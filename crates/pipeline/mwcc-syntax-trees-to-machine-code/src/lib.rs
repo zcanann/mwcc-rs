@@ -389,6 +389,11 @@ impl Generator {
     /// is tested (a leaf against zero, a comparison directly) with an early
     /// conditional return. Each operand may be a leaf or a comparison.
     fn emit_short_circuit(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
+        // If the right operand still reads the result register, the running result
+        // cannot live there; mwcc computes it in r0 and copies it out at the end.
+        if self.registers_used_by(right).contains(&result) {
+            return self.emit_short_circuit_via_scratch(operator, left, right, result);
+        }
         match operator {
             BinaryOperator::LogicalAnd => {
                 // test left; result 0; return 0 if left false; test right; return 0 if right false; result 1.
@@ -417,6 +422,52 @@ impl Generator {
             _ => unreachable!("caller restricts to logical and/or"),
         }
         Ok(())
+    }
+
+    /// Short-circuit `&&`/`||` whose result is built in the scratch register and
+    /// copied to the destination at a common exit — used when the destination
+    /// register is still needed by the right operand.
+    fn emit_short_circuit_via_scratch(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
+        let scratch = GENERAL_SCRATCH;
+        match operator {
+            BinaryOperator::LogicalAnd => {
+                let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                self.output.instructions.push(Instruction::load_immediate(scratch, 0));
+                let exit_a = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: left_skip, condition_bit: left_bit, target: 0 });
+                let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                let exit_b = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: right_skip, condition_bit: right_bit, target: 0 });
+                self.output.instructions.push(Instruction::load_immediate(scratch, 1));
+                let exit = self.output.instructions.len();
+                self.patch_forward(exit_a, exit);
+                self.patch_forward(exit_b, exit);
+                self.output.instructions.push(Instruction::move_register(result, scratch));
+            }
+            BinaryOperator::LogicalOr => {
+                let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                self.output.instructions.push(Instruction::load_immediate(scratch, 0));
+                let to_set_one = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: left_skip ^ 8, condition_bit: left_bit, target: 0 });
+                let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                let to_exit = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: right_skip, condition_bit: right_bit, target: 0 });
+                let set_one = self.output.instructions.len();
+                self.output.instructions.push(Instruction::load_immediate(scratch, 1));
+                let exit = self.output.instructions.len();
+                self.patch_forward(to_set_one, set_one);
+                self.patch_forward(to_exit, exit);
+                self.output.instructions.push(Instruction::move_register(result, scratch));
+            }
+            _ => unreachable!("caller restricts to logical and/or"),
+        }
+        Ok(())
+    }
+
+    fn patch_forward(&mut self, branch_index: usize, target: usize) {
+        if let Instruction::BranchConditionalForward { target: slot, .. } = &mut self.output.instructions[branch_index] {
+            *slot = target;
+        }
     }
 
     fn evaluate_single_local(
