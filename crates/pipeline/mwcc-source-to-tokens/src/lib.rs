@@ -44,6 +44,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
                 "float" => Token::KeywordFloat,
                 "void" => Token::KeywordVoid,
                 "return" => Token::KeywordReturn,
+                "if" => Token::KeywordIf,
                 _ => Token::Identifier(word.to_string()),
             });
             continue;

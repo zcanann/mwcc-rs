@@ -47,6 +47,19 @@ fn is_zero_literal(expression: &Expression) -> bool {
     matches!(expression, Expression::IntegerLiteral(0))
 }
 
+/// Fold `if (c) return v;` guards into nested conditionals around `final_return`.
+fn desugar_guards(guards: &[mwcc_syntax_trees::GuardedReturn], final_return: &Expression) -> Expression {
+    let mut value = final_return.clone();
+    for guard in guards.iter().rev() {
+        value = Expression::Conditional {
+            condition: Box::new(guard.condition.clone()),
+            when_true: Box::new(guard.value.clone()),
+            when_false: Box::new(value),
+        };
+    }
+    value
+}
+
 /// A nonzero integer literal that fits a signed 16-bit immediate.
 fn as_small_integer(expression: &Expression) -> Option<i16> {
     match expression {
@@ -213,10 +226,28 @@ impl Generator {
             Type::Void => return Ok(()),
         };
 
+        // `if (c) return v;` guards desugar into nested conditionals around the
+        // final return: `if(c1) return v1; ... return e` == `c1 ? v1 : (... : e)`.
+        let return_value = desugar_guards(&function.guards, &function.return_expression);
+
         match function.locals.as_slice() {
-            [] => self.evaluate(&function.return_expression, function.return_type, result),
-            [local] => self.evaluate_single_local(local, &function.return_expression, function.return_type, result),
+            [] => self.evaluate_tail(&return_value, function.return_type, result),
+            [local] if function.guards.is_empty() => {
+                self.evaluate_single_local(local, &function.return_expression, function.return_type, result)
+            }
+            [_] => Err(Diagnostic::error("locals combined with guards not yet supported")),
             _ => Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
+        }
+    }
+
+    /// Evaluate the function result. A conditional in this tail position can use a
+    /// conditional return when its false value already sits in the result register.
+    fn evaluate_tail(&mut self, expression: &Expression, value_type: Type, result: u8) -> Compilation<()> {
+        match expression {
+            Expression::Conditional { condition, when_true, when_false } => {
+                self.emit_conditional(condition, when_true, when_false, result, true)
+            }
+            other => self.evaluate(other, value_type, result),
         }
     }
 
@@ -273,7 +304,7 @@ impl Generator {
             }
             Expression::Unary { operator, operand } => self.emit_unary(*operator, operand, destination),
             Expression::Conditional { condition, when_true, when_false } => {
-                self.emit_conditional(condition, when_true, when_false, destination)
+                self.emit_conditional(condition, when_true, when_false, destination, false)
             }
             Expression::Binary { operator, left, right } => {
                 // Comparisons compile to branchless idioms.
@@ -376,12 +407,24 @@ impl Generator {
         when_true: &Expression,
         when_false: &Expression,
         destination: u8,
+        tail: bool,
     ) -> Compilation<()> {
         let true_register = self.general_register_of_leaf(when_true)?;
         let false_register = self.general_register_of_leaf(when_false)?;
 
         // Emit the condition test and the branch that skips the true path when it fails.
         let (options, condition_bit) = self.emit_condition_test(condition)?;
+
+        // In tail position, when the false value already sits in the result
+        // register, return early on the false path instead of branching forward.
+        if tail && false_register == destination {
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+            if destination != true_register {
+                self.output.instructions.push(Instruction::move_register(destination, true_register));
+            }
+            return Ok(());
+        }
+
         let branch_index = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
         self.output.instructions.push(Instruction::move_register(false_register, true_register));

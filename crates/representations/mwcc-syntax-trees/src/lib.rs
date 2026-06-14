@@ -99,13 +99,21 @@ pub struct LocalDeclaration {
     pub initializer: Expression,
 }
 
-/// A function definition. Bodies are zero or more local declarations followed by
-/// a single `return <expression>;`.
+/// A guarded early return: `if (condition) return value;`.
+#[derive(Debug, Clone)]
+pub struct GuardedReturn {
+    pub condition: Expression,
+    pub value: Expression,
+}
+
+/// A function definition. Bodies are zero or more local declarations, then zero
+/// or more `if (...) return ...;` guards, then a final `return <expression>;`.
 #[derive(Debug, Clone)]
 pub struct Function {
     pub return_type: Type,
     pub name: String,
     pub parameters: Vec<Parameter>,
     pub locals: Vec<LocalDeclaration>,
+    pub guards: Vec<GuardedReturn>,
     pub return_expression: Expression,
 }

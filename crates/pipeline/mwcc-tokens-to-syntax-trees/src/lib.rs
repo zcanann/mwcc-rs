@@ -7,7 +7,7 @@
 //!   factor     := literal | identifier | '(' expression ')'
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Parameter, Type, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, Parameter, Type, UnaryOperator};
 use mwcc_tokens::Token;
 
 pub fn parse_function(tokens: Vec<Token>) -> Compilation<Function> {
@@ -98,12 +98,25 @@ impl Parser {
             locals.push(LocalDeclaration { declared_type, name, initializer });
         }
 
+        // Zero or more guarded early returns: `if (condition) return value;`.
+        let mut guards = Vec::new();
+        while *self.peek() == Token::KeywordIf {
+            self.advance();
+            self.expect(Token::ParenOpen)?;
+            let condition = self.expression()?;
+            self.expect(Token::ParenClose)?;
+            self.expect(Token::KeywordReturn)?;
+            let value = self.expression()?;
+            self.expect(Token::Semicolon)?;
+            guards.push(GuardedReturn { condition, value });
+        }
+
         self.expect(Token::KeywordReturn)?;
         let return_expression = self.expression()?;
         self.expect(Token::Semicolon)?;
         self.expect(Token::BraceClose)?;
 
-        Ok(Function { return_type, name, parameters, locals, return_expression })
+        Ok(Function { return_type, name, parameters, locals, guards, return_expression })
     }
 
     fn peek_is_type(&self) -> bool {

@@ -9,6 +9,7 @@ pub enum Token {
     KeywordFloat,
     KeywordVoid,
     KeywordReturn,
+    KeywordIf,
     // identifiers and literals
     Identifier(String),
     IntegerLiteral(i64),

@@ -84,6 +84,8 @@ pub enum Instruction {
     /// is the PowerPC BO field, `condition_bit` the BI field (cr0: 0=LT,1=GT,2=EQ).
     /// The byte offset is resolved at encode time from the instruction positions.
     BranchConditionalForward { options: u8, condition_bit: u8, target: usize },
+    /// `bclr BO, BI` — conditional return (e.g. `bnelr`).
+    BranchConditionalToLinkRegister { options: u8, condition_bit: u8 },
     /// `blr` — return to link register.
     BranchToLinkRegister,
 }
@@ -155,6 +157,9 @@ impl Instruction {
             Instruction::CompareWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
             // resolved positionally in encode_text
             Instruction::BranchConditionalForward { .. } => 0,
+            Instruction::BranchConditionalToLinkRegister { options, condition_bit } => {
+                (19 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | (16 << 1)
+            }
             Instruction::BranchToLinkRegister => 0x4E80_0020,
         }
     }
