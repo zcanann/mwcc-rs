@@ -1,6 +1,32 @@
 //! Pure predicates and shape queries over expressions — no `Generator` state.
 
-use mwcc_syntax_trees::{BinaryOperator, Expression, Type, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
+
+/// Whether an expression contains a call anywhere.
+pub(crate) fn expression_has_call(expression: &Expression) -> bool {
+    match expression {
+        Expression::Call { .. } => true,
+        Expression::Binary { left, right, .. } => expression_has_call(left) || expression_has_call(right),
+        Expression::Unary { operand, .. } => expression_has_call(operand),
+        Expression::Conditional { condition, when_true, when_false } => {
+            expression_has_call(condition) || expression_has_call(when_true) || expression_has_call(when_false)
+        }
+        Expression::Cast { operand, .. } => expression_has_call(operand),
+        Expression::Dereference { pointer } => expression_has_call(pointer),
+        Expression::Index { base, index } => expression_has_call(base) || expression_has_call(index),
+        _ => false,
+    }
+}
+
+/// Whether a function makes a call (and so needs the non-leaf prologue).
+pub(crate) fn function_makes_call(function: &Function) -> bool {
+    function.statements.iter().any(|statement| match statement {
+        Statement::Store { target, value } => expression_has_call(target) || expression_has_call(value),
+        Statement::Expression(expression) => expression_has_call(expression),
+    }) || function.return_expression.as_ref().is_some_and(expression_has_call)
+        || function.locals.iter().any(|local| expression_has_call(&local.initializer))
+        || function.guards.iter().any(|guard| expression_has_call(&guard.condition) || expression_has_call(&guard.value))
+}
 
 pub(crate) fn is_complex(expression: &Expression) -> bool {
     matches!(

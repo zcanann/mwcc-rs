@@ -100,6 +100,10 @@ impl Instruction {
                 (19 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | (16 << 1)
             }
             Instruction::BranchToLinkRegister => 0x4E80_0020,
+            // The displacement is supplied by the relocation; emit the placeholder.
+            Instruction::BranchAndLink { .. } => 0x4800_0001,
+            Instruction::MoveFromLinkRegister { d } => 0x7C08_02A6 | ((d as u32) << 21),
+            Instruction::MoveToLinkRegister { s } => 0x7C08_03A6 | ((s as u32) << 21),
         }
     }
 }

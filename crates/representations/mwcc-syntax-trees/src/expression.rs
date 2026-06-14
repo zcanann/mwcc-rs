@@ -36,4 +36,9 @@ pub enum Expression {
         base: Box<Expression>,
         index: Box<Expression>,
     },
+    /// `name(arguments)` — a direct call.
+    Call {
+        name: String,
+        arguments: Vec<Expression>,
+    },
 }

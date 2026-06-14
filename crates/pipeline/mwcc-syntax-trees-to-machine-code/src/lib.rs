@@ -34,6 +34,7 @@ pub fn lower_function(function: &Function, build: CompilerBuild) -> Compilation<
         reserved: HashSet::new(),
         frame_size: 0,
         build,
+        non_leaf: false,
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;

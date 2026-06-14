@@ -87,6 +87,23 @@ impl Parser {
         let mut expression = match self.advance() {
             Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
+            // `name(args)` is a call; a bare `name` is a variable.
+            Token::Identifier(name) if *self.peek() == Token::ParenOpen => {
+                self.advance();
+                let mut arguments = Vec::new();
+                if *self.peek() != Token::ParenClose {
+                    loop {
+                        arguments.push(self.expression()?);
+                        if *self.peek() == Token::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(Token::ParenClose)?;
+                Expression::Call { name, arguments }
+            }
             Token::Identifier(name) => Expression::Variable(name),
             Token::ParenOpen => {
                 // `(type) expr` is a cast; otherwise a parenthesised expression.

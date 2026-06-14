@@ -3,6 +3,7 @@
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, UnaryOperator};
+use mwcc_target::Eabi;
 use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
@@ -74,6 +75,7 @@ impl Generator {
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
+            Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), false),
             Expression::Binary { operator, left, right } => {
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
@@ -214,6 +216,54 @@ impl Generator {
         }
         self.evaluate_general(value, GENERAL_SCRATCH)?;
         Ok(GENERAL_SCRATCH)
+    }
+
+    /// Emit a direct call. Arguments are placed in the EABI argument registers,
+    /// then `bl name`; the result (in r3 / f1) is moved to `destination` when one
+    /// is wanted (a discarded call statement passes `None`).
+    pub(crate) fn emit_call(&mut self, name: &str, arguments: &[Expression], destination: Option<u8>, float_result: bool) -> Compilation<()> {
+        self.emit_arguments(arguments)?;
+        self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
+        if let Some(destination) = destination {
+            let result = if float_result { Eabi::float_result().number } else { Eabi::general_result().number };
+            if destination != result {
+                self.output.instructions.push(if float_result {
+                    Instruction::FloatMove { d: destination, b: result }
+                } else {
+                    Instruction::move_register(destination, result)
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Place call arguments in the EABI argument registers (r3.. / f1..). Each is
+    /// evaluated into its positional register; passthrough parameters are already
+    /// in place, so this is a no-op for them.
+    fn emit_arguments(&mut self, arguments: &[Expression]) -> Compilation<()> {
+        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
+        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        for argument in arguments {
+            if self.is_float_value(argument) {
+                self.evaluate_float(argument, next_float)?;
+                next_float += 1;
+            } else {
+                self.evaluate_general(argument, next_general)?;
+                next_general += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether an expression yields a float (a float leaf, literal, or load).
+    fn is_float_value(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::FloatLiteral(_) => true,
+            Expression::Variable(_) => self.is_float_leaf(expression),
+            Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Float)),
+            Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Float)),
+            _ => false,
+        }
     }
 
     /// `(pointee, address register)` for a pointer leaf variable.

@@ -41,7 +41,20 @@ impl Generator {
 
     /// Emit the whole function body, including its `blr`(s).
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
-        // Body statements (stores) run first.
+        // A function that calls is non-leaf: save the link register around a 16-byte
+        // frame before doing anything else.
+        if function_makes_call(function) {
+            if !function.guards.is_empty() {
+                return Err(Diagnostic::error("calls combined with guards not yet supported"));
+            }
+            self.non_leaf = true;
+            self.frame_size = 16;
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        }
+
+        // Body statements (stores, calls) run first.
         for statement in &function.statements {
             self.emit_statement(statement)?;
         }
@@ -89,8 +102,13 @@ impl Generator {
         Ok(())
     }
 
-    /// Tear down the stack frame (if one was allocated) and return.
+    /// Tear down the stack frame (if one was allocated) and return. A non-leaf
+    /// function restores the link register from `frame_size + 4` first.
     fn emit_epilogue_and_return(&mut self) {
+        if self.non_leaf {
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        }
         if self.frame_size != 0 {
             self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
         }
@@ -101,6 +119,10 @@ impl Generator {
     pub(crate) fn emit_statement(&mut self, statement: &Statement) -> Compilation<()> {
         match statement {
             Statement::Store { target, value } => self.emit_store(target, value),
+            Statement::Expression(Expression::Call { name, arguments }) => {
+                self.emit_call(name, arguments, None, false)
+            }
+            Statement::Expression(_) => Err(Diagnostic::error("only a call may be a bare statement (roadmap)")),
         }
     }
 

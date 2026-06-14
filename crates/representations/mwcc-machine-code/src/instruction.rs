@@ -153,6 +153,14 @@ pub enum Instruction {
     BranchConditionalToLinkRegister { options: u8, condition_bit: u8 },
     /// `blr` — return to link register.
     BranchToLinkRegister,
+    /// `bl target` — branch and link (call). The 24-bit displacement is filled by
+    /// an `R_PPC_REL24` relocation to `target`, so the `.text` word is the
+    /// placeholder `0x48000001`.
+    BranchAndLink { target: String },
+    /// `mflr rD` — move from the link register.
+    MoveFromLinkRegister { d: u8 },
+    /// `mtlr rS` — move to the link register.
+    MoveToLinkRegister { s: u8 },
 }
 
 impl Instruction {

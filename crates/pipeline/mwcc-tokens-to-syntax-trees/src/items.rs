@@ -56,27 +56,42 @@ impl Parser {
     }
 
     pub(crate) fn function(&mut self) -> Compilation<Function> {
-        let return_type = self.parse_type()?;
-        let name = self.parse_identifier()?;
-        self.expect(Token::ParenOpen)?;
+        // Skip leading prototype declarations (`type name(params);`) until the
+        // function *definition* (the signature followed by `{`).
+        let (return_type, name, parameters) = loop {
+            let return_type = self.parse_type()?;
+            let name = self.parse_identifier()?;
+            self.expect(Token::ParenOpen)?;
 
-        let mut parameters = Vec::new();
-        if *self.peek() == Token::KeywordVoid {
-            self.advance();
-        } else if *self.peek() != Token::ParenClose {
-            loop {
-                let parameter_type = self.parse_type()?;
-                let name = self.parse_identifier()?;
-                parameters.push(Parameter { parameter_type, name });
-                if *self.peek() == Token::Comma {
-                    self.advance();
-                } else {
-                    break;
+            let mut parameters = Vec::new();
+            if *self.peek() == Token::KeywordVoid {
+                self.advance();
+            } else if *self.peek() != Token::ParenClose {
+                loop {
+                    let parameter_type = self.parse_type()?;
+                    // The name is optional (a prototype may write just the type).
+                    let name = if matches!(self.peek(), Token::Identifier(_)) {
+                        self.parse_identifier()?
+                    } else {
+                        String::new()
+                    };
+                    parameters.push(Parameter { parameter_type, name });
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
                 }
             }
-        }
+            self.expect(Token::ParenClose)?;
 
-        self.expect(Token::ParenClose)?;
+            if *self.peek() == Token::Semicolon {
+                self.advance(); // a prototype — keep looking for the definition
+                continue;
+            }
+            break (return_type, name, parameters);
+        };
+
         self.expect(Token::BraceOpen)?;
 
         // Zero or more local declarations precede the return statement. A
@@ -92,14 +107,20 @@ impl Parser {
             locals.push(LocalDeclaration { declared_type, name, initializer });
         }
 
-        // Zero or more store statements: `*p = v;` / `p[i] = v;`.
+        // Zero or more statements: a store `*p = v;` / `p[i] = v;`, or a bare
+        // expression evaluated for effect like a call `g();`.
         let mut statements = Vec::new();
         while !matches!(self.peek(), Token::KeywordReturn | Token::KeywordIf | Token::BraceClose) {
-            let target = self.factor()?;
-            self.expect(Token::Equals)?;
-            let value = self.expression()?;
-            self.expect(Token::Semicolon)?;
-            statements.push(Statement::Store { target, value });
+            let first = self.factor()?;
+            if *self.peek() == Token::Equals {
+                self.advance();
+                let value = self.expression()?;
+                self.expect(Token::Semicolon)?;
+                statements.push(Statement::Store { target: first, value });
+            } else {
+                self.expect(Token::Semicolon)?;
+                statements.push(Statement::Expression(first));
+            }
         }
 
         // Zero or more guarded early returns: `if (condition) return value;`.

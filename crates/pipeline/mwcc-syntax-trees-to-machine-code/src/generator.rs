@@ -41,6 +41,9 @@ pub(crate) struct Generator {
     /// The build we are reproducing. Its only codegen-affecting knob today is
     /// the default signedness of plain `char` (see [`Generator::signed_of`]).
     pub(crate) build: CompilerBuild,
+    /// Whether the function makes a call: it then saves/restores the link register
+    /// around a stack frame (the non-leaf prologue/epilogue).
+    pub(crate) non_leaf: bool,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
@@ -112,6 +115,8 @@ impl Generator {
             // `*p` and `p[i]` have the signedness of the pointee.
             Expression::Dereference { pointer } => Ok(self.pointee_of(pointer)?.element().is_signed()),
             Expression::Index { base, .. } => Ok(self.pointee_of(base)?.element().is_signed()),
+            // A call returns an int by default (we have no prototype types yet).
+            Expression::Call { .. } => Ok(true),
         }
     }
 
