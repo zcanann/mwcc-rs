@@ -51,6 +51,16 @@ pub const GC_1_3_2: CompilerBuild = CompilerBuild {
     char_is_signed: true,
 };
 
+/// GC/1.3.2r — mwcceppc 2.4.2 build 81, byte-identical to GC/1.3.2 across the
+/// canary suite (a re-release of the same compiler).
+pub const GC_1_3_2R: CompilerBuild = CompilerBuild {
+    label: "GC/1.3.2r",
+    product: "CodeWarrior for GameCube 1.3.2 (r)",
+    version: (2, 4, 2),
+    build: 81,
+    char_is_signed: true,
+};
+
 /// GC/2.0 — mwcceppc 2.4.7 build 92.
 pub const GC_2_0: CompilerBuild = CompilerBuild {
     label: "GC/2.0",
@@ -88,7 +98,7 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
 };
 
 /// Every build the generator reproduces byte-for-byte across the canary suite.
-pub const SUPPORTED: &[CompilerBuild] = &[GC_1_3, GC_1_3_2, GC_2_0, GC_2_5, GC_2_6, GC_2_7];
+pub const SUPPORTED: &[CompilerBuild] = &[GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_5, GC_2_6, GC_2_7];
 
 /// The default build new compilations target until one is selected.
 pub const DEFAULT: CompilerBuild = GC_1_3_2;

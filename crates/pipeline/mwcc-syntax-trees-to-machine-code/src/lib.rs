@@ -575,7 +575,7 @@ impl Generator {
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
-                let operands = self.place_general_operands(left, right, destination)?;
+                let operands = self.place_general_operands(*operator, left, right, destination)?;
                 self.output.instructions.push(general_combine(*operator, destination, operands)?);
                 Ok(())
             }
@@ -1358,9 +1358,63 @@ impl Generator {
         Ok(true)
     }
 
-    fn place_general_operands(&mut self, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
+    /// (register, width-bits, signed) for a general-register leaf variable.
+    fn leaf_info(&self, expression: &Expression) -> Compilation<(u8, u8, bool)> {
+        if let Expression::Variable(name) = expression {
+            if let Some(location) = self.locations.get(name.as_str()) {
+                if location.class == ValueClass::General {
+                    return Ok((location.register, location.width, location.signed));
+                }
+            }
+        }
+        Err(Diagnostic::error("expected a general-register leaf"))
+    }
+
+    /// Place two leaf operands when at least one is narrow, emitting the width
+    /// extensions mwcc inserts. A wide leaf stays in its home register; a narrow
+    /// leaf is extended — into the scratch when it is the only operand needing
+    /// materialization or the non-anchor of a two-narrow pair, in place (its home)
+    /// when it is the pair's anchor. The anchor is the left operand for commutative
+    /// operators and the right for subtraction, matching mwcc's evaluation order.
+    fn place_narrow_leaves(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
+        let (left_register, left_width, left_signed) = self.leaf_info(left)?;
+        let (right_register, right_width, right_signed) = self.leaf_info(right)?;
+        let left_narrow = left_width < 32;
+        let right_narrow = right_width < 32;
+        let subtract = operator == BinaryOperator::Subtract;
+
+        // Where each operand ends up.
+        let (left_target, right_target) = if left_narrow && right_narrow {
+            if subtract {
+                (GENERAL_SCRATCH, right_register) // right is the anchor, kept in place
+            } else {
+                (left_register, GENERAL_SCRATCH) // left is the anchor, kept in place
+            }
+        } else if left_narrow {
+            (GENERAL_SCRATCH, right_register)
+        } else {
+            (left_register, GENERAL_SCRATCH)
+        };
+
+        // Emit extensions in mwcc's order: the anchor first, then the scratch operand.
+        if subtract {
+            if right_narrow { self.emit_widen(right_target, right_register, right_width, right_signed); }
+            if left_narrow { self.emit_widen(left_target, left_register, left_width, left_signed); }
+        } else {
+            if left_narrow { self.emit_widen(left_target, left_register, left_width, left_signed); }
+            if right_narrow { self.emit_widen(right_target, right_register, right_width, right_signed); }
+        }
+        Operands::ordered(left_target, right_target)
+    }
+
+    fn place_general_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
         match (is_complex(left), is_complex(right)) {
-            (false, false) => Operands::ordered(self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?),
+            (false, false) => {
+                if self.is_narrow_leaf(left) || self.is_narrow_leaf(right) {
+                    return self.place_narrow_leaves(operator, left, right);
+                }
+                Operands::ordered(self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?)
+            }
             (true, false) => {
                 self.evaluate_general(left, GENERAL_SCRATCH)?;
                 // left computed into scratch, right is a leaf: mwcc puts the leaf first.
