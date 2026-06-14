@@ -50,6 +50,18 @@ fn is_zero_literal(expression: &Expression) -> bool {
     matches!(expression, Expression::IntegerLiteral(0))
 }
 
+/// The integer value if `expression` is a literal or a negated literal.
+fn constant_value(expression: &Expression) -> Option<i64> {
+    match expression {
+        Expression::IntegerLiteral(value) => Some(*value),
+        Expression::Unary { operator: UnaryOperator::Negate, operand } => match operand.as_ref() {
+            Expression::IntegerLiteral(value) => Some(-*value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The variable name if `expression` is a plain variable reference.
 fn leaf_name(expression: &Expression) -> Option<&str> {
     match expression {
@@ -933,10 +945,10 @@ impl Generator {
         destination: u8,
     ) -> Compilation<bool> {
         // variable op constant — subtraction becomes addition of the negation.
-        if let Expression::IntegerLiteral(constant) = right {
+        if let Some(constant) = constant_value(right) {
             let (effective, value) = match operator {
                 BinaryOperator::Subtract => (BinaryOperator::Add, -constant),
-                other => (other, *constant),
+                other => (other, constant),
             };
             if self.emit_constant_form(effective, left, value, destination)? {
                 return Ok(true);
@@ -944,8 +956,8 @@ impl Generator {
         }
         // constant op variable — only the commutative operators.
         if is_commutative(operator) {
-            if let Expression::IntegerLiteral(constant) = left {
-                if self.emit_constant_form(operator, right, *constant, destination)? {
+            if let Some(constant) = constant_value(left) {
+                if self.emit_constant_form(operator, right, constant, destination)? {
                     return Ok(true);
                 }
             }
@@ -959,6 +971,30 @@ impl Generator {
     /// that source directly — `addi` must not take `r0` as its source, which would
     /// silently mean `li`.
     fn emit_constant_form(&mut self, operator: BinaryOperator, variable: &Expression, constant: i64, destination: u8) -> Compilation<bool> {
+        // Identity and strength-reduction folds.
+        match (operator, constant) {
+            (BinaryOperator::Add, 0) => {
+                self.evaluate_general(variable, destination)?;
+                return Ok(true);
+            }
+            (BinaryOperator::Multiply, 0) => {
+                self.load_integer_constant(destination, 0);
+                return Ok(true);
+            }
+            (BinaryOperator::Multiply, 1) => {
+                self.evaluate_general(variable, destination)?;
+                return Ok(true);
+            }
+            (BinaryOperator::Multiply, -1) => {
+                let Some(source) = self.place_operand(variable, destination, false)? else {
+                    return Ok(false);
+                };
+                self.output.instructions.push(Instruction::Negate { d: destination, a: source });
+                return Ok(true);
+            }
+            _ => {}
+        }
+
         enum Immediate {
             Add,
             ShiftLeft(u8),
