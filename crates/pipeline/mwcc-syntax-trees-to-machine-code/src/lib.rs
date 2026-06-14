@@ -377,14 +377,13 @@ impl Generator {
         when_false: &Expression,
         destination: u8,
     ) -> Compilation<()> {
-        let condition_register = self.general_register_of_leaf(condition)?;
         let true_register = self.general_register_of_leaf(when_true)?;
         let false_register = self.general_register_of_leaf(when_false)?;
 
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: condition_register, immediate: 0 });
+        // Emit the condition test and the branch that skips the true path when it fails.
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
         let branch_index = self.output.instructions.len();
-        // beq: BO=12 (branch if true), BI=2 (cr0 EQ) — skip the true-path move when the condition is zero.
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
         self.output.instructions.push(Instruction::move_register(false_register, true_register));
 
         let label = self.output.instructions.len();
@@ -395,6 +394,43 @@ impl Generator {
             self.output.instructions.push(Instruction::move_register(destination, false_register));
         }
         Ok(())
+    }
+
+    /// Emit the test for a branch condition and return the `(BO, BI)` of the
+    /// branch that skips the guarded code when the condition is **false**. A
+    /// comparison condition uses `cmpw`/`cmpwi` with the negated relation; any
+    /// other expression is tested against zero (`!= 0`).
+    fn emit_condition_test(&mut self, condition: &Expression) -> Compilation<(u8, u8)> {
+        if let Expression::Binary { operator, left, right } = condition {
+            if is_comparison(*operator) {
+                if !(self.signedness_of(left)? && self.signedness_of(right)?) {
+                    return Err(Diagnostic::error("unsigned comparison conditions not yet supported (need cmplw)"));
+                }
+                let left_register = self.general_register_of_leaf(left)?;
+                if let Some(constant) = as_small_integer(right) {
+                    self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: constant });
+                } else if is_zero_literal(right) {
+                    self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
+                } else {
+                    let right_register = self.general_register_of_leaf(right)?;
+                    self.output.instructions.push(Instruction::CompareWord { a: left_register, b: right_register });
+                }
+                // Branch when the comparison is false. BO: 4 = if-false, 12 = if-true. BI: 0=LT,1=GT,2=EQ.
+                return Ok(match operator {
+                    BinaryOperator::Greater => (4, 1),      // ble
+                    BinaryOperator::Less => (4, 0),         // bge
+                    BinaryOperator::GreaterEqual => (12, 0), // blt
+                    BinaryOperator::LessEqual => (12, 1),    // bgt
+                    BinaryOperator::Equal => (4, 2),         // bne
+                    BinaryOperator::NotEqual => (12, 2),     // beq
+                    _ => unreachable!("is_comparison restricts the operator"),
+                });
+            }
+        }
+        // Plain truth test: compare against zero, skip when equal.
+        let register = self.general_register_of_leaf(condition)?;
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+        Ok((12, 2)) // beq — skip when condition == 0
     }
 
     /// Emit a prefix unary operator into `destination`.
