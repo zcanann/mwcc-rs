@@ -43,6 +43,14 @@ pub(crate) fn as_dereference(expression: &Expression) -> Option<&Expression> {
     }
 }
 
+/// If `expression` is `base->field`, its base, byte offset, and member type.
+pub(crate) fn as_member(expression: &Expression) -> Option<(&Expression, u16, mwcc_syntax_trees::Type)> {
+    match expression {
+        Expression::Member { base, offset, member_type } => Some((base, *offset, *member_type)),
+        _ => None,
+    }
+}
+
 pub(crate) fn is_zero_literal(expression: &Expression) -> bool {
     matches!(expression, Expression::IntegerLiteral(0))
 }

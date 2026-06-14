@@ -56,6 +56,10 @@ impl Generator {
         if self.is_global(left) || self.is_global(right) {
             return self.place_global_operands(operator, left, right, destination);
         }
+        // A struct-member operand loads into a register, like a dereference.
+        if as_member(left).is_some() || as_member(right).is_some() {
+            return self.place_member_operands(operator, left, right, destination);
+        }
         match (is_complex(left), is_complex(right)) {
             (false, false) => {
                 if self.is_narrow_leaf(left) || self.is_narrow_leaf(right) {
@@ -125,6 +129,60 @@ impl Generator {
             }
             (None, None) => unreachable!("caller checked one side is a dereference"),
         }
+    }
+
+    /// Place a binary node where at least one operand is a `base->field` load.
+    /// A member loads like a dereference: a single member loads into the scratch
+    /// (the other operand stays home); two members load the first-needed one into
+    /// a free temporary (the shared base register must survive the first load) and
+    /// the second into the scratch. Subtraction loads the right operand first so
+    /// `subf` computes `left - right`.
+    fn place_member_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        let subtract = operator == BinaryOperator::Subtract;
+        match (as_member(left), as_member(right)) {
+            (Some((left_base, left_offset, left_type)), Some((right_base, right_offset, right_type))) => {
+                if destination == GENERAL_SCRATCH {
+                    return Err(Diagnostic::error("two members need a non-scratch destination (roadmap)"));
+                }
+                // The temporary must avoid both bases (often the same register).
+                let temp = self.free_register_avoiding(&[left_base, right_base])?;
+                if subtract {
+                    self.emit_member_load(right_base, right_offset, right_type, temp)?;
+                    self.emit_member_load(left_base, left_offset, left_type, GENERAL_SCRATCH)?;
+                    Operands::ordered(GENERAL_SCRATCH, temp)
+                } else {
+                    self.emit_member_load(left_base, left_offset, left_type, temp)?;
+                    self.emit_member_load(right_base, right_offset, right_type, GENERAL_SCRATCH)?;
+                    Operands::ordered(temp, GENERAL_SCRATCH)
+                }
+            }
+            (Some((base, offset, member_type)), None) => {
+                let right_register = self.wide_leaf_register(right)?;
+                self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+                Operands::ordered(GENERAL_SCRATCH, right_register)
+            }
+            (None, Some((base, offset, member_type))) => {
+                let left_register = self.wide_leaf_register(left)?;
+                self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+                Operands::ordered(left_register, GENERAL_SCRATCH)
+            }
+            (None, None) => unreachable!("caller checked one side is a member"),
+        }
+    }
+
+    /// The lowest free general register that avoids the registers read by the
+    /// given base expressions (so a member's shared base survives the first load).
+    fn free_register_avoiding(&mut self, bases: &[&Expression]) -> Compilation<u8> {
+        let mut reserved_registers = HashSet::new();
+        for base in bases {
+            reserved_registers.extend(self.registers_used_by(base));
+        }
+        let newly: Vec<u8> = reserved_registers.iter().copied().filter(|register| self.reserved.insert(*register)).collect();
+        let register = self.lowest_free_general();
+        for register in &newly {
+            self.reserved.remove(register);
+        }
+        register
     }
 
     /// Whether `operand` is a reference to a file-scope global.
@@ -219,6 +277,8 @@ impl Generator {
                 self.collect_registers(when_false, registers);
             }
             Expression::Cast { operand, .. } => self.collect_registers(operand, registers),
+            // `base->field` reads the base pointer's register.
+            Expression::Member { base, .. } => self.collect_registers(base, registers),
             _ => {}
         }
     }
