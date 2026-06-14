@@ -34,6 +34,14 @@ pub enum Instruction {
     Xor { a: u8, s: u8, b: u8 },
     /// `slw rA, rS, rB` — shift left word by the low bits of rB.
     ShiftLeftWord { a: u8, s: u8, b: u8 },
+    /// `sraw rA, rS, rB` — arithmetic (signed) shift right word.
+    ShiftRightAlgebraicWord { a: u8, s: u8, b: u8 },
+    /// `srw rA, rS, rB` — logical (unsigned) shift right word.
+    ShiftRightWord { a: u8, s: u8, b: u8 },
+    /// `srawi rA, rS, shift` — arithmetic shift right immediate.
+    ShiftRightAlgebraicImmediate { a: u8, s: u8, shift: u8 },
+    /// `srwi rA, rS, shift` — logical shift right immediate, via `rlwinm`.
+    ShiftRightLogicalImmediate { a: u8, s: u8, shift: u8 },
     /// `xori rA, rS, UIMM`
     XorImmediate { a: u8, s: u8, immediate: u16 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
@@ -89,6 +97,16 @@ impl Instruction {
             Instruction::And { a, s, b } => logical_form(s, a, b, 28),
             Instruction::Xor { a, s, b } => logical_form(s, a, b, 316),
             Instruction::ShiftLeftWord { a, s, b } => logical_form(s, a, b, 24),
+            Instruction::ShiftRightAlgebraicWord { a, s, b } => logical_form(s, a, b, 792),
+            Instruction::ShiftRightWord { a, s, b } => logical_form(s, a, b, 536),
+            Instruction::ShiftRightAlgebraicImmediate { a, s, shift } => {
+                (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (824 << 1)
+            }
+            // srwi rA,rS,n == rlwinm rA,rS,32-n,n,31
+            Instruction::ShiftRightLogicalImmediate { a, s, shift } => {
+                let rotate = 32 - shift as u32;
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (rotate << 11) | ((shift as u32) << 6) | (31 << 1)
+            }
             Instruction::XorImmediate { a, s, immediate } => d_form(26, s, a, immediate),
             // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
             Instruction::ClearLeftImmediate { a, s, clear } => {

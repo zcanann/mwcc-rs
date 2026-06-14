@@ -5,8 +5,16 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
     Int,
+    UnsignedInt,
     Float,
     Void,
+}
+
+impl Type {
+    /// Whether this is a signed integer (affects e.g. `>>`).
+    pub fn is_signed(self) -> bool {
+        matches!(self, Type::Int)
+    }
 }
 
 /// A function parameter.

@@ -123,6 +123,7 @@ enum ValueClass {
 struct Location {
     class: ValueClass,
     register: u8,
+    signed: bool,
 }
 
 struct Generator {
@@ -132,7 +133,7 @@ struct Generator {
 
 fn class_of(declared: Type) -> Compilation<ValueClass> {
     match declared {
-        Type::Int => Ok(ValueClass::General),
+        Type::Int | Type::UnsignedInt => Ok(ValueClass::General),
         Type::Float => Ok(ValueClass::Float),
         Type::Void => Err(Diagnostic::error("a value cannot have type void")),
     }
@@ -156,7 +157,10 @@ impl Generator {
                     register
                 }
             };
-            self.locations.insert(parameter.name.clone(), Location { class, register });
+            self.locations.insert(
+                parameter.name.clone(),
+                Location { class, register, signed: parameter.parameter_type.is_signed() },
+            );
         }
         Ok(())
     }
@@ -164,7 +168,7 @@ impl Generator {
     /// Evaluate the locals (if any) and the return expression into the result register.
     fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
         let result = match function.return_type {
-            Type::Int => Eabi::general_result().number,
+            Type::Int | Type::UnsignedInt => Eabi::general_result().number,
             Type::Float => Eabi::float_result().number,
             Type::Void => return Ok(()),
         };
@@ -201,13 +205,13 @@ impl Generator {
             ValueClass::Float => FLOAT_SCRATCH,
         };
         self.evaluate(&local.initializer, local.declared_type, scratch)?;
-        self.locations.insert(local.name.clone(), Location { class, register: scratch });
+        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed: local.declared_type.is_signed() });
         self.evaluate(return_expression, return_type, result)
     }
 
     fn evaluate(&mut self, expression: &Expression, value_type: Type, destination: u8) -> Compilation<()> {
         match value_type {
-            Type::Int => self.evaluate_general(expression, destination),
+            Type::Int | Type::UnsignedInt => self.evaluate_general(expression, destination),
             Type::Float => self.evaluate_float(expression, destination),
             Type::Void => Err(Diagnostic::error("cannot evaluate a void expression")),
         }
@@ -228,6 +232,10 @@ impl Generator {
                 Ok(())
             }
             Expression::Binary { operator, left, right } => {
+                // Right shift selects an instruction by signedness.
+                if *operator == BinaryOperator::ShiftRight {
+                    return self.emit_shift_right(left, right, destination);
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());
@@ -241,6 +249,58 @@ impl Generator {
             }
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literal in integer context")),
         }
+    }
+
+    /// Whether the value of `expression` is signed (for selecting `>>`). The
+    /// usual arithmetic conversions make a binary expression unsigned if either
+    /// operand is unsigned.
+    fn signedness_of(&self, expression: &Expression) -> Compilation<bool> {
+        match expression {
+            Expression::IntegerLiteral(_) => Ok(true),
+            Expression::FloatLiteral(_) => Ok(true),
+            Expression::Variable(name) => {
+                Ok(self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?.signed)
+            }
+            Expression::Binary { left, right, .. } => Ok(self.signedness_of(left)? && self.signedness_of(right)?),
+        }
+    }
+
+    /// Emit a right shift, choosing arithmetic (signed) or logical (unsigned)
+    /// from the type of the shifted value.
+    fn emit_shift_right(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+        let signed = self.signedness_of(left)?;
+        let d = destination;
+
+        if let Expression::IntegerLiteral(amount) = right {
+            if (1..=31).contains(amount) {
+                self.evaluate_general(left, d)?;
+                let shift = *amount as u8;
+                self.output.instructions.push(if signed {
+                    Instruction::ShiftRightAlgebraicImmediate { a: d, s: d, shift }
+                } else {
+                    Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift }
+                });
+                return Ok(());
+            }
+        }
+
+        // Register form: value into the destination, shift amount into a register.
+        self.evaluate_general(left, d)?;
+        let amount = if is_complex(right) {
+            if !fits_single_scratch(right, true) {
+                return Err(Diagnostic::error("shift amount needs the full register allocator (roadmap M1)"));
+            }
+            self.evaluate_general(right, GENERAL_SCRATCH)?;
+            GENERAL_SCRATCH
+        } else {
+            self.general_register_of_leaf(right)?
+        };
+        self.output.instructions.push(if signed {
+            Instruction::ShiftRightAlgebraicWord { a: d, s: d, b: amount }
+        } else {
+            Instruction::ShiftRightWord { a: d, s: d, b: amount }
+        });
+        Ok(())
     }
 
     /// Fold a constant operand into an immediate instruction. Returns whether an

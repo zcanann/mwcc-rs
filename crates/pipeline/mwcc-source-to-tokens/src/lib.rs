@@ -40,6 +40,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             let word = &source[start..position];
             tokens.push(match word {
                 "int" => Token::KeywordInt,
+                "unsigned" => Token::KeywordUnsigned,
                 "float" => Token::KeywordFloat,
                 "void" => Token::KeywordVoid,
                 "return" => Token::KeywordReturn,

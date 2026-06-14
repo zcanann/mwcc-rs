@@ -5,6 +5,7 @@
 pub enum Token {
     // keywords
     KeywordInt,
+    KeywordUnsigned,
     KeywordFloat,
     KeywordVoid,
     KeywordReturn,
