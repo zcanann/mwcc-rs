@@ -30,6 +30,10 @@ pub enum Instruction {
     MultiplyLow { d: u8, a: u8, b: u8 },
     /// `mulli rD, rA, SIMM`
     MultiplyImmediate { d: u8, a: u8, immediate: i16 },
+    /// `divw rD, rA, rB` — signed divide.
+    DivideWord { d: u8, a: u8, b: u8 },
+    /// `divwu rD, rA, rB` — unsigned divide.
+    DivideWordUnsigned { d: u8, a: u8, b: u8 },
     /// `slwi rA, rS, shift` — shift left by `shift` (1..=31), via `rlwinm`.
     ShiftLeftImmediate { a: u8, s: u8, shift: u8 },
     /// `or rA, rS, rB` — spells `mr rA, rS` when `s == b`.
@@ -58,6 +62,8 @@ pub enum Instruction {
     FloatSubtractSingle { d: u8, a: u8, b: u8 },
     /// `fmuls frD, frA, frC`
     FloatMultiplySingle { d: u8, a: u8, c: u8 },
+    /// `fdivs frD, frA, frB`
+    FloatDivideSingle { d: u8, a: u8, b: u8 },
     /// `fmadds frD, frA, frC, frB` => frD = frA*frC + frB.
     FloatMultiplyAddSingle { d: u8, a: u8, c: u8, b: u8 },
     /// `fmsubs frD, frA, frC, frB` => frD = frA*frC - frB.
@@ -97,6 +103,8 @@ impl Instruction {
             Instruction::CountLeadingZeros { a, s } => logical_form(s, a, 0, 26),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
             Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
+            Instruction::DivideWord { d, a, b } => xo_form(d, a, b, 491),
+            Instruction::DivideWordUnsigned { d, a, b } => xo_form(d, a, b, 459),
             // slwi rA,rS,n == rlwinm rA,rS,n,0,31-n
             Instruction::ShiftLeftImmediate { a, s, shift } => {
                 let mask_end = 31 - shift as u32;
@@ -124,6 +132,7 @@ impl Instruction {
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
             Instruction::FloatMultiplySingle { d, a, c } => a_form(59, d, a, 0, c, 25),
+            Instruction::FloatDivideSingle { d, a, b } => a_form(59, d, a, b, 0, 18),
             Instruction::FloatMultiplyAddSingle { d, a, c, b } => a_form(59, d, a, b, c, 29),
             Instruction::FloatMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 28),
             Instruction::FloatNegativeMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 30),

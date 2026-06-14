@@ -115,6 +115,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             '-' => Token::Minus,
             '*' => Token::Star,
             '/' => Token::Slash,
+            '%' => Token::Percent,
             '&' => Token::Ampersand,
             '|' => Token::Pipe,
             '^' => Token::Caret,

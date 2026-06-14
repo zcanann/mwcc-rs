@@ -260,9 +260,15 @@ impl Generator {
                 if is_comparison(*operator) {
                     return self.emit_comparison(*operator, left, right, destination);
                 }
-                // Right shift selects an instruction by signedness.
+                // Right shift, divide, and modulo select instructions by signedness.
                 if *operator == BinaryOperator::ShiftRight {
                     return self.emit_shift_right(left, right, destination);
+                }
+                if *operator == BinaryOperator::Divide {
+                    return self.emit_divide(left, right, destination);
+                }
+                if *operator == BinaryOperator::Modulo {
+                    return self.emit_modulo(left, right, destination);
                 }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
@@ -277,6 +283,67 @@ impl Generator {
             }
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literal in integer context")),
         }
+    }
+
+    /// Emit a division, choosing signed/unsigned and handling power-of-two
+    /// constant divisors; non-power-of-two constants (magic-number lowering) and
+    /// signed division by powers of two beyond 2 are deferred.
+    fn emit_divide(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+        let signed = self.signedness_of(left)? && self.signedness_of(right)?;
+        let d = destination;
+
+        if let Expression::IntegerLiteral(divisor) = right {
+            let divisor = *divisor;
+            if divisor >= 2 && (divisor as u64).is_power_of_two() {
+                if !signed {
+                    self.evaluate_general(left, d)?;
+                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift: divisor.trailing_zeros() as u8 });
+                    return Ok(());
+                }
+                if divisor == 2 {
+                    // signed /2 rounds toward zero: add the sign bit, then arithmetic shift.
+                    self.evaluate_general(left, d)?;
+                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: d, shift: 31 });
+                    self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: d });
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: GENERAL_SCRATCH, shift: 1 });
+                    return Ok(());
+                }
+            }
+            return Err(Diagnostic::error("division by this constant needs magic-number lowering (roadmap)"));
+        }
+
+        // register divide
+        self.evaluate_general(left, d)?;
+        let divisor = if is_complex(right) {
+            if !fits_single_scratch(right, true) {
+                return Err(Diagnostic::error("divisor needs the full register allocator (roadmap M1)"));
+            }
+            self.evaluate_general(right, GENERAL_SCRATCH)?;
+            GENERAL_SCRATCH
+        } else {
+            self.general_register_of_leaf(right)?
+        };
+        self.output.instructions.push(if signed {
+            Instruction::DivideWord { d, a: d, b: divisor }
+        } else {
+            Instruction::DivideWordUnsigned { d, a: d, b: divisor }
+        });
+        Ok(())
+    }
+
+    /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
+    fn emit_modulo(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+        let signed = self.signedness_of(left)? && self.signedness_of(right)?;
+        let left_register = self.general_register_of_leaf(left)?;
+        let right_register = self.general_register_of_leaf(right)?;
+        self.output.instructions.push(if signed {
+            Instruction::DivideWord { d: GENERAL_SCRATCH, a: left_register, b: right_register }
+        } else {
+            Instruction::DivideWordUnsigned { d: GENERAL_SCRATCH, a: left_register, b: right_register }
+        });
+        self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: right_register });
+        self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: GENERAL_SCRATCH, b: left_register });
+        Ok(())
     }
 
     /// Emit a prefix unary operator into `destination`.
@@ -662,7 +729,7 @@ fn float_combine(operator: BinaryOperator, destination: u8, operands: Operands) 
         BinaryOperator::Add => Instruction::FloatAddSingle { d: destination, a: first, b: second },
         BinaryOperator::Subtract => Instruction::FloatSubtractSingle { d: destination, a: operands.left, b: operands.right },
         BinaryOperator::Multiply => Instruction::FloatMultiplySingle { d: destination, a: first, c: second },
-        BinaryOperator::Divide => return Err(Diagnostic::error("float division not yet supported")),
+        BinaryOperator::Divide => Instruction::FloatDivideSingle { d: destination, a: operands.left, b: operands.right },
         BinaryOperator::BitAnd
         | BinaryOperator::BitOr
         | BinaryOperator::BitXor

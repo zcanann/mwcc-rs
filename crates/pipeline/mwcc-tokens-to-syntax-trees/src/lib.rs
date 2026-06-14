@@ -135,6 +135,7 @@ impl Parser {
             Token::Minus => BinaryOperator::Subtract,
             Token::Star => BinaryOperator::Multiply,
             Token::Slash => BinaryOperator::Divide,
+            Token::Percent => BinaryOperator::Modulo,
             Token::Ampersand => BinaryOperator::BitAnd,
             Token::Pipe => BinaryOperator::BitOr,
             Token::Caret => BinaryOperator::BitXor,

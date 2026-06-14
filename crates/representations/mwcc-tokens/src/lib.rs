@@ -25,6 +25,7 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    Percent,
     Ampersand,
     Pipe,
     Caret,

@@ -31,6 +31,7 @@ pub enum BinaryOperator {
     Subtract,
     Multiply,
     Divide,
+    Modulo,
     BitAnd,
     BitOr,
     BitXor,
@@ -48,7 +49,7 @@ impl BinaryOperator {
     /// Binding strength (higher binds tighter), matching C for these operators.
     pub fn precedence(self) -> u8 {
         match self {
-            BinaryOperator::Multiply | BinaryOperator::Divide => 10,
+            BinaryOperator::Multiply | BinaryOperator::Divide | BinaryOperator::Modulo => 10,
             BinaryOperator::Add | BinaryOperator::Subtract => 9,
             BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => 8,
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual => 7,
