@@ -1,17 +1,20 @@
 //! A function's worth of machine code, and its lowering to `.text` bytes.
 
 use crate::instruction::Instruction;
+use crate::relocation::Relocation;
 
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
     pub name: String,
     pub instructions: Vec<Instruction>,
+    /// `.text` relocations, by the instruction they patch.
+    pub relocations: Vec<Relocation>,
 }
 
 impl MachineFunction {
     pub fn new(name: impl Into<String>) -> Self {
-        MachineFunction { name: name.into(), instructions: Vec::new() }
+        MachineFunction { name: name.into(), instructions: Vec::new(), relocations: Vec::new() }
     }
 
     /// Encode the whole function to big-endian `.text` bytes. Forward conditional

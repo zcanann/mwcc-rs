@@ -1,7 +1,7 @@
 //! Core integer expression evaluation and operand placement.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use mwcc_target::Eabi;
 use crate::analysis::*;
@@ -181,6 +181,7 @@ impl Generator {
                 let pointee = pointee_of_type(global_type)
                     .ok_or_else(|| Diagnostic::error("global store of this type is not supported yet"))?;
                 let source = self.place_store_value(value, pointee)?;
+                self.record_relocation(RelocationKind::EmbSda21, name);
                 self.output.instructions.push(displacement_store(pointee, source, 0, 0));
                 return Ok(());
             }
@@ -250,6 +251,7 @@ impl Generator {
     /// is wanted (a discarded call statement passes `None`).
     pub(crate) fn emit_call(&mut self, name: &str, arguments: &[Expression], destination: Option<u8>, float_result: bool) -> Compilation<()> {
         self.emit_arguments(arguments)?;
+        self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
         if let Some(destination) = destination {
             let result = if float_result { Eabi::float_result().number } else { Eabi::general_result().number };
@@ -298,6 +300,7 @@ impl Generator {
     /// small-data offset); the load is chosen by the global's type.
     pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
         let global_type = *self.globals.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        self.record_relocation(RelocationKind::EmbSda21, name);
         let instruction = match global_type {
             Type::Int | Type::UnsignedInt => Instruction::LoadWord { d: destination, a: 0, offset: 0 },
             Type::Char | Type::UnsignedChar => Instruction::LoadByteZero { d: destination, a: 0, offset: 0 },

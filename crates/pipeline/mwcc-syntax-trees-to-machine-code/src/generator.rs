@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::{Instruction, MachineFunction};
+use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind};
 use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::CompilerBuild;
 use crate::analysis::*;
@@ -74,6 +74,12 @@ impl Generator {
     /// Whether `expression` is a float-valued leaf.
     pub(crate) fn is_float_leaf(&self, expression: &Expression) -> bool {
         matches!(expression, Expression::Variable(name) if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::Float))
+    }
+
+    /// Record a relocation against the instruction that is about to be pushed.
+    pub(crate) fn record_relocation(&mut self, kind: RelocationKind, symbol: &str) {
+        let instruction_index = self.output.instructions.len();
+        self.output.relocations.push(Relocation { instruction_index, kind, symbol: symbol.to_string() });
     }
 
     pub(crate) fn lookup_general(&self, name: &str) -> Option<u8> {

@@ -9,6 +9,8 @@
 mod encoding;
 mod function;
 mod instruction;
+mod relocation;
 
 pub use function::MachineFunction;
 pub use instruction::Instruction;
+pub use relocation::{Relocation, RelocationKind};
