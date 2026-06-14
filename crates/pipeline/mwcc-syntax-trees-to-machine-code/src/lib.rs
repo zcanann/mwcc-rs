@@ -1199,7 +1199,8 @@ impl Generator {
             }
             // general signed branchless comparisons (leaf operands)
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
-                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
+                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = self.general_register_of_leaf(right)?;
@@ -1234,7 +1235,8 @@ impl Generator {
             }
             // unsigned a < b / a > b : xor/cntlzw/slw/srwi.
             BinaryOperator::Less | BinaryOperator::Greater
-                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
+                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = self.general_register_of_leaf(right)?;
@@ -1249,7 +1251,8 @@ impl Generator {
             }
             // unsigned a <= b / a >= b : orc-based, dest + scratch.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
+                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = self.general_register_of_leaf(right)?;
@@ -1267,7 +1270,8 @@ impl Generator {
             }
             // signed a <= b / a >= b : carry-based, with two temporaries.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
+                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = self.general_register_of_leaf(right)?;
