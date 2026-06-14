@@ -1,0 +1,108 @@
+//! Instruction encoding: each `Instruction` to its 32-bit big-endian word, plus
+//! the PowerPC instruction-form helpers. Encodings are verified against real
+//! `mwcceppc` output by the differential oracle.
+
+use crate::instruction::Instruction;
+
+impl Instruction {
+    /// Encode to a 32-bit big-endian instruction word.
+    pub fn encode(&self) -> u32 {
+        match *self {
+            Instruction::AddImmediate { d, a, immediate } => d_form(14, d, a, immediate as u16),
+            Instruction::AddImmediateShifted { d, a, immediate } => d_form(15, d, a, immediate as u16),
+            Instruction::OrImmediate { a, s, immediate } => d_form(24, s, a, immediate),
+            Instruction::Add { d, a, b } => xo_form(d, a, b, 266),
+            Instruction::SubtractFrom { d, a, b } => xo_form(d, a, b, 40),
+            Instruction::Negate { d, a } => xo_form(d, a, 0, 104),
+            Instruction::Nor { a, s, b } => logical_form(s, a, b, 124),
+            Instruction::CountLeadingZeros { a, s } => logical_form(s, a, 0, 26),
+            Instruction::ExtendSignByte { a, s } => logical_form(s, a, 0, 954),
+            Instruction::ExtendSignHalfword { a, s } => logical_form(s, a, 0, 922),
+            Instruction::AndComplement { a, s, b } => logical_form(s, a, b, 60),
+            Instruction::OrComplement { a, s, b } => logical_form(s, a, b, 412),
+            Instruction::SubtractFromImmediate { d, a, immediate } => d_form(8, d, a, immediate as u16),
+            Instruction::SubtractFromCarrying { d, a, b } => xo_form(d, a, b, 8),
+            Instruction::AddExtended { d, a, b } => xo_form(d, a, b, 138),
+            Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
+            Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
+            Instruction::DivideWord { d, a, b } => xo_form(d, a, b, 491),
+            Instruction::DivideWordUnsigned { d, a, b } => xo_form(d, a, b, 459),
+            // slwi rA,rS,n == rlwinm rA,rS,n,0,31-n
+            Instruction::ShiftLeftImmediate { a, s, shift } => {
+                let mask_end = 31 - shift as u32;
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (mask_end << 1)
+            }
+            Instruction::Or { a, s, b } => logical_form(s, a, b, 444),
+            Instruction::And { a, s, b } => logical_form(s, a, b, 28),
+            Instruction::Xor { a, s, b } => logical_form(s, a, b, 316),
+            Instruction::ShiftLeftWord { a, s, b } => logical_form(s, a, b, 24),
+            Instruction::ShiftRightAlgebraicWord { a, s, b } => logical_form(s, a, b, 792),
+            Instruction::ShiftRightWord { a, s, b } => logical_form(s, a, b, 536),
+            Instruction::ShiftRightAlgebraicImmediate { a, s, shift } => {
+                (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (824 << 1)
+            }
+            // srwi rA,rS,n == rlwinm rA,rS,32-n,n,31
+            Instruction::ShiftRightLogicalImmediate { a, s, shift } => {
+                let rotate = 32 - shift as u32;
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (rotate << 11) | ((shift as u32) << 6) | (31 << 1)
+            }
+            Instruction::XorImmediate { a, s, immediate } => d_form(26, s, a, immediate),
+            Instruction::XorImmediateShifted { a, s, immediate } => d_form(27, s, a, immediate),
+            Instruction::StoreWord { s, a, offset } => d_form(36, s, a, offset as u16),
+            Instruction::LoadFloatDouble { d, a, offset } => d_form(50, d, a, offset as u16),
+            // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
+            Instruction::ClearLeftImmediate { a, s, clear } => {
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1)
+            }
+            Instruction::AndContiguousMask { a, s, begin, end } => {
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((begin as u32) << 6) | ((end as u32) << 1)
+            }
+            Instruction::RotateAndMask { a, s, shift, begin, end } => {
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
+            }
+            Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
+            Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
+            Instruction::FloatMultiplySingle { d, a, c } => a_form(59, d, a, 0, c, 25),
+            Instruction::FloatDivideSingle { d, a, b } => a_form(59, d, a, b, 0, 18),
+            Instruction::FloatMultiplyAddSingle { d, a, c, b } => a_form(59, d, a, b, c, 29),
+            Instruction::FloatMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 28),
+            Instruction::FloatNegativeMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 30),
+            Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
+            Instruction::FloatNegate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (40 << 1),
+            Instruction::ConvertToIntegerWordZero { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (15 << 1),
+            Instruction::StoreWordWithUpdate { s, a, offset } => d_form(37, s, a, offset as u16),
+            Instruction::LoadWord { d, a, offset } => d_form(32, d, a, offset as u16),
+            Instruction::StoreFloatDouble { s, a, offset } => d_form(54, s, a, offset as u16),
+            Instruction::FloatCompareOrdered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
+            Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
+            Instruction::CompareWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
+            Instruction::CompareLogicalWordImmediate { a, immediate } => (10 << 26) | ((a as u32) << 16) | (immediate as u32),
+            Instruction::CompareLogicalWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
+            // resolved positionally in encode_text
+            Instruction::BranchConditionalForward { .. } => 0,
+            Instruction::BranchConditionalToLinkRegister { options, condition_bit } => {
+                (19 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | (16 << 1)
+            }
+            Instruction::BranchToLinkRegister => 0x4E80_0020,
+        }
+    }
+}
+
+fn d_form(opcode: u32, d: u8, a: u8, immediate: u16) -> u32 {
+    (opcode << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (immediate as u32)
+}
+fn xo_form(d: u8, a: u8, b: u8, extended_opcode: u32) -> u32 {
+    (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (extended_opcode << 1)
+}
+/// Logical/shift register form: opcode 31, rS in the D slot, rA in the A slot, rB.
+fn logical_form(s: u8, a: u8, b: u8, extended_opcode: u32) -> u32 {
+    (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (extended_opcode << 1)
+}
+fn a_form(opcode: u32, d: u8, a: u8, b: u8, c: u8, extended_opcode: u32) -> u32 {
+    (opcode << 26)
+        | ((d as u32) << 21)
+        | ((a as u32) << 16)
+        | ((b as u32) << 11)
+        | ((c as u32) << 6)
+        | (extended_opcode << 1)
+}
