@@ -592,6 +592,13 @@ impl Generator {
         destination: u8,
         tail: bool,
     ) -> Compilation<()> {
+        // `comparison ? 1 : 0` is just the boolean value of the comparison.
+        if let (Some(1), Some(0)) = (constant_value(when_true), constant_value(when_false)) {
+            if matches!(condition, Expression::Binary { operator, .. } if is_comparison(*operator)) {
+                return self.evaluate_general(condition, destination);
+            }
+        }
+
         // `cond ? x : 0` with a plain truth condition is branchless: AND x with a
         // mask that is all-ones when cond != 0.
         if is_zero_literal(when_false) {
