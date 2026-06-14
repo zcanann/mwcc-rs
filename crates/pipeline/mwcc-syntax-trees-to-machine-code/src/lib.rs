@@ -930,14 +930,35 @@ impl Generator {
         self.locations.get(name).filter(|location| location.class == ValueClass::General).map(|location| location.register)
     }
 
+    /// Whether `expression` is a narrow (sub-32-bit) integer variable. Such an
+    /// operand needs width extension before use, and a few consumers (left shift
+    /// and pow2 multiply) fuse extension and shift into a single `rlwinm` on the
+    /// builds that treat `char` as unsigned — a peephole we do not model yet, so
+    /// those callers defer narrow operands rather than emit non-matching bytes.
+    fn is_narrow_leaf(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::Variable(name)
+            if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::General && l.width < 32))
+    }
+
     /// Place an operand and return the register holding it. A leaf stays in its
     /// own register. A sub-expression is computed into the destination when the
     /// consumer can fold it there (`addi`), otherwise into the scratch register —
     /// mwcc keeps `addi` operands in place but routes `rlwinm`/logical operands
     /// through `r0`. Returns `None` when a scratch operand does not fit.
     fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
-        if let Expression::Variable(_) = operand {
-            return Ok(Some(self.general_register_of_leaf(operand)?));
+        if let Expression::Variable(name) = operand {
+            let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+            let (register, width, signed) = (location.register, location.width, location.signed);
+            if width == 32 {
+                return Ok(Some(register));
+            }
+            // A narrow operand is width-extended to 32 bits before use. The
+            // extension lands in the consumer's working register: the destination
+            // for addi-family consumers that keep their operand in place, otherwise
+            // the scratch (mwcc routes `extsb r0,rX` ahead of an `rlwinm`/`mulli`).
+            let target = if prefer_destination { destination } else { GENERAL_SCRATCH };
+            self.emit_widen(target, register, width, signed);
+            return Ok(Some(target));
         }
         if prefer_destination {
             self.evaluate_general(operand, destination)?;
@@ -1189,6 +1210,11 @@ impl Generator {
 
         if let Expression::IntegerLiteral(amount) = right {
             if (1..=31).contains(amount) {
+                // A narrow shifted value fuses extension and shift into one rlwinm
+                // on unsigned-char builds; that peephole is not modeled yet.
+                if self.is_narrow_leaf(left) {
+                    return Err(Diagnostic::error("narrow right shift needs the extend+shift peephole (roadmap)"));
+                }
                 // The shifted value: a leaf stays put, a sub-expression goes to scratch.
                 let Some(source) = self.place_operand(left, d, false)? else {
                     return Err(Diagnostic::error("shift value needs the full register allocator (roadmap M1)"));
@@ -1310,6 +1336,11 @@ impl Generator {
             _ => return Ok(false),
         };
 
+        // A narrow value times a power of two (or `<< n`) fuses extension and shift
+        // into one rlwinm on unsigned-char builds — peephole not modeled yet.
+        if matches!(kind, Immediate::ShiftLeft(_)) && self.is_narrow_leaf(variable) {
+            return Ok(false);
+        }
         let prefer_destination = matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract);
         let Some(source) = self.place_operand(variable, destination, prefer_destination)? else {
             return Ok(false);
