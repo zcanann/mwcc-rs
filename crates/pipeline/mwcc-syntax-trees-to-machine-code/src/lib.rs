@@ -50,6 +50,22 @@ fn is_zero_literal(expression: &Expression) -> bool {
     matches!(expression, Expression::IntegerLiteral(0))
 }
 
+/// The variable name if `expression` is a plain variable reference.
+fn leaf_name(expression: &Expression) -> Option<&str> {
+    match expression {
+        Expression::Variable(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// The variable name if `expression` is `~variable`.
+fn complemented_leaf_name(expression: &Expression) -> Option<&str> {
+    match expression {
+        Expression::Unary { operator: UnaryOperator::BitNot, operand } => leaf_name(operand),
+        _ => None,
+    }
+}
+
 
 /// A nonzero integer literal that fits a signed 16-bit immediate.
 fn as_small_integer(expression: &Expression) -> Option<i16> {
@@ -406,6 +422,12 @@ impl Generator {
                 if *operator == BinaryOperator::Modulo {
                     return self.emit_modulo(left, right, destination);
                 }
+                // `x & ~y` / `x | ~y` fuse into andc/orc.
+                if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr)
+                    && self.try_emit_complement_logical(*operator, left, right, destination)
+                {
+                    return Ok(());
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());
@@ -657,6 +679,32 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: 8 });
         self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: 12 });
         Ok(())
+    }
+
+    /// If one operand is `~leaf` and the other is a leaf, emit `andc`/`orc`.
+    fn try_emit_complement_logical(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> bool {
+        let (kept_expression, complemented_name) = if let Some(name) = complemented_leaf_name(right) {
+            (left, name)
+        } else if let Some(name) = complemented_leaf_name(left) {
+            (right, name)
+        } else {
+            return false;
+        };
+        let (Some(kept_name), Some(complemented_register)) = (leaf_name(kept_expression), self.lookup_general(complemented_name)) else {
+            return false;
+        };
+        let Some(kept_register) = self.lookup_general(kept_name) else {
+            return false;
+        };
+        self.output.instructions.push(match operator {
+            BinaryOperator::BitAnd => Instruction::AndComplement { a: destination, s: kept_register, b: complemented_register },
+            _ => Instruction::OrComplement { a: destination, s: kept_register, b: complemented_register },
+        });
+        true
+    }
+
+    fn lookup_general(&self, name: &str) -> Option<u8> {
+        self.locations.get(name).filter(|location| location.class == ValueClass::General).map(|location| location.register)
     }
 
     /// Place an operand and return the register holding it. A leaf stays in its

@@ -28,6 +28,8 @@ pub enum Instruction {
     CountLeadingZeros { a: u8, s: u8 },
     /// `andc rA, rS, rB` => rA = rS & ~rB.
     AndComplement { a: u8, s: u8, b: u8 },
+    /// `orc rA, rS, rB` => rA = rS | ~rB.
+    OrComplement { a: u8, s: u8, b: u8 },
     /// `subfic rD, rA, SIMM` => rD = SIMM - rA.
     SubtractFromImmediate { d: u8, a: u8, immediate: i16 },
     /// `mullw rD, rA, rB`
@@ -138,6 +140,7 @@ impl Instruction {
             Instruction::Nor { a, s, b } => logical_form(s, a, b, 124),
             Instruction::CountLeadingZeros { a, s } => logical_form(s, a, 0, 26),
             Instruction::AndComplement { a, s, b } => logical_form(s, a, b, 60),
+            Instruction::OrComplement { a, s, b } => logical_form(s, a, b, 412),
             Instruction::SubtractFromImmediate { d, a, immediate } => d_form(8, d, a, immediate as u16),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
             Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
