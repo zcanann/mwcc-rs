@@ -332,10 +332,13 @@ fn general_combine(operator: BinaryOperator, destination: u8, left: u8, right: u
 }
 
 fn float_combine(operator: BinaryOperator, destination: u8, left: u8, right: u8) -> Compilation<Instruction> {
+    // As with integers, the scratch register (holding a just-computed value) goes
+    // second for the commutative operators.
+    let (first, second) = if left == FLOAT_SCRATCH { (right, left) } else { (left, right) };
     Ok(match operator {
-        BinaryOperator::Add => Instruction::FloatAddSingle { d: destination, a: left, b: right },
+        BinaryOperator::Add => Instruction::FloatAddSingle { d: destination, a: first, b: second },
         BinaryOperator::Subtract => Instruction::FloatSubtractSingle { d: destination, a: left, b: right },
-        BinaryOperator::Multiply => Instruction::FloatMultiplySingle { d: destination, a: left, c: right },
+        BinaryOperator::Multiply => Instruction::FloatMultiplySingle { d: destination, a: first, c: second },
         BinaryOperator::Divide => return Err(Diagnostic::error("float division not yet supported")),
     })
 }
