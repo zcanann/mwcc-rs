@@ -21,9 +21,11 @@ const SHF_WRITE_EXEC: u32 = 0x6; // ALLOC | EXECINSTR for .text
 const R_PPC_ADDR32: u32 = 1;
 
 const SHN_ABS: u16 = 0xFFF1;
+const SHN_UNDEF: u16 = 0;
 const STT_FILE: u8 = 4; // STB_LOCAL (0<<4) | STT_FILE
 const STT_SECTION: u8 = 3; // STB_LOCAL | STT_SECTION
-const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2;
+const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
+const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
 
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
 /// compiler version (`02 04 0X` = 2.4.X) and byte 11 is a format marker that
@@ -53,35 +55,60 @@ fn comment_record(version: (u8, u8, u8), build: u16) -> [u8; 84] {
 
 const ELF_HEADER_SIZE: u32 = 52;
 const SECTION_HEADER_SIZE: u32 = 40;
-const SECTION_COUNT: u16 = 8;
 
 pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let text = input.text;
     let text_size = text.len() as u32;
     let comment = comment_record(input.version, input.build);
 
+    // External symbols referenced by `.text` relocations (globals, callees), in
+    // first-reference order. With none, this is the original leaf layout and the
+    // bytes are produced identically to before (no `.rela.text`, no extra symbols).
+    let mut externals: Vec<&str> = Vec::new();
+    for relocation in &input.relocations {
+        if !externals.iter().any(|name| *name == relocation.symbol.as_str()) {
+            externals.push(&relocation.symbol);
+        }
+    }
+    let has_text_relocations = !externals.is_empty();
+
+    // Section indices depend on whether `.rela.text` is present (it sits between
+    // `.mwcats.text` and `.rela.mwcats.text`, shifting everything after it).
+    let section_count: u16 = if has_text_relocations { 9 } else { 8 };
+    let symtab_section = if has_text_relocations { 5 } else { 4 };
+    let strtab_section = symtab_section + 1;
+    let shstrtab_section = strtab_section + 1;
+
     // .shstrtab — section header names, in section order.
     let mut shstrtab = StringTable::new();
     let name_text = shstrtab.add(".text");
     let name_mwcats = shstrtab.add(".mwcats.text");
+    let name_rela_text = if has_text_relocations { shstrtab.add(".rela.text") } else { 0 };
     let name_rela_mwcats = shstrtab.add(".rela.mwcats.text");
     let name_symtab = shstrtab.add(".symtab");
     let name_strtab = shstrtab.add(".strtab");
     let name_shstrtab = shstrtab.add(".shstrtab");
     let name_comment = shstrtab.add(".comment");
 
-    // .strtab — symbol names.
+    // .strtab — symbol names: source file, then the externals, then the function.
     let mut strtab = StringTable::new();
     let name_source = strtab.add(input.source_name);
+    let external_names: Vec<u32> = externals.iter().map(|name| strtab.add(name)).collect();
     let name_function = strtab.add(input.function_name);
 
-    // .symtab — null, FILE, SECTION .text, SECTION .mwcats.text, the function.
-    const FUNCTION_SYMBOL_INDEX: u32 = 4;
+    // .symtab — null, FILE, SECTION .text, SECTION .mwcats.text, the undefined
+    // externals, then the function. The externals are the first GLOBAL symbols, so
+    // they precede the function and `sh_info` (first global) stays at index 4.
+    let first_global_index: u32 = 4;
+    let function_symbol_index = first_global_index + externals.len() as u32;
     let mut symtab = Vec::new();
     write_symbol(&mut symtab, 0, 0, 0, 0, 0, 0); // null
     write_symbol(&mut symtab, name_source, 0, 0, STT_FILE, 0, SHN_ABS);
     write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, 1); // .text
     write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, 2); // .mwcats.text
+    for &name in &external_names {
+        write_symbol(&mut symtab, name, 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+    }
     write_symbol(&mut symtab, name_function, 0, text_size, STB_GLOBAL_FUNC, 0, 1);
 
     // .mwcats.text — (tag | text size, &function). The second word is relocated.
@@ -89,17 +116,26 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     write_u32(&mut mwcats, 0x0200_0000 | text_size);
     write_u32(&mut mwcats, 0);
 
+    // .rela.text — one entry per `.text` relocation, against the external symbol.
+    let mut rela_text = Vec::new();
+    for relocation in &input.relocations {
+        let position = externals.iter().position(|name| *name == relocation.symbol.as_str()).unwrap();
+        let symbol = first_global_index + position as u32;
+        write_rela(&mut rela_text, relocation.offset, symbol, relocation.elf_type, 0);
+    }
+
     // .rela.mwcats.text — point the trailer word at the function.
     let mut rela_mwcats = Vec::new();
-    write_rela(&mut rela_mwcats, 4, FUNCTION_SYMBOL_INDEX, R_PPC_ADDR32, 0);
+    write_rela(&mut rela_mwcats, 4, function_symbol_index, R_PPC_ADDR32, 0);
 
     // File offsets. The 4-aligned sections (.text, .mwcats, .rela, .symtab) have
     // 4-aligned sizes and pack contiguously; the string/comment sections are
-    // byte-aligned; the section-header table is padded to 4.
+    // byte-aligned; the section-header table is padded to 8.
     let text_offset = ELF_HEADER_SIZE;
     let mwcats_offset = text_offset + text_size;
-    let rela_offset = mwcats_offset + mwcats.len() as u32;
-    let symtab_offset = rela_offset + rela_mwcats.len() as u32;
+    let rela_text_offset = mwcats_offset + mwcats.len() as u32;
+    let rela_mwcats_offset = rela_text_offset + rela_text.len() as u32;
+    let symtab_offset = rela_mwcats_offset + rela_mwcats.len() as u32;
     let strtab_offset = symtab_offset + symtab.len() as u32;
     let shstrtab_offset = strtab_offset + strtab.bytes.len() as u32;
     let comment_offset = shstrtab_offset + shstrtab.bytes.len() as u32;
@@ -107,11 +143,14 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let section_headers_offset = align8(comment_offset + comment.len() as u32);
 
     let mut output = Vec::new();
-    write_elf_header(&mut output, section_headers_offset);
+    write_elf_header(&mut output, section_headers_offset, section_count, shstrtab_section as u16);
 
-    // Section payloads.
+    // Section payloads, in section order.
     output.extend_from_slice(text);
     output.extend_from_slice(&mwcats);
+    if has_text_relocations {
+        output.extend_from_slice(&rela_text);
+    }
     output.extend_from_slice(&rela_mwcats);
     output.extend_from_slice(&symtab);
     output.extend_from_slice(&strtab.bytes);
@@ -128,8 +167,13 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     header(0, 0, 0, 0, 0, 0, 0, 0, 0); // null
     header(name_text, SHT_PROGBITS, SHF_WRITE_EXEC, text_offset, text_size, 0, 0, 4, 0);
     header(name_mwcats, SHT_MWCATS, 0, mwcats_offset, mwcats.len() as u32, 1, 0, 4, 1);
-    header(name_rela_mwcats, SHT_RELA, 0, rela_offset, rela_mwcats.len() as u32, 4, 2, 4, 12);
-    header(name_symtab, SHT_SYMTAB, 0, symtab_offset, symtab.len() as u32, 5, FUNCTION_SYMBOL_INDEX, 4, 16);
+    if has_text_relocations {
+        // sh_link -> .symtab, sh_info -> .text (section 1).
+        header(name_rela_text, SHT_RELA, 0, rela_text_offset, rela_text.len() as u32, symtab_section, 1, 4, 12);
+    }
+    // sh_link -> .symtab, sh_info -> .mwcats.text (section 2).
+    header(name_rela_mwcats, SHT_RELA, 0, rela_mwcats_offset, rela_mwcats.len() as u32, symtab_section, 2, 4, 12);
+    header(name_symtab, SHT_SYMTAB, 0, symtab_offset, symtab.len() as u32, strtab_section, first_global_index, 4, 16);
     // Metrowerks stamps string tables with sh_entsize = 1.
     header(name_strtab, SHT_STRTAB, 0, strtab_offset, strtab.bytes.len() as u32, 0, 0, 1, 1);
     header(name_shstrtab, SHT_STRTAB, 0, shstrtab_offset, shstrtab.bytes.len() as u32, 0, 0, 1, 1);
@@ -154,7 +198,7 @@ impl StringTable {
     }
 }
 
-fn write_elf_header(output: &mut Vec<u8>, section_headers_offset: u32) {
+fn write_elf_header(output: &mut Vec<u8>, section_headers_offset: u32, section_count: u16, shstrndx: u16) {
     output.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
     output.push(1); // ELFCLASS32
     output.push(2); // ELFDATA2MSB (big-endian)
@@ -171,8 +215,8 @@ fn write_elf_header(output: &mut Vec<u8>, section_headers_offset: u32) {
     write_u16(output, 0); // e_phentsize
     write_u16(output, 0); // e_phnum
     write_u16(output, SECTION_HEADER_SIZE as u16); // e_shentsize
-    write_u16(output, SECTION_COUNT); // e_shnum
-    write_u16(output, 6); // e_shstrndx (.shstrtab)
+    write_u16(output, section_count); // e_shnum
+    write_u16(output, shstrndx); // e_shstrndx (.shstrtab)
 }
 
 fn align8(value: u32) -> u32 {

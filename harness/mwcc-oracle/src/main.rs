@@ -44,6 +44,9 @@ fn main() -> std::process::ExitCode {
     // Whole-object byte-exactness, tracked alongside .text. Pass/fail keys on
     // .text; this reports how many objects match mwcceppc byte-for-byte.
     let mut object_exact = 0u32;
+    // Relocation correctness — the objdiff contract. `.comment` keeps reloc'd
+    // objects from being byte-exact, but their relocations/symbols must match.
+    let mut reloc_exact = 0u32;
 
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&canaries)
         .expect("cannot read canaries/")
@@ -78,14 +81,25 @@ fn main() -> std::process::ExitCode {
                 let reference_text = disassemble(&objdump, &reference_object);
                 let our_text = disassemble(&objdump, &our_object);
                 if reference_text == our_text {
+                    let reference_relocs = relocations(&objdump, &reference_object);
+                    let our_relocs = relocations(&objdump, &our_object);
+                    let relocs_match = reference_relocs == our_relocs;
+                    if relocs_match {
+                        reloc_exact += 1;
+                    }
                     let whole_object_matches = std::fs::read(&reference_object).ok() == std::fs::read(&our_object).ok();
                     let marker = if whole_object_matches {
                         object_exact += 1;
                         "PASS"
+                    } else if relocs_match {
+                        "PASS*" // .text + relocations match; the full object (e.g. .comment) does not yet
                     } else {
-                        "PASS*" // .text matches; the full object (e.g. .sdata2) does not yet
+                        "PASS!" // .text matches but relocations differ — objdiff would flag this
                     };
                     println!("  {marker} {name}");
+                    if !relocs_match {
+                        print_difference(&our_relocs, &reference_relocs);
+                    }
                     passed += 1;
                 } else {
                     println!("  FAIL {name} — .text differs (ours | oracle):");
@@ -105,8 +119,32 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    println!("== {passed} passed, {failed} failed ({object_exact} byte-exact objects) ==");
+    println!("== {passed} passed, {failed} failed ({object_exact} byte-exact, {reloc_exact} reloc-exact objects) ==");
     if failed == 0 { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+}
+
+/// Parse `objdump -r` into normalized `[section] offset type symbol` lines,
+/// sorted so two objects compare by content. This is the objdiff contract for
+/// relocations: same offsets, same types, same target symbols.
+fn relocations(objdump: &Path, object: &Path) -> Vec<String> {
+    let output = Command::new(objdump).arg("-r").arg(object).output();
+    let Ok(output) = output else { return Vec::new() };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut section = String::new();
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("RELOCATION RECORDS FOR [") {
+            section = rest.trim_end_matches("]:").to_string();
+            continue;
+        }
+        // Data rows: "OFFSET   TYPE   VALUE"; skip the "OFFSET TYPE VALUE" header.
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() >= 3 && fields[0] != "OFFSET" && fields[0].chars().all(|c| c.is_ascii_hexdigit()) {
+            lines.push(format!("[{section}] {} {} {}", fields[0], fields[1], fields[2]));
+        }
+    }
+    lines.sort();
+    lines
 }
 
 /// Disassemble `.text` into one entry per instruction, each carrying the raw

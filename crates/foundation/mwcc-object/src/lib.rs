@@ -19,6 +19,16 @@ pub struct ObjectInput<'a> {
     pub version: (u8, u8, u8),
     /// The compiler build number; a `.comment` format marker depends on it.
     pub build: u16,
+    /// `.text` relocations against external symbols (globals, callees).
+    pub relocations: Vec<TextRelocation>,
+}
+
+/// A `.text` relocation: a byte offset, the ELF relocation type, and the
+/// (external) symbol it references.
+pub struct TextRelocation {
+    pub offset: u32,
+    pub elf_type: u32,
+    pub symbol: String,
 }
 
 /// Write a relocatable object for a single function.
