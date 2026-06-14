@@ -490,21 +490,27 @@ impl Generator {
             return Err(Diagnostic::error("division by this constant needs magic-number lowering (roadmap)"));
         }
 
-        // register divide
-        self.evaluate_general(left, d)?;
-        let divisor = if is_complex(right) {
+        // register divide: dividend (leaf stays, sub-expr -> scratch), then divisor.
+        let Some(dividend) = self.place_operand(left, d, false)? else {
+            return Err(Diagnostic::error("dividend needs the full register allocator (roadmap M1)"));
+        };
+        let divisor = if let Some(register) = leaf_name(right).and_then(|name| self.lookup_general(name)) {
+            register
+        } else {
+            // a sub-expression divisor needs the scratch, which the dividend may occupy.
+            if dividend == GENERAL_SCRATCH {
+                return Err(Diagnostic::error("divisor and dividend both need scratch (roadmap M1)"));
+            }
             if !fits_single_scratch(right, true) {
                 return Err(Diagnostic::error("divisor needs the full register allocator (roadmap M1)"));
             }
             self.evaluate_general(right, GENERAL_SCRATCH)?;
             GENERAL_SCRATCH
-        } else {
-            self.general_register_of_leaf(right)?
         };
         self.output.instructions.push(if signed {
-            Instruction::DivideWord { d, a: d, b: divisor }
+            Instruction::DivideWord { d, a: dividend, b: divisor }
         } else {
-            Instruction::DivideWordUnsigned { d, a: d, b: divisor }
+            Instruction::DivideWordUnsigned { d, a: dividend, b: divisor }
         });
         Ok(())
     }
@@ -821,8 +827,10 @@ impl Generator {
             BinaryOperator::Equal => {
                 if is_zero_literal(right) || is_zero_literal(left) {
                     let value = if is_zero_literal(right) { left } else { right };
-                    self.evaluate_general(value, d)?;
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: d });
+                    let Some(source) = self.place_operand(value, d, false)? else {
+                        return Err(Diagnostic::error("comparison value needs the full register allocator (roadmap M1)"));
+                    };
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 } else if let Some(constant) = as_small_integer(right) {
                     // a == c : (c - a) leading zeros
                     let value = self.general_register_of_leaf(left)?;
@@ -847,8 +855,10 @@ impl Generator {
             }
             // signed x < 0 : the sign bit.
             BinaryOperator::Less if is_zero_literal(right) && signed_left => {
-                self.evaluate_general(left, d)?;
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift: 31 });
+                let Some(source) = self.place_operand(left, d, false)? else {
+                    return Err(Diagnostic::error("comparison value needs the full register allocator (roadmap M1)"));
+                };
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift: 31 });
                 Ok(())
             }
             // signed x > 0 : sign bit of (-x & ~x)
