@@ -98,6 +98,8 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             ('>', Some(b'=')) => Some(Token::GreaterEqual),
             ('=', Some(b'=')) => Some(Token::EqualEqual),
             ('!', Some(b'=')) => Some(Token::BangEqual),
+            ('&', Some(b'&')) => Some(Token::AmpersandAmpersand),
+            ('|', Some(b'|')) => Some(Token::PipePipe),
             _ => None,
         };
         if let Some(token) = two_char {

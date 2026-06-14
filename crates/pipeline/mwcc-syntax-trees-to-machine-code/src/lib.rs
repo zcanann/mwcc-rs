@@ -365,8 +365,43 @@ impl Generator {
                 Type::Float => self.emit_float_conditional(condition, when_true, when_false, result, true),
                 _ => self.emit_conditional(condition, when_true, when_false, result, true),
             },
+            Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), left, right } => {
+                self.emit_short_circuit(*operator, left, right, result)
+            }
             other => self.evaluate(other, value_type, result),
         }
+    }
+
+    /// Emit a short-circuit `&&`/`||` in tail position as mwcc does: each operand
+    /// is tested with `cmpwi`, with early conditional returns of 0/1. Leaf operands.
+    fn emit_short_circuit(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
+        let left_register = self.general_register_of_leaf(left)?;
+        let right_register = self.general_register_of_leaf(right)?;
+
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
+        self.output.instructions.push(Instruction::load_immediate(result, 0));
+
+        match operator {
+            BinaryOperator::LogicalAnd => {
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }); // beqlr
+                self.output.instructions.push(Instruction::CompareWordImmediate { a: right_register, immediate: 0 });
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }); // beqlr
+                self.output.instructions.push(Instruction::load_immediate(result, 1));
+            }
+            BinaryOperator::LogicalOr => {
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 0 }); // bne -> set 1
+                self.output.instructions.push(Instruction::CompareWordImmediate { a: right_register, immediate: 0 });
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }); // beqlr
+                let set_one = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = set_one;
+                }
+                self.output.instructions.push(Instruction::load_immediate(result, 1));
+            }
+            _ => unreachable!("caller restricts to logical and/or"),
+        }
+        Ok(())
     }
 
     fn evaluate_single_local(

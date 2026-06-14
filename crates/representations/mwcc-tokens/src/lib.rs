@@ -33,6 +33,8 @@ pub enum Token {
     Percent,
     Ampersand,
     Pipe,
+    AmpersandAmpersand,
+    PipePipe,
     Caret,
     Tilde,
     Bang,

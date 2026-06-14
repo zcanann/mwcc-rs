@@ -56,6 +56,8 @@ pub enum BinaryOperator {
     GreaterEqual,
     Equal,
     NotEqual,
+    LogicalAnd,
+    LogicalOr,
 }
 
 impl BinaryOperator {
@@ -70,6 +72,8 @@ impl BinaryOperator {
             BinaryOperator::BitAnd => 5,
             BinaryOperator::BitXor => 4,
             BinaryOperator::BitOr => 3,
+            BinaryOperator::LogicalAnd => 2,
+            BinaryOperator::LogicalOr => 1,
         }
     }
 }

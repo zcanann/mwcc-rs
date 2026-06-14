@@ -192,6 +192,8 @@ impl Parser {
             Token::GreaterEqual => BinaryOperator::GreaterEqual,
             Token::EqualEqual => BinaryOperator::Equal,
             Token::BangEqual => BinaryOperator::NotEqual,
+            Token::AmpersandAmpersand => BinaryOperator::LogicalAnd,
+            Token::PipePipe => BinaryOperator::LogicalOr,
             _ => return None,
         })
     }
