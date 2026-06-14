@@ -953,6 +953,41 @@ impl Generator {
                 self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
                 Ok(())
             }
+            // general signed branchless comparisons (leaf operands)
+            BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
+                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+            {
+                let left_register = self.general_register_of_leaf(left)?;
+                let right_register = self.general_register_of_leaf(right)?;
+                let scratch = GENERAL_SCRATCH;
+                match operator {
+                    // a < b : sign bit of (((a^b)>>1) - ((a^b)&b))
+                    BinaryOperator::Less => {
+                        self.output.instructions.push(Instruction::Xor { a: scratch, s: right_register, b: left_register });
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
+                        self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: right_register });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
+                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                    }
+                    // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)), reusing rB as a temp
+                    BinaryOperator::Greater => {
+                        self.output.instructions.push(Instruction::Xor { a: scratch, s: left_register, b: right_register });
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: right_register, s: scratch, shift: 1 });
+                        self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: left_register });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: right_register });
+                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                    }
+                    // a != b : sign bit of ((b - a) | (a - b)), with a second temp
+                    _ => {
+                        let temp = (3u8..=12).find(|r| ![left_register, right_register, scratch].contains(r)).ok_or_else(|| Diagnostic::error("out of registers"))?;
+                        self.output.instructions.push(Instruction::SubtractFrom { d: temp, a: left_register, b: right_register });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: right_register, b: left_register });
+                        self.output.instructions.push(Instruction::Or { a: scratch, s: temp, b: scratch });
+                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                    }
+                }
+                Ok(())
+            }
             _ => Err(Diagnostic::error("this comparison needs the branchless compare idioms (roadmap)")),
         }
     }
