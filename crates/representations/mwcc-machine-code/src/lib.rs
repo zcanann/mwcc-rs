@@ -92,6 +92,8 @@ pub enum Instruction {
     LoadWord { d: u8, a: u8, offset: i16 },
     /// `stfd frS, offset(rA)` — store float double.
     StoreFloatDouble { s: u8, a: u8, offset: i16 },
+    /// `fcmpo crf0, frA, frB` — ordered float compare.
+    FloatCompareOrdered { a: u8, b: u8 },
     /// `cmpwi crf0, rA, SIMM` — signed compare against an immediate.
     CompareWordImmediate { a: u8, immediate: i16 },
     /// `cmpw crf0, rA, rB` — signed compare.
@@ -177,6 +179,7 @@ impl Instruction {
             Instruction::StoreWordWithUpdate { s, a, offset } => d_form(37, s, a, offset as u16),
             Instruction::LoadWord { d, a, offset } => d_form(32, d, a, offset as u16),
             Instruction::StoreFloatDouble { s, a, offset } => d_form(54, s, a, offset as u16),
+            Instruction::FloatCompareOrdered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
             Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
             // resolved positionally in encode_text

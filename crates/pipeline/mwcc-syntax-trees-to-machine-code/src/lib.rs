@@ -59,6 +59,21 @@ fn as_small_integer(expression: &Expression) -> Option<i16> {
     }
 }
 
+/// The `(BO, BI)` of the branch that fires when `operator` is **true** (cr0 bits:
+/// 0=LT, 1=GT, 2=EQ; BO 12 = if-true, 4 = if-false). The negated branch is
+/// `(BO ^ 8, BI)`.
+fn positive_branch(operator: BinaryOperator) -> (u8, u8) {
+    match operator {
+        BinaryOperator::Greater => (12, 1),
+        BinaryOperator::Less => (12, 0),
+        BinaryOperator::GreaterEqual => (4, 0),
+        BinaryOperator::LessEqual => (4, 1),
+        BinaryOperator::Equal => (12, 2),
+        BinaryOperator::NotEqual => (4, 2),
+        _ => (12, 2),
+    }
+}
+
 fn is_comparison(operator: BinaryOperator) -> bool {
     matches!(
         operator,
@@ -309,12 +324,13 @@ impl Generator {
     }
 
     /// Evaluate the function result. A conditional in this tail position can use a
-    /// conditional return when its false value already sits in the result register.
+    /// conditional return when one of its values already sits in the result register.
     fn evaluate_tail(&mut self, expression: &Expression, value_type: Type, result: u8) -> Compilation<()> {
         match expression {
-            Expression::Conditional { condition, when_true, when_false } => {
-                self.emit_conditional(condition, when_true, when_false, result, true)
-            }
+            Expression::Conditional { condition, when_true, when_false } => match value_type {
+                Type::Float => self.emit_float_conditional(condition, when_true, when_false, result, true),
+                _ => self.emit_conditional(condition, when_true, when_false, result, true),
+            },
             other => self.evaluate(other, value_type, result),
         }
     }
@@ -506,6 +522,49 @@ impl Generator {
             self.output.instructions.push(Instruction::move_register(destination, false_register));
         }
         Ok(())
+    }
+
+    /// Emit a float `condition ? when_true : when_false`. The condition must be a
+    /// float comparison; in tail position, when one branch value already sits in
+    /// the result register, return early on that branch (fcmpo + bclr).
+    fn emit_float_conditional(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+        tail: bool,
+    ) -> Compilation<()> {
+        let Expression::Binary { operator, left, right } = condition else {
+            return Err(Diagnostic::error("float conditional needs a comparison condition"));
+        };
+        if !is_comparison(*operator) {
+            return Err(Diagnostic::error("float conditional needs a comparison condition"));
+        }
+        let left_register = self.float_register_of_leaf(left)?;
+        let right_register = self.float_register_of_leaf(right)?;
+        let true_register = self.float_register_of_leaf(when_true)?;
+        let false_register = self.float_register_of_leaf(when_false)?;
+
+        self.output.instructions.push(Instruction::FloatCompareOrdered { a: left_register, b: right_register });
+        let (positive_options, condition_bit) = positive_branch(*operator);
+
+        if tail && true_register == destination {
+            // true value already in the result: return on the true branch.
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: positive_options, condition_bit });
+            if destination != false_register {
+                self.output.instructions.push(Instruction::FloatMove { d: destination, b: false_register });
+            }
+            return Ok(());
+        }
+        if tail && false_register == destination {
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: positive_options ^ 8, condition_bit });
+            if destination != true_register {
+                self.output.instructions.push(Instruction::FloatMove { d: destination, b: true_register });
+            }
+            return Ok(());
+        }
+        Err(Diagnostic::error("non-tail float select not yet supported"))
     }
 
     /// Emit the test for a branch condition and return the `(BO, BI)` of the
@@ -925,7 +984,9 @@ impl Generator {
                 Ok(())
             }
             Expression::Unary { .. } => Err(Diagnostic::error("only float negation is supported as a float unary")),
-            Expression::Conditional { .. } => Err(Diagnostic::error("float conditional not yet supported")),
+            Expression::Conditional { condition, when_true, when_false } => {
+                self.emit_float_conditional(condition, when_true, when_false, destination, false)
+            }
             Expression::Cast { operand, .. } => self.emit_cast_to_float(operand, destination),
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literals need the constant pool (roadmap M3)")),
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
