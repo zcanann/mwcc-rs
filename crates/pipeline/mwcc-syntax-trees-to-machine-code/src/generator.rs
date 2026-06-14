@@ -58,7 +58,7 @@ impl Generator {
     /// int->float bias — follow the build with no scattered version checks.
     pub(crate) fn signed_of(&self, declared: Type) -> bool {
         match declared {
-            Type::Char => self.build.char_is_signed,
+            Type::Char => self.build.profile.char_is_signed(),
             other => other.is_signed(),
         }
     }

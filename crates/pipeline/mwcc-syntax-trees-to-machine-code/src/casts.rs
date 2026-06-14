@@ -21,7 +21,7 @@ impl Generator {
         self.output.instructions.push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
         // The bias load and the value store are independent; builds schedule them
         // in opposite orders (GC/2.0p1 stores first, every other build loads first).
-        if self.build.float_cast_value_store_first {
+        if self.build.profile.float_cast_value_store_first() {
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
             self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 }); // bias (needs reloc)
         } else {
