@@ -11,13 +11,27 @@ pub struct MachineFunction {
     pub instructions: Vec<Instruction>,
     /// `.text` relocations, by the instruction they patch.
     pub relocations: Vec<Relocation>,
+    /// Read-only single-precision constants this function loads from `.sdata2`,
+    /// as raw IEEE-754 bit patterns. Each becomes an anonymous `@N` object that
+    /// the function's `R_PPC_EMB_SDA21` loads reference.
+    pub constants: Vec<u32>,
     /// Frame metadata for the unwind tables; `None` for a leaf with no frame.
     pub frame: Option<FrameInfo>,
 }
 
 impl MachineFunction {
     pub fn new(name: impl Into<String>) -> Self {
-        MachineFunction { name: name.into(), instructions: Vec::new(), relocations: Vec::new(), frame: None }
+        MachineFunction { name: name.into(), instructions: Vec::new(), relocations: Vec::new(), constants: Vec::new(), frame: None }
+    }
+
+    /// Intern a single-precision constant, returning its constant-pool index.
+    /// Equal bit patterns share one slot (mwcc pools identical constants).
+    pub fn intern_constant(&mut self, bits: u32) -> usize {
+        if let Some(index) = self.constants.iter().position(|existing| *existing == bits) {
+            return index;
+        }
+        self.constants.push(bits);
+        self.constants.len() - 1
     }
 
     /// Encode the whole function to big-endian `.text` bytes. Forward conditional

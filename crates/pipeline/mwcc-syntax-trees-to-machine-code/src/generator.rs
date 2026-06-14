@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind};
+use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::CompilerBuild;
 use crate::analysis::*;
@@ -78,8 +78,22 @@ impl Generator {
 
     /// Record a relocation against the instruction that is about to be pushed.
     pub(crate) fn record_relocation(&mut self, kind: RelocationKind, symbol: &str) {
+        self.record_target(kind, RelocationTarget::External(symbol.to_string()));
+    }
+
+    /// Record a relocation with an explicit target (external symbol or pooled
+    /// constant) against the instruction about to be pushed.
+    pub(crate) fn record_target(&mut self, kind: RelocationKind, target: RelocationTarget) {
         let instruction_index = self.output.instructions.len();
-        self.output.relocations.push(Relocation { instruction_index, kind, symbol: symbol.to_string() });
+        self.output.relocations.push(Relocation { instruction_index, kind, target });
+    }
+
+    /// Emit a load of a single-precision constant from `.sdata2`: `lfs fD, 0(r0)`
+    /// (the zero placeholder the SDA21 relocation patches), pooling the value.
+    pub(crate) fn load_float_constant(&mut self, destination: u8, value: f32) {
+        let index = self.output.intern_constant(value.to_bits());
+        self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
+        self.output.instructions.push(Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 });
     }
 
     pub(crate) fn lookup_general(&self, name: &str) -> Option<u8> {

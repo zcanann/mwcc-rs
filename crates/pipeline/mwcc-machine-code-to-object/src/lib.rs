@@ -4,8 +4,8 @@
 //! big-endian PowerPC object matching mwcceppc's layout (sections, symbols,
 //! relocations, and the Metrowerks metadata records).
 
-use mwcc_machine_code::MachineFunction;
-use mwcc_object::{FrameLayout, ObjectInput, TextRelocation};
+use mwcc_machine_code::{MachineFunction, RelocationTarget as MachineTarget};
+use mwcc_object::{FrameLayout, ObjectInput, RelocationTarget, TextRelocation};
 
 /// Assemble a relocatable object. `source_name` is the source file's base name
 /// (e.g. "foo.c"), used for the object's `FILE` symbol; `version` is the compiler
@@ -20,7 +20,10 @@ pub fn assemble_object(function: &MachineFunction, source_name: &str, version: (
         .map(|relocation| TextRelocation {
             offset: relocation.instruction_index as u32 * 4,
             elf_type: relocation.kind.elf_type(),
-            symbol: relocation.symbol.clone(),
+            target: match &relocation.target {
+                MachineTarget::External(symbol) => RelocationTarget::External(symbol.clone()),
+                MachineTarget::Constant(index) => RelocationTarget::Constant(*index),
+            },
         })
         .collect();
     let frame = function.frame.map(|frame| FrameLayout { extab_header: frame.extab_header() });
@@ -31,6 +34,9 @@ pub fn assemble_object(function: &MachineFunction, source_name: &str, version: (
         version,
         build,
         relocations,
+        constants: function.constants.clone(),
+        // mwcceppc's anonymous-symbol counter starts at 5 for a plain function.
+        anonymous_base: 5,
         frame,
     })
 }

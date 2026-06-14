@@ -6,7 +6,7 @@
 //! Float/stack-frame functions add `.sdata2` / `extab` / `extabindex` sections;
 //! those are the next layer and not emitted yet.
 
-use crate::ObjectInput;
+use crate::{ObjectInput, RelocationTarget};
 
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
 /// "LOUSER+0x4a2a82c2").
@@ -19,6 +19,7 @@ const SHT_RELA: u32 = 4;
 
 const SHF_WRITE_EXEC: u32 = 0x6; // ALLOC | EXECINSTR for .text
 const SHF_ALLOC: u32 = 0x2; // ALLOC for the unwind tables (read-only data)
+const SHF_WRITE_ALLOC: u32 = 0x3; // WRITE | ALLOC for the .sdata2 constant pool
 const R_PPC_ADDR32: u32 = 1;
 
 const SHN_ABS: u16 = 0xFFF1;
@@ -83,20 +84,28 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     // bytes are produced identically to before (no `.rela.text`, no extra symbols).
     let mut externals: Vec<&str> = Vec::new();
     for relocation in &input.relocations {
-        if !externals.iter().any(|name| *name == relocation.symbol.as_str()) {
-            externals.push(&relocation.symbol);
+        if let RelocationTarget::External(symbol) = &relocation.target {
+            if !externals.iter().any(|name| *name == symbol.as_str()) {
+                externals.push(symbol);
+            }
         }
     }
-    let has_text_relocations = !externals.is_empty();
+    // `.rela.text` is needed for any relocation — external (global/call) or a
+    // pooled-constant load.
+    let has_text_relocations = !input.relocations.is_empty();
     let has_frame = input.frame.is_some();
+    let has_constants = !input.constants.is_empty();
 
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The
-    //    unwind tables sit right after `.text`; their `.rela` and the small-data
-    //    sections key off this order, so everything downstream resolves by name.
+    //    unwind tables sit right after `.text`, then the `.sdata2` constant pool;
+    //    their `.rela` and everything downstream key off this order, by name.
     let mut order: Vec<&str> = vec![".text"];
     if has_frame {
         order.push("extab");
         order.push("extabindex");
+    }
+    if has_constants {
+        order.push(".sdata2");
     }
     order.push(".mwcats.text");
     if has_text_relocations {
@@ -117,8 +126,10 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     //    symbol per content section (in section order), the local `@N` unwind
     //    entries, the undefined externals, then the function. The externals/function
     //    are the GLOBAL symbols, so the first of them is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> =
-        [".text", "extab", "extabindex", ".mwcats.text"].into_iter().filter(|name| order.contains(name)).collect();
+    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".sdata2", ".mwcats.text"]
+        .into_iter()
+        .filter(|name| order.contains(name))
+        .collect();
     let mut strtab = StringTable::new();
     let mut symtab = Vec::new();
     write_symbol(&mut symtab, 0, 0, 0, 0, 0, 0); // null
@@ -126,13 +137,24 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     for name in &content_sections {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
     }
-    // The `@N` unwind entries: locals pointing at their `extab`/`extabindex` slots.
-    // For a single-function object with no constant pool these are always @5/@6.
+    // Anonymous `@N` locals, numbered from `anonymous_base`: pooled constants
+    // first (visible objects in `.sdata2`), then the hidden unwind entries. mwcc
+    // emits them in this order, so the numbering follows it.
+    let mut constant_symbols: Vec<u32> = Vec::new();
+    for index in 0..input.constants.len() {
+        let number = input.anonymous_base + index as u32;
+        constant_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
+        let name = strtab.add(&format!("@{number}"));
+        write_symbol(&mut symtab, name, index as u32 * 4, 4, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
+    }
     let mut extab_entry_symbol = 0u32;
     if has_frame {
+        let extab_number = input.anonymous_base + input.constants.len() as u32;
         extab_entry_symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-        write_symbol(&mut symtab, strtab.add("@5"), 0, 8, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extab") as u16);
-        write_symbol(&mut symtab, strtab.add("@6"), 0, 12, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extabindex") as u16);
+        let extab_name = strtab.add(&format!("@{extab_number}"));
+        write_symbol(&mut symtab, extab_name, 0, 8, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extab") as u16);
+        let extabindex_name = strtab.add(&format!("@{}", extab_number + 1));
+        write_symbol(&mut symtab, extabindex_name, 0, 12, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extabindex") as u16);
     }
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
     for name in &externals {
@@ -141,11 +163,18 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let function_symbol = (symtab.len() / SYMBOL_SIZE) as u32;
     write_symbol(&mut symtab, strtab.add(input.function_name), 0, text_size, STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
 
-    // 3. Relocation payloads (now that symbol indices are fixed).
+    // 3. Relocation payloads (now that symbol indices are fixed). A relocation
+    //    targets either an external (the i-th global symbol) or a pooled constant.
     let mut rela_text = Vec::new();
     for relocation in &input.relocations {
-        let position = externals.iter().position(|name| *name == relocation.symbol.as_str()).unwrap();
-        write_rela(&mut rela_text, relocation.offset, first_global_index + position as u32, relocation.elf_type, 0);
+        let symbol = match &relocation.target {
+            RelocationTarget::External(name) => {
+                let position = externals.iter().position(|external| *external == name.as_str()).unwrap();
+                first_global_index + position as u32
+            }
+            RelocationTarget::Constant(index) => constant_symbols[*index],
+        };
+        write_rela(&mut rela_text, relocation.offset, symbol, relocation.elf_type, 0);
     }
     let mut rela_extabindex = Vec::new();
     if has_frame {
@@ -169,6 +198,11 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         write_u32(&mut extabindex, text_size);
         write_u32(&mut extabindex, 0); // -> the extab entry
     }
+    // `.sdata2` — the pooled single-precision constants, one big-endian word each.
+    let mut sdata2 = Vec::new();
+    for bits in &input.constants {
+        write_u32(&mut sdata2, *bits);
+    }
 
     // 5. `.shstrtab` — section names in section order; record each name's offset.
     let mut shstrtab = StringTable::new();
@@ -185,6 +219,9 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     if has_frame {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab);
         push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex);
+    }
+    if has_constants {
+        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2);
     }
     push(".mwcats.text", SHT_MWCATS, 0, index_of(".text"), 0, 4, 1, mwcats);
     if has_text_relocations {
@@ -211,6 +248,10 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
             if index == 0 {
                 return 0;
             }
+            // Honour each section's alignment (e.g. `.sdata2` is 8-aligned, so it
+            // may need padding after a `.text` whose size is not a multiple of 8).
+            let align = section.align.max(1);
+            offset = (offset + align - 1) / align * align;
             let here = offset;
             offset += section.payload.len() as u32;
             here
@@ -221,7 +262,11 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     // 8. Emit: header, payloads, padding, section headers.
     let mut output = Vec::new();
     write_elf_header(&mut output, section_headers_offset, sections.len() as u16, index_of(".shstrtab") as u16);
-    for section in &sections {
+    for (section, &section_offset) in sections.iter().zip(&offsets) {
+        // Pad to the section's aligned offset, then emit its payload.
+        while output.len() < section_offset as usize {
+            output.push(0);
+        }
         output.extend_from_slice(&section.payload);
     }
     while output.len() < section_headers_offset as usize {

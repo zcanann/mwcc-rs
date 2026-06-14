@@ -23,11 +23,20 @@ impl RelocationKind {
     }
 }
 
+/// What a relocation points at: a named symbol defined elsewhere (a global or a
+/// callee, emitted as an undefined external) or an entry in this function's own
+/// constant pool (an anonymous `@N` object the writer materializes in `.sdata2`).
+#[derive(Debug, Clone)]
+pub enum RelocationTarget {
+    External(String),
+    Constant(usize),
+}
+
 /// A relocation against `.text`, located by the instruction it patches (byte
-/// offset = index * 4) and naming the referenced symbol.
+/// offset = index * 4) and naming the referenced target.
 #[derive(Debug, Clone)]
 pub struct Relocation {
     pub instruction_index: usize,
     pub kind: RelocationKind,
-    pub symbol: String,
+    pub target: RelocationTarget,
 }

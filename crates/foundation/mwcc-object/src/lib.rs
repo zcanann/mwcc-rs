@@ -19,18 +19,33 @@ pub struct ObjectInput<'a> {
     pub version: (u8, u8, u8),
     /// The compiler build number; a `.comment` format marker depends on it.
     pub build: u16,
-    /// `.text` relocations against external symbols (globals, callees).
+    /// `.text` relocations against external symbols (globals, callees) or pooled
+    /// constants.
     pub relocations: Vec<TextRelocation>,
+    /// Single-precision constants this function loads from `.sdata2`, as raw
+    /// IEEE-754 bit patterns. Each becomes an anonymous `@N` object.
+    pub constants: Vec<u32>,
+    /// The starting number for this object's anonymous `@N` symbols (constants,
+    /// then unwind entries). mwcceppc's internal counter begins at 5, plus one
+    /// when the function contains a float<->int conversion.
+    pub anonymous_base: u32,
     /// Unwind-table layout for a stack-frame function; `None` for a pure leaf.
     pub frame: Option<FrameLayout>,
 }
 
-/// A `.text` relocation: a byte offset, the ELF relocation type, and the
-/// (external) symbol it references.
+/// What a `.text` relocation points at.
+pub enum RelocationTarget {
+    /// An external symbol defined elsewhere (a global or callee).
+    External(String),
+    /// An entry in this object's constant pool, by index.
+    Constant(usize),
+}
+
+/// A `.text` relocation: a byte offset, the ELF relocation type, and its target.
 pub struct TextRelocation {
     pub offset: u32,
     pub elf_type: u32,
-    pub symbol: String,
+    pub target: RelocationTarget,
 }
 
 /// The `extab`/`extabindex` unwind tables a stack-frame function carries. The

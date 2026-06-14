@@ -62,7 +62,10 @@ impl Generator {
                 self.emit_float_conditional(condition, when_true, when_false, destination, false)
             }
             Expression::Cast { operand, .. } => self.emit_cast_to_float(operand, destination),
-            Expression::FloatLiteral(_) => Err(Diagnostic::error("float literals need the constant pool (roadmap M3)")),
+            Expression::FloatLiteral(value) => {
+                self.load_float_constant(destination, *value as f32);
+                Ok(())
+            }
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
         }
     }
@@ -115,6 +118,23 @@ impl Generator {
     }
 
     pub(crate) fn place_float_operands(&mut self, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
+        // A float constant operand is loaded from `.sdata2` into the scratch
+        // register; the other operand stays in place. mwcc emits the constant as
+        // the first source of the (commutative) operation, so its register leads.
+        if let Expression::FloatLiteral(value) = right {
+            if !is_complex(left) {
+                let left_register = self.float_register_of_leaf(left)?;
+                self.load_float_constant(FLOAT_SCRATCH, *value as f32);
+                return Operands::reversed(left_register, FLOAT_SCRATCH);
+            }
+        }
+        if let Expression::FloatLiteral(value) = left {
+            if !is_complex(right) {
+                let right_register = self.float_register_of_leaf(right)?;
+                self.load_float_constant(FLOAT_SCRATCH, *value as f32);
+                return Operands::ordered(FLOAT_SCRATCH, right_register);
+            }
+        }
         match (is_complex(left), is_complex(right)) {
             (false, false) => Operands::ordered(self.float_register_of_leaf(left)?, self.float_register_of_leaf(right)?),
             (true, false) => {

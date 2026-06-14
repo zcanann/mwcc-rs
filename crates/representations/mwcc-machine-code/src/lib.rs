@@ -15,4 +15,4 @@ mod relocation;
 pub use frame::FrameInfo;
 pub use function::MachineFunction;
 pub use instruction::Instruction;
-pub use relocation::{Relocation, RelocationKind};
+pub use relocation::{Relocation, RelocationKind, RelocationTarget};
