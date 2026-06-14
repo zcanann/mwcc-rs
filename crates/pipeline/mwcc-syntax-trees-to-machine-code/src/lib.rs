@@ -929,6 +929,35 @@ impl Generator {
         }
     }
 
+    /// Emit mwcc's fused `rlwinm` for an unsigned narrow value shifted by a
+    /// constant. A `width`-bit value occupies the low `width` bits, starting at
+    /// big-endian bit `32-width`. `<< n` rotates left n and keeps the shifted
+    /// window; `>> n` rotates by `32-n`. Returns false when the shift would push
+    /// significant bits out of the single-rlwinm range (deferred, not modeled).
+    fn emit_narrow_unsigned_shift(&mut self, destination: u8, source: u8, width: u8, left: bool, amount: u8) -> bool {
+        let start = 32 - width as u32; // first significant big-endian bit: uchar=24, ushort=16
+        let n = amount as u32;
+        let (shift, begin, end) = if left {
+            if n == 0 || n > start {
+                return false;
+            }
+            (n, start - n, 31 - n)
+        } else {
+            if n == 0 || n >= width as u32 {
+                return false;
+            }
+            (32 - n, start + n, 31)
+        };
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: destination,
+            s: source,
+            shift: shift as u8,
+            begin: begin as u8,
+            end: end as u8,
+        });
+        true
+    }
+
     /// Whether `expression` is a float-valued leaf.
     fn is_float_leaf(&self, expression: &Expression) -> bool {
         matches!(expression, Expression::Variable(name) if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::Float))
@@ -1271,10 +1300,15 @@ impl Generator {
 
         if let Expression::IntegerLiteral(amount) = right {
             if (1..=31).contains(amount) {
-                // A narrow shifted value fuses extension and shift into one rlwinm
-                // on unsigned-char builds; that peephole is not modeled yet.
-                if self.is_narrow_leaf(left) {
-                    return Err(Diagnostic::error("narrow right shift needs the extend+shift peephole (roadmap)"));
+                // An unsigned narrow value fuses extension and shift into one
+                // rlwinm; a signed narrow value extends (extsb/extsh) then shifts.
+                if let Ok((register, width, leaf_signed)) = self.leaf_info(left) {
+                    if width < 32 && !leaf_signed {
+                        if self.emit_narrow_unsigned_shift(d, register, width, false, *amount as u8) {
+                            return Ok(());
+                        }
+                        return Err(Diagnostic::error("narrow unsigned shift out of the single-rlwinm range (roadmap)"));
+                    }
                 }
                 // The shifted value: a leaf stays put, a sub-expression goes to scratch.
                 let Some(source) = self.place_operand(left, d, false)? else {
@@ -1397,10 +1431,15 @@ impl Generator {
             _ => return Ok(false),
         };
 
-        // A narrow value times a power of two (or `<< n`) fuses extension and shift
-        // into one rlwinm on unsigned-char builds — peephole not modeled yet.
-        if matches!(kind, Immediate::ShiftLeft(_)) && self.is_narrow_leaf(variable) {
-            return Ok(false);
+        // A narrow value times a power of two (or `<< n`): an unsigned narrow
+        // operand fuses extension and shift into one rlwinm; a signed one extends
+        // (extsb/extsh) then shifts via the normal path below.
+        if let &Immediate::ShiftLeft(shift) = &kind {
+            if let Ok((register, width, leaf_signed)) = self.leaf_info(variable) {
+                if width < 32 && !leaf_signed {
+                    return Ok(self.emit_narrow_unsigned_shift(destination, register, width, true, shift));
+                }
+            }
         }
         let prefer_destination = matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract);
         let Some(source) = self.place_operand(variable, destination, prefer_destination)? else {

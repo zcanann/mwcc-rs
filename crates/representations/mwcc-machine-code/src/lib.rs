@@ -78,6 +78,10 @@ pub enum Instruction {
     ClearLeftImmediate { a: u8, s: u8, clear: u8 },
     /// `rlwinm rA, rS, 0, begin, end` — keep the contiguous bit run `[begin, end]`.
     AndContiguousMask { a: u8, s: u8, begin: u8, end: u8 },
+    /// `rlwinm rA, rS, shift, begin, end` — rotate left by `shift`, keep bits
+    /// `[begin, end]`. The general form; mwcc fuses a narrow unsigned shift and
+    /// its width mask into one of these.
+    RotateAndMask { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
     /// `fadds frD, frA, frB`
     FloatAddSingle { d: u8, a: u8, b: u8 },
     /// `fsubs frD, frA, frB`
@@ -189,6 +193,9 @@ impl Instruction {
             }
             Instruction::AndContiguousMask { a, s, begin, end } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((begin as u32) << 6) | ((end as u32) << 1)
+            }
+            Instruction::RotateAndMask { a, s, shift, begin, end } => {
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
