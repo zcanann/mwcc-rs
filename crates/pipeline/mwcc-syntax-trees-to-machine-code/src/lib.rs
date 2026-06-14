@@ -1135,8 +1135,15 @@ impl Generator {
                     };
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 } else if let Some(constant) = as_small_integer(right) {
-                    // a == c : (c - a) leading zeros
-                    let value = self.general_register_of_leaf(left)?;
+                    // a == c : (c - a) leading zeros. A narrow operand is extended
+                    // into the scratch first (extsb/clrlwi), then consumed there.
+                    let value = match self.leaf_info(left) {
+                        Ok((register, width, signed)) if width < 32 => {
+                            self.emit_widen(GENERAL_SCRATCH, register, width, signed);
+                            GENERAL_SCRATCH
+                        }
+                        _ => self.general_register_of_leaf(left)?,
+                    };
                     self.output.instructions.push(Instruction::SubtractFromImmediate { d: GENERAL_SCRATCH, a: value, immediate: constant });
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
                 } else {
