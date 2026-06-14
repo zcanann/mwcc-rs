@@ -20,6 +20,12 @@ pub enum Instruction {
     Add { d: u8, a: u8, b: u8 },
     /// `subf rD, rA, rB` => rD = rB - rA.
     SubtractFrom { d: u8, a: u8, b: u8 },
+    /// `neg rD, rA`
+    Negate { d: u8, a: u8 },
+    /// `nor rA, rS, rB` — spells `not rA, rS` when `s == b`.
+    Nor { a: u8, s: u8, b: u8 },
+    /// `cntlzw rA, rS` — count leading zero bits.
+    CountLeadingZeros { a: u8, s: u8 },
     /// `mullw rD, rA, rB`
     MultiplyLow { d: u8, a: u8, b: u8 },
     /// `mulli rD, rA, SIMM`
@@ -86,6 +92,9 @@ impl Instruction {
             Instruction::OrImmediate { a, s, immediate } => d_form(24, s, a, immediate),
             Instruction::Add { d, a, b } => xo_form(d, a, b, 266),
             Instruction::SubtractFrom { d, a, b } => xo_form(d, a, b, 40),
+            Instruction::Negate { d, a } => xo_form(d, a, 0, 104),
+            Instruction::Nor { a, s, b } => logical_form(s, a, b, 124),
+            Instruction::CountLeadingZeros { a, s } => logical_form(s, a, 0, 26),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
             Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
             // slwi rA,rS,n == rlwinm rA,rS,n,0,31-n

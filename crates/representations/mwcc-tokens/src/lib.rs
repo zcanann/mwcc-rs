@@ -28,8 +28,16 @@ pub enum Token {
     Ampersand,
     Pipe,
     Caret,
+    Tilde,
+    Bang,
     ShiftLeft,
     ShiftRight,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+    EqualEqual,
+    BangEqual,
     EndOfFile,
 }
 

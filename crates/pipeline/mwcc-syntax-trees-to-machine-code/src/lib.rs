@@ -30,7 +30,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, MachineFunction};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Type, UnaryOperator};
 use mwcc_target::Eabi;
 use mwcc_versions::CompilerBuild;
 use std::collections::HashMap;
@@ -40,7 +40,23 @@ const GENERAL_SCRATCH: u8 = 0; // r0
 const FLOAT_SCRATCH: u8 = 0; // f0
 
 fn is_complex(expression: &Expression) -> bool {
-    matches!(expression, Expression::Binary { .. })
+    matches!(expression, Expression::Binary { .. } | Expression::Unary { .. })
+}
+
+fn is_zero_literal(expression: &Expression) -> bool {
+    matches!(expression, Expression::IntegerLiteral(0))
+}
+
+fn is_comparison(operator: BinaryOperator) -> bool {
+    matches!(
+        operator,
+        BinaryOperator::Less
+            | BinaryOperator::Greater
+            | BinaryOperator::LessEqual
+            | BinaryOperator::GreaterEqual
+            | BinaryOperator::Equal
+            | BinaryOperator::NotEqual
+    )
 }
 
 /// If `expression` is a multiplication, return its two operands.
@@ -85,6 +101,9 @@ fn needs_scratch(expression: &Expression) -> bool {
         Expression::Binary { left, right, .. } => {
             is_complex(left) || is_complex(right) || needs_scratch(left) || needs_scratch(right)
         }
+        Expression::Unary { operator, operand } => {
+            matches!(operator, UnaryOperator::LogicalNot) || needs_scratch(operand)
+        }
         _ => false,
     }
 }
@@ -100,6 +119,10 @@ fn fits_single_scratch(expression: &Expression, destination_is_scratch: bool) ->
             (true, true) => {
                 !destination_is_scratch && fits_single_scratch(left, false) && fits_single_scratch(right, true)
             }
+        },
+        Expression::Unary { operator, operand } => match operator {
+            UnaryOperator::LogicalNot => !destination_is_scratch && fits_single_scratch(operand, destination_is_scratch),
+            _ => fits_single_scratch(operand, destination_is_scratch),
         },
         _ => true,
     }
@@ -231,7 +254,12 @@ impl Generator {
                 }
                 Ok(())
             }
+            Expression::Unary { operator, operand } => self.emit_unary(*operator, operand, destination),
             Expression::Binary { operator, left, right } => {
+                // Comparisons compile to branchless idioms.
+                if is_comparison(*operator) {
+                    return self.emit_comparison(*operator, left, right, destination);
+                }
                 // Right shift selects an instruction by signedness.
                 if *operator == BinaryOperator::ShiftRight {
                     return self.emit_shift_right(left, right, destination);
@@ -251,6 +279,58 @@ impl Generator {
         }
     }
 
+    /// Emit a prefix unary operator into `destination`.
+    fn emit_unary(&mut self, operator: UnaryOperator, operand: &Expression, destination: u8) -> Compilation<()> {
+        let d = destination;
+        match operator {
+            UnaryOperator::Negate => {
+                self.evaluate_general(operand, d)?;
+                self.output.instructions.push(Instruction::Negate { d, a: d });
+            }
+            UnaryOperator::BitNot => {
+                self.evaluate_general(operand, d)?;
+                self.output.instructions.push(Instruction::Nor { a: d, s: d, b: d });
+            }
+            UnaryOperator::LogicalNot => {
+                // !x == (x == 0): cntlzw then srwi by 5.
+                self.evaluate_general(operand, d)?;
+                self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: d });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit a comparison as mwcc's branchless idiom. Currently handles `==` (and
+    /// `== 0`) and signed `< 0`; the richer signed less/greater idioms are not
+    /// implemented yet.
+    fn emit_comparison(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+        let d = destination;
+        match operator {
+            BinaryOperator::Equal => {
+                if is_zero_literal(right) || is_zero_literal(left) {
+                    let value = if is_zero_literal(right) { left } else { right };
+                    self.evaluate_general(value, d)?;
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: d });
+                } else {
+                    let left_register = self.general_register_of_leaf(left)?;
+                    let right_register = self.general_register_of_leaf(right)?;
+                    self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: left_register, b: right_register });
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
+                }
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
+                Ok(())
+            }
+            // signed `x < 0` is the sign bit.
+            BinaryOperator::Less if is_zero_literal(right) && self.signedness_of(left)? => {
+                self.evaluate_general(left, d)?;
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift: 31 });
+                Ok(())
+            }
+            _ => Err(Diagnostic::error("this comparison needs the branchless compare idioms (roadmap)")),
+        }
+    }
+
     /// Whether the value of `expression` is signed (for selecting `>>`). The
     /// usual arithmetic conversions make a binary expression unsigned if either
     /// operand is unsigned.
@@ -261,7 +341,17 @@ impl Generator {
             Expression::Variable(name) => {
                 Ok(self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?.signed)
             }
-            Expression::Binary { left, right, .. } => Ok(self.signedness_of(left)? && self.signedness_of(right)?),
+            Expression::Binary { operator, left, right } => {
+                if is_comparison(*operator) {
+                    Ok(true) // a comparison yields an int (signed)
+                } else {
+                    Ok(self.signedness_of(left)? && self.signedness_of(right)?)
+                }
+            }
+            Expression::Unary { operator, operand } => match operator {
+                UnaryOperator::LogicalNot => Ok(true),
+                _ => self.signedness_of(operand),
+            },
         }
     }
 
@@ -403,6 +493,7 @@ impl Generator {
                 self.output.instructions.push(float_combine(*operator, destination, operands)?);
                 Ok(())
             }
+            Expression::Unary { .. } => Err(Diagnostic::error("float unary operators not yet supported")),
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literals need the constant pool (roadmap M3)")),
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
         }
@@ -559,6 +650,9 @@ fn general_combine(operator: BinaryOperator, destination: u8, operands: Operands
         BinaryOperator::ShiftLeft => Instruction::ShiftLeftWord { a: destination, s: operands.left, b: operands.right },
         BinaryOperator::ShiftRight => return Err(Diagnostic::error("'>>' needs signed/unsigned types (roadmap)")),
         BinaryOperator::Divide => return Err(Diagnostic::error("integer division not yet supported")),
+        // comparisons are handled before reaching the generic combiner
+        operator if is_comparison(operator) => return Err(Diagnostic::error("comparison reached the generic combiner")),
+        _ => return Err(Diagnostic::error("unsupported integer operator")),
     })
 }
 
@@ -574,5 +668,6 @@ fn float_combine(operator: BinaryOperator, destination: u8, operands: Operands) 
         | BinaryOperator::BitXor
         | BinaryOperator::ShiftLeft
         | BinaryOperator::ShiftRight => return Err(Diagnostic::error("bitwise operators are not valid on floats")),
+        _ => return Err(Diagnostic::error("float comparisons not yet supported")),
     })
 }

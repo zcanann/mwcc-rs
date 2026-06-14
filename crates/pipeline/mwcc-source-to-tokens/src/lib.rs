@@ -87,13 +87,18 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
         }
 
         // two-character operators
-        if character == '<' && peek(bytes, position + 1) == Some(b'<') {
-            tokens.push(Token::ShiftLeft);
-            position += 2;
-            continue;
-        }
-        if character == '>' && peek(bytes, position + 1) == Some(b'>') {
-            tokens.push(Token::ShiftRight);
+        let two = (character, peek(bytes, position + 1));
+        let two_char = match two {
+            ('<', Some(b'<')) => Some(Token::ShiftLeft),
+            ('>', Some(b'>')) => Some(Token::ShiftRight),
+            ('<', Some(b'=')) => Some(Token::LessEqual),
+            ('>', Some(b'=')) => Some(Token::GreaterEqual),
+            ('=', Some(b'=')) => Some(Token::EqualEqual),
+            ('!', Some(b'=')) => Some(Token::BangEqual),
+            _ => None,
+        };
+        if let Some(token) = two_char {
+            tokens.push(token);
             position += 2;
             continue;
         }
@@ -113,6 +118,10 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             '&' => Token::Ampersand,
             '|' => Token::Pipe,
             '^' => Token::Caret,
+            '~' => Token::Tilde,
+            '!' => Token::Bang,
+            '<' => Token::Less,
+            '>' => Token::Greater,
             other => return Err(Diagnostic::error(format!("unexpected character '{other}'"))),
         };
         tokens.push(punctuation);

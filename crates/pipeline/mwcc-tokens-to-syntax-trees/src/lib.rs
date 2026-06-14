@@ -7,7 +7,7 @@
 //!   factor     := literal | identifier | '(' expression ')'
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Parameter, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Parameter, Type, UnaryOperator};
 use mwcc_tokens::Token;
 
 pub fn parse_function(tokens: Vec<Token>) -> Compilation<Function> {
@@ -140,11 +140,30 @@ impl Parser {
             Token::Caret => BinaryOperator::BitXor,
             Token::ShiftLeft => BinaryOperator::ShiftLeft,
             Token::ShiftRight => BinaryOperator::ShiftRight,
+            Token::Less => BinaryOperator::Less,
+            Token::Greater => BinaryOperator::Greater,
+            Token::LessEqual => BinaryOperator::LessEqual,
+            Token::GreaterEqual => BinaryOperator::GreaterEqual,
+            Token::EqualEqual => BinaryOperator::Equal,
+            Token::BangEqual => BinaryOperator::NotEqual,
             _ => return None,
         })
     }
 
     fn factor(&mut self) -> Compilation<Expression> {
+        // prefix unary operators
+        let unary = match self.peek() {
+            Token::Minus => Some(UnaryOperator::Negate),
+            Token::Tilde => Some(UnaryOperator::BitNot),
+            Token::Bang => Some(UnaryOperator::LogicalNot),
+            _ => None,
+        };
+        if let Some(operator) = unary {
+            self.advance();
+            let operand = self.factor()?;
+            return Ok(Expression::Unary { operator, operand: Box::new(operand) });
+        }
+
         match self.advance() {
             Token::IntegerLiteral(value) => Ok(Expression::IntegerLiteral(value)),
             Token::FloatLiteral(value) => Ok(Expression::FloatLiteral(value)),
