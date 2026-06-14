@@ -89,6 +89,10 @@ pub enum Expression {
         when_true: Box<Expression>,
         when_false: Box<Expression>,
     },
+    Cast {
+        target_type: Type,
+        operand: Box<Expression>,
+    },
 }
 
 /// A local variable declaration with an initializer: `type name = expression;`.

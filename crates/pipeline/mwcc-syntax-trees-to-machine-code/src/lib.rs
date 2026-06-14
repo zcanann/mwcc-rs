@@ -40,7 +40,10 @@ const GENERAL_SCRATCH: u8 = 0; // r0
 const FLOAT_SCRATCH: u8 = 0; // f0
 
 fn is_complex(expression: &Expression) -> bool {
-    matches!(expression, Expression::Binary { .. } | Expression::Unary { .. } | Expression::Conditional { .. })
+    matches!(
+        expression,
+        Expression::Binary { .. } | Expression::Unary { .. } | Expression::Conditional { .. } | Expression::Cast { .. }
+    )
 }
 
 fn is_zero_literal(expression: &Expression) -> bool {
@@ -114,6 +117,7 @@ fn needs_scratch(expression: &Expression) -> bool {
             matches!(operator, UnaryOperator::LogicalNot) || needs_scratch(operand)
         }
         Expression::Conditional { .. } => true,
+        Expression::Cast { .. } => true,
         _ => false,
     }
 }
@@ -134,17 +138,21 @@ fn fits_single_scratch(expression: &Expression, destination_is_scratch: bool) ->
             UnaryOperator::LogicalNot => !destination_is_scratch && fits_single_scratch(operand, destination_is_scratch),
             _ => fits_single_scratch(operand, destination_is_scratch),
         },
-        // a conditional is only handled at the top of an evaluation, not nested
-        // inside the single-scratch tree model
-        Expression::Conditional { .. } => false,
+        // conditionals and casts are only handled at the top of an evaluation,
+        // not nested inside the single-scratch tree model
+        Expression::Conditional { .. } | Expression::Cast { .. } => false,
         _ => true,
     }
 }
 
 /// Lower a parsed function to machine code for the given compiler build.
 pub fn lower_function(function: &Function, _build: CompilerBuild) -> Compilation<MachineFunction> {
-    let mut generator =
-        Generator { output: MachineFunction::new(function.name.clone()), locations: HashMap::new(), reserved: HashSet::new() };
+    let mut generator = Generator {
+        output: MachineFunction::new(function.name.clone()),
+        locations: HashMap::new(),
+        reserved: HashSet::new(),
+        frame_size: 0,
+    };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
     Ok(generator.output)
@@ -169,6 +177,9 @@ struct Generator {
     /// sub-expression is being evaluated. The allocator draws temporaries from
     /// the registers outside this set.
     reserved: HashSet<u8>,
+    /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
+    /// operation needs scratch stack space (e.g. an int/float conversion).
+    frame_size: i16,
 }
 
 fn class_of(declared: Type) -> Compilation<ValueClass> {
@@ -239,6 +250,10 @@ impl Generator {
             [] => self.evaluate_tail(&function.return_expression, function.return_type, result)?,
             [local] => self.evaluate_single_local(local, &function.return_expression, function.return_type, result)?,
             _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
+        }
+        // Tear down the stack frame, if one was allocated.
+        if self.frame_size != 0 {
+            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
         }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(())
@@ -359,6 +374,7 @@ impl Generator {
             Expression::Conditional { condition, when_true, when_false } => {
                 self.emit_conditional(condition, when_true, when_false, destination, false)
             }
+            Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
             Expression::Binary { operator, left, right } => {
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
@@ -529,6 +545,23 @@ impl Generator {
         Ok((12, 2)) // beq — skip when condition == 0
     }
 
+    /// Emit a cast of a float operand to an integer in `destination`. mwcc
+    /// converts with `fctiwz`, then bounces the value through the stack frame.
+    /// Leaf float operands only for now; int->float (the constant-pool direction)
+    /// is handled separately once .sdata2 lands.
+    fn emit_cast_to_integer(&mut self, target_type: Type, operand: &Expression, destination: u8) -> Compilation<()> {
+        if !matches!(target_type, Type::Int | Type::UnsignedInt) {
+            return Err(Diagnostic::error("unsupported cast target"));
+        }
+        let source = self.float_register_of_leaf(operand)?;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: FLOAT_SCRATCH, b: source });
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: 12 });
+        Ok(())
+    }
+
     /// Emit a prefix unary operator into `destination`.
     fn emit_unary(&mut self, operator: UnaryOperator, operand: &Expression, destination: u8) -> Compilation<()> {
         let d = destination;
@@ -634,6 +667,7 @@ impl Generator {
             Expression::Conditional { when_true, when_false, .. } => {
                 Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?)
             }
+            Expression::Cast { target_type, .. } => Ok(target_type.is_signed()),
         }
     }
 
@@ -823,6 +857,7 @@ impl Generator {
                 self.collect_registers(when_true, registers);
                 self.collect_registers(when_false, registers);
             }
+            Expression::Cast { operand, .. } => self.collect_registers(operand, registers),
             _ => {}
         }
     }
@@ -866,6 +901,7 @@ impl Generator {
             }
             Expression::Unary { .. } => Err(Diagnostic::error("float unary operators not yet supported")),
             Expression::Conditional { .. } => Err(Diagnostic::error("float conditional not yet supported")),
+            Expression::Cast { .. } => Err(Diagnostic::error("int->float cast needs the constant pool (roadmap M3)")),
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literals need the constant pool (roadmap M3)")),
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
         }

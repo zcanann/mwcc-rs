@@ -196,9 +196,17 @@ impl Parser {
             Token::FloatLiteral(value) => Ok(Expression::FloatLiteral(value)),
             Token::Identifier(name) => Ok(Expression::Variable(name)),
             Token::ParenOpen => {
-                let inner = self.expression()?;
-                self.expect(Token::ParenClose)?;
-                Ok(inner)
+                // `(type) expr` is a cast; otherwise a parenthesised expression.
+                if self.peek_is_type() {
+                    let target_type = self.parse_type()?;
+                    self.expect(Token::ParenClose)?;
+                    let operand = self.factor()?;
+                    Ok(Expression::Cast { target_type, operand: Box::new(operand) })
+                } else {
+                    let inner = self.expression()?;
+                    self.expect(Token::ParenClose)?;
+                    Ok(inner)
+                }
             }
             other => Err(Diagnostic::error(format!("expected an expression, found {other}"))),
         }
