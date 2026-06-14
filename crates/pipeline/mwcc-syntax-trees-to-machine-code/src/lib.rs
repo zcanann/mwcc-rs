@@ -942,12 +942,20 @@ impl Generator {
                     self.load_integer_constant(d, -*value);
                     return Ok(());
                 }
+                // -(-x) == x
+                if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = operand {
+                    return self.evaluate_general(inner, d);
+                }
                 let Some(source) = self.place_operand(operand, d, false)? else {
                     return Err(Diagnostic::error("negation operand needs the full register allocator (roadmap M1)"));
                 };
                 self.output.instructions.push(Instruction::Negate { d, a: source });
             }
             UnaryOperator::BitNot => {
+                // ~(~x) == x
+                if let Expression::Unary { operator: UnaryOperator::BitNot, operand: inner } = operand {
+                    return self.evaluate_general(inner, d);
+                }
                 let Some(source) = self.place_operand(operand, d, false)? else {
                     return Err(Diagnostic::error("complement operand needs the full register allocator (roadmap M1)"));
                 };
@@ -1411,6 +1419,10 @@ impl Generator {
                 Ok(())
             }
             Expression::Unary { operator: UnaryOperator::Negate, operand } => {
+                // -(-x) == x
+                if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = operand.as_ref() {
+                    return self.evaluate_float(inner, destination);
+                }
                 // A leaf negates in place; a sub-expression goes through the scratch.
                 let source = if is_complex(operand) {
                     if !fits_single_scratch(operand, true) {
