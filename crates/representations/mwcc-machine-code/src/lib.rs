@@ -22,6 +22,10 @@ pub enum Instruction {
     SubtractFrom { d: u8, a: u8, b: u8 },
     /// `mullw rD, rA, rB`
     MultiplyLow { d: u8, a: u8, b: u8 },
+    /// `mulli rD, rA, SIMM`
+    MultiplyImmediate { d: u8, a: u8, immediate: i16 },
+    /// `slwi rA, rS, shift` — shift left by `shift` (1..=31), via `rlwinm`.
+    ShiftLeftImmediate { a: u8, s: u8, shift: u8 },
     /// `or rA, rS, rB` — spells `mr rA, rS` when `s == b`.
     Or { a: u8, s: u8, b: u8 },
     /// `fadds frD, frA, frB`
@@ -65,6 +69,12 @@ impl Instruction {
             Instruction::Add { d, a, b } => xo_form(d, a, b, 266),
             Instruction::SubtractFrom { d, a, b } => xo_form(d, a, b, 40),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
+            Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
+            // slwi rA,rS,n == rlwinm rA,rS,n,0,31-n
+            Instruction::ShiftLeftImmediate { a, s, shift } => {
+                let mask_end = 31 - shift as u32;
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (mask_end << 1)
+            }
             Instruction::Or { a, s, b } => (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (444 << 1),
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),

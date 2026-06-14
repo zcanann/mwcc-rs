@@ -51,6 +51,15 @@ fn as_multiplication(expression: &Expression) -> Option<(&Expression, &Expressio
     }
 }
 
+/// If `expression` is an integer literal that fits a signed 16-bit immediate,
+/// return it.
+fn as_small_integer(expression: &Expression) -> Option<i16> {
+    match expression {
+        Expression::IntegerLiteral(value) => i16::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
 /// Whether evaluating `expression` uses the scratch register at all — true when
 /// any binary node has a binary child.
 fn needs_scratch(expression: &Expression) -> bool {
@@ -201,6 +210,10 @@ impl Generator {
                 Ok(())
             }
             Expression::Binary { operator, left, right } => {
+                // A 16-bit constant operand folds into an immediate instruction.
+                if self.try_emit_general_with_constant(*operator, left, right, destination)? {
+                    return Ok(());
+                }
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
@@ -210,6 +223,56 @@ impl Generator {
             }
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literal in integer context")),
         }
+    }
+
+    /// Fold a 16-bit constant operand into an immediate instruction: `addi` for
+    /// add/subtract, `slwi` for multiply by a power of two, `mulli` otherwise.
+    /// Returns whether an instruction was emitted.
+    fn try_emit_general_with_constant(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        // variable-side op constant
+        if let Some(constant) = as_small_integer(right) {
+            match operator {
+                BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply => {
+                    self.evaluate_general(left, destination)?;
+                    let signed = if matches!(operator, BinaryOperator::Subtract) { -constant } else { constant };
+                    self.emit_general_immediate(operator, destination, signed);
+                    return Ok(true);
+                }
+                BinaryOperator::Divide => {}
+            }
+        }
+        // constant op variable — only for the commutative operators
+        if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply) {
+            if let Some(constant) = as_small_integer(left) {
+                self.evaluate_general(right, destination)?;
+                self.emit_general_immediate(operator, destination, constant);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn emit_general_immediate(&mut self, operator: BinaryOperator, destination: u8, constant: i16) {
+        let instruction = match operator {
+            BinaryOperator::Add | BinaryOperator::Subtract => {
+                Instruction::AddImmediate { d: destination, a: destination, immediate: constant }
+            }
+            BinaryOperator::Multiply => {
+                if constant >= 2 && (constant as u16).is_power_of_two() {
+                    Instruction::ShiftLeftImmediate { a: destination, s: destination, shift: constant.trailing_zeros() as u8 }
+                } else {
+                    Instruction::MultiplyImmediate { d: destination, a: destination, immediate: constant }
+                }
+            }
+            BinaryOperator::Divide => unreachable!("caller excludes divide"),
+        };
+        self.output.instructions.push(instruction);
     }
 
     fn place_general_operands(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
