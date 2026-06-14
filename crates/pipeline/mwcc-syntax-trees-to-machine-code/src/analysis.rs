@@ -9,6 +9,14 @@ pub(crate) fn is_complex(expression: &Expression) -> bool {
     )
 }
 
+/// If `expression` is `*pointer`, the pointer sub-expression.
+pub(crate) fn as_dereference(expression: &Expression) -> Option<&Expression> {
+    match expression {
+        Expression::Dereference { pointer } => Some(pointer),
+        _ => None,
+    }
+}
+
 pub(crate) fn is_zero_literal(expression: &Expression) -> bool {
     matches!(expression, Expression::IntegerLiteral(0))
 }

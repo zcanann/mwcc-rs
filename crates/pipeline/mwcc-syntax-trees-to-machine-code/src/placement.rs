@@ -46,7 +46,12 @@ impl Generator {
         Operands::ordered(left_target, right_target)
     }
 
-    pub(crate) fn place_general_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
+    pub(crate) fn place_general_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        // A dereference operand loads into a register but orders like a leaf, not
+        // like a reversed sub-expression — handle it before the complexity match.
+        if as_dereference(left).is_some() || as_dereference(right).is_some() {
+            return self.place_dereference_operands(operator, left, right, destination);
+        }
         match (is_complex(left), is_complex(right)) {
             (false, false) => {
                 if self.is_narrow_leaf(left) || self.is_narrow_leaf(right) {
@@ -80,6 +85,51 @@ impl Generator {
                 Operands::ordered(temp, GENERAL_SCRATCH)
             }
         }
+    }
+
+    /// Place a binary node where at least one operand is a `*pointer` load. A
+    /// single deref loads into the scratch and the other operand stays in its home
+    /// register (the deref keeps source order); two derefs load left into the
+    /// destination and right into the scratch.
+    fn place_dereference_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        match (as_dereference(left), as_dereference(right)) {
+            (Some(left_pointer), Some(right_pointer)) => {
+                // Subtraction anchors the right operand: it loads in place (into its
+                // own pointer register) while the left loads into the scratch.
+                if operator == BinaryOperator::Subtract {
+                    let right_register = self.general_register_of_leaf(right_pointer)?;
+                    self.emit_load_from_pointer(right_pointer, right_register)?;
+                    self.emit_load_from_pointer(left_pointer, GENERAL_SCRATCH)?;
+                    return Operands::ordered(GENERAL_SCRATCH, right_register);
+                }
+                if destination == GENERAL_SCRATCH {
+                    return Err(Diagnostic::error("two dereferences need a non-scratch destination (roadmap)"));
+                }
+                self.emit_load_from_pointer(left_pointer, destination)?;
+                self.emit_load_from_pointer(right_pointer, GENERAL_SCRATCH)?;
+                Operands::ordered(destination, GENERAL_SCRATCH)
+            }
+            (Some(left_pointer), None) => {
+                let right_register = self.wide_leaf_register(right)?;
+                self.emit_load_from_pointer(left_pointer, GENERAL_SCRATCH)?;
+                Operands::ordered(GENERAL_SCRATCH, right_register)
+            }
+            (None, Some(right_pointer)) => {
+                let left_register = self.wide_leaf_register(left)?;
+                self.emit_load_from_pointer(right_pointer, GENERAL_SCRATCH)?;
+                Operands::ordered(left_register, GENERAL_SCRATCH)
+            }
+            (None, None) => unreachable!("caller checked one side is a dereference"),
+        }
+    }
+
+    /// The home register of a wide (32-bit) leaf variable; narrow leaves and
+    /// non-leaves are deferred (they need extension or their own placement).
+    fn wide_leaf_register(&self, operand: &Expression) -> Compilation<u8> {
+        if !matches!(operand, Expression::Variable(_)) || self.is_narrow_leaf(operand) {
+            return Err(Diagnostic::error("dereference combined with this operand needs the full allocator (roadmap)"));
+        }
+        self.general_register_of_leaf(operand)
     }
 
     /// Run `body` with the registers read by `expression` reserved, restoring the
