@@ -102,6 +102,19 @@ fn positive_branch(operator: BinaryOperator) -> (u8, u8) {
     }
 }
 
+/// The logical negation of a comparison operator (`==`↔`!=`, `<`↔`>=`, `>`↔`<=`).
+fn flip_comparison(operator: BinaryOperator) -> Option<BinaryOperator> {
+    Some(match operator {
+        BinaryOperator::Equal => BinaryOperator::NotEqual,
+        BinaryOperator::NotEqual => BinaryOperator::Equal,
+        BinaryOperator::Less => BinaryOperator::GreaterEqual,
+        BinaryOperator::GreaterEqual => BinaryOperator::Less,
+        BinaryOperator::Greater => BinaryOperator::LessEqual,
+        BinaryOperator::LessEqual => BinaryOperator::Greater,
+        _ => return None,
+    })
+}
+
 fn is_comparison(operator: BinaryOperator) -> bool {
     matches!(
         operator,
@@ -592,10 +605,17 @@ impl Generator {
         destination: u8,
         tail: bool,
     ) -> Compilation<()> {
-        // `comparison ? 1 : 0` is just the boolean value of the comparison.
-        if let (Some(1), Some(0)) = (constant_value(when_true), constant_value(when_false)) {
-            if matches!(condition, Expression::Binary { operator, .. } if is_comparison(*operator)) {
-                return self.evaluate_general(condition, destination);
+        // `comparison ? 1 : 0` is the comparison; `comparison ? 0 : 1` is its negation.
+        if let Expression::Binary { operator, left, right } = condition {
+            if is_comparison(*operator) {
+                match (constant_value(when_true), constant_value(when_false)) {
+                    (Some(1), Some(0)) => return self.evaluate_general(condition, destination),
+                    (Some(0), Some(1)) => {
+                        let flipped = flip_comparison(*operator).unwrap();
+                        return self.emit_comparison(flipped, left, right, destination);
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -881,6 +901,12 @@ impl Generator {
                 self.output.instructions.push(Instruction::Nor { a: d, s: source, b: source });
             }
             UnaryOperator::LogicalNot => {
+                // !(comparison) is the flipped comparison.
+                if let Expression::Binary { operator, left, right } = operand {
+                    if let Some(flipped) = (is_comparison(*operator)).then(|| flip_comparison(*operator)).flatten() {
+                        return self.emit_comparison(flipped, left, right, d);
+                    }
+                }
                 // !x == (x == 0): cntlzw then srwi by 5.
                 let Some(source) = self.place_operand(operand, d, false)? else {
                     return Err(Diagnostic::error("logical-not operand needs the full register allocator (roadmap M1)"));
