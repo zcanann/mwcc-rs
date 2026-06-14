@@ -38,11 +38,21 @@ pub enum Expression {
     },
 }
 
-/// A function definition. v0 bodies are a single `return <expression>;`.
+/// A local variable declaration with an initializer: `type name = expression;`.
+#[derive(Debug, Clone)]
+pub struct LocalDeclaration {
+    pub declared_type: Type,
+    pub name: String,
+    pub initializer: Expression,
+}
+
+/// A function definition. Bodies are zero or more local declarations followed by
+/// a single `return <expression>;`.
 #[derive(Debug, Clone)]
 pub struct Function {
     pub return_type: Type,
     pub name: String,
     pub parameters: Vec<Parameter>,
+    pub locals: Vec<LocalDeclaration>,
     pub return_expression: Expression,
 }

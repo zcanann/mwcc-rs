@@ -19,6 +19,7 @@ pub enum Token {
     BraceClose,
     Semicolon,
     Comma,
+    Equals,
     Plus,
     Minus,
     Star,

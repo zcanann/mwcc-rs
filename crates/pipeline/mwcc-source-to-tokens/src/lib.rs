@@ -92,6 +92,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             '}' => Token::BraceClose,
             ';' => Token::Semicolon,
             ',' => Token::Comma,
+            '=' => Token::Equals,
             '+' => Token::Plus,
             '-' => Token::Minus,
             '*' => Token::Star,

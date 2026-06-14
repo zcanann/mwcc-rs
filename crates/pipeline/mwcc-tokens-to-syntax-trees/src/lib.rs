@@ -7,7 +7,7 @@
 //!   factor     := literal | identifier | '(' expression ')'
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Parameter, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Parameter, Type};
 use mwcc_tokens::Token;
 
 pub fn parse_function(tokens: Vec<Token>) -> Compilation<Function> {
@@ -77,12 +77,30 @@ impl Parser {
 
         self.expect(Token::ParenClose)?;
         self.expect(Token::BraceOpen)?;
+
+        // Zero or more local declarations precede the return statement. A
+        // statement that begins with a type keyword is a local declaration;
+        // `return` ends the body.
+        let mut locals = Vec::new();
+        while self.peek_is_type() {
+            let declared_type = self.parse_type()?;
+            let name = self.parse_identifier()?;
+            self.expect(Token::Equals)?;
+            let initializer = self.expression()?;
+            self.expect(Token::Semicolon)?;
+            locals.push(LocalDeclaration { declared_type, name, initializer });
+        }
+
         self.expect(Token::KeywordReturn)?;
         let return_expression = self.expression()?;
         self.expect(Token::Semicolon)?;
         self.expect(Token::BraceClose)?;
 
-        Ok(Function { return_type, name, parameters, return_expression })
+        Ok(Function { return_type, name, parameters, locals, return_expression })
+    }
+
+    fn peek_is_type(&self) -> bool {
+        matches!(self.peek(), Token::KeywordInt | Token::KeywordFloat | Token::KeywordVoid)
     }
 
     fn expression(&mut self) -> Compilation<Expression> {
