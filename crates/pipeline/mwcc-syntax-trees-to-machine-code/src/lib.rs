@@ -567,10 +567,26 @@ impl Generator {
                 Operands::ordered(self.general_register_of_leaf(left)?, GENERAL_SCRATCH)
             }
             (true, true) => {
+                // Evaluating the left side into the destination clobbers it; if the
+                // right side still needs the value currently there, this needs the
+                // full allocator (a free temp register), not the single scratch.
+                if self.uses_register(right, destination) {
+                    return Err(Diagnostic::error("operand reuse needs the full register allocator (roadmap M1)"));
+                }
                 self.evaluate_general(left, destination)?;
                 self.evaluate_general(right, GENERAL_SCRATCH)?;
                 Operands::ordered(destination, GENERAL_SCRATCH)
             }
+        }
+    }
+
+    /// Whether `expression` reads a variable currently held in `register`.
+    fn uses_register(&self, expression: &Expression, register: u8) -> bool {
+        match expression {
+            Expression::Variable(name) => self.locations.get(name).is_some_and(|location| location.register == register),
+            Expression::Binary { left, right, .. } => self.uses_register(left, register) || self.uses_register(right, register),
+            Expression::Unary { operand, .. } => self.uses_register(operand, register),
+            _ => false,
         }
     }
 
@@ -662,6 +678,9 @@ impl Generator {
                 Operands::ordered(self.float_register_of_leaf(left)?, FLOAT_SCRATCH)
             }
             (true, true) => {
+                if self.uses_register(right, destination) {
+                    return Err(Diagnostic::error("operand reuse needs the full register allocator (roadmap M1)"));
+                }
                 self.evaluate_float(left, destination)?;
                 self.evaluate_float(right, FLOAT_SCRATCH)?;
                 Operands::ordered(destination, FLOAT_SCRATCH)
