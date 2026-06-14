@@ -796,8 +796,10 @@ impl Generator {
                 self.output.instructions.push(Instruction::Negate { d, a: source });
             }
             UnaryOperator::BitNot => {
-                self.evaluate_general(operand, d)?;
-                self.output.instructions.push(Instruction::Nor { a: d, s: d, b: d });
+                let Some(source) = self.place_operand(operand, d, false)? else {
+                    return Err(Diagnostic::error("complement operand needs the full register allocator (roadmap M1)"));
+                };
+                self.output.instructions.push(Instruction::Nor { a: d, s: source, b: source });
             }
             UnaryOperator::LogicalNot => {
                 // !x == (x == 0): cntlzw then srwi by 5.
