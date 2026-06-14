@@ -66,8 +66,10 @@ fn main() -> std::process::ExitCode {
             continue;
         }
 
-        // Ours.
-        let ours = Command::new(&our_compiler).arg("-c").arg(&source).arg("-o").arg(&our_object).output();
+        // Ours — pin codegen to the same build the oracle is running.
+        let ours = Command::new(&our_compiler)
+            .arg("--build").arg(format!("GC/{version}"))
+            .arg("-c").arg(&source).arg("-o").arg(&our_object).output();
         match ours {
             Ok(result) if our_object.exists() => {
                 let reference_text = disassemble(&objdump, &reference_object);

@@ -206,12 +206,13 @@ fn fits_single_scratch(expression: &Expression, destination_is_scratch: bool) ->
 }
 
 /// Lower a parsed function to machine code for the given compiler build.
-pub fn lower_function(function: &Function, _build: CompilerBuild) -> Compilation<MachineFunction> {
+pub fn lower_function(function: &Function, build: CompilerBuild) -> Compilation<MachineFunction> {
     let mut generator = Generator {
         output: MachineFunction::new(function.name.clone()),
         locations: HashMap::new(),
         reserved: HashSet::new(),
         frame_size: 0,
+        build,
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
@@ -242,6 +243,9 @@ struct Generator {
     /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
     /// operation needs scratch stack space (e.g. an int/float conversion).
     frame_size: i16,
+    /// The build we are reproducing. Its only codegen-affecting knob today is
+    /// the default signedness of plain `char` (see [`Generator::signed_of`]).
+    build: CompilerBuild,
 }
 
 fn class_of(declared: Type) -> Compilation<ValueClass> {
@@ -253,6 +257,19 @@ fn class_of(declared: Type) -> Compilation<ValueClass> {
 }
 
 impl Generator {
+    /// Signedness of a source-level type for the target build. Plain `char` is
+    /// the one type whose signedness is build-dependent (unsigned in GC/1.3
+    /// build 53, signed from build 81 on); every other type is fixed. Routing
+    /// all type-signedness queries through here makes the whole cascade — read
+    /// extension, `>>`/`/`/`%` strength reduction, comparison folding, and the
+    /// int->float bias — follow the build with no scattered version checks.
+    fn signed_of(&self, declared: Type) -> bool {
+        match declared {
+            Type::Char => self.build.char_is_signed,
+            other => other.is_signed(),
+        }
+    }
+
     fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
@@ -270,9 +287,10 @@ impl Generator {
                     register
                 }
             };
+            let signed = self.signed_of(parameter.parameter_type);
             self.locations.insert(
                 parameter.name.clone(),
-                Location { class, register, signed: parameter.parameter_type.is_signed(), width: parameter.parameter_type.width() },
+                Location { class, register, signed, width: parameter.parameter_type.width() },
             );
         }
         Ok(())
@@ -495,7 +513,8 @@ impl Generator {
             ValueClass::Float => FLOAT_SCRATCH,
         };
         self.evaluate(&local.initializer, local.declared_type, scratch)?;
-        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed: local.declared_type.is_signed(), width: local.declared_type.width() });
+        let signed = self.signed_of(local.declared_type);
+        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed, width: local.declared_type.width() });
         self.evaluate(return_expression, return_type, result)
     }
 
@@ -868,7 +887,7 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: 8 });
             self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: 12 });
             if target_type.width() < 32 {
-                self.emit_widen(destination, destination, target_type.width(), target_type.is_signed());
+                self.emit_widen(destination, destination, target_type.width(), self.signed_of(target_type));
             }
             return Ok(());
         }
@@ -878,7 +897,7 @@ impl Generator {
             let Some(source) = self.place_operand(operand, destination, false)? else {
                 return Err(Diagnostic::error("cast operand needs the full register allocator (roadmap M1)"));
             };
-            self.emit_widen(destination, source, target_type.width(), target_type.is_signed());
+            self.emit_widen(destination, source, target_type.width(), self.signed_of(target_type));
         } else {
             self.evaluate_general(operand, destination)?;
         }
@@ -1158,7 +1177,7 @@ impl Generator {
             Expression::Conditional { when_true, when_false, .. } => {
                 Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?)
             }
-            Expression::Cast { target_type, .. } => Ok(target_type.is_signed()),
+            Expression::Cast { target_type, .. } => Ok(self.signed_of(*target_type)),
         }
     }
 
