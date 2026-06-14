@@ -2,7 +2,7 @@
 
 A byte-exact reimplementation, in Rust, of **Metrowerks CodeWarrior for Embedded PowerPC** (`mwcceppc`) — the compiler that built Nintendo GameCube and Wii games — for use in decompilation.
 
-The goal is narrow and absolute: for a supported translation unit, `mwcc-rs` emits a `.text` that is **identical, byte for byte, to the output of the real compiler**. Not equivalent code. The same code. First target is **GC/1.3.2 (mwcceppc 2.4.2 build 81)**; the architecture is built to carry many builds.
+The goal is narrow and absolute: for a supported translation unit, `mwcc-rs` emits a `.text` that is **identical, byte for byte, to the output of the real compiler**. Not equivalent code. The same code. It currently reproduces **seven GameCube builds** — GC/1.3, 1.3.2, 1.3.2r, 2.0, 2.5, 2.6, 2.7 (mwcceppc 2.4.2 build 53 through 2.4.7 build 108) — from one code generator parameterized by build.
 
 ## Why this exists
 
@@ -24,6 +24,8 @@ The real `mwcceppc` is the **source of truth**. Development is a tight test-driv
 ```sh
 cargo build --release
 ./target/release/mwcc-oracle 1.3.2     # PASS/FAIL per canary, with the diff on failure
+./target/release/mwcc-oracle 1.3       # any supported build: 1.3 1.3.2 1.3.2r 2.0 2.5 2.6 2.7
+tools/vdiff.sh canaries/112_rdchar.c 1.3 1.3.2   # diff what two real builds emit
 ```
 
 The oracle needs a decomp checkout for the real toolchain — `wibo`, the compiler set, and `powerpc-eabi-objdump`. Point it at one with `FFCC=/path/to/decomp`. Nothing about the *design* is decomp-specific; that's just where the reference binaries live.
@@ -73,9 +75,18 @@ mwcc -c canaries/02_add.c -o add.o --emit-artifacts ./build
 
 ## Status
 
-**138 canaries byte-exact vs GC/1.3.2.** The compiler reproduces mwcc's `.text`
-instruction-for-instruction across a broad subset of straight-line C with
-branching control flow:
+**207 canaries byte-exact across seven builds** (GC/1.3, 1.3.2, 1.3.2r, 2.0,
+2.5, 2.6, 2.7). The compiler reproduces mwcc's `.text` instruction-for-instruction
+across a broad subset of straight-line C with branching control flow:
+
+- **Multiple builds from one generator.** A cross-build survey (`tools/vdiff.sh`,
+  ~320 probed forms) established that mwcceppc builds 53…108 share a single code
+  generator distinguished by exactly one observable knob: the default signedness
+  of plain `char` (unsigned in GC/1.3 build 53, signed from build 81 on). That
+  flag lives on `CompilerBuild` and is threaded through one `signed_of(Type)`
+  query; it cascades correctly into read extension, `>>`/`/`/`%` strength
+  reduction, comparison folding, and the int→float bias with no scattered version
+  checks. The oracle pins our codegen to the build under test.
 
 - **EABI & expressions** — integer/float args and returns; `+ - * / %` (signed and
   unsigned), bitwise `& | ^ ~`, shifts `<< >>` (sign-aware), comparisons, unary `- ~ !`.
@@ -95,7 +106,9 @@ branching control flow:
   resolution, float selects (`fcmpo`).
 - **Casts & types** — int↔float (the FFCC `randchar` magic-constant conversion, at
   the `.text` level), stack frames (`stwu`/`addi`), narrow `char`/`short`/`unsigned`
-  with sign/zero-extension.
+  with sign/zero-extension, and narrow arithmetic — operands widened before use
+  (`extsb`/`extsh`/`clrlwi`) with the anchor-in-place / other-through-`r0` placement
+  mwcc uses for two narrow operands.
 
 What's deliberately *not* matched yet — and where the hard, large subsystems lie:
 mwcc's **optimizer** (CSE, algebraic factoring `a*b+a*c`→`a*(b+c)`, chain
@@ -113,7 +126,7 @@ Each milestone is a canary tier that must stay 100% byte-exact before the next b
 - **M3 — memory, types, and the constant pool.** Pointers, structs, arrays, the narrow integer types, loads and stores, `.data` / `.sdata` and **relocations**, and the float/double constant pool.
 - **M4 — calls and the full ABI.** Function calls, argument marshalling, varargs, aggregate returns.
 - **M5 — a C++ subset.** Metrowerks name mangling, member functions, references, `inline`, simple templates — enough to compile real decomp translation units.
-- **M6 — multiple builds.** Parameterize codegen by `CompilerBuild`; add GC/1.2.5n, 2.0, 2.6, 2.7, and a reconstructed 1.3.1, each validated against its real binary through the oracle.
+- **M6 — multiple builds.** *In progress:* codegen is parameterized by `CompilerBuild` and seven GameCube builds (GC/1.3 … 2.7) are byte-exact today. Remaining: the GC/3.0 alpha line (mwcceppc 4.1/4.2, ~11 canary diffs), the 2.3.x line (GC/1.0–1.2.5, a distinct generator), and a reconstructed 1.3.1.
 
 ## Canaries
 
