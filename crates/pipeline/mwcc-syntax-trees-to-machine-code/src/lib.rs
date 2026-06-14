@@ -1029,6 +1029,24 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
+            // unsigned a <= b / a >= b : orc-based, dest + scratch.
+            BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
+                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+            {
+                let left_register = self.general_register_of_leaf(left)?;
+                let right_register = self.general_register_of_leaf(right)?;
+                // a<=b uses (low,high)=(a,b); a>=b is b<=a.
+                let (low, high) = match operator {
+                    BinaryOperator::LessEqual => (left_register, right_register),
+                    _ => (right_register, left_register),
+                };
+                self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: low, b: high });
+                self.output.instructions.push(Instruction::OrComplement { a: d, s: high, b: low });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 1 });
+                self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: d });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                Ok(())
+            }
             // signed a <= b / a >= b : carry-based, with two temporaries.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
                 if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
