@@ -47,6 +47,14 @@ fn is_zero_literal(expression: &Expression) -> bool {
     matches!(expression, Expression::IntegerLiteral(0))
 }
 
+/// A nonzero integer literal that fits a signed 16-bit immediate.
+fn as_small_integer(expression: &Expression) -> Option<i16> {
+    match expression {
+        Expression::IntegerLiteral(value) if *value != 0 => i16::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
 fn is_comparison(operator: BinaryOperator) -> bool {
     matches!(
         operator,
@@ -373,12 +381,18 @@ impl Generator {
     /// implemented yet.
     fn emit_comparison(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
         let d = destination;
+        let signed_left = self.signedness_of(left)?;
         match operator {
             BinaryOperator::Equal => {
                 if is_zero_literal(right) || is_zero_literal(left) {
                     let value = if is_zero_literal(right) { left } else { right };
                     self.evaluate_general(value, d)?;
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: d });
+                } else if let Some(constant) = as_small_integer(right) {
+                    // a == c : (c - a) leading zeros
+                    let value = self.general_register_of_leaf(left)?;
+                    self.output.instructions.push(Instruction::SubtractFromImmediate { d: GENERAL_SCRATCH, a: value, immediate: constant });
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
                 } else {
                     let left_register = self.general_register_of_leaf(left)?;
                     let right_register = self.general_register_of_leaf(right)?;
@@ -388,10 +402,33 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
                 Ok(())
             }
-            // signed `x < 0` is the sign bit.
-            BinaryOperator::Less if is_zero_literal(right) && self.signedness_of(left)? => {
+            // x != 0 : sign bit of (-x | x)
+            BinaryOperator::NotEqual if is_zero_literal(right) => {
+                self.evaluate_general(left, d)?;
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: d });
+                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: d });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                Ok(())
+            }
+            // signed x < 0 : the sign bit.
+            BinaryOperator::Less if is_zero_literal(right) && signed_left => {
                 self.evaluate_general(left, d)?;
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift: 31 });
+                Ok(())
+            }
+            // signed x > 0 : sign bit of (-x & ~x)
+            BinaryOperator::Greater if is_zero_literal(right) && signed_left => {
+                self.evaluate_general(left, d)?;
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: d });
+                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: d });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                Ok(())
+            }
+            // signed x >= 0 : !(x < 0)
+            BinaryOperator::GreaterEqual if is_zero_literal(right) && signed_left => {
+                self.evaluate_general(left, d)?;
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: d, shift: 31 });
+                self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
                 Ok(())
             }
             _ => Err(Diagnostic::error("this comparison needs the branchless compare idioms (roadmap)")),
