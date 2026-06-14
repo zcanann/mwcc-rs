@@ -33,7 +33,7 @@ use mwcc_machine_code::{Instruction, MachineFunction};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Type, UnaryOperator};
 use mwcc_target::Eabi;
 use mwcc_versions::CompilerBuild;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
 const GENERAL_SCRATCH: u8 = 0; // r0
@@ -138,7 +138,8 @@ fn fits_single_scratch(expression: &Expression, destination_is_scratch: bool) ->
 
 /// Lower a parsed function to machine code for the given compiler build.
 pub fn lower_function(function: &Function, _build: CompilerBuild) -> Compilation<MachineFunction> {
-    let mut generator = Generator { output: MachineFunction::new(function.name.clone()), locations: HashMap::new() };
+    let mut generator =
+        Generator { output: MachineFunction::new(function.name.clone()), locations: HashMap::new(), reserved: HashSet::new() };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
     generator.output.instructions.push(Instruction::BranchToLinkRegister);
@@ -160,6 +161,10 @@ struct Location {
 struct Generator {
     output: MachineFunction,
     locations: HashMap<String, Location>,
+    /// Registers holding live values that must not be clobbered while a sibling
+    /// sub-expression is being evaluated. The allocator draws temporaries from
+    /// the registers outside this set.
+    reserved: HashSet<u8>,
 }
 
 fn class_of(declared: Type) -> Compilation<ValueClass> {
@@ -528,33 +533,56 @@ impl Generator {
         Ok(false)
     }
 
-    /// Evaluate `variable` into `destination` and apply `constant` via the
-    /// matching immediate instruction, if the constant qualifies for one.
+    /// Apply `constant` to `variable` via the matching immediate instruction, if
+    /// the constant qualifies. The operand is read from its own register (a leaf)
+    /// or computed into `destination` (a sub-expression); the immediate then reads
+    /// that source directly — `addi` must not take `r0` as its source, which would
+    /// silently mean `li`.
     fn emit_constant_form(&mut self, operator: BinaryOperator, variable: &Expression, constant: i64, destination: u8) -> Compilation<bool> {
-        let d = destination;
-        let instruction = match operator {
-            BinaryOperator::Add if fits_signed_16(constant) => Instruction::AddImmediate { d, a: d, immediate: constant as i16 },
+        enum Immediate {
+            Add,
+            ShiftLeft(u8),
+            Multiply,
+            Or,
+            Xor,
+            ClearLeft(u8),
+        }
+        let kind = match operator {
+            BinaryOperator::Add if fits_signed_16(constant) => Immediate::Add,
             BinaryOperator::Multiply if fits_signed_16(constant) => {
                 if constant >= 2 && (constant as u64).is_power_of_two() {
-                    Instruction::ShiftLeftImmediate { a: d, s: d, shift: constant.trailing_zeros() as u8 }
+                    Immediate::ShiftLeft(constant.trailing_zeros() as u8)
                 } else {
-                    Instruction::MultiplyImmediate { d, a: d, immediate: constant as i16 }
+                    Immediate::Multiply
                 }
             }
-            BinaryOperator::BitOr if fits_unsigned_16(constant) => Instruction::OrImmediate { a: d, s: d, immediate: constant as u16 },
-            BinaryOperator::BitXor if fits_unsigned_16(constant) => Instruction::XorImmediate { a: d, s: d, immediate: constant as u16 },
-            BinaryOperator::BitAnd if low_bit_mask(constant).is_some() => {
-                Instruction::ClearLeftImmediate { a: d, s: d, clear: 32 - low_bit_mask(constant).unwrap() }
-            }
-            BinaryOperator::ShiftLeft if (1..=31).contains(&constant) => Instruction::ShiftLeftImmediate { a: d, s: d, shift: constant as u8 },
+            BinaryOperator::BitOr if fits_unsigned_16(constant) => Immediate::Or,
+            BinaryOperator::BitXor if fits_unsigned_16(constant) => Immediate::Xor,
+            BinaryOperator::BitAnd if low_bit_mask(constant).is_some() => Immediate::ClearLeft(32 - low_bit_mask(constant).unwrap()),
+            BinaryOperator::ShiftLeft if (1..=31).contains(&constant) => Immediate::ShiftLeft(constant as u8),
             _ => return Ok(false),
         };
-        self.evaluate_general(variable, destination)?;
+
+        let source = if is_complex(variable) {
+            self.evaluate_general(variable, destination)?;
+            destination
+        } else {
+            self.general_register_of_leaf(variable)?
+        };
+        let d = destination;
+        let instruction = match kind {
+            Immediate::Add => Instruction::AddImmediate { d, a: source, immediate: constant as i16 },
+            Immediate::ShiftLeft(shift) => Instruction::ShiftLeftImmediate { a: d, s: source, shift },
+            Immediate::Multiply => Instruction::MultiplyImmediate { d, a: source, immediate: constant as i16 },
+            Immediate::Or => Instruction::OrImmediate { a: d, s: source, immediate: constant as u16 },
+            Immediate::Xor => Instruction::XorImmediate { a: d, s: source, immediate: constant as u16 },
+            Immediate::ClearLeft(clear) => Instruction::ClearLeftImmediate { a: d, s: source, clear },
+        };
         self.output.instructions.push(instruction);
         Ok(true)
     }
 
-    fn place_general_operands(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    fn place_general_operands(&mut self, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
         match (is_complex(left), is_complex(right)) {
             (false, false) => Operands::ordered(self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?),
             (true, false) => {
@@ -567,27 +595,72 @@ impl Generator {
                 Operands::ordered(self.general_register_of_leaf(left)?, GENERAL_SCRATCH)
             }
             (true, true) => {
-                // Evaluating the left side into the destination clobbers it; if the
-                // right side still needs the value currently there, this needs the
-                // full allocator (a free temp register), not the single scratch.
-                if self.uses_register(right, destination) {
-                    return Err(Diagnostic::error("operand reuse needs the full register allocator (roadmap M1)"));
-                }
-                self.evaluate_general(left, destination)?;
+                // Compute the left side into a free temporary, keeping the right
+                // side's inputs live; then the right side into the scratch.
+                let temp = self.with_reserved_inputs(right, |generator| {
+                    let temp = generator.lowest_free_general()?;
+                    generator.evaluate_general(left, temp)?;
+                    Ok(temp)
+                })?;
+                // The temporary holds the left result; keep it live while the right runs.
+                let temp_added = self.reserved.insert(temp);
                 self.evaluate_general(right, GENERAL_SCRATCH)?;
-                Operands::ordered(destination, GENERAL_SCRATCH)
+                if temp_added {
+                    self.reserved.remove(&temp);
+                }
+                Operands::ordered(temp, GENERAL_SCRATCH)
             }
         }
     }
 
-    /// Whether `expression` reads a variable currently held in `register`.
-    fn uses_register(&self, expression: &Expression, register: u8) -> bool {
-        match expression {
-            Expression::Variable(name) => self.locations.get(name).is_some_and(|location| location.register == register),
-            Expression::Binary { left, right, .. } => self.uses_register(left, register) || self.uses_register(right, register),
-            Expression::Unary { operand, .. } => self.uses_register(operand, register),
-            _ => false,
+    /// Run `body` with the registers read by `expression` reserved, restoring the
+    /// reservation set afterward.
+    fn with_reserved_inputs<T>(&mut self, expression: &Expression, body: impl FnOnce(&mut Self) -> Compilation<T>) -> Compilation<T> {
+        let registers = self.registers_used_by(expression);
+        let newly_reserved: Vec<u8> = registers.iter().copied().filter(|register| self.reserved.insert(*register)).collect();
+        let result = body(self);
+        for register in &newly_reserved {
+            self.reserved.remove(register);
         }
+        result
+    }
+
+    /// The general registers read by variables in `expression`.
+    fn registers_used_by(&self, expression: &Expression) -> HashSet<u8> {
+        let mut registers = HashSet::new();
+        self.collect_registers(expression, &mut registers);
+        registers
+    }
+    fn collect_registers(&self, expression: &Expression, registers: &mut HashSet<u8>) {
+        // Within a single expression all variables share a class, so we record
+        // register numbers without filtering by class.
+        match expression {
+            Expression::Variable(name) => {
+                if let Some(location) = self.locations.get(name) {
+                    registers.insert(location.register);
+                }
+            }
+            Expression::Binary { left, right, .. } => {
+                self.collect_registers(left, registers);
+                self.collect_registers(right, registers);
+            }
+            Expression::Unary { operand, .. } => self.collect_registers(operand, registers),
+            _ => {}
+        }
+    }
+
+    /// The lowest general register (r3..=r12) that is neither reserved nor the scratch.
+    fn lowest_free_general(&self) -> Compilation<u8> {
+        (3..=12)
+            .find(|register| *register != GENERAL_SCRATCH && !self.reserved.contains(register))
+            .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
+    }
+
+    /// The lowest float register (f1..=f13) that is neither reserved nor the scratch.
+    fn lowest_free_float(&self) -> Compilation<u8> {
+        (1..=13)
+            .find(|register| *register != FLOAT_SCRATCH && !self.reserved.contains(register))
+            .ok_or_else(|| Diagnostic::error("out of free float registers (roadmap M1: spilling)"))
     }
 
     /// Evaluate a float expression into float register `destination`.
@@ -666,7 +739,7 @@ impl Generator {
         }
     }
 
-    fn place_float_operands(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    fn place_float_operands(&mut self, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
         match (is_complex(left), is_complex(right)) {
             (false, false) => Operands::ordered(self.float_register_of_leaf(left)?, self.float_register_of_leaf(right)?),
             (true, false) => {
@@ -678,12 +751,17 @@ impl Generator {
                 Operands::ordered(self.float_register_of_leaf(left)?, FLOAT_SCRATCH)
             }
             (true, true) => {
-                if self.uses_register(right, destination) {
-                    return Err(Diagnostic::error("operand reuse needs the full register allocator (roadmap M1)"));
-                }
-                self.evaluate_float(left, destination)?;
+                let temp = self.with_reserved_inputs(right, |generator| {
+                    let temp = generator.lowest_free_float()?;
+                    generator.evaluate_float(left, temp)?;
+                    Ok(temp)
+                })?;
+                let temp_added = self.reserved.insert(temp);
                 self.evaluate_float(right, FLOAT_SCRATCH)?;
-                Operands::ordered(destination, FLOAT_SCRATCH)
+                if temp_added {
+                    self.reserved.remove(&temp);
+                }
+                Operands::ordered(temp, FLOAT_SCRATCH)
             }
         }
     }
