@@ -97,8 +97,10 @@ fn main() -> std::process::ExitCode {
     if failed == 0 { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
 }
 
-/// Disassemble `.text` and return the instruction lines, stripped of address and
-/// byte columns, so two objects can be compared by their assembly alone.
+/// Disassemble `.text` into one entry per instruction, each carrying the raw
+/// encoded bytes *and* the mnemonic. Comparing these makes the oracle authoritative
+/// on bytes — the project's actual contract — while the mnemonic keeps failure
+/// diffs readable. The address column is dropped so two objects compare by content.
 fn disassemble(objdump: &Path, object: &Path) -> Vec<String> {
     let output = Command::new(objdump).arg("-d").arg("-j").arg(".text").arg(object).output();
     let Ok(output) = output else { return Vec::new() };
@@ -106,13 +108,12 @@ fn disassemble(objdump: &Path, object: &Path) -> Vec<String> {
     let mut lines = Vec::new();
     for line in text.lines() {
         // Instruction lines look like: "   0:\t38 60 00 00 \tli      r3,0"
-        if let Some((address_and_bytes, mnemonic)) = line.split_once('\t').and_then(|(left, rest)| {
-            // left is the address; rest is "bytes\tmnemonic"
-            let _ = left;
-            rest.split_once('\t')
-        }) {
-            let _ = address_and_bytes;
-            lines.push(mnemonic.trim().to_string());
+        // fields: [address] [encoded bytes] [mnemonic]
+        let fields: Vec<&str> = line.splitn(3, '\t').collect();
+        if fields.len() == 3 {
+            let bytes = fields[1].split_whitespace().collect::<String>();
+            let mnemonic = fields[2].trim();
+            lines.push(format!("{bytes}  {mnemonic}"));
         }
     }
     lines

@@ -30,6 +30,12 @@ pub enum Instruction {
     FloatSubtractSingle { d: u8, a: u8, b: u8 },
     /// `fmuls frD, frA, frC`
     FloatMultiplySingle { d: u8, a: u8, c: u8 },
+    /// `fmadds frD, frA, frC, frB` => frD = frA*frC + frB.
+    FloatMultiplyAddSingle { d: u8, a: u8, c: u8, b: u8 },
+    /// `fmsubs frD, frA, frC, frB` => frD = frA*frC - frB.
+    FloatMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
+    /// `fnmsubs frD, frA, frC, frB` => frD = frB - frA*frC.
+    FloatNegativeMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
     /// `fmr frD, frB`
     FloatMove { d: u8, b: u8 },
     /// `blr` — return to link register.
@@ -63,6 +69,9 @@ impl Instruction {
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
             Instruction::FloatMultiplySingle { d, a, c } => a_form(59, d, a, 0, c, 25),
+            Instruction::FloatMultiplyAddSingle { d, a, c, b } => a_form(59, d, a, b, c, 29),
+            Instruction::FloatMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 28),
+            Instruction::FloatNegativeMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 30),
             Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
             Instruction::BranchToLinkRegister => 0x4E80_0020,
         }
