@@ -809,8 +809,10 @@ impl Generator {
             }
             UnaryOperator::LogicalNot => {
                 // !x == (x == 0): cntlzw then srwi by 5.
-                self.evaluate_general(operand, d)?;
-                self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: d });
+                let Some(source) = self.place_operand(operand, d, false)? else {
+                    return Err(Diagnostic::error("logical-not operand needs the full register allocator (roadmap M1)"));
+                };
+                self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
             }
         }
@@ -871,8 +873,10 @@ impl Generator {
             }
             // signed x >= 0 : !(x < 0)
             BinaryOperator::GreaterEqual if is_zero_literal(right) && signed_left => {
-                self.evaluate_general(left, d)?;
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: d, shift: 31 });
+                let Some(source) = self.place_operand(left, d, false)? else {
+                    return Err(Diagnostic::error("comparison value needs the full register allocator (roadmap M1)"));
+                };
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: source, shift: 31 });
                 self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
                 Ok(())
             }
