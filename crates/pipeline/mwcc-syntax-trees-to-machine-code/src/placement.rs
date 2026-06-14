@@ -1,0 +1,141 @@
+//! Operand placement and the free-register allocator helpers.
+
+use std::collections::HashSet;
+use mwcc_core::{Compilation, Diagnostic};
+use mwcc_syntax_trees::{BinaryOperator, Expression};
+use crate::analysis::*;
+use crate::generator::*;
+use crate::operands::*;
+
+impl Generator {
+
+    /// Place two leaf operands when at least one is narrow, emitting the width
+    /// extensions mwcc inserts. A wide leaf stays in its home register; a narrow
+    /// leaf is extended — into the scratch when it is the only operand needing
+    /// materialization or the non-anchor of a two-narrow pair, in place (its home)
+    /// when it is the pair's anchor. The anchor is the left operand for commutative
+    /// operators and the right for subtraction, matching mwcc's evaluation order.
+    pub(crate) fn place_narrow_leaves(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
+        let (left_register, left_width, left_signed) = self.leaf_info(left)?;
+        let (right_register, right_width, right_signed) = self.leaf_info(right)?;
+        let left_narrow = left_width < 32;
+        let right_narrow = right_width < 32;
+        let subtract = operator == BinaryOperator::Subtract;
+
+        // Where each operand ends up.
+        let (left_target, right_target) = if left_narrow && right_narrow {
+            if subtract {
+                (GENERAL_SCRATCH, right_register) // right is the anchor, kept in place
+            } else {
+                (left_register, GENERAL_SCRATCH) // left is the anchor, kept in place
+            }
+        } else if left_narrow {
+            (GENERAL_SCRATCH, right_register)
+        } else {
+            (left_register, GENERAL_SCRATCH)
+        };
+
+        // Emit extensions in mwcc's order: the anchor first, then the scratch operand.
+        if subtract {
+            if right_narrow { self.emit_widen(right_target, right_register, right_width, right_signed); }
+            if left_narrow { self.emit_widen(left_target, left_register, left_width, left_signed); }
+        } else {
+            if left_narrow { self.emit_widen(left_target, left_register, left_width, left_signed); }
+            if right_narrow { self.emit_widen(right_target, right_register, right_width, right_signed); }
+        }
+        Operands::ordered(left_target, right_target)
+    }
+
+    pub(crate) fn place_general_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
+        match (is_complex(left), is_complex(right)) {
+            (false, false) => {
+                if self.is_narrow_leaf(left) || self.is_narrow_leaf(right) {
+                    return self.place_narrow_leaves(operator, left, right);
+                }
+                Operands::ordered(self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?)
+            }
+            (true, false) => {
+                self.evaluate_general(left, GENERAL_SCRATCH)?;
+                // left computed into scratch, right is a leaf: mwcc puts the leaf first.
+                Operands::reversed(GENERAL_SCRATCH, self.general_register_of_leaf(right)?)
+            }
+            (false, true) => {
+                self.evaluate_general(right, GENERAL_SCRATCH)?;
+                Operands::ordered(self.general_register_of_leaf(left)?, GENERAL_SCRATCH)
+            }
+            (true, true) => {
+                // Compute the left side into a free temporary, keeping the right
+                // side's inputs live; then the right side into the scratch.
+                let temp = self.with_reserved_inputs(right, |generator| {
+                    let temp = generator.lowest_free_general()?;
+                    generator.evaluate_general(left, temp)?;
+                    Ok(temp)
+                })?;
+                // The temporary holds the left result; keep it live while the right runs.
+                let temp_added = self.reserved.insert(temp);
+                self.evaluate_general(right, GENERAL_SCRATCH)?;
+                if temp_added {
+                    self.reserved.remove(&temp);
+                }
+                Operands::ordered(temp, GENERAL_SCRATCH)
+            }
+        }
+    }
+
+    /// Run `body` with the registers read by `expression` reserved, restoring the
+    /// reservation set afterward.
+    pub(crate) fn with_reserved_inputs<T>(&mut self, expression: &Expression, body: impl FnOnce(&mut Self) -> Compilation<T>) -> Compilation<T> {
+        let registers = self.registers_used_by(expression);
+        let newly_reserved: Vec<u8> = registers.iter().copied().filter(|register| self.reserved.insert(*register)).collect();
+        let result = body(self);
+        for register in &newly_reserved {
+            self.reserved.remove(register);
+        }
+        result
+    }
+
+    /// The general registers read by variables in `expression`.
+    pub(crate) fn registers_used_by(&self, expression: &Expression) -> HashSet<u8> {
+        let mut registers = HashSet::new();
+        self.collect_registers(expression, &mut registers);
+        registers
+    }
+
+    pub(crate) fn collect_registers(&self, expression: &Expression, registers: &mut HashSet<u8>) {
+        // Within a single expression all variables share a class, so we record
+        // register numbers without filtering by class.
+        match expression {
+            Expression::Variable(name) => {
+                if let Some(location) = self.locations.get(name) {
+                    registers.insert(location.register);
+                }
+            }
+            Expression::Binary { left, right, .. } => {
+                self.collect_registers(left, registers);
+                self.collect_registers(right, registers);
+            }
+            Expression::Unary { operand, .. } => self.collect_registers(operand, registers),
+            Expression::Conditional { condition, when_true, when_false } => {
+                self.collect_registers(condition, registers);
+                self.collect_registers(when_true, registers);
+                self.collect_registers(when_false, registers);
+            }
+            Expression::Cast { operand, .. } => self.collect_registers(operand, registers),
+            _ => {}
+        }
+    }
+
+    /// The lowest general register (r3..=r12) that is neither reserved nor the scratch.
+    pub(crate) fn lowest_free_general(&self) -> Compilation<u8> {
+        (3..=12)
+            .find(|register| *register != GENERAL_SCRATCH && !self.reserved.contains(register))
+            .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
+    }
+
+    /// The lowest float register (f1..=f13) that is neither reserved nor the scratch.
+    pub(crate) fn lowest_free_float(&self) -> Compilation<u8> {
+        (1..=13)
+            .find(|register| *register != FLOAT_SCRATCH && !self.reserved.contains(register))
+            .ok_or_else(|| Diagnostic::error("out of free float registers (roadmap M1: spilling)"))
+    }
+}
