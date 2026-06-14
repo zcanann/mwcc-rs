@@ -73,13 +73,36 @@ mwcc -c canaries/02_add.c -o add.o --emit-artifacts ./build
 
 ## Status
 
-v0 — the pipeline is complete end to end (lex → parse → machine code → ELF object) and **9/9 canaries are byte-exact vs GC/1.3.2**:
+**138 canaries byte-exact vs GC/1.3.2.** The compiler reproduces mwcc's `.text`
+instruction-for-instruction across a broad subset of straight-line C with
+branching control flow:
 
-- leaf functions, no stack frame
-- the EABI: integer args `r3, r4, …` → result `r3`; float args `f1, f2, …` → result `f1`
-- `+ - *` on integers (`add` / `subf` / `mullw`) and floats (`fadds` / `fsubs` / `fmuls`)
-- 16- and 32-bit integer constants (`li`; `lis` + `addi` with high-half adjustment)
-- redundant-move elision (returning the first argument emits just `blr`)
+- **EABI & expressions** — integer/float args and returns; `+ - * / %` (signed and
+  unsigned), bitwise `& | ^ ~`, shifts `<< >>` (sign-aware), comparisons, unary `- ~ !`.
+- **The register allocator** — a free-register pool with a live/reserved set: a
+  binary node computes its left side into the lowest free register while the right
+  side's inputs stay reserved, the right into the scratch (`r0`/`f0`). Handles
+  shared inputs, dead-input reuse, and the consumer-dependent operand placement
+  (`addi` keeps operands in the destination, `rlwinm`/logical route through `r0`).
+  *Matching mwcc's exact register coloring is the core research target.*
+- **Instruction selection** — `slwi`/`srwi`/`srawi` for shift-by-constant, `rlwinm`
+  for contiguous masks, `mulli`/`addi` immediate folds, `andc`/`orc`, fused
+  float multiply-add (`fmadds`/`fmsubs`/`fnmsubs`), and identity/strength folds
+  (`a*-1`→`neg`, `a+0`→`a`, negated-literal constants).
+- **Control flow** — ternary `?:`, `if`-return guards (single → select, chained →
+  return blocks), comparison conditions (`cmpw`/`cmplw` + the negated branch),
+  conditional returns (`bnelr`/`bgtlr`), forward branches with encode-time offset
+  resolution, float selects (`fcmpo`).
+- **Casts & types** — int↔float (the FFCC `randchar` magic-constant conversion, at
+  the `.text` level), stack frames (`stwu`/`addi`), narrow `char`/`short`/`unsigned`
+  with sign/zero-extension.
+
+What's deliberately *not* matched yet — and where the hard, large subsystems lie:
+mwcc's **optimizer** (CSE, algebraic factoring `a*b+a*c`→`a*(b+c)`, chain
+re-association, value-range), the **instruction scheduler** (it reorders within a
+block), **loop unrolling** (a simple `while` becomes an 8× `mtctr`/`bdnz` loop at
+-O4), full **object metadata** (`.sdata2` constants, `R_PPC_EMB_SDA21` relocations,
+the `extab`/`extabindex`/`.mwcats` sections), and the **C++** frontend.
 
 ## Roadmap
 
