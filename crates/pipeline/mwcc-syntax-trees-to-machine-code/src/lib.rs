@@ -919,7 +919,12 @@ impl Generator {
                 self.output.instructions.push(float_combine(*operator, destination, operands)?);
                 Ok(())
             }
-            Expression::Unary { .. } => Err(Diagnostic::error("float unary operators not yet supported")),
+            Expression::Unary { operator: UnaryOperator::Negate, operand } => {
+                let source = self.float_register_of_leaf(operand)?;
+                self.output.instructions.push(Instruction::FloatNegate { d: destination, b: source });
+                Ok(())
+            }
+            Expression::Unary { .. } => Err(Diagnostic::error("only float negation is supported as a float unary")),
             Expression::Conditional { .. } => Err(Diagnostic::error("float conditional not yet supported")),
             Expression::Cast { operand, .. } => self.emit_cast_to_float(operand, destination),
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literals need the constant pool (roadmap M3)")),

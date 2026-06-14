@@ -82,6 +82,8 @@ pub enum Instruction {
     FloatNegativeMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
     /// `fmr frD, frB`
     FloatMove { d: u8, b: u8 },
+    /// `fneg frD, frB`
+    FloatNegate { d: u8, b: u8 },
     /// `fctiwz frD, frB` — convert float to integer, round toward zero.
     ConvertToIntegerWordZero { d: u8, b: u8 },
     /// `stwu rS, offset(rA)` — store word with base update (stack frame push).
@@ -170,6 +172,7 @@ impl Instruction {
             Instruction::FloatMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 28),
             Instruction::FloatNegativeMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 30),
             Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
+            Instruction::FloatNegate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (40 << 1),
             Instruction::ConvertToIntegerWordZero { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (15 << 1),
             Instruction::StoreWordWithUpdate { s, a, offset } => d_form(37, s, a, offset as u16),
             Instruction::LoadWord { d, a, offset } => d_form(32, d, a, offset as u16),
