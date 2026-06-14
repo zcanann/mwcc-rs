@@ -102,8 +102,9 @@ fn main() -> ExitCode {
 /// Run the full pipeline, optionally dumping a per-phase artifact report.
 fn compile(source: &str, source_name: &str, build: mwcc_versions::CompilerBuild, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
     let tokens = mwcc_source_to_tokens::tokenize(source)?;
-    let function = mwcc_tokens_to_syntax_trees::parse_function(tokens.clone())?;
-    let machine_code = mwcc_syntax_trees_to_machine_code::lower_function(&function, build)?;
+    let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(tokens.clone())?;
+    let function = &unit.function;
+    let machine_code = mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, build)?;
     let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name, build.version, build.build);
 
     if let Some(directory) = artifacts {

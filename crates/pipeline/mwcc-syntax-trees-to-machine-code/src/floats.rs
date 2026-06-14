@@ -13,11 +13,15 @@ impl Generator {
     pub(crate) fn evaluate_float(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         match expression {
             Expression::Variable(name) => {
-                let source = self.float_register_of(name)?;
-                if source != destination {
-                    self.output.instructions.push(Instruction::FloatMove { d: destination, b: source });
+                if self.locations.contains_key(name) {
+                    let source = self.float_register_of(name)?;
+                    if source != destination {
+                        self.output.instructions.push(Instruction::FloatMove { d: destination, b: source });
+                    }
+                    Ok(())
+                } else {
+                    self.emit_global_load(name, destination)
                 }
-                Ok(())
             }
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),

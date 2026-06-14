@@ -6,7 +6,7 @@
 
 use mwcc_core::Compilation;
 use mwcc_machine_code::MachineFunction;
-use mwcc_syntax_trees::Function;
+use mwcc_syntax_trees::{Function, GlobalDeclaration};
 use mwcc_versions::CompilerBuild;
 use std::collections::{HashMap, HashSet};
 
@@ -27,10 +27,11 @@ mod floats;
 use generator::Generator;
 
 /// Lower a parsed function to machine code for the given compiler build.
-pub fn lower_function(function: &Function, build: CompilerBuild) -> Compilation<MachineFunction> {
+pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], build: CompilerBuild) -> Compilation<MachineFunction> {
     let mut generator = Generator {
         output: MachineFunction::new(function.name.clone()),
         locations: HashMap::new(),
+        globals: globals.iter().map(|global| (global.name.clone(), global.declared_type)).collect(),
         reserved: HashSet::new(),
         frame_size: 0,
         build,

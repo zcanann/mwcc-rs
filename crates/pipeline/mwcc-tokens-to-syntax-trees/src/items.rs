@@ -1,7 +1,7 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Function, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, Type};
+use mwcc_syntax_trees::{Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::Parser;
@@ -55,12 +55,23 @@ impl Parser {
         Ok(base)
     }
 
-    pub(crate) fn function(&mut self) -> Compilation<Function> {
-        // Skip leading prototype declarations (`type name(params);`) until the
+    pub(crate) fn translation_unit(&mut self) -> Compilation<TranslationUnit> {
+        // Collect file-scope globals and skip prototype declarations until the
         // function *definition* (the signature followed by `{`).
+        let mut globals = Vec::new();
         let (return_type, name, parameters) = loop {
+            // `extern`/`static` storage qualifiers don't change codegen here.
+            while matches!(self.peek(), Token::Identifier(word) if word == "extern" || word == "static") {
+                self.advance();
+            }
             let return_type = self.parse_type()?;
             let name = self.parse_identifier()?;
+            // `type name;` is a global variable declaration.
+            if *self.peek() == Token::Semicolon {
+                self.advance();
+                globals.push(GlobalDeclaration { declared_type: return_type, name });
+                continue;
+            }
             self.expect(Token::ParenOpen)?;
 
             let mut parameters = Vec::new();
@@ -148,7 +159,8 @@ impl Parser {
         };
         self.expect(Token::BraceClose)?;
 
-        Ok(Function { return_type, name, parameters, locals, statements, guards, return_expression })
+        let function = Function { return_type, name, parameters, locals, statements, guards, return_expression };
+        Ok(TranslationUnit { globals, function })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

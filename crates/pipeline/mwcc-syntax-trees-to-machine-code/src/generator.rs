@@ -31,6 +31,9 @@ pub(crate) struct Location {
 pub(crate) struct Generator {
     pub(crate) output: MachineFunction,
     pub(crate) locations: HashMap<String, Location>,
+    /// File-scope globals by name; a reference to one loads from the small-data
+    /// area (an `R_PPC_EMB_SDA21` relocation off r13, the `0(r0)` placeholder).
+    pub(crate) globals: HashMap<String, Type>,
     /// Registers holding live values that must not be clobbered while a sibling
     /// sub-expression is being evaluated. The allocator draws temporaries from
     /// the registers outside this set.
@@ -95,7 +98,13 @@ impl Generator {
             Expression::IntegerLiteral(_) => Ok(true),
             Expression::FloatLiteral(_) => Ok(true),
             Expression::Variable(name) => {
-                Ok(self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?.signed)
+                if let Some(location) = self.locations.get(name) {
+                    Ok(location.signed)
+                } else if let Some(global_type) = self.globals.get(name) {
+                    Ok(global_type.is_signed())
+                } else {
+                    Err(Diagnostic::error(format!("unknown variable '{name}'")))
+                }
             }
             Expression::Binary { operator, left, right } => {
                 if is_comparison(*operator) {

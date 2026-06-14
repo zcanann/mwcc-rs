@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use mwcc_target::Eabi;
 use crate::analysis::*;
 use crate::generator::*;
@@ -60,13 +60,16 @@ impl Generator {
                 Ok(())
             }
             Expression::Variable(name) => {
-                let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
-                if location.class != ValueClass::General {
-                    return Err(Diagnostic::error(format!("'{name}' is not an integer")));
+                if let Some(location) = self.locations.get(name) {
+                    if location.class != ValueClass::General {
+                        return Err(Diagnostic::error(format!("'{name}' is not an integer")));
+                    }
+                    let (source, width, signed) = (location.register, location.width, location.signed);
+                    self.emit_widen(destination, source, width, signed);
+                    Ok(())
+                } else {
+                    self.emit_global_load(name, destination)
                 }
-                let (source, width, signed) = (location.register, location.width, location.signed);
-                self.emit_widen(destination, source, width, signed);
-                Ok(())
             }
             Expression::Unary { operator, operand } => self.emit_unary(*operator, operand, destination),
             Expression::Conditional { condition, when_true, when_false } => {
@@ -264,6 +267,23 @@ impl Generator {
             Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Float)),
             _ => false,
         }
+    }
+
+    /// Load a file-scope global into `destination`. The instruction carries the
+    /// `0(r0)` placeholder that an `R_PPC_EMB_SDA21` relocation fills (r13 + the
+    /// small-data offset); the load is chosen by the global's type.
+    pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
+        let global_type = *self.globals.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        let instruction = match global_type {
+            Type::Int | Type::UnsignedInt => Instruction::LoadWord { d: destination, a: 0, offset: 0 },
+            Type::Char | Type::UnsignedChar => Instruction::LoadByteZero { d: destination, a: 0, offset: 0 },
+            Type::Short => Instruction::LoadHalfwordAlgebraic { d: destination, a: 0, offset: 0 },
+            Type::UnsignedShort => Instruction::LoadHalfwordZero { d: destination, a: 0, offset: 0 },
+            Type::Float => Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 },
+            other => return Err(Diagnostic::error(format!("global of type {other:?} is not supported yet"))),
+        };
+        self.output.instructions.push(instruction);
+        Ok(())
     }
 
     /// `(pointee, address register)` for a pointer leaf variable.

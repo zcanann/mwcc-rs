@@ -5,7 +5,7 @@
 //! `lib.rs` wires the parser modules and exposes the entry point.
 
 use mwcc_core::Compilation;
-use mwcc_syntax_trees::Function;
+use mwcc_syntax_trees::TranslationUnit;
 use mwcc_tokens::Token;
 
 mod expressions;
@@ -14,8 +14,9 @@ mod parser;
 
 use parser::Parser;
 
-/// Parse a token stream into a single function definition.
-pub fn parse_function(tokens: Vec<Token>) -> Compilation<Function> {
+/// Parse a token stream into a translation unit (file-scope globals + the
+/// function definition).
+pub fn parse_translation_unit(tokens: Vec<Token>) -> Compilation<TranslationUnit> {
     let mut parser = Parser { tokens, position: 0 };
-    parser.function()
+    parser.translation_unit()
 }

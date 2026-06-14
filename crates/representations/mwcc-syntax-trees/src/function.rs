@@ -35,6 +35,21 @@ pub enum Statement {
     Expression(Expression),
 }
 
+/// A file-scope global variable, e.g. `int g;` or `extern int g;`.
+#[derive(Debug, Clone)]
+pub struct GlobalDeclaration {
+    pub declared_type: Type,
+    pub name: String,
+}
+
+/// A translation unit: file-scope globals (and skipped prototypes) followed by a
+/// single function definition.
+#[derive(Debug, Clone)]
+pub struct TranslationUnit {
+    pub globals: Vec<GlobalDeclaration>,
+    pub function: Function,
+}
+
 /// A function definition. Bodies are zero or more local declarations, then zero
 /// or more statements, then zero or more `if (...) return ...;` guards, then an
 /// optional final `return <expression>;` (absent for a `void` function).
