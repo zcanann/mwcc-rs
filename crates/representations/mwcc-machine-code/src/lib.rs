@@ -98,6 +98,10 @@ pub enum Instruction {
     CompareWordImmediate { a: u8, immediate: i16 },
     /// `cmpw crf0, rA, rB` — signed compare.
     CompareWord { a: u8, b: u8 },
+    /// `cmplwi crf0, rA, UIMM` — unsigned compare against an immediate.
+    CompareLogicalWordImmediate { a: u8, immediate: u16 },
+    /// `cmplw crf0, rA, rB` — unsigned compare.
+    CompareLogicalWord { a: u8, b: u8 },
     /// A forward conditional branch to another instruction (by index). `options`
     /// is the PowerPC BO field, `condition_bit` the BI field (cr0: 0=LT,1=GT,2=EQ).
     /// The byte offset is resolved at encode time from the instruction positions.
@@ -182,6 +186,8 @@ impl Instruction {
             Instruction::FloatCompareOrdered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
             Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
+            Instruction::CompareLogicalWordImmediate { a, immediate } => (10 << 26) | ((a as u32) << 16) | (immediate as u32),
+            Instruction::CompareLogicalWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
             // resolved positionally in encode_text
             Instruction::BranchConditionalForward { .. } => 0,
             Instruction::BranchConditionalToLinkRegister { options, condition_bit } => {

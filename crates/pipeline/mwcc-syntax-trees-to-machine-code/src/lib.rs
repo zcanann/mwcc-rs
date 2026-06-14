@@ -572,19 +572,37 @@ impl Generator {
     /// comparison condition uses `cmpw`/`cmpwi` with the negated relation; any
     /// other expression is tested against zero (`!= 0`).
     fn emit_condition_test(&mut self, condition: &Expression) -> Compilation<(u8, u8)> {
+        // `!x` as a condition is `x == 0`: skip the guarded code when x != 0.
+        if let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition {
+            let register = self.general_register_of_leaf(operand)?;
+            self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+            return Ok((4, 2)); // bne — skip when x != 0
+        }
         if let Expression::Binary { operator, left, right } = condition {
             if is_comparison(*operator) {
-                if !(self.signedness_of(left)? && self.signedness_of(right)?) {
-                    return Err(Diagnostic::error("unsigned comparison conditions not yet supported (need cmplw)"));
-                }
+                let signed = self.signedness_of(left)? && self.signedness_of(right)?;
                 let left_register = self.general_register_of_leaf(left)?;
-                if let Some(constant) = as_small_integer(right) {
-                    self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: constant });
-                } else if is_zero_literal(right) {
-                    self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
-                } else {
-                    let right_register = self.general_register_of_leaf(right)?;
-                    self.output.instructions.push(Instruction::CompareWord { a: left_register, b: right_register });
+                match (as_small_integer(right), is_zero_literal(right)) {
+                    (Some(constant), _) if signed => {
+                        self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: constant });
+                    }
+                    (Some(constant), _) => {
+                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: left_register, immediate: constant as u16 });
+                    }
+                    (None, true) if signed => {
+                        self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
+                    }
+                    (None, true) => {
+                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: left_register, immediate: 0 });
+                    }
+                    (None, false) => {
+                        let right_register = self.general_register_of_leaf(right)?;
+                        if signed {
+                            self.output.instructions.push(Instruction::CompareWord { a: left_register, b: right_register });
+                        } else {
+                            self.output.instructions.push(Instruction::CompareLogicalWord { a: left_register, b: right_register });
+                        }
+                    }
                 }
                 // Branch when the comparison is false. BO: 4 = if-false, 12 = if-true. BI: 0=LT,1=GT,2=EQ.
                 return Ok(match operator {
