@@ -659,13 +659,36 @@ impl Generator {
         Ok(())
     }
 
+    /// Place an operand and return the register holding it: a leaf stays in its
+    /// own register, a unary sub-expression is computed into `destination`, and a
+    /// binary sub-expression is computed into the scratch register (mwcc's rule).
+    /// Returns `None` when a binary operand does not fit the single-scratch model.
+    fn place_operand(&mut self, operand: &Expression, destination: u8) -> Compilation<Option<u8>> {
+        match operand {
+            Expression::Variable(_) => Ok(Some(self.general_register_of_leaf(operand)?)),
+            Expression::Binary { .. } => {
+                if !fits_single_scratch(operand, true) {
+                    return Ok(None);
+                }
+                self.evaluate_general(operand, GENERAL_SCRATCH)?;
+                Ok(Some(GENERAL_SCRATCH))
+            }
+            _ => {
+                self.evaluate_general(operand, destination)?;
+                Ok(Some(destination))
+            }
+        }
+    }
+
     /// Emit a prefix unary operator into `destination`.
     fn emit_unary(&mut self, operator: UnaryOperator, operand: &Expression, destination: u8) -> Compilation<()> {
         let d = destination;
         match operator {
             UnaryOperator::Negate => {
-                self.evaluate_general(operand, d)?;
-                self.output.instructions.push(Instruction::Negate { d, a: d });
+                let Some(source) = self.place_operand(operand, d)? else {
+                    return Err(Diagnostic::error("negation operand needs the full register allocator (roadmap M1)"));
+                };
+                self.output.instructions.push(Instruction::Negate { d, a: source });
             }
             UnaryOperator::BitNot => {
                 self.evaluate_general(operand, d)?;
@@ -867,11 +890,8 @@ impl Generator {
             _ => return Ok(false),
         };
 
-        let source = if is_complex(variable) {
-            self.evaluate_general(variable, destination)?;
-            destination
-        } else {
-            self.general_register_of_leaf(variable)?
+        let Some(source) = self.place_operand(variable, destination)? else {
+            return Ok(false);
         };
         let d = destination;
         let instruction = match kind {
