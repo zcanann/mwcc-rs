@@ -125,16 +125,20 @@ fn fits_unsigned_16(value: i64) -> bool {
     (0..=0xffff).contains(&value)
 }
 
-/// If `value` is a mask of exactly the low `k` bits (`2^k - 1`, `1 <= k <= 31`),
-/// return `k`.
-fn low_bit_mask(value: i64) -> Option<u8> {
-    if value >= 1 && (value as u64 & (value as u64 + 1)) == 0 {
-        let bits = (value as u64 + 1).trailing_zeros();
-        if (1..=31).contains(&bits) {
-            return Some(bits as u8);
-        }
+/// If `value` is a single contiguous run of set bits, return the PowerPC
+/// `(mask_begin, mask_end)` for `rlwinm rA,rS,0,begin,end`.
+fn contiguous_mask(value: i64) -> Option<(u8, u8)> {
+    let mask = value as u32;
+    if mask == 0 {
+        return None;
     }
-    None
+    let lowest = mask.trailing_zeros();
+    let highest = 31 - mask.leading_zeros();
+    let shifted = mask >> lowest;
+    if shifted & shifted.wrapping_add(1) != 0 {
+        return None; // not a single contiguous run
+    }
+    Some(((31 - highest) as u8, (31 - lowest) as u8))
 }
 
 /// Whether evaluating `expression` uses the scratch register at all — true when
@@ -961,7 +965,7 @@ impl Generator {
             Multiply,
             Or,
             Xor,
-            ClearLeft(u8),
+            Mask(u8, u8),
         }
         let kind = match operator {
             BinaryOperator::Add if fits_signed_16(constant) => Immediate::Add,
@@ -974,7 +978,10 @@ impl Generator {
             }
             BinaryOperator::BitOr if fits_unsigned_16(constant) => Immediate::Or,
             BinaryOperator::BitXor if fits_unsigned_16(constant) => Immediate::Xor,
-            BinaryOperator::BitAnd if low_bit_mask(constant).is_some() => Immediate::ClearLeft(32 - low_bit_mask(constant).unwrap()),
+            BinaryOperator::BitAnd if contiguous_mask(constant).is_some() => {
+                let (begin, end) = contiguous_mask(constant).unwrap();
+                Immediate::Mask(begin, end)
+            }
             BinaryOperator::ShiftLeft if (1..=31).contains(&constant) => Immediate::ShiftLeft(constant as u8),
             _ => return Ok(false),
         };
@@ -990,7 +997,7 @@ impl Generator {
             Immediate::Multiply => Instruction::MultiplyImmediate { d, a: source, immediate: constant as i16 },
             Immediate::Or => Instruction::OrImmediate { a: d, s: source, immediate: constant as u16 },
             Immediate::Xor => Instruction::XorImmediate { a: d, s: source, immediate: constant as u16 },
-            Immediate::ClearLeft(clear) => Instruction::ClearLeftImmediate { a: d, s: source, clear },
+            Immediate::Mask(begin, end) => Instruction::AndContiguousMask { a: d, s: source, begin, end },
         };
         self.output.instructions.push(instruction);
         Ok(true)

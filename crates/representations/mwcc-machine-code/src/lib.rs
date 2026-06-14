@@ -72,6 +72,8 @@ pub enum Instruction {
     LoadFloatDouble { d: u8, a: u8, offset: i16 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
     ClearLeftImmediate { a: u8, s: u8, clear: u8 },
+    /// `rlwinm rA, rS, 0, begin, end` — keep the contiguous bit run `[begin, end]`.
+    AndContiguousMask { a: u8, s: u8, begin: u8, end: u8 },
     /// `fadds frD, frA, frB`
     FloatAddSingle { d: u8, a: u8, b: u8 },
     /// `fsubs frD, frA, frB`
@@ -178,6 +180,9 @@ impl Instruction {
             // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
             Instruction::ClearLeftImmediate { a, s, clear } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1)
+            }
+            Instruction::AndContiguousMask { a, s, begin, end } => {
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
