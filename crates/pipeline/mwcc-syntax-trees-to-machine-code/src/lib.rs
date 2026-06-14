@@ -988,6 +988,21 @@ impl Generator {
                 }
                 Ok(())
             }
+            // unsigned a < b / a > b : xor/cntlzw/slw/srwi.
+            BinaryOperator::Less | BinaryOperator::Greater
+                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+            {
+                let left_register = self.general_register_of_leaf(left)?;
+                let right_register = self.general_register_of_leaf(right)?;
+                // a < b uses b as the high side; a > b is b < a.
+                let high = if matches!(operator, BinaryOperator::Less) { right_register } else { left_register };
+                let low = if matches!(operator, BinaryOperator::Less) { left_register } else { right_register };
+                self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: high, b: low });
+                self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::ShiftLeftWord { a: GENERAL_SCRATCH, s: high, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                Ok(())
+            }
             // signed a <= b / a >= b : carry-based, with two temporaries.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
                 if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
