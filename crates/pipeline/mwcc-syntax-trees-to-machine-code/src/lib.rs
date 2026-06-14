@@ -704,10 +704,15 @@ impl Generator {
             }
             return Ok(());
         }
-        // int -> int narrowing: evaluate then extend/truncate to the target width.
-        self.evaluate_general(operand, destination)?;
+        // int -> int narrowing: place the operand (sub-expression -> scratch),
+        // then extend/truncate to the target width into the destination.
         if target_type.width() < 32 {
-            self.emit_widen(destination, destination, target_type.width(), target_type.is_signed());
+            let Some(source) = self.place_operand(operand, destination, false)? else {
+                return Err(Diagnostic::error("cast operand needs the full register allocator (roadmap M1)"));
+            };
+            self.emit_widen(destination, source, target_type.width(), target_type.is_signed());
+        } else {
+            self.evaluate_general(operand, destination)?;
         }
         Ok(())
     }
