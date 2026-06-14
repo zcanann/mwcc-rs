@@ -30,7 +30,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, MachineFunction};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LocalDeclaration, Type, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, Type, UnaryOperator};
 use mwcc_target::Eabi;
 use mwcc_versions::CompilerBuild;
 use std::collections::{HashMap, HashSet};
@@ -47,18 +47,6 @@ fn is_zero_literal(expression: &Expression) -> bool {
     matches!(expression, Expression::IntegerLiteral(0))
 }
 
-/// Fold `if (c) return v;` guards into nested conditionals around `final_return`.
-fn desugar_guards(guards: &[mwcc_syntax_trees::GuardedReturn], final_return: &Expression) -> Expression {
-    let mut value = final_return.clone();
-    for guard in guards.iter().rev() {
-        value = Expression::Conditional {
-            condition: Box::new(guard.condition.clone()),
-            when_true: Box::new(guard.value.clone()),
-            when_false: Box::new(value),
-        };
-    }
-    value
-}
 
 /// A nonzero integer literal that fits a signed 16-bit immediate.
 fn as_small_integer(expression: &Expression) -> Option<i16> {
@@ -159,7 +147,6 @@ pub fn lower_function(function: &Function, _build: CompilerBuild) -> Compilation
         Generator { output: MachineFunction::new(function.name.clone()), locations: HashMap::new(), reserved: HashSet::new() };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
-    generator.output.instructions.push(Instruction::BranchToLinkRegister);
     Ok(generator.output)
 }
 
@@ -218,26 +205,92 @@ impl Generator {
         Ok(())
     }
 
-    /// Evaluate the locals (if any) and the return expression into the result register.
+    /// Emit the whole function body, including its `blr`(s).
     fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
         let result = match function.return_type {
             Type::Int | Type::UnsignedInt => Eabi::general_result().number,
             Type::Float => Eabi::float_result().number,
-            Type::Void => return Ok(()),
+            Type::Void => {
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                return Ok(());
+            }
         };
 
-        // `if (c) return v;` guards desugar into nested conditionals around the
-        // final return: `if(c1) return v1; ... return e` == `c1 ? v1 : (... : e)`.
-        let return_value = desugar_guards(&function.guards, &function.return_expression);
+        if !function.guards.is_empty() {
+            if !function.locals.is_empty() {
+                return Err(Diagnostic::error("locals combined with guards not yet supported"));
+            }
+            // mwcc lowers a single guard as a select (working-register form) but a
+            // chain of guards as separate return blocks.
+            if let [guard] = function.guards.as_slice() {
+                let select = Expression::Conditional {
+                    condition: Box::new(guard.condition.clone()),
+                    when_true: Box::new(guard.value.clone()),
+                    when_false: Box::new(function.return_expression.clone()),
+                };
+                self.evaluate_tail(&select, function.return_type, result)?;
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                return Ok(());
+            }
+            return self.emit_guard_sequence(&function.guards, &function.return_expression, function.return_type, result);
+        }
 
         match function.locals.as_slice() {
-            [] => self.evaluate_tail(&return_value, function.return_type, result),
-            [local] if function.guards.is_empty() => {
-                self.evaluate_single_local(local, &function.return_expression, function.return_type, result)
-            }
-            [_] => Err(Diagnostic::error("locals combined with guards not yet supported")),
-            _ => Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
+            [] => self.evaluate_tail(&function.return_expression, function.return_type, result)?,
+            [local] => self.evaluate_single_local(local, &function.return_expression, function.return_type, result)?,
+            _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
         }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(())
+    }
+
+    /// Emit a sequence of `if (c) return v;` guards followed by the final return.
+    /// Each guard is its own block ending in `blr`; the last guard collapses the
+    /// final return into a conditional return when the final value already sits in
+    /// the result register.
+    fn emit_guard_sequence(
+        &mut self,
+        guards: &[GuardedReturn],
+        final_return: &Expression,
+        return_type: Type,
+        result: u8,
+    ) -> Compilation<()> {
+        let final_in_result = match final_return {
+            Expression::Variable(name) => self.locations.get(name).map(|location| location.register) == Some(result),
+            _ => false,
+        };
+
+        for (index, guard) in guards.iter().enumerate() {
+            let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+            let value_register = self.general_register_of_leaf(&guard.value)?;
+            let is_last = index + 1 == guards.len();
+
+            if is_last && final_in_result {
+                // false path returns the final value already in the result register
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                if result != value_register {
+                    self.output.instructions.push(Instruction::move_register(result, value_register));
+                }
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                return Ok(());
+            }
+
+            let branch_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            if result != value_register {
+                self.output.instructions.push(Instruction::move_register(result, value_register));
+            }
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            let next = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = next;
+            }
+        }
+
+        // Final fall-through return.
+        self.evaluate_tail(final_return, return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(())
     }
 
     /// Evaluate the function result. A conditional in this tail position can use a
