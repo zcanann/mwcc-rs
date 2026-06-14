@@ -14,6 +14,11 @@ pub struct ObjectInput<'a> {
     pub source_name: &'a str,
     pub function_name: &'a str,
     pub text: &'a [u8],
+    /// The compiler version being reproduced (e.g. `(2, 4, 2)`); stamped into the
+    /// Metrowerks `.comment` record.
+    pub version: (u8, u8, u8),
+    /// The compiler build number; a `.comment` format marker depends on it.
+    pub build: u16,
 }
 
 /// Write a relocatable object for a single function.

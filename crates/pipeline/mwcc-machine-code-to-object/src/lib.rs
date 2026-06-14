@@ -8,12 +8,15 @@ use mwcc_machine_code::MachineFunction;
 use mwcc_object::ObjectInput;
 
 /// Assemble a relocatable object. `source_name` is the source file's base name
-/// (e.g. "foo.c"), used for the object's `FILE` symbol.
-pub fn assemble_object(function: &MachineFunction, source_name: &str) -> Vec<u8> {
+/// (e.g. "foo.c"), used for the object's `FILE` symbol; `version` is the compiler
+/// version being reproduced, stamped into `.comment`.
+pub fn assemble_object(function: &MachineFunction, source_name: &str, version: (u8, u8, u8), build: u16) -> Vec<u8> {
     let text = function.encode_text();
     mwcc_object::write_object(&ObjectInput {
         source_name,
         function_name: &function.name,
         text: &text,
+        version,
+        build,
     })
 }

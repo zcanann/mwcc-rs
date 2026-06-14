@@ -41,6 +41,9 @@ fn main() -> std::process::ExitCode {
     println!("== differential oracle vs mwcceppc GC/{version} ==");
     let mut passed = 0u32;
     let mut failed = 0u32;
+    // Whole-object byte-exactness, tracked alongside .text. Pass/fail keys on
+    // .text; this reports how many objects match mwcceppc byte-for-byte.
+    let mut object_exact = 0u32;
 
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&canaries)
         .expect("cannot read canaries/")
@@ -75,7 +78,14 @@ fn main() -> std::process::ExitCode {
                 let reference_text = disassemble(&objdump, &reference_object);
                 let our_text = disassemble(&objdump, &our_object);
                 if reference_text == our_text {
-                    println!("  PASS {name}");
+                    let whole_object_matches = std::fs::read(&reference_object).ok() == std::fs::read(&our_object).ok();
+                    let marker = if whole_object_matches {
+                        object_exact += 1;
+                        "PASS"
+                    } else {
+                        "PASS*" // .text matches; the full object (e.g. .sdata2) does not yet
+                    };
+                    println!("  {marker} {name}");
                     passed += 1;
                 } else {
                     println!("  FAIL {name} — .text differs (ours | oracle):");
@@ -95,7 +105,7 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    println!("== {passed} passed, {failed} failed ==");
+    println!("== {passed} passed, {failed} failed ({object_exact} byte-exact objects) ==");
     if failed == 0 { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
 }
 

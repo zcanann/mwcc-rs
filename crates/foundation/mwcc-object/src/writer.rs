@@ -25,10 +25,12 @@ const STT_FILE: u8 = 4; // STB_LOCAL (0<<4) | STT_FILE
 const STT_SECTION: u8 = 3; // STB_LOCAL | STT_SECTION
 const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2;
 
-/// The Metrowerks `.comment` record, identical across every plain function. It
-/// grows for objects with extra sections (float/frame); that variant arrives
-/// with those sections.
-const COMMENT: [u8; 84] = [
+/// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
+/// compiler version (`02 04 0X` = 2.4.X) and byte 11 is a format marker that
+/// tracks the version line; [`comment_record`] patches them per build. The record
+/// grows for objects with extra sections (float/frame); that variant arrives with
+/// those sections.
+const COMMENT_BASE: [u8; 84] = [
     b'C', b'o', b'd', b'e', b'W', b'a', b'r', b'r', b'i', b'o', b'r', b'\n', //
     0x02, 0x04, 0x02, 0x01, 0x01, 0x02, 0x00, 0x16, 0x2c, 0x00, 0x00, 0x00, //
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
@@ -37,6 +39,18 @@ const COMMENT: [u8; 84] = [
     0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
 ];
 
+/// The `.comment` record for a specific compiler version and build.
+fn comment_record(version: (u8, u8, u8), build: u16) -> [u8; 84] {
+    let mut record = COMMENT_BASE;
+    // Byte 11 is a format marker: 0x0a for every supported build except GC/2.7
+    // (build 108), which bumped it to 0x0b. Bytes 12..15 are the version itself.
+    record[11] = if build == 108 { 0x0b } else { 0x0a };
+    record[12] = version.0;
+    record[13] = version.1;
+    record[14] = version.2;
+    record
+}
+
 const ELF_HEADER_SIZE: u32 = 52;
 const SECTION_HEADER_SIZE: u32 = 40;
 const SECTION_COUNT: u16 = 8;
@@ -44,6 +58,7 @@ const SECTION_COUNT: u16 = 8;
 pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let text = input.text;
     let text_size = text.len() as u32;
+    let comment = comment_record(input.version, input.build);
 
     // .shstrtab — section header names, in section order.
     let mut shstrtab = StringTable::new();
@@ -89,7 +104,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let shstrtab_offset = strtab_offset + strtab.bytes.len() as u32;
     let comment_offset = shstrtab_offset + shstrtab.bytes.len() as u32;
     // mwcceppc aligns the section-header table to an 8-byte boundary.
-    let section_headers_offset = align8(comment_offset + COMMENT.len() as u32);
+    let section_headers_offset = align8(comment_offset + comment.len() as u32);
 
     let mut output = Vec::new();
     write_elf_header(&mut output, section_headers_offset);
@@ -101,7 +116,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     output.extend_from_slice(&symtab);
     output.extend_from_slice(&strtab.bytes);
     output.extend_from_slice(&shstrtab.bytes);
-    output.extend_from_slice(&COMMENT);
+    output.extend_from_slice(&comment);
     while output.len() < section_headers_offset as usize {
         output.push(0);
     }
@@ -118,7 +133,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     // Metrowerks stamps string tables with sh_entsize = 1.
     header(name_strtab, SHT_STRTAB, 0, strtab_offset, strtab.bytes.len() as u32, 0, 0, 1, 1);
     header(name_shstrtab, SHT_STRTAB, 0, shstrtab_offset, shstrtab.bytes.len() as u32, 0, 0, 1, 1);
-    header(name_comment, SHT_PROGBITS, 0, comment_offset, COMMENT.len() as u32, 0, 0, 1, 1);
+    header(name_comment, SHT_PROGBITS, 0, comment_offset, comment.len() as u32, 0, 0, 1, 1);
 
     output
 }

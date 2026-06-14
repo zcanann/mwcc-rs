@@ -104,7 +104,7 @@ fn compile(source: &str, source_name: &str, build: mwcc_versions::CompilerBuild,
     let tokens = mwcc_source_to_tokens::tokenize(source)?;
     let function = mwcc_tokens_to_syntax_trees::parse_function(tokens.clone())?;
     let machine_code = mwcc_syntax_trees_to_machine_code::lower_function(&function, build)?;
-    let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name);
+    let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name, build.version, build.build);
 
     if let Some(directory) = artifacts {
         write_artifacts(directory, build, &tokens, &function, &machine_code, &object);
