@@ -10,4 +10,4 @@ mod types;
 pub use expression::Expression;
 pub use function::{Function, GuardedReturn, LocalDeclaration, Parameter};
 pub use operators::{BinaryOperator, UnaryOperator};
-pub use types::Type;
+pub use types::{Pointee, Type};

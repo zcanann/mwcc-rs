@@ -27,9 +27,13 @@ impl Generator {
                 }
             };
             let signed = self.signed_of(parameter.parameter_type);
+            let pointee = match parameter.parameter_type {
+                Type::Pointer(pointee) => Some(pointee),
+                _ => None,
+            };
             self.locations.insert(
                 parameter.name.clone(),
-                Location { class, register, signed, width: parameter.parameter_type.width() },
+                Location { class, register, signed, width: parameter.parameter_type.width(), pointee },
             );
         }
         Ok(())
@@ -174,7 +178,11 @@ impl Generator {
         };
         self.evaluate(&local.initializer, local.declared_type, scratch)?;
         let signed = self.signed_of(local.declared_type);
-        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed, width: local.declared_type.width() });
+        let pointee = match local.declared_type {
+            Type::Pointer(pointee) => Some(pointee),
+            _ => None,
+        };
+        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed, width: local.declared_type.width(), pointee });
         self.evaluate(return_expression, return_type, result)
     }
 

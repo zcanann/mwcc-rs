@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, MachineFunction};
-use mwcc_syntax_trees::{Expression, Type, UnaryOperator};
+use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::CompilerBuild;
 use crate::analysis::*;
 
@@ -24,6 +24,8 @@ pub(crate) struct Location {
     pub(crate) signed: bool,
     /// Integer width in bits (8/16/32); narrow values are extended when read.
     pub(crate) width: u8,
+    /// For a pointer value, what it points to (so `*p` picks the right load).
+    pub(crate) pointee: Option<Pointee>,
 }
 
 pub(crate) struct Generator {
@@ -107,6 +109,16 @@ impl Generator {
                 Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?)
             }
             Expression::Cast { target_type, .. } => Ok(self.signed_of(*target_type)),
+            // `*p` has the signedness of the pointee.
+            Expression::Dereference { pointer } => {
+                let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("dereference needs a pointer variable (roadmap)"))?;
+                let pointee = self
+                    .locations
+                    .get(name)
+                    .and_then(|location| location.pointee)
+                    .ok_or_else(|| Diagnostic::error(format!("'{name}' is not a pointer")))?;
+                Ok(pointee.element().is_signed())
+            }
         }
     }
 

@@ -27,4 +27,8 @@ pub enum Expression {
         target_type: Type,
         operand: Box<Expression>,
     },
+    /// `*pointer` — load the pointed-to value.
+    Dereference {
+        pointer: Box<Expression>,
+    },
 }

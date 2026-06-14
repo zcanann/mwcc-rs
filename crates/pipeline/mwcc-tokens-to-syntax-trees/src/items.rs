@@ -1,37 +1,58 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Function, GuardedReturn, LocalDeclaration, Parameter, Type};
+use mwcc_syntax_trees::{Function, GuardedReturn, LocalDeclaration, Parameter, Pointee, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::Parser;
 
+/// The pointee kind for `<scalar>*`. Pointer-to-pointer and pointer-to-aggregate
+/// are not in the subset yet.
+fn pointee_of(base: Type) -> Compilation<Pointee> {
+    match base {
+        Type::Int => Ok(Pointee::Int),
+        Type::UnsignedInt => Ok(Pointee::UnsignedInt),
+        Type::Char => Ok(Pointee::Char),
+        Type::UnsignedChar => Ok(Pointee::UnsignedChar),
+        Type::Short => Ok(Pointee::Short),
+        Type::UnsignedShort => Ok(Pointee::UnsignedShort),
+        Type::Float => Ok(Pointee::Float),
+        other => Err(Diagnostic::error(format!("pointer to {other:?} is not supported yet"))),
+    }
+}
+
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
-        match self.advance() {
-            Token::KeywordInt => Ok(Type::Int),
-            Token::KeywordChar => Ok(Type::Char),
-            Token::KeywordShort => Ok(Type::Short),
+        let base = match self.advance() {
+            Token::KeywordInt => Type::Int,
+            Token::KeywordChar => Type::Char,
+            Token::KeywordShort => Type::Short,
             // `unsigned` may be followed by char/short/int.
             Token::KeywordUnsigned => match self.peek() {
                 Token::KeywordChar => {
                     self.advance();
-                    Ok(Type::UnsignedChar)
+                    Type::UnsignedChar
                 }
                 Token::KeywordShort => {
                     self.advance();
-                    Ok(Type::UnsignedShort)
+                    Type::UnsignedShort
                 }
                 Token::KeywordInt => {
                     self.advance();
-                    Ok(Type::UnsignedInt)
+                    Type::UnsignedInt
                 }
-                _ => Ok(Type::UnsignedInt),
+                _ => Type::UnsignedInt,
             },
-            Token::KeywordFloat => Ok(Type::Float),
-            Token::KeywordVoid => Ok(Type::Void),
-            other => Err(Diagnostic::error(format!("expected a type, found {other}"))),
+            Token::KeywordFloat => Type::Float,
+            Token::KeywordVoid => Type::Void,
+            other => return Err(Diagnostic::error(format!("expected a type, found {other}"))),
+        };
+        // A trailing `*` makes it a pointer to that scalar.
+        if *self.peek() == Token::Star {
+            self.advance();
+            return Ok(Type::Pointer(pointee_of(base)?));
         }
+        Ok(base)
     }
 
     pub(crate) fn function(&mut self) -> Compilation<Function> {

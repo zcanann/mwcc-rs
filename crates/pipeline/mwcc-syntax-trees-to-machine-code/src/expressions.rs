@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, UnaryOperator};
 use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
@@ -30,6 +30,7 @@ impl Generator {
                 self.emit_conditional(condition, when_true, when_false, destination, false)
             }
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
+            Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
             Expression::Binary { operator, left, right } => {
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
@@ -71,6 +72,27 @@ impl Generator {
     /// consumer can fold it there (`addi`), otherwise into the scratch register —
     /// mwcc keeps `addi` operands in place but routes `rlwinm`/logical operands
     /// through `r0`. Returns `None` when a scratch operand does not fit.
+    /// Emit `*pointer` — load the pointed-to value into `destination`, choosing
+    /// the load by the pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`). The pointer
+    /// must be a leaf variable holding the address; richer addressing is on the
+    /// roadmap.
+    pub(crate) fn emit_load_from_pointer(&mut self, pointer: &Expression, destination: u8) -> Compilation<()> {
+        let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("dereference needs a pointer variable (roadmap)"))?;
+        let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        let pointee = location.pointee.ok_or_else(|| Diagnostic::error(format!("'{name}' is not a pointer")))?;
+        let address = location.register;
+        let offset = 0;
+        let instruction = match pointee {
+            Pointee::Int | Pointee::UnsignedInt => Instruction::LoadWord { d: destination, a: address, offset },
+            Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZero { d: destination, a: address, offset },
+            Pointee::Short => Instruction::LoadHalfwordAlgebraic { d: destination, a: address, offset },
+            Pointee::UnsignedShort => Instruction::LoadHalfwordZero { d: destination, a: address, offset },
+            Pointee::Float => Instruction::LoadFloatSingle { d: destination, a: address, offset },
+        };
+        self.output.instructions.push(instruction);
+        Ok(())
+    }
+
     pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
         if let Expression::Variable(name) = operand {
             let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;

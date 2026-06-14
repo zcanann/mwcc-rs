@@ -46,6 +46,16 @@ impl Generator {
             return Ok(());
         }
 
+        // A load already yields the pointee's width; when it matches the return
+        // type the value needs no truncation — load straight into the result.
+        if let Expression::Dereference { pointer } = expression {
+            if let Some(pointee) = leaf_name(pointer).and_then(|name| self.locations.get(name)).and_then(|location| location.pointee) {
+                if pointee.element().width() == width {
+                    return self.evaluate_general(expression, result);
+                }
+            }
+        }
+
         if self.contains_narrow_leaf(expression) {
             return Err(Diagnostic::error("narrow return of a narrow-operand expression needs the truncation-context optimization (roadmap)"));
         }

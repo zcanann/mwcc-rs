@@ -101,6 +101,14 @@ pub enum Instruction {
     StoreWordWithUpdate { s: u8, a: u8, offset: i16 },
     /// `lwz rD, offset(rA)` — load word.
     LoadWord { d: u8, a: u8, offset: i16 },
+    /// `lbz rD, offset(rA)` — load byte, zero-extended.
+    LoadByteZero { d: u8, a: u8, offset: i16 },
+    /// `lhz rD, offset(rA)` — load halfword, zero-extended.
+    LoadHalfwordZero { d: u8, a: u8, offset: i16 },
+    /// `lha rD, offset(rA)` — load halfword, sign-extended.
+    LoadHalfwordAlgebraic { d: u8, a: u8, offset: i16 },
+    /// `lfs frD, offset(rA)` — load float single.
+    LoadFloatSingle { d: u8, a: u8, offset: i16 },
     /// `stfd frS, offset(rA)` — store float double.
     StoreFloatDouble { s: u8, a: u8, offset: i16 },
     /// `fcmpo crf0, frA, frB` — ordered float compare.

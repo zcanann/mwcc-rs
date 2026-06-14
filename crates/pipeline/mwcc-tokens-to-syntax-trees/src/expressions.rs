@@ -65,6 +65,12 @@ impl Parser {
     }
 
     pub(crate) fn factor(&mut self) -> Compilation<Expression> {
+        // prefix dereference: `*pointer`
+        if *self.peek() == Token::Star {
+            self.advance();
+            let pointer = self.factor()?;
+            return Ok(Expression::Dereference { pointer: Box::new(pointer) });
+        }
         // prefix unary operators
         let unary = match self.peek() {
             Token::Minus => Some(UnaryOperator::Negate),
