@@ -84,6 +84,11 @@ pub enum Expression {
         operator: UnaryOperator,
         operand: Box<Expression>,
     },
+    Conditional {
+        condition: Box<Expression>,
+        when_true: Box<Expression>,
+        when_false: Box<Expression>,
+    },
 }
 
 /// A local variable declaration with an initializer: `type name = expression;`.

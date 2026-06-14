@@ -76,6 +76,14 @@ pub enum Instruction {
     FloatNegativeMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
     /// `fmr frD, frB`
     FloatMove { d: u8, b: u8 },
+    /// `cmpwi crf0, rA, SIMM` — signed compare against an immediate.
+    CompareWordImmediate { a: u8, immediate: i16 },
+    /// `cmpw crf0, rA, rB` — signed compare.
+    CompareWord { a: u8, b: u8 },
+    /// A forward conditional branch to another instruction (by index). `options`
+    /// is the PowerPC BO field, `condition_bit` the BI field (cr0: 0=LT,1=GT,2=EQ).
+    /// The byte offset is resolved at encode time from the instruction positions.
+    BranchConditionalForward { options: u8, condition_bit: u8, target: usize },
     /// `blr` — return to link register.
     BranchToLinkRegister,
 }
@@ -143,6 +151,10 @@ impl Instruction {
             Instruction::FloatMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 28),
             Instruction::FloatNegativeMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 30),
             Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
+            Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
+            Instruction::CompareWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
+            // resolved positionally in encode_text
+            Instruction::BranchConditionalForward { .. } => 0,
             Instruction::BranchToLinkRegister => 0x4E80_0020,
         }
     }
@@ -179,11 +191,19 @@ impl MachineFunction {
         MachineFunction { name: name.into(), instructions: Vec::new() }
     }
 
-    /// Encode the whole function to big-endian `.text` bytes.
+    /// Encode the whole function to big-endian `.text` bytes. Forward conditional
+    /// branches are resolved here from instruction positions.
     pub fn encode_text(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.instructions.len() * 4);
-        for instruction in &self.instructions {
-            bytes.extend_from_slice(&instruction.encode().to_be_bytes());
+        for (index, instruction) in self.instructions.iter().enumerate() {
+            let word = match *instruction {
+                Instruction::BranchConditionalForward { options, condition_bit, target } => {
+                    let offset = (target as i64 - index as i64) * 4;
+                    (16 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | ((offset as u32) & 0xfffc)
+                }
+                ref other => other.encode(),
+            };
+            bytes.extend_from_slice(&word.to_be_bytes());
         }
         bytes
     }

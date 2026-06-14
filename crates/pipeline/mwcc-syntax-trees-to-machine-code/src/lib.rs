@@ -40,7 +40,7 @@ const GENERAL_SCRATCH: u8 = 0; // r0
 const FLOAT_SCRATCH: u8 = 0; // f0
 
 fn is_complex(expression: &Expression) -> bool {
-    matches!(expression, Expression::Binary { .. } | Expression::Unary { .. })
+    matches!(expression, Expression::Binary { .. } | Expression::Unary { .. } | Expression::Conditional { .. })
 }
 
 fn is_zero_literal(expression: &Expression) -> bool {
@@ -112,6 +112,7 @@ fn needs_scratch(expression: &Expression) -> bool {
         Expression::Unary { operator, operand } => {
             matches!(operator, UnaryOperator::LogicalNot) || needs_scratch(operand)
         }
+        Expression::Conditional { .. } => true,
         _ => false,
     }
 }
@@ -132,6 +133,9 @@ fn fits_single_scratch(expression: &Expression, destination_is_scratch: bool) ->
             UnaryOperator::LogicalNot => !destination_is_scratch && fits_single_scratch(operand, destination_is_scratch),
             _ => fits_single_scratch(operand, destination_is_scratch),
         },
+        // a conditional is only handled at the top of an evaluation, not nested
+        // inside the single-scratch tree model
+        Expression::Conditional { .. } => false,
         _ => true,
     }
 }
@@ -268,6 +272,9 @@ impl Generator {
                 Ok(())
             }
             Expression::Unary { operator, operand } => self.emit_unary(*operator, operand, destination),
+            Expression::Conditional { condition, when_true, when_false } => {
+                self.emit_conditional(condition, when_true, when_false, destination)
+            }
             Expression::Binary { operator, left, right } => {
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
@@ -356,6 +363,37 @@ impl Generator {
         });
         self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: right_register });
         self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: GENERAL_SCRATCH, b: left_register });
+        Ok(())
+    }
+
+    /// Emit a ternary `condition ? when_true : when_false` into `destination`,
+    /// matching mwcc's shape: the false value's register is the working register,
+    /// conditionally overwritten with the true value, then moved to the result.
+    /// Leaf operands only for now.
+    fn emit_conditional(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        let condition_register = self.general_register_of_leaf(condition)?;
+        let true_register = self.general_register_of_leaf(when_true)?;
+        let false_register = self.general_register_of_leaf(when_false)?;
+
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: condition_register, immediate: 0 });
+        let branch_index = self.output.instructions.len();
+        // beq: BO=12 (branch if true), BI=2 (cr0 EQ) — skip the true-path move when the condition is zero.
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
+        self.output.instructions.push(Instruction::move_register(false_register, true_register));
+
+        let label = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = label;
+        }
+        if destination != false_register {
+            self.output.instructions.push(Instruction::move_register(destination, false_register));
+        }
         Ok(())
     }
 
@@ -461,6 +499,9 @@ impl Generator {
                 UnaryOperator::LogicalNot => Ok(true),
                 _ => self.signedness_of(operand),
             },
+            Expression::Conditional { when_true, when_false, .. } => {
+                Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?)
+            }
         }
     }
 
@@ -645,6 +686,11 @@ impl Generator {
                 self.collect_registers(right, registers);
             }
             Expression::Unary { operand, .. } => self.collect_registers(operand, registers),
+            Expression::Conditional { condition, when_true, when_false } => {
+                self.collect_registers(condition, registers);
+                self.collect_registers(when_true, registers);
+                self.collect_registers(when_false, registers);
+            }
             _ => {}
         }
     }
@@ -687,6 +733,7 @@ impl Generator {
                 Ok(())
             }
             Expression::Unary { .. } => Err(Diagnostic::error("float unary operators not yet supported")),
+            Expression::Conditional { .. } => Err(Diagnostic::error("float conditional not yet supported")),
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literals need the constant pool (roadmap M3)")),
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
         }

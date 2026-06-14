@@ -111,7 +111,20 @@ impl Parser {
     }
 
     fn expression(&mut self) -> Compilation<Expression> {
-        self.binary_expression(1)
+        let condition = self.binary_expression(1)?;
+        // ternary conditional has the lowest precedence
+        if *self.peek() == Token::Question {
+            self.advance();
+            let when_true = self.expression()?;
+            self.expect(Token::Colon)?;
+            let when_false = self.expression()?;
+            return Ok(Expression::Conditional {
+                condition: Box::new(condition),
+                when_true: Box::new(when_true),
+                when_false: Box::new(when_false),
+            });
+        }
+        Ok(condition)
     }
 
     /// Precedence-climbing parse of left-associative binary operators with

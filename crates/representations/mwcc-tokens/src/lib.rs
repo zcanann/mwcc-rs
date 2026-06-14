@@ -21,6 +21,8 @@ pub enum Token {
     Semicolon,
     Comma,
     Equals,
+    Question,
+    Colon,
     Plus,
     Minus,
     Star,

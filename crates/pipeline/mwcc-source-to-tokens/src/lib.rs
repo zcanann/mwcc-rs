@@ -111,6 +111,8 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             '=' => Token::Equals,
+            '?' => Token::Question,
+            ':' => Token::Colon,
             '+' => Token::Plus,
             '-' => Token::Minus,
             '*' => Token::Star,
