@@ -518,6 +518,21 @@ impl Generator {
     /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
     fn emit_modulo(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
+
+        // Unsigned modulo by a power of two is a low-bit mask: a % 2^k == a & (2^k - 1).
+        if !signed {
+            if let Expression::IntegerLiteral(divisor) = right {
+                if *divisor >= 2 && (*divisor as u64).is_power_of_two() {
+                    let Some(source) = self.place_operand(left, destination, false)? else {
+                        return Err(Diagnostic::error("modulo value needs the full register allocator (roadmap M1)"));
+                    };
+                    let clear = 32 - divisor.trailing_zeros() as u8;
+                    self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear });
+                    return Ok(());
+                }
+            }
+        }
+
         let left_register = self.general_register_of_leaf(left)?;
         let right_register = self.general_register_of_leaf(right)?;
         self.output.instructions.push(if signed {
