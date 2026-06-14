@@ -904,12 +904,15 @@ impl Generator {
 
         if let Expression::IntegerLiteral(amount) = right {
             if (1..=31).contains(amount) {
-                self.evaluate_general(left, d)?;
+                // The shifted value: a leaf stays put, a sub-expression goes to scratch.
+                let Some(source) = self.place_operand(left, d, false)? else {
+                    return Err(Diagnostic::error("shift value needs the full register allocator (roadmap M1)"));
+                };
                 let shift = *amount as u8;
                 self.output.instructions.push(if signed {
-                    Instruction::ShiftRightAlgebraicImmediate { a: d, s: d, shift }
+                    Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift }
                 } else {
-                    Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift }
+                    Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift }
                 });
                 return Ok(());
             }
