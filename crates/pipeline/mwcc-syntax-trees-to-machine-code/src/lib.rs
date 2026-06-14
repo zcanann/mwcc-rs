@@ -557,6 +557,22 @@ impl Generator {
         destination: u8,
         tail: bool,
     ) -> Compilation<()> {
+        // `cond ? x : 0` with a plain truth condition is branchless: AND x with a
+        // mask that is all-ones when cond != 0.
+        if is_zero_literal(when_false) {
+            if let (Some(condition_name), Some(value_name)) = (leaf_name(condition), leaf_name(when_true)) {
+                if let (Some(condition_register), Some(value_register)) =
+                    (self.lookup_general(condition_name), self.lookup_general(value_name))
+                {
+                    self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
+                    self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                    self.output.instructions.push(Instruction::And { a: destination, s: value_register, b: GENERAL_SCRATCH });
+                    return Ok(());
+                }
+            }
+        }
+
         let true_register = self.general_register_of_leaf(when_true)?;
         let false_register = self.general_register_of_leaf(when_false)?;
 
