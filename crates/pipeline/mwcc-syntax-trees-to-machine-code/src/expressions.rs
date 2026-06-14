@@ -198,20 +198,22 @@ impl Generator {
         Ok(())
     }
 
-    /// The register holding the value to store: a leaf in its own register, or an
-    /// integer constant materialized into the scratch.
+    /// The register holding the value to store: a leaf stays in its own register,
+    /// anything else is computed into the scratch (`li r0,0; stw r0,…`,
+    /// `add r0,…; stw r0,…`) ahead of the store.
     fn place_store_value(&mut self, value: &Expression, pointee: Pointee) -> Compilation<u8> {
         if pointee == Pointee::Float {
-            return self.float_register_of_leaf(value);
+            if matches!(value, Expression::Variable(_)) {
+                return self.float_register_of_leaf(value);
+            }
+            self.evaluate_float(value, FLOAT_SCRATCH)?;
+            return Ok(FLOAT_SCRATCH);
         }
         if matches!(value, Expression::Variable(_)) {
             return self.general_register_of_leaf(value);
         }
-        if let Some(constant) = constant_value(value) {
-            self.load_integer_constant(GENERAL_SCRATCH, constant);
-            return Ok(GENERAL_SCRATCH);
-        }
-        Err(Diagnostic::error("store value needs the full register allocator (roadmap)"))
+        self.evaluate_general(value, GENERAL_SCRATCH)?;
+        Ok(GENERAL_SCRATCH)
     }
 
     /// `(pointee, address register)` for a pointer leaf variable.
