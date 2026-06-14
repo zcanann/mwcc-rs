@@ -16,13 +16,32 @@ pub struct Parameter {
     pub name: String,
 }
 
-/// An arithmetic operator.
+/// A binary operator.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOperator {
     Add,
     Subtract,
     Multiply,
     Divide,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
+}
+
+impl BinaryOperator {
+    /// Binding strength (higher binds tighter), matching C for these operators.
+    pub fn precedence(self) -> u8 {
+        match self {
+            BinaryOperator::Multiply | BinaryOperator::Divide => 6,
+            BinaryOperator::Add | BinaryOperator::Subtract => 5,
+            BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => 4,
+            BinaryOperator::BitAnd => 3,
+            BinaryOperator::BitXor => 2,
+            BinaryOperator::BitOr => 1,
+        }
+    }
 }
 
 /// An expression.

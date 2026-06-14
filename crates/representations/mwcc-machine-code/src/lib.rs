@@ -28,6 +28,16 @@ pub enum Instruction {
     ShiftLeftImmediate { a: u8, s: u8, shift: u8 },
     /// `or rA, rS, rB` — spells `mr rA, rS` when `s == b`.
     Or { a: u8, s: u8, b: u8 },
+    /// `and rA, rS, rB`
+    And { a: u8, s: u8, b: u8 },
+    /// `xor rA, rS, rB`
+    Xor { a: u8, s: u8, b: u8 },
+    /// `slw rA, rS, rB` — shift left word by the low bits of rB.
+    ShiftLeftWord { a: u8, s: u8, b: u8 },
+    /// `xori rA, rS, UIMM`
+    XorImmediate { a: u8, s: u8, immediate: u16 },
+    /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
+    ClearLeftImmediate { a: u8, s: u8, clear: u8 },
     /// `fadds frD, frA, frB`
     FloatAddSingle { d: u8, a: u8, b: u8 },
     /// `fsubs frD, frA, frB`
@@ -75,7 +85,15 @@ impl Instruction {
                 let mask_end = 31 - shift as u32;
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (mask_end << 1)
             }
-            Instruction::Or { a, s, b } => (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (444 << 1),
+            Instruction::Or { a, s, b } => logical_form(s, a, b, 444),
+            Instruction::And { a, s, b } => logical_form(s, a, b, 28),
+            Instruction::Xor { a, s, b } => logical_form(s, a, b, 316),
+            Instruction::ShiftLeftWord { a, s, b } => logical_form(s, a, b, 24),
+            Instruction::XorImmediate { a, s, immediate } => d_form(26, s, a, immediate),
+            // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
+            Instruction::ClearLeftImmediate { a, s, clear } => {
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1)
+            }
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
             Instruction::FloatMultiplySingle { d, a, c } => a_form(59, d, a, 0, c, 25),
@@ -93,6 +111,10 @@ fn d_form(opcode: u32, d: u8, a: u8, immediate: u16) -> u32 {
 }
 fn xo_form(d: u8, a: u8, b: u8, extended_opcode: u32) -> u32 {
     (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (extended_opcode << 1)
+}
+/// Logical/shift register form: opcode 31, rS in the D slot, rA in the A slot, rB.
+fn logical_form(s: u8, a: u8, b: u8, extended_opcode: u32) -> u32 {
+    (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (extended_opcode << 1)
 }
 fn a_form(opcode: u32, d: u8, a: u8, b: u8, c: u8, extended_opcode: u32) -> u32 {
     (opcode << 26)

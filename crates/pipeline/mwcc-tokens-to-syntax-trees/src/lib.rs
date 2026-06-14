@@ -104,33 +104,37 @@ impl Parser {
     }
 
     fn expression(&mut self) -> Compilation<Expression> {
-        let mut left = self.term()?;
-        loop {
-            let operator = match self.peek() {
-                Token::Plus => BinaryOperator::Add,
-                Token::Minus => BinaryOperator::Subtract,
-                _ => break,
-            };
+        self.binary_expression(1)
+    }
+
+    /// Precedence-climbing parse of left-associative binary operators with
+    /// precedence at least `minimum`.
+    fn binary_expression(&mut self, minimum: u8) -> Compilation<Expression> {
+        let mut left = self.factor()?;
+        while let Some(operator) = self.peek_binary_operator() {
+            if operator.precedence() < minimum {
+                break;
+            }
             self.advance();
-            let right = self.term()?;
+            let right = self.binary_expression(operator.precedence() + 1)?;
             left = Expression::Binary { operator, left: Box::new(left), right: Box::new(right) };
         }
         Ok(left)
     }
 
-    fn term(&mut self) -> Compilation<Expression> {
-        let mut left = self.factor()?;
-        loop {
-            let operator = match self.peek() {
-                Token::Star => BinaryOperator::Multiply,
-                Token::Slash => BinaryOperator::Divide,
-                _ => break,
-            };
-            self.advance();
-            let right = self.factor()?;
-            left = Expression::Binary { operator, left: Box::new(left), right: Box::new(right) };
-        }
-        Ok(left)
+    fn peek_binary_operator(&self) -> Option<BinaryOperator> {
+        Some(match self.peek() {
+            Token::Plus => BinaryOperator::Add,
+            Token::Minus => BinaryOperator::Subtract,
+            Token::Star => BinaryOperator::Multiply,
+            Token::Slash => BinaryOperator::Divide,
+            Token::Ampersand => BinaryOperator::BitAnd,
+            Token::Pipe => BinaryOperator::BitOr,
+            Token::Caret => BinaryOperator::BitXor,
+            Token::ShiftLeft => BinaryOperator::ShiftLeft,
+            Token::ShiftRight => BinaryOperator::ShiftRight,
+            _ => return None,
+        })
     }
 
     fn factor(&mut self) -> Compilation<Expression> {

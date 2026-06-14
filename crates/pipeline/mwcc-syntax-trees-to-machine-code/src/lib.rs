@@ -51,13 +51,31 @@ fn as_multiplication(expression: &Expression) -> Option<(&Expression, &Expressio
     }
 }
 
-/// If `expression` is an integer literal that fits a signed 16-bit immediate,
-/// return it.
-fn as_small_integer(expression: &Expression) -> Option<i16> {
-    match expression {
-        Expression::IntegerLiteral(value) => i16::try_from(*value).ok(),
-        _ => None,
+fn is_commutative(operator: BinaryOperator) -> bool {
+    matches!(
+        operator,
+        BinaryOperator::Add | BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor
+    )
+}
+
+fn fits_signed_16(value: i64) -> bool {
+    (-0x8000..=0x7fff).contains(&value)
+}
+
+fn fits_unsigned_16(value: i64) -> bool {
+    (0..=0xffff).contains(&value)
+}
+
+/// If `value` is a mask of exactly the low `k` bits (`2^k - 1`, `1 <= k <= 31`),
+/// return `k`.
+fn low_bit_mask(value: i64) -> Option<u8> {
+    if value >= 1 && (value as u64 & (value as u64 + 1)) == 0 {
+        let bits = (value as u64 + 1).trailing_zeros();
+        if (1..=31).contains(&bits) {
+            return Some(bits as u8);
+        }
     }
+    None
 }
 
 /// Whether evaluating `expression` uses the scratch register at all — true when
@@ -225,9 +243,9 @@ impl Generator {
         }
     }
 
-    /// Fold a 16-bit constant operand into an immediate instruction: `addi` for
-    /// add/subtract, `slwi` for multiply by a power of two, `mulli` otherwise.
-    /// Returns whether an instruction was emitted.
+    /// Fold a constant operand into an immediate instruction. Returns whether an
+    /// instruction was emitted; if the constant does not qualify (out of range,
+    /// non-mask), returns false so the caller can stop honestly.
     fn try_emit_general_with_constant(
         &mut self,
         operator: BinaryOperator,
@@ -235,44 +253,51 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
-        // variable-side op constant
-        if let Some(constant) = as_small_integer(right) {
-            match operator {
-                BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply => {
-                    self.evaluate_general(left, destination)?;
-                    let signed = if matches!(operator, BinaryOperator::Subtract) { -constant } else { constant };
-                    self.emit_general_immediate(operator, destination, signed);
-                    return Ok(true);
-                }
-                BinaryOperator::Divide => {}
+        // variable op constant — subtraction becomes addition of the negation.
+        if let Expression::IntegerLiteral(constant) = right {
+            let (effective, value) = match operator {
+                BinaryOperator::Subtract => (BinaryOperator::Add, -constant),
+                other => (other, *constant),
+            };
+            if self.emit_constant_form(effective, left, value, destination)? {
+                return Ok(true);
             }
         }
-        // constant op variable — only for the commutative operators
-        if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply) {
-            if let Some(constant) = as_small_integer(left) {
-                self.evaluate_general(right, destination)?;
-                self.emit_general_immediate(operator, destination, constant);
-                return Ok(true);
+        // constant op variable — only the commutative operators.
+        if is_commutative(operator) {
+            if let Expression::IntegerLiteral(constant) = left {
+                if self.emit_constant_form(operator, right, *constant, destination)? {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)
     }
 
-    fn emit_general_immediate(&mut self, operator: BinaryOperator, destination: u8, constant: i16) {
+    /// Evaluate `variable` into `destination` and apply `constant` via the
+    /// matching immediate instruction, if the constant qualifies for one.
+    fn emit_constant_form(&mut self, operator: BinaryOperator, variable: &Expression, constant: i64, destination: u8) -> Compilation<bool> {
+        let d = destination;
         let instruction = match operator {
-            BinaryOperator::Add | BinaryOperator::Subtract => {
-                Instruction::AddImmediate { d: destination, a: destination, immediate: constant }
-            }
-            BinaryOperator::Multiply => {
-                if constant >= 2 && (constant as u16).is_power_of_two() {
-                    Instruction::ShiftLeftImmediate { a: destination, s: destination, shift: constant.trailing_zeros() as u8 }
+            BinaryOperator::Add if fits_signed_16(constant) => Instruction::AddImmediate { d, a: d, immediate: constant as i16 },
+            BinaryOperator::Multiply if fits_signed_16(constant) => {
+                if constant >= 2 && (constant as u64).is_power_of_two() {
+                    Instruction::ShiftLeftImmediate { a: d, s: d, shift: constant.trailing_zeros() as u8 }
                 } else {
-                    Instruction::MultiplyImmediate { d: destination, a: destination, immediate: constant }
+                    Instruction::MultiplyImmediate { d, a: d, immediate: constant as i16 }
                 }
             }
-            BinaryOperator::Divide => unreachable!("caller excludes divide"),
+            BinaryOperator::BitOr if fits_unsigned_16(constant) => Instruction::OrImmediate { a: d, s: d, immediate: constant as u16 },
+            BinaryOperator::BitXor if fits_unsigned_16(constant) => Instruction::XorImmediate { a: d, s: d, immediate: constant as u16 },
+            BinaryOperator::BitAnd if low_bit_mask(constant).is_some() => {
+                Instruction::ClearLeftImmediate { a: d, s: d, clear: 32 - low_bit_mask(constant).unwrap() }
+            }
+            BinaryOperator::ShiftLeft if (1..=31).contains(&constant) => Instruction::ShiftLeftImmediate { a: d, s: d, shift: constant as u8 },
+            _ => return Ok(false),
         };
+        self.evaluate_general(variable, destination)?;
         self.output.instructions.push(instruction);
+        Ok(true)
     }
 
     fn place_general_operands(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
@@ -467,6 +492,12 @@ fn general_combine(operator: BinaryOperator, destination: u8, operands: Operands
         BinaryOperator::Add => Instruction::Add { d: destination, a: first, b: second },
         BinaryOperator::Subtract => Instruction::SubtractFrom { d: destination, a: operands.right, b: operands.left },
         BinaryOperator::Multiply => Instruction::MultiplyLow { d: destination, a: first, b: second },
+        BinaryOperator::BitAnd => Instruction::And { a: destination, s: first, b: second },
+        BinaryOperator::BitOr => Instruction::Or { a: destination, s: first, b: second },
+        BinaryOperator::BitXor => Instruction::Xor { a: destination, s: first, b: second },
+        // shifts are not commutative: keep source order
+        BinaryOperator::ShiftLeft => Instruction::ShiftLeftWord { a: destination, s: operands.left, b: operands.right },
+        BinaryOperator::ShiftRight => return Err(Diagnostic::error("'>>' needs signed/unsigned types (roadmap)")),
         BinaryOperator::Divide => return Err(Diagnostic::error("integer division not yet supported")),
     })
 }
@@ -478,5 +509,10 @@ fn float_combine(operator: BinaryOperator, destination: u8, operands: Operands) 
         BinaryOperator::Subtract => Instruction::FloatSubtractSingle { d: destination, a: operands.left, b: operands.right },
         BinaryOperator::Multiply => Instruction::FloatMultiplySingle { d: destination, a: first, c: second },
         BinaryOperator::Divide => return Err(Diagnostic::error("float division not yet supported")),
+        BinaryOperator::BitAnd
+        | BinaryOperator::BitOr
+        | BinaryOperator::BitXor
+        | BinaryOperator::ShiftLeft
+        | BinaryOperator::ShiftRight => return Err(Diagnostic::error("bitwise operators are not valid on floats")),
     })
 }

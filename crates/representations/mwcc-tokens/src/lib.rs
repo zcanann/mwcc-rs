@@ -24,6 +24,11 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    Ampersand,
+    Pipe,
+    Caret,
+    ShiftLeft,
+    ShiftRight,
     EndOfFile,
 }
 

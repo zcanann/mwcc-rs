@@ -85,6 +85,18 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             continue;
         }
 
+        // two-character operators
+        if character == '<' && peek(bytes, position + 1) == Some(b'<') {
+            tokens.push(Token::ShiftLeft);
+            position += 2;
+            continue;
+        }
+        if character == '>' && peek(bytes, position + 1) == Some(b'>') {
+            tokens.push(Token::ShiftRight);
+            position += 2;
+            continue;
+        }
+
         let punctuation = match character {
             '(' => Token::ParenOpen,
             ')' => Token::ParenClose,
@@ -97,6 +109,9 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             '-' => Token::Minus,
             '*' => Token::Star,
             '/' => Token::Slash,
+            '&' => Token::Ampersand,
+            '|' => Token::Pipe,
+            '^' => Token::Caret,
             other => return Err(Diagnostic::error(format!("unexpected character '{other}'"))),
         };
         tokens.push(punctuation);
