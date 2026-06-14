@@ -52,6 +52,10 @@ impl Generator {
         if as_dereference(left).is_some() || as_dereference(right).is_some() {
             return self.place_dereference_operands(operator, left, right, destination);
         }
+        // A global operand also loads into a register (from the small-data area).
+        if self.is_global(left) || self.is_global(right) {
+            return self.place_global_operands(operator, left, right, destination);
+        }
         match (is_complex(left), is_complex(right)) {
             (false, false) => {
                 if self.is_narrow_leaf(left) || self.is_narrow_leaf(right) {
@@ -120,6 +124,50 @@ impl Generator {
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (None, None) => unreachable!("caller checked one side is a dereference"),
+        }
+    }
+
+    /// Whether `operand` is a reference to a file-scope global.
+    fn is_global(&self, operand: &Expression) -> bool {
+        matches!(operand, Expression::Variable(name)
+            if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str()))
+    }
+
+    /// Place a binary node where at least one operand is a global load. A single
+    /// global loads into the scratch (the other operand stays home); two globals
+    /// load left into the destination and right into the scratch, except for
+    /// subtraction, which loads the right into the destination and left into the
+    /// scratch (a global has no address register to keep it in place).
+    fn place_global_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        let subtract = operator == BinaryOperator::Subtract;
+        match (self.is_global(left), self.is_global(right)) {
+            (true, true) => {
+                if destination == GENERAL_SCRATCH {
+                    return Err(Diagnostic::error("two globals need a non-scratch destination (roadmap)"));
+                }
+                let left_name = leaf_name(left).unwrap();
+                let right_name = leaf_name(right).unwrap();
+                if subtract {
+                    self.emit_global_load(right_name, destination)?;
+                    self.emit_global_load(left_name, GENERAL_SCRATCH)?;
+                    Operands::ordered(GENERAL_SCRATCH, destination)
+                } else {
+                    self.emit_global_load(left_name, destination)?;
+                    self.emit_global_load(right_name, GENERAL_SCRATCH)?;
+                    Operands::ordered(destination, GENERAL_SCRATCH)
+                }
+            }
+            (true, false) => {
+                let right_register = self.wide_leaf_register(right)?;
+                self.emit_global_load(leaf_name(left).unwrap(), GENERAL_SCRATCH)?;
+                Operands::ordered(GENERAL_SCRATCH, right_register)
+            }
+            (false, true) => {
+                let left_register = self.wide_leaf_register(left)?;
+                self.emit_global_load(leaf_name(right).unwrap(), GENERAL_SCRATCH)?;
+                Operands::ordered(left_register, GENERAL_SCRATCH)
+            }
+            (false, false) => unreachable!("caller checked one side is a global"),
         }
     }
 

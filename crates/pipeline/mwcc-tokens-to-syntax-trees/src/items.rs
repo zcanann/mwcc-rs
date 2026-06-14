@@ -66,10 +66,15 @@ impl Parser {
             }
             let return_type = self.parse_type()?;
             let name = self.parse_identifier()?;
-            // `type name;` is a global variable declaration.
-            if *self.peek() == Token::Semicolon {
-                self.advance();
+            // `type name;` or `type a, b, c;` is a global variable declaration.
+            if matches!(self.peek(), Token::Semicolon | Token::Comma) {
                 globals.push(GlobalDeclaration { declared_type: return_type, name });
+                while *self.peek() == Token::Comma {
+                    self.advance();
+                    let next = self.parse_identifier()?;
+                    globals.push(GlobalDeclaration { declared_type: return_type, name: next });
+                }
+                self.expect(Token::Semicolon)?;
                 continue;
             }
             self.expect(Token::ParenOpen)?;
