@@ -3,5 +3,90 @@
 version = 4
 
 [[package]]
-name = "mwcc-rs"
+name = "mwcc"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-machine-code",
+ "mwcc-machine-code-to-object",
+ "mwcc-source-to-tokens",
+ "mwcc-syntax-trees",
+ "mwcc-syntax-trees-to-machine-code",
+ "mwcc-tokens",
+ "mwcc-tokens-to-syntax-trees",
+ "mwcc-versions",
+]
+
+[[package]]
+name = "mwcc-core"
+version = "0.0.1"
+
+[[package]]
+name = "mwcc-machine-code"
+version = "0.0.1"
+dependencies = [
+ "mwcc-target",
+]
+
+[[package]]
+name = "mwcc-machine-code-to-object"
+version = "0.0.1"
+dependencies = [
+ "mwcc-machine-code",
+ "mwcc-object",
+]
+
+[[package]]
+name = "mwcc-object"
+version = "0.0.1"
+
+[[package]]
+name = "mwcc-oracle"
+version = "0.0.1"
+
+[[package]]
+name = "mwcc-source-to-tokens"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-tokens",
+]
+
+[[package]]
+name = "mwcc-syntax-trees"
+version = "0.0.1"
+
+[[package]]
+name = "mwcc-syntax-trees-to-machine-code"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-machine-code",
+ "mwcc-syntax-trees",
+ "mwcc-target",
+ "mwcc-versions",
+]
+
+[[package]]
+name = "mwcc-target"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+]
+
+[[package]]
+name = "mwcc-tokens"
+version = "0.0.1"
+
+[[package]]
+name = "mwcc-tokens-to-syntax-trees"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-syntax-trees",
+ "mwcc-tokens",
+]
+
+[[package]]
+name = "mwcc-versions"
 version = "0.0.1"

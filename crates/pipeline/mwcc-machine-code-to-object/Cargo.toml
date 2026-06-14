@@ -1,0 +1,12 @@
+[package]
+name = "mwcc-machine-code-to-object"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mwcc-machine-code.workspace = true
+mwcc-object.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

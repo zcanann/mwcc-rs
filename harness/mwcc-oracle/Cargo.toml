@@ -1,0 +1,12 @@
+[package]
+name = "mwcc-oracle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mwcc-oracle"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"

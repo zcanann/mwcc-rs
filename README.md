@@ -1,70 +1,108 @@
 # mwcc-rs
 
-A byte-matching reimplementation, in Rust, of **Metrowerks CodeWarrior for Embedded PowerPC** (`mwcceppc`) — the compiler used to build GameCube/Wii games — for use in decompilation projects.
+A byte-exact reimplementation, in Rust, of **Metrowerks CodeWarrior for Embedded PowerPC** (`mwcceppc`) — the compiler that built Nintendo GameCube and Wii games — for use in decompilation.
 
-First target: **GC/1.3.2 = mwcceppc 2.4.2 build 81** (the compiler FFCC and many other titles need). The goal is to emit `.text` that is **byte-for-byte identical** to the real compiler, then expand language coverage and add more versions.
+The goal is narrow and absolute: for a supported translation unit, `mwcc-rs` emits a `.text` that is **identical, byte for byte, to the output of the real compiler**. Not equivalent code. The same code. First target is **GC/1.3.2 (mwcceppc 2.4.2 build 81)**; the architecture is built to carry many builds.
 
-## Why
+## Why this exists
 
-Decomp projects must reproduce the original compiler's *exact* output. The real `mwcceppc` is a closed 2002 Windows binary whose register allocator and instruction scheduler are not understood and not patchable. Some builds (e.g. an FFCC-era **1.3.1**) appear to be entirely unpreserved. An open, inspectable, *modifiable* compiler that matches `mwcceppc` would:
+A decompilation is verified by recompiling reconstructed source and checking that it reproduces the original game's machine code exactly. That makes the *compiler* a hard dependency: you must own the precise build the game shipped with, and you must be able to coax its precise register allocation and instruction scheduling. Two problems follow:
 
-- let projects match functions the stock binary can't (different allocator/scheduler behavior),
-- be diffable/patchable to reconstruct missing point builds,
-- serve the whole GC/Wii decomp community (FFCC, BFBB, and others hit the same wall).
+1. **Some builds are lost.** The real `mwcceppc` is a closed 2002 Windows binary. Point builds exist that were never preserved (an FFCC-era 1.3.1, for instance); no amount of searching produces them.
+2. **The real compiler is opaque and unmodifiable.** When its allocator or scheduler makes a choice the reconstructed source can't reproduce, there is no recourse — you cannot inspect why, and you cannot change it.
 
-## Approach: A/B against the oracle
+An open, inspectable, *modifiable* compiler that matches `mwcceppc` removes both walls. It lets projects match functions the stock binary cannot, it can be diffed and adjusted to reconstruct missing builds, and it serves the whole GameCube/Wii decomp community — many projects hit the same compiler wall.
 
-The real `mwcceppc` (run via `wibo`) is the **source of truth**. Development is a tight TDD loop:
+## How it works: the differential oracle
 
-1. Add a tiny C program to `corpus/`.
-2. `harness/abtest.sh` compiles it with **both** the real compiler and `mwcc-rs`, then diffs the `.text` disassembly.
-3. Make `mwcc-rs` match, byte-for-byte. Grow the corpus.
+The real `mwcceppc` is the **source of truth**. Development is a tight test-driven loop against it:
+
+1. Add a small program to `canaries/`.
+2. The oracle compiles it with **both** the real compiler and `mwcc-rs`, and compares the `.text` disassembly.
+3. Make `mwcc-rs` match, exactly. Grow the canary set.
 
 ```sh
 cargo build --release
-./harness/abtest.sh 1.3.2      # PASS/FAIL per corpus entry, with diffs
+./target/release/mwcc-oracle 1.3.2     # PASS/FAIL per canary, with the diff on failure
 ```
 
-The harness expects the FFCC checkout for tooling (`wibo`, the compiler set, `powerpc-eabi-objdump`); override with `FFCC=/path/to/FFCC-Decomp`.
+The oracle needs a decomp checkout for the real toolchain — `wibo`, the compiler set, and `powerpc-eabi-objdump`. Point it at one with `FFCC=/path/to/decomp`. Nothing about the *design* is decomp-specific; that's just where the reference binaries live.
+
+There is a standing rule: **fail honestly**. When a construct is not yet supported, the relevant phase returns a diagnostic. It never emits plausible-but-wrong bytes — a silently-wrong compiler is worse than one that stops.
+
+## Architecture
+
+A Cargo workspace split three ways. The discipline is that **data and transforms are different crates**: a *representation* is the data a phase produces (a noun); a *pipeline* crate is a transform named for what it converts (`source-to-tokens`). You can read the whole compiler off the crate list.
+
+```
+crates/
+  foundation/          shared vocabulary, no pipeline logic
+    mwcc-core            diagnostics, source spans, the Compilation result type
+    mwcc-target          PowerPC/Gekko register file + the EABI calling convention
+    mwcc-versions        the build registry (GC/1.3.2 = 2.4.2 build 81, …) + behavior knobs
+    mwcc-object          ELF32 big-endian PowerPC object writer
+
+  representations/     the data each phase produces
+    mwcc-tokens          lexical tokens
+    mwcc-syntax-trees    the parsed program
+    mwcc-machine-code    PowerPC instructions (structured) + their encodings
+
+  pipeline/            the transforms between representations
+    mwcc-source-to-tokens               lexing
+    mwcc-tokens-to-syntax-trees         parsing
+    mwcc-syntax-trees-to-machine-code   lowering, selection, register assignment
+    mwcc-machine-code-to-object         encoding + object emission
+
+apps/    mwcc            the compiler driver (mwcceppc-compatible CLI)
+harness/ mwcc-oracle     the differential oracle described above
+canaries/                one C program per capability under test
+```
+
+Why structured machine code instead of raw words: the register **allocator** and instruction **scheduler** are where byte-matching is actually won or lost, and they must *inspect and rewrite* the instruction stream before it is encoded. They get their own pipeline crates as the language grows; the `mwcc-machine-code` representation is the seam they plug into.
+
+On dependencies: the codegen path is deliberately bespoke. General code generators (Cranelift, LLVM) optimize for *good* code and ship their own allocator and scheduler — the exact passes we must reproduce — so they cannot help here and would actively prevent matching. We also own the object bytes rather than reaching for a general object crate, because decomp tooling keys on exact section ordering, symbol order, alignment, and the Metrowerks `.comment` record. (A general object writer becomes worth adopting once relocations and `.data`/`.sdata` arrive; see M3.)
+
+## Inspecting a compilation
+
+Every phase can dump an artifact, which is how you debug a byte mismatch — you can see precisely where our decision diverged from the oracle's:
+
+```sh
+mwcc -c canaries/02_add.c -o add.o --emit-artifacts ./build
+#  00_build.txt  01_tokens.txt  02_syntax_tree.txt  03_machine_code.txt  04_object.txt
+```
 
 ## Status
 
-v0 — pipeline complete (lexer → parser → codegen → ELF32 BE PPC object), **9/9 corpus byte-exact** vs GC/1.3.2:
-leaf functions, integer return / args (`r3,r4,…`→`r3`), float return / args (`f1,f2,…`→`f1`),
-`+ - *` int (`add`/`subf`/`mullw`), `+ - *` float (`fadds`/`fsubs`/`fmuls`), 16-bit and 32-bit constants
-(`li`, `lis`+`addi` ha16/lo16), redundant-move elision.
+v0 — the pipeline is complete end to end (lex → parse → machine code → ELF object) and **9/9 canaries are byte-exact vs GC/1.3.2**:
 
-## Roadmap (milestone ladder)
+- leaf functions, no stack frame
+- the EABI: integer args `r3, r4, …` → result `r3`; float args `f1, f2, …` → result `f1`
+- `+ - *` on integers (`add` / `subf` / `mullw`) and floats (`fadds` / `fsubs` / `fmuls`)
+- 16- and 32-bit integer constants (`li`; `lis` + `addi` with high-half adjustment)
+- redundant-move elision (returning the first argument emits just `blr`)
 
-Each milestone = a corpus tier that must stay 100% byte-exact before moving on.
+## Roadmap
 
-- **M1 — expressions & locals:** deeper expression trees, local variables, stack frame
-  (prologue/epilogue: `stwu`/`mflr`/`stw`…/`lwz`/`mtlr`/`blr`), spill model, the
-  **register allocator** (this is where FFCC's f2/f3 divergence lives — the core research target).
-- **M2 — control flow:** `if`/`else`/`while`/`for`, comparisons, `b`/`bc` and the
-  **instruction scheduler** (the `pppColum`-class reorders).
-- **M3 — memory & types:** pointers, structs, arrays, `char`/`short`/`u8`…, loads/stores,
-  `.data`/`.sdata`/relocations, the **float/double constant pool** (the int→float bias the
-  FFCC `randchar` cast needs).
-- **M4 — calls & ABI:** function calls, arg marshalling, varargs, returning aggregates.
-- **M5 — C++ subset:** name mangling (Metrowerks ABI), member fns, references, `inline`,
-  simple templates — enough to compile real decomp TUs like `pppRandCV.cpp`.
-- **M6 — versions:** parameterize codegen by build; add GC/1.2.5n, 2.0, 2.6, 2.7, and a
-  reconstructed 1.3.1. Validate against each real binary via the harness.
+Each milestone is a canary tier that must stay 100% byte-exact before the next begins.
 
-## Validation against real decomps
+- **M1 — locals, stack frames, the register allocator.** Prologue/epilogue (`stwu` / `mflr` / `stw…` / `lwz` / `mtlr` / `blr`), a spill model, and the allocator. This is the core research target: matching mwcc's exact register coloring is the single hardest part of the whole project.
+- **M2 — control flow and the instruction scheduler.** `if` / `while` / `for`, comparisons and conditional branches, and the scheduler that decides instruction order.
+- **M3 — memory, types, and the constant pool.** Pointers, structs, arrays, the narrow integer types, loads and stores, `.data` / `.sdata` and **relocations**, and the float/double constant pool.
+- **M4 — calls and the full ABI.** Function calls, argument marshalling, varargs, aggregate returns.
+- **M5 — a C++ subset.** Metrowerks name mangling, member functions, references, `inline`, simple templates — enough to compile real decomp translation units.
+- **M6 — multiple builds.** Parameterize codegen by `CompilerBuild`; add GC/1.2.5n, 2.0, 2.6, 2.7, and a reconstructed 1.3.1, each validated against its real binary through the oracle.
 
-Beyond the synthetic corpus, the harness can be pointed at real translation units from
-`reference_projects/` (other GC decomps) and FFCC itself: compile a TU with `mwcc-rs` and diff
-against the project's known-good target object. The `pppRand*` family is the canonical hard test.
+## Canaries
 
-## Layout
+A canary is the smallest program that pins one compiler behavior. Because the real compiler defines the expected output, canaries are just source — the oracle supplies the answer. Name a canary for the behavior it exercises, not the program that exposed it. Beyond the synthetic set, the oracle can be pointed at real translation units and diffed against a project's known-good objects; that is the ultimate test.
 
-```
-src/lexer.rs    src/parser.rs    src/codegen.rs   # front to back end
-src/ppc.rs      # PPC/Gekko instruction encoders (verified vs oracle)
-src/elf.rs      # ELF32 big-endian PPC object writer
-corpus/         # A/B test programs (the milestone ladder)
-harness/abtest.sh
-oracle_probe/   # scratch: real-compiler output samples used to derive encodings
-```
+## Conventions
+
+- **Real words.** `expression`, not `expr`; `arguments`, not `args`; `character`, not `ch`. Names should read without compiler-insider shorthand.
+- **Honest phases.** Lex, parse, lower, select, allocate, schedule, emit — each does one nameable thing, and says so when it can't.
+- **Own the bytes.** The output is the product; the encoder and the object container are ours so every byte is accountable.
+- **The oracle is the authority.** No guessing about what mwcc does — every claim is a diff against the real compiler.
+
+## License
+
+Dual-licensed under MIT or Apache-2.0.

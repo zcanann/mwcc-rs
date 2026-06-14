@@ -1,0 +1,15 @@
+[package]
+name = "mwcc-syntax-trees-to-machine-code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mwcc-core.workspace = true
+mwcc-syntax-trees.workspace = true
+mwcc-machine-code.workspace = true
+mwcc-target.workspace = true
+mwcc-versions.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

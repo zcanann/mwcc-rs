@@ -1,0 +1,23 @@
+[package]
+name = "mwcc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mwcc"
+path = "src/main.rs"
+
+[dependencies]
+mwcc-core.workspace = true
+mwcc-versions.workspace = true
+mwcc-tokens.workspace = true
+mwcc-syntax-trees.workspace = true
+mwcc-machine-code.workspace = true
+mwcc-source-to-tokens.workspace = true
+mwcc-tokens-to-syntax-trees.workspace = true
+mwcc-syntax-trees-to-machine-code.workspace = true
+mwcc-machine-code-to-object.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
