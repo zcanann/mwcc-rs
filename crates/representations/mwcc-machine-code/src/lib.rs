@@ -26,6 +26,10 @@ pub enum Instruction {
     Nor { a: u8, s: u8, b: u8 },
     /// `cntlzw rA, rS` — count leading zero bits.
     CountLeadingZeros { a: u8, s: u8 },
+    /// `extsb rA, rS` — sign-extend byte.
+    ExtendSignByte { a: u8, s: u8 },
+    /// `extsh rA, rS` — sign-extend halfword.
+    ExtendSignHalfword { a: u8, s: u8 },
     /// `andc rA, rS, rB` => rA = rS & ~rB.
     AndComplement { a: u8, s: u8, b: u8 },
     /// `orc rA, rS, rB` => rA = rS | ~rB.
@@ -139,6 +143,8 @@ impl Instruction {
             Instruction::Negate { d, a } => xo_form(d, a, 0, 104),
             Instruction::Nor { a, s, b } => logical_form(s, a, b, 124),
             Instruction::CountLeadingZeros { a, s } => logical_form(s, a, 0, 26),
+            Instruction::ExtendSignByte { a, s } => logical_form(s, a, 0, 954),
+            Instruction::ExtendSignHalfword { a, s } => logical_form(s, a, 0, 922),
             Instruction::AndComplement { a, s, b } => logical_form(s, a, b, 60),
             Instruction::OrComplement { a, s, b } => logical_form(s, a, b, 412),
             Instruction::SubtractFromImmediate { d, a, immediate } => d_form(8, d, a, immediate as u16),

@@ -41,13 +41,24 @@ impl Parser {
     fn parse_type(&mut self) -> Compilation<Type> {
         match self.advance() {
             Token::KeywordInt => Ok(Type::Int),
-            // `unsigned` and `unsigned int` both mean unsigned int.
-            Token::KeywordUnsigned => {
-                if *self.peek() == Token::KeywordInt {
+            Token::KeywordChar => Ok(Type::Char),
+            Token::KeywordShort => Ok(Type::Short),
+            // `unsigned` may be followed by char/short/int.
+            Token::KeywordUnsigned => match self.peek() {
+                Token::KeywordChar => {
                     self.advance();
+                    Ok(Type::UnsignedChar)
                 }
-                Ok(Type::UnsignedInt)
-            }
+                Token::KeywordShort => {
+                    self.advance();
+                    Ok(Type::UnsignedShort)
+                }
+                Token::KeywordInt => {
+                    self.advance();
+                    Ok(Type::UnsignedInt)
+                }
+                _ => Ok(Type::UnsignedInt),
+            },
             Token::KeywordFloat => Ok(Type::Float),
             Token::KeywordVoid => Ok(Type::Void),
             other => Err(Diagnostic::error(format!("expected a type, found {other}"))),
@@ -120,7 +131,15 @@ impl Parser {
     }
 
     fn peek_is_type(&self) -> bool {
-        matches!(self.peek(), Token::KeywordInt | Token::KeywordUnsigned | Token::KeywordFloat | Token::KeywordVoid)
+        matches!(
+            self.peek(),
+            Token::KeywordInt
+                | Token::KeywordChar
+                | Token::KeywordShort
+                | Token::KeywordUnsigned
+                | Token::KeywordFloat
+                | Token::KeywordVoid
+        )
     }
 
     fn expression(&mut self) -> Compilation<Expression> {

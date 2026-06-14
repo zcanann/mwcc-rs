@@ -199,6 +199,8 @@ struct Location {
     class: ValueClass,
     register: u8,
     signed: bool,
+    /// Integer width in bits (8/16/32); narrow values are extended when read.
+    width: u8,
 }
 
 struct Generator {
@@ -215,9 +217,9 @@ struct Generator {
 
 fn class_of(declared: Type) -> Compilation<ValueClass> {
     match declared {
-        Type::Int | Type::UnsignedInt => Ok(ValueClass::General),
         Type::Float => Ok(ValueClass::Float),
         Type::Void => Err(Diagnostic::error("a value cannot have type void")),
+        _ => Ok(ValueClass::General),
     }
 }
 
@@ -241,7 +243,7 @@ impl Generator {
             };
             self.locations.insert(
                 parameter.name.clone(),
-                Location { class, register, signed: parameter.parameter_type.is_signed() },
+                Location { class, register, signed: parameter.parameter_type.is_signed(), width: parameter.parameter_type.width() },
             );
         }
         Ok(())
@@ -250,12 +252,12 @@ impl Generator {
     /// Emit the whole function body, including its `blr`(s).
     fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
         let result = match function.return_type {
-            Type::Int | Type::UnsignedInt => Eabi::general_result().number,
             Type::Float => Eabi::float_result().number,
             Type::Void => {
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
                 return Ok(());
             }
+            _ => Eabi::general_result().number,
         };
 
         if !function.guards.is_empty() {
@@ -376,15 +378,15 @@ impl Generator {
             ValueClass::Float => FLOAT_SCRATCH,
         };
         self.evaluate(&local.initializer, local.declared_type, scratch)?;
-        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed: local.declared_type.is_signed() });
+        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed: local.declared_type.is_signed(), width: local.declared_type.width() });
         self.evaluate(return_expression, return_type, result)
     }
 
     fn evaluate(&mut self, expression: &Expression, value_type: Type, destination: u8) -> Compilation<()> {
         match value_type {
-            Type::Int | Type::UnsignedInt => self.evaluate_general(expression, destination),
             Type::Float => self.evaluate_float(expression, destination),
             Type::Void => Err(Diagnostic::error("cannot evaluate a void expression")),
+            _ => self.evaluate_general(expression, destination),
         }
     }
 
@@ -396,10 +398,12 @@ impl Generator {
                 Ok(())
             }
             Expression::Variable(name) => {
-                let source = self.general_register_of(name)?;
-                if source != destination {
-                    self.output.instructions.push(Instruction::move_register(destination, source));
+                let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+                if location.class != ValueClass::General {
+                    return Err(Diagnostic::error(format!("'{name}' is not an integer")));
                 }
+                let (source, width, signed) = (location.register, location.width, location.signed);
+                self.emit_widen(destination, source, width, signed);
                 Ok(())
             }
             Expression::Unary { operator, operand } => self.emit_unary(*operator, operand, destination),
@@ -664,20 +668,47 @@ impl Generator {
         Ok(())
     }
 
+    /// Move/extend a value of `width` bits from `source` into `destination`,
+    /// sign- or zero-extending narrow values to 32 bits.
+    fn emit_widen(&mut self, destination: u8, source: u8, width: u8, signed: bool) {
+        match (width, signed) {
+            (8, true) => self.output.instructions.push(Instruction::ExtendSignByte { a: destination, s: source }),
+            (16, true) => self.output.instructions.push(Instruction::ExtendSignHalfword { a: destination, s: source }),
+            (8, false) => self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear: 24 }),
+            (16, false) => self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear: 16 }),
+            _ if source != destination => self.output.instructions.push(Instruction::move_register(destination, source)),
+            _ => {}
+        }
+    }
+
+    /// Whether `expression` is a float-valued leaf.
+    fn is_float_leaf(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::Variable(name) if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::Float))
+    }
+
     /// Emit a cast of a float operand to an integer in `destination`. mwcc
     /// converts with `fctiwz`, then bounces the value through the stack frame.
     /// Leaf float operands only for now; int->float (the constant-pool direction)
     /// is handled separately once .sdata2 lands.
     fn emit_cast_to_integer(&mut self, target_type: Type, operand: &Expression, destination: u8) -> Compilation<()> {
-        if !matches!(target_type, Type::Int | Type::UnsignedInt) {
-            return Err(Diagnostic::error("unsupported cast target"));
+        if self.is_float_leaf(operand) {
+            // float -> int: convert, bounce through the frame, then narrow if needed.
+            let source = self.float_register_of_leaf(operand)?;
+            self.frame_size = 16;
+            self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: FLOAT_SCRATCH, b: source });
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: 12 });
+            if target_type.width() < 32 {
+                self.emit_widen(destination, destination, target_type.width(), target_type.is_signed());
+            }
+            return Ok(());
         }
-        let source = self.float_register_of_leaf(operand)?;
-        self.frame_size = 16;
-        self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: FLOAT_SCRATCH, b: source });
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: 12 });
+        // int -> int narrowing: evaluate then extend/truncate to the target width.
+        self.evaluate_general(operand, destination)?;
+        if target_type.width() < 32 {
+            self.emit_widen(destination, destination, target_type.width(), target_type.is_signed());
+        }
         Ok(())
     }
 
