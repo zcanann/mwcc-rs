@@ -21,6 +21,7 @@ members = [
     # binaries
     "apps/mwcc",
     "harness/mwcc-oracle",
+    "harness/mwcc-detect",
 ]
 
 [workspace.package]
