@@ -1154,8 +1154,10 @@ impl Generator {
                     self.output.instructions.push(Instruction::SubtractFromImmediate { d: GENERAL_SCRATCH, a: value, immediate: constant });
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
                 } else {
-                    let left_register = self.general_register_of_leaf(left)?;
-                    let right_register = self.general_register_of_leaf(right)?;
+                    // a == b : leading zeros of (a - b). Narrow operands are
+                    // extended first — the left in place, the right into the
+                    // scratch (mwcc's placement for the equality idiom).
+                    let (left_register, right_register) = self.place_compare_leaves(left, right)?;
                     self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: left_register, b: right_register });
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
                 }
@@ -1493,6 +1495,33 @@ impl Generator {
             }
         }
         Err(Diagnostic::error("expected a general-register leaf"))
+    }
+
+    /// Place two leaf operands for the equality idiom, extending narrow operands
+    /// the way mwcc does: when both are narrow the left is extended in its home
+    /// register and the right into the scratch; when only one is narrow it goes to
+    /// the scratch and the wide operand stays in its home register. Build-aware via
+    /// each leaf's signedness; transparent (home registers) for the all-int case.
+    fn place_compare_leaves(&mut self, left: &Expression, right: &Expression) -> Compilation<(u8, u8)> {
+        let (left_register, left_width, left_signed) = self.leaf_info(left)?;
+        let (right_register, right_width, right_signed) = self.leaf_info(right)?;
+        let left_narrow = left_width < 32;
+        let right_narrow = right_width < 32;
+
+        let (left_placed, right_placed) = if left_narrow && right_narrow {
+            self.emit_widen(left_register, left_register, left_width, left_signed);
+            self.emit_widen(GENERAL_SCRATCH, right_register, right_width, right_signed);
+            (left_register, GENERAL_SCRATCH)
+        } else if left_narrow {
+            self.emit_widen(GENERAL_SCRATCH, left_register, left_width, left_signed);
+            (GENERAL_SCRATCH, right_register)
+        } else if right_narrow {
+            self.emit_widen(GENERAL_SCRATCH, right_register, right_width, right_signed);
+            (left_register, GENERAL_SCRATCH)
+        } else {
+            (left_register, right_register)
+        };
+        Ok((left_placed, right_placed))
     }
 
     /// Place two leaf operands when at least one is narrow, emitting the width
