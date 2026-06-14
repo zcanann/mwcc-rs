@@ -21,6 +21,8 @@ pub struct ObjectInput<'a> {
     pub build: u16,
     /// `.text` relocations against external symbols (globals, callees).
     pub relocations: Vec<TextRelocation>,
+    /// Unwind-table layout for a stack-frame function; `None` for a pure leaf.
+    pub frame: Option<FrameLayout>,
 }
 
 /// A `.text` relocation: a byte offset, the ELF relocation type, and the
@@ -29,6 +31,13 @@ pub struct TextRelocation {
     pub offset: u32,
     pub elf_type: u32,
     pub symbol: String,
+}
+
+/// The `extab`/`extabindex` unwind tables a stack-frame function carries. The
+/// header word is encoded by the codegen from the saved-register shape; the
+/// writer only places it.
+pub struct FrameLayout {
+    pub extab_header: u32,
 }
 
 /// Write a relocatable object for a single function.

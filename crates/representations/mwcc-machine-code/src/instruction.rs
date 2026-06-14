@@ -176,4 +176,30 @@ impl Instruction {
     pub fn move_register(a: u8, s: u8) -> Self {
         Instruction::Or { a, s, b: s }
     }
+
+    /// Whether this is a floating-point operation (FPR loads/stores, arithmetic,
+    /// moves, conversions, compares). Used to set the `extab` "uses FPU" flag.
+    pub fn is_floating_point(&self) -> bool {
+        use Instruction::*;
+        matches!(
+            self,
+            StoreFloatSingle { .. }
+                | StoreFloatSingleIndexed { .. }
+                | StoreFloatDouble { .. }
+                | LoadFloatSingle { .. }
+                | LoadFloatSingleIndexed { .. }
+                | LoadFloatDouble { .. }
+                | FloatAddSingle { .. }
+                | FloatSubtractSingle { .. }
+                | FloatMultiplySingle { .. }
+                | FloatDivideSingle { .. }
+                | FloatMultiplyAddSingle { .. }
+                | FloatMultiplySubtractSingle { .. }
+                | FloatNegativeMultiplySubtractSingle { .. }
+                | FloatMove { .. }
+                | FloatNegate { .. }
+                | FloatCompareOrdered { .. }
+                | ConvertToIntegerWordZero { .. }
+        )
+    }
 }

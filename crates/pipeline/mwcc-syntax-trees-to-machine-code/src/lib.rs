@@ -5,7 +5,7 @@
 //! modules together and exposes the entry point; the work lives in them.
 
 use mwcc_core::Compilation;
-use mwcc_machine_code::MachineFunction;
+use mwcc_machine_code::{FrameInfo, MachineFunction};
 use mwcc_syntax_trees::{Function, GlobalDeclaration};
 use mwcc_versions::CompilerBuild;
 use std::collections::{HashMap, HashSet};
@@ -39,5 +39,17 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], build:
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
+
+    // A function with a stack frame carries unwind tables. The codegen does not
+    // yet save callee registers, so the saved counts are zero today; the FPU flag
+    // is set for a non-leaf function that touches the FPU.
+    if generator.frame_size != 0 {
+        let uses_fpu = generator.output.instructions.iter().any(|instruction| instruction.is_floating_point());
+        generator.output.frame = Some(FrameInfo {
+            saved_gpr_count: 0,
+            saved_fpr_count: 0,
+            fpu_in_non_leaf: generator.non_leaf && uses_fpu,
+        });
+    }
     Ok(generator.output)
 }

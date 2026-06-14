@@ -7,10 +7,12 @@
 //! together; the work lives in them.
 
 mod encoding;
+mod frame;
 mod function;
 mod instruction;
 mod relocation;
 
+pub use frame::FrameInfo;
 pub use function::MachineFunction;
 pub use instruction::Instruction;
 pub use relocation::{Relocation, RelocationKind};
