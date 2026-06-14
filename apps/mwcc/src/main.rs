@@ -79,7 +79,12 @@ fn main() -> ExitCode {
         }
     };
 
-    match compile(&source, build, invocation.artifacts_directory.as_deref()) {
+    let source_name = std::path::Path::new(&input)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&input);
+
+    match compile(&source, source_name, build, invocation.artifacts_directory.as_deref()) {
         Ok(object) => {
             if let Err(error) = std::fs::write(&output, object) {
                 eprintln!("mwcc: cannot write {output}: {error}");
@@ -95,11 +100,11 @@ fn main() -> ExitCode {
 }
 
 /// Run the full pipeline, optionally dumping a per-phase artifact report.
-fn compile(source: &str, build: mwcc_versions::CompilerBuild, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
+fn compile(source: &str, source_name: &str, build: mwcc_versions::CompilerBuild, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
     let tokens = mwcc_source_to_tokens::tokenize(source)?;
     let function = mwcc_tokens_to_syntax_trees::parse_function(tokens.clone())?;
     let machine_code = mwcc_syntax_trees_to_machine_code::lower_function(&function, build)?;
-    let object = mwcc_machine_code_to_object::assemble_object(&machine_code);
+    let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name);
 
     if let Some(directory) = artifacts {
         write_artifacts(directory, build, &tokens, &function, &machine_code, &object);

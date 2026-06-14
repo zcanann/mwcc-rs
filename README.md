@@ -41,7 +41,7 @@ crates/
   foundation/          shared vocabulary, no pipeline logic
     mwcc-core            diagnostics, source spans, the Compilation result type
     mwcc-target          PowerPC/Gekko register file + the EABI calling convention
-    mwcc-versions        the build registry (GC/1.3.2 = 2.4.2 build 81, …) + behavior knobs
+    mwcc-versions        the build registry + a per-build CodegenProfile trait
     mwcc-object          ELF32 big-endian PowerPC object writer
 
   representations/     the data each phase produces
@@ -59,6 +59,8 @@ apps/    mwcc            the compiler driver (mwcceppc-compatible CLI)
 harness/ mwcc-oracle     the differential oracle described above
 canaries/                one C program per capability under test
 ```
+
+Within a crate, every `lib.rs` is a visibility exporter — module wiring plus the public entry point — and the work lives in focused, clearly-named files. The code generator, for instance, is one `Generator` whose methods are grouped by theme across `body.rs`, `expressions.rs`, `arithmetic.rs`, `comparisons.rs`, `control_flow.rs`, `narrow.rs`, `casts.rs`, `placement.rs`, `floats.rs`, … each a further `impl Generator`. Per-build differences are not scattered `if version ==` checks: each build carries a `CodegenProfile` whose default methods are the 2.4.x mainline, so a divergent build (GC/1.3's unsigned `char`, GC/2.0p1's int→float scheduling) overrides only the method that changed. Branching support to a new build is "add a profile, override one method" — the shared path and every other build stay untouched.
 
 Why structured machine code instead of raw words: the register **allocator** and instruction **scheduler** are where byte-matching is actually won or lost, and they must *inspect and rewrite* the instruction stream before it is encoded. They get their own pipeline crates as the language grows; the `mwcc-machine-code` representation is the seam they plug into.
 
