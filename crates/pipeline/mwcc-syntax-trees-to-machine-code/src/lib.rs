@@ -182,6 +182,12 @@ fn needs_scratch(expression: &Expression) -> bool {
     }
 }
 
+/// Whether a type is a narrow integer (sub-32-bit), whose values are extended
+/// when read and truncated when produced as a result.
+fn is_narrow_int(value_type: Type) -> bool {
+    matches!(value_type, Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+}
+
 /// Whether `evaluate_*` can compute `expression` into `destination` using only
 /// that register and the scratch register.
 fn fits_single_scratch(expression: &Expression, destination_is_scratch: bool) -> bool {
@@ -399,8 +405,63 @@ impl Generator {
             Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), left, right } => {
                 self.emit_short_circuit(*operator, left, right, result)
             }
+            // A narrow return type truncates the returned value. A `(type)` cast
+            // expression already yields the narrow type, so it falls through to the
+            // normal path; everything else is coerced here.
+            other if is_narrow_int(value_type) && !matches!(other, Expression::Cast { .. }) => {
+                self.evaluate_narrow_return(other, value_type, result)
+            }
             other => self.evaluate(other, value_type, result),
         }
+    }
+
+    /// Whether the expression reads any narrow variable. A narrow return whose
+    /// expression reads narrow operands relies on mwcc's optimization that elides
+    /// operand extension because the result is truncated anyway — not yet modeled.
+    fn contains_narrow_leaf(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Variable(_) => self.is_narrow_leaf(expression),
+            Expression::Binary { left, right, .. } => self.contains_narrow_leaf(left) || self.contains_narrow_leaf(right),
+            Expression::Unary { operand, .. } => self.contains_narrow_leaf(operand),
+            Expression::Conditional { condition, when_true, when_false } => {
+                self.contains_narrow_leaf(condition) || self.contains_narrow_leaf(when_true) || self.contains_narrow_leaf(when_false)
+            }
+            Expression::Cast { operand, .. } => self.contains_narrow_leaf(operand),
+            _ => false,
+        }
+    }
+
+    /// Coerce a returned value to a narrow return type. mwcc truncates a bare wide
+    /// variable in place (`extsb`/`extsh`/`clrlwi r3,r3`) and computes a wider
+    /// expression into the scratch before truncating it into the result
+    /// (`addi r0,r3,1; extsb r3,r0`). The optimization that elides operand
+    /// extension when the result is truncated is not modeled, so a computation
+    /// reading a narrow operand is deferred rather than mis-extended.
+    fn evaluate_narrow_return(&mut self, expression: &Expression, return_type: Type, result: u8) -> Compilation<()> {
+        let width = return_type.width();
+        let signed = self.signed_of(return_type);
+
+        if let Expression::Variable(_) = expression {
+            let (register, variable_width, _) = self.leaf_info(expression)?;
+            if register != result {
+                return Err(Diagnostic::error("narrow return of a non-result variable (roadmap M1)"));
+            }
+            // A wider variable is truncated; one already this narrow needs nothing.
+            if variable_width > width {
+                self.emit_widen(result, register, width, signed);
+            }
+            return Ok(());
+        }
+
+        if self.contains_narrow_leaf(expression) {
+            return Err(Diagnostic::error("narrow return of a narrow-operand expression needs the truncation-context optimization (roadmap)"));
+        }
+        if needs_scratch(expression) {
+            return Err(Diagnostic::error("narrow return of a scratch-needing expression (roadmap M1)"));
+        }
+        self.evaluate_general(expression, GENERAL_SCRATCH)?;
+        self.emit_widen(result, GENERAL_SCRATCH, width, signed);
+        Ok(())
     }
 
     /// Emit a short-circuit `&&`/`||` in tail position as mwcc does: each operand
