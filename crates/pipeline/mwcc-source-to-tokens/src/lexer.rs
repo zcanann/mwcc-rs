@@ -47,6 +47,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
                 "void" => Token::KeywordVoid,
                 "return" => Token::KeywordReturn,
                 "if" => Token::KeywordIf,
+                "struct" => Token::KeywordStruct,
                 _ => Token::Identifier(word.to_string()),
             });
             continue;
@@ -100,6 +101,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             ('!', Some(b'=')) => Some(Token::BangEqual),
             ('&', Some(b'&')) => Some(Token::AmpersandAmpersand),
             ('|', Some(b'|')) => Some(Token::PipePipe),
+            ('-', Some(b'>')) => Some(Token::Arrow),
             _ => None,
         };
         if let Some(token) = two_char {
@@ -132,6 +134,9 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             '!' => Token::Bang,
             '<' => Token::Less,
             '>' => Token::Greater,
+            // A standalone `.` is member access; `.` inside a number is consumed
+            // by the literal lexer above.
+            '.' => Token::Dot,
             other => return Err(Diagnostic::error(format!("unexpected character '{other}'"))),
         };
         tokens.push(punctuation);

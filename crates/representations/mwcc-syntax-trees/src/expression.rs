@@ -36,6 +36,14 @@ pub enum Expression {
         base: Box<Expression>,
         index: Box<Expression>,
     },
+    /// `base->field` (or `base.field`) — load the member at `offset` from the
+    /// struct pointer `base`. The parser resolves the field to its byte offset and
+    /// type from the struct layout, so codegen is a plain displacement access.
+    Member {
+        base: Box<Expression>,
+        offset: u16,
+        member_type: Type,
+    },
     /// `name(arguments)` — a direct call.
     Call {
         name: String,

@@ -46,6 +46,10 @@ pub enum Type {
     Void,
     /// A pointer to a scalar, e.g. `int*`.
     Pointer(Pointee),
+    /// A pointer to a struct. The struct's layout is resolved by the parser (it
+    /// bakes member offsets into [`crate::Expression::Member`]), so codegen only
+    /// needs to know this is a general 32-bit address.
+    StructPointer,
 }
 
 impl Type {

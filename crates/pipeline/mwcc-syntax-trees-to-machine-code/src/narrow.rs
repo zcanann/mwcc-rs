@@ -46,19 +46,16 @@ impl Generator {
             return Ok(());
         }
 
-        // A load already yields the pointee's width; when it matches the return
-        // type the value needs no truncation — load straight into the result.
-        let pointer_base = match expression {
-            Expression::Dereference { pointer } => Some(pointer.as_ref()),
-            Expression::Index { base, .. } => Some(base.as_ref()),
+        // A load already yields the value's natural width; when it matches the
+        // return type no truncation is needed — load straight into the result.
+        let load_width = match expression {
+            Expression::Dereference { pointer } => self.pointee_of(pointer).ok().map(|pointee| pointee.element().width()),
+            Expression::Index { base, .. } => self.pointee_of(base).ok().map(|pointee| pointee.element().width()),
+            Expression::Member { member_type, .. } => Some(member_type.width()),
             _ => None,
         };
-        if let Some(base) = pointer_base {
-            if let Ok(pointee) = self.pointee_of(base) {
-                if pointee.element().width() == width {
-                    return self.evaluate_general(expression, result);
-                }
-            }
+        if load_width == Some(width) {
+            return self.evaluate_general(expression, result);
         }
 
         if self.contains_narrow_leaf(expression) {

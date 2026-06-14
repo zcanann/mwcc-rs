@@ -120,13 +120,41 @@ impl Parser {
             }
             other => return Err(Diagnostic::error(format!("expected an expression, found {other}"))),
         };
-        // postfix subscript `base[index]`, left-associative
-        while *self.peek() == Token::BracketOpen {
-            self.advance();
-            let index = self.expression()?;
-            self.expect(Token::BracketClose)?;
-            expression = Expression::Index { base: Box::new(expression), index: Box::new(index) };
+        // postfix subscript `base[index]` and member access `base->field` /
+        // `base.field`, left-associative.
+        loop {
+            match self.peek() {
+                Token::BracketOpen => {
+                    self.advance();
+                    let index = self.expression()?;
+                    self.expect(Token::BracketClose)?;
+                    expression = Expression::Index { base: Box::new(expression), index: Box::new(index) };
+                }
+                Token::Arrow | Token::Dot => {
+                    self.advance();
+                    let field = self.parse_identifier()?;
+                    expression = self.resolve_member(expression, &field)?;
+                }
+                _ => break,
+            }
         }
         Ok(expression)
+    }
+
+    /// Resolve `base.field` / `base->field` to a [`Expression::Member`] with the
+    /// member's baked offset and type. The base must be a variable known to be a
+    /// pointer to a declared struct (single-level access; chains arrive later).
+    fn resolve_member(&self, base: Expression, field: &str) -> Compilation<Expression> {
+        let tag = match &base {
+            Expression::Variable(name) => self.variable_structs.get(name).cloned(),
+            _ => None,
+        };
+        let tag = tag.ok_or_else(|| Diagnostic::error(format!("member '{field}' on a non-struct-pointer base")))?;
+        let layout = self.structs.get(&tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
+        let member = layout
+            .fields
+            .get(field)
+            .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
+        Ok(Expression::Member { base: Box::new(base), offset: member.offset, member_type: member.member_type })
     }
 }

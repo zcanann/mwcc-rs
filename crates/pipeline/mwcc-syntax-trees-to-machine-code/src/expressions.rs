@@ -91,6 +91,7 @@ impl Generator {
             }
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
+            Expression::Member { base, offset, member_type } => self.emit_member_load(base, *offset, *member_type, destination),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), false),
             Expression::Binary { operator, left, right } => {
@@ -144,6 +145,25 @@ impl Generator {
         Ok(())
     }
 
+    /// Emit `base->field` — a displacement load from the struct pointer's register
+    /// at the member's offset, choosing the load by the member type. The base must
+    /// be a struct-pointer leaf variable (chained/complex bases are roadmap).
+    pub(crate) fn emit_member_load(&mut self, base: &Expression, offset: u16, member_type: Type, destination: u8) -> Compilation<()> {
+        let address = self.member_base_register(base)?;
+        let pointee = pointee_of_type(member_type)
+            .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+        self.output.instructions.push(displacement_load(pointee, destination, address, offset as i16));
+        Ok(())
+    }
+
+    /// The register holding a struct pointer for member access.
+    pub(crate) fn member_base_register(&self, base: &Expression) -> Compilation<u8> {
+        match base {
+            Expression::Variable(name) => self.general_register_of(name),
+            _ => Err(Diagnostic::error("struct member base must be a pointer variable (roadmap)")),
+        }
+    }
+
     /// Emit `base[index]` into `destination`. A constant index folds into the load
     /// displacement (`lwz r3,8(r3)`); a variable index is scaled by the element
     /// size and uses an indexed load (`slwi r0,rI,2; lwzx r3,rBase,r0`).
@@ -186,10 +206,19 @@ impl Generator {
                 return Ok(());
             }
         }
+        // `p->field = v;` — a displacement store to the struct member.
+        if let Expression::Member { base, offset, member_type } = target {
+            let pointee = pointee_of_type(*member_type)
+                .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
+            let address = self.member_base_register(base)?;
+            let source = self.place_store_value(value, pointee)?;
+            self.output.instructions.push(displacement_store(pointee, source, address, *offset as i16));
+            return Ok(());
+        }
         let (base, index) = match target {
             Expression::Dereference { pointer } => (pointer.as_ref(), None),
             Expression::Index { base, index } => (base.as_ref(), Some(index.as_ref())),
-            _ => return Err(Diagnostic::error("store target must be `*p`, `p[i]`, or a global")),
+            _ => return Err(Diagnostic::error("store target must be `*p`, `p[i]`, a member, or a global")),
         };
         let (pointee, address) = self.pointer_leaf(base)?;
         match index {

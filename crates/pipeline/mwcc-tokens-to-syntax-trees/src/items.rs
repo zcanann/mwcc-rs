@@ -4,7 +4,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
-use crate::parser::Parser;
+use crate::parser::{Parser, StructField, StructLayout};
 
 /// The pointee kind for `<scalar>*`. Pointer-to-pointer and pointer-to-aggregate
 /// are not in the subset yet.
@@ -21,8 +21,29 @@ fn pointee_of(base: Type) -> Compilation<Pointee> {
     }
 }
 
+/// Size in bytes of a scalar or pointer type, for laying out struct members.
+fn type_size(declared: Type) -> u16 {
+    match declared {
+        Type::Pointer(_) | Type::StructPointer => 4,
+        other => (other.width() / 8) as u16,
+    }
+}
+
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
+        self.last_struct_tag = None;
+        // `struct Name*` — a pointer to a (already declared) struct. The tag is
+        // stashed in `last_struct_tag` for the declarator parser to record.
+        if *self.peek() == Token::KeywordStruct {
+            self.advance();
+            let tag = self.parse_identifier()?;
+            if *self.peek() != Token::Star {
+                return Err(Diagnostic::error("struct values are not supported yet — use a struct pointer"));
+            }
+            self.advance();
+            self.last_struct_tag = Some(tag);
+            return Ok(Type::StructPointer);
+        }
         let base = match self.advance() {
             Token::KeywordInt => Type::Int,
             Token::KeywordChar => Type::Char,
@@ -55,6 +76,31 @@ impl Parser {
         Ok(base)
     }
 
+    /// Parse `struct Name { type field; ... };`, laying members out with natural
+    /// alignment (the `-align powerpc` default) and registering the layout.
+    pub(crate) fn parse_struct_definition(&mut self) -> Compilation<()> {
+        self.expect(Token::KeywordStruct)?;
+        let tag = self.parse_identifier()?;
+        self.expect(Token::BraceOpen)?;
+        let mut layout = StructLayout::default();
+        let mut offset: u16 = 0;
+        while *self.peek() != Token::BraceClose {
+            let field_type = self.parse_type()?;
+            let field_name = self.parse_identifier()?;
+            self.expect(Token::Semicolon)?;
+            let size = type_size(field_type);
+            // Natural alignment: a member starts at the next multiple of its size.
+            let alignment = size.max(1);
+            offset = offset.div_ceil(alignment) * alignment;
+            layout.fields.insert(field_name, StructField { member_type: field_type, offset });
+            offset += size;
+        }
+        self.expect(Token::BraceClose)?;
+        self.expect(Token::Semicolon)?;
+        self.structs.insert(tag, layout);
+        Ok(())
+    }
+
     pub(crate) fn translation_unit(&mut self) -> Compilation<TranslationUnit> {
         // Collect file-scope globals and skip prototype declarations until the
         // function *definition* (the signature followed by `{`).
@@ -63,6 +109,12 @@ impl Parser {
             // `extern`/`static` storage qualifiers don't change codegen here.
             while matches!(self.peek(), Token::Identifier(word) if word == "extern" || word == "static") {
                 self.advance();
+            }
+            // A `struct Name { ... };` definition registers a layout. A `struct
+            // Name*` use (function return or parameter) falls through to parse_type.
+            if *self.peek() == Token::KeywordStruct && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
+                self.parse_struct_definition()?;
+                continue;
             }
             let return_type = self.parse_type()?;
             let name = self.parse_identifier()?;
@@ -85,12 +137,18 @@ impl Parser {
             } else if *self.peek() != Token::ParenClose {
                 loop {
                     let parameter_type = self.parse_type()?;
+                    let struct_tag = self.last_struct_tag.take();
                     // The name is optional (a prototype may write just the type).
                     let name = if matches!(self.peek(), Token::Identifier(_)) {
                         self.parse_identifier()?
                     } else {
                         String::new()
                     };
+                    if let Some(tag) = struct_tag {
+                        if !name.is_empty() {
+                            self.variable_structs.insert(name.clone(), tag);
+                        }
+                    }
                     parameters.push(Parameter { parameter_type, name });
                     if *self.peek() == Token::Comma {
                         self.advance();
@@ -116,7 +174,11 @@ impl Parser {
         let mut locals = Vec::new();
         while self.peek_is_type() {
             let declared_type = self.parse_type()?;
+            let struct_tag = self.last_struct_tag.take();
             let name = self.parse_identifier()?;
+            if let Some(tag) = struct_tag {
+                self.variable_structs.insert(name.clone(), tag);
+            }
             self.expect(Token::Equals)?;
             let initializer = self.expression()?;
             self.expect(Token::Semicolon)?;
@@ -177,6 +239,7 @@ impl Parser {
                 | Token::KeywordUnsigned
                 | Token::KeywordFloat
                 | Token::KeywordVoid
+                | Token::KeywordStruct
         )
     }
 }

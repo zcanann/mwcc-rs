@@ -12,6 +12,7 @@ pub enum Token {
     KeywordVoid,
     KeywordReturn,
     KeywordIf,
+    KeywordStruct,
     // identifiers and literals
     Identifier(String),
     IntegerLiteral(i64),
@@ -30,6 +31,8 @@ pub enum Token {
     Colon,
     Plus,
     Minus,
+    Arrow,
+    Dot,
     Star,
     Slash,
     Percent,

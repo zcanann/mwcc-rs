@@ -144,6 +144,8 @@ impl Generator {
             // `*p` and `p[i]` have the signedness of the pointee.
             Expression::Dereference { pointer } => Ok(self.pointee_of(pointer)?.element().is_signed()),
             Expression::Index { base, .. } => Ok(self.pointee_of(base)?.element().is_signed()),
+            // `p->field` has the signedness of the member type.
+            Expression::Member { member_type, .. } => Ok(self.signed_of(*member_type)),
             // A call returns an int by default (we have no prototype types yet).
             Expression::Call { .. } => Ok(true),
         }

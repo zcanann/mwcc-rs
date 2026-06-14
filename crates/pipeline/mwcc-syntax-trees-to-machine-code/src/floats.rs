@@ -24,6 +24,7 @@ impl Generator {
                 }
             }
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
+            Expression::Member { base, offset, member_type } => self.emit_member_load(base, *offset, *member_type, destination),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), true),
             Expression::Binary { operator, left, right } => {
