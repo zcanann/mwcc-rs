@@ -386,26 +386,28 @@ impl Generator {
     }
 
     /// Emit a short-circuit `&&`/`||` in tail position as mwcc does: each operand
-    /// is tested with `cmpwi`, with early conditional returns of 0/1. Leaf operands.
+    /// is tested (a leaf against zero, a comparison directly) with an early
+    /// conditional return. Each operand may be a leaf or a comparison.
     fn emit_short_circuit(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
-        let left_register = self.general_register_of_leaf(left)?;
-        let right_register = self.general_register_of_leaf(right)?;
-
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
-        self.output.instructions.push(Instruction::load_immediate(result, 0));
-
         match operator {
             BinaryOperator::LogicalAnd => {
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }); // beqlr
-                self.output.instructions.push(Instruction::CompareWordImmediate { a: right_register, immediate: 0 });
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }); // beqlr
+                // test left; result 0; return 0 if left false; test right; return 0 if right false; result 1.
+                let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                self.output.instructions.push(Instruction::load_immediate(result, 0));
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: left_skip, condition_bit: left_bit });
+                let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: right_skip, condition_bit: right_bit });
                 self.output.instructions.push(Instruction::load_immediate(result, 1));
             }
             BinaryOperator::LogicalOr => {
+                // test left; result 0; if left true skip to result 1; test right; return 0 if right false; result 1.
+                let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                self.output.instructions.push(Instruction::load_immediate(result, 0));
                 let branch_index = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 0 }); // bne -> set 1
-                self.output.instructions.push(Instruction::CompareWordImmediate { a: right_register, immediate: 0 });
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }); // beqlr
+                // the branch taken when left is TRUE is the negation of the skip-when-false branch.
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: left_skip ^ 8, condition_bit: left_bit, target: 0 });
+                let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: right_skip, condition_bit: right_bit });
                 let set_one = self.output.instructions.len();
                 if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
                     *target = set_one;
