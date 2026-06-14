@@ -48,8 +48,13 @@ impl Generator {
 
         // A load already yields the pointee's width; when it matches the return
         // type the value needs no truncation — load straight into the result.
-        if let Expression::Dereference { pointer } = expression {
-            if let Some(pointee) = leaf_name(pointer).and_then(|name| self.locations.get(name)).and_then(|location| location.pointee) {
+        let pointer_base = match expression {
+            Expression::Dereference { pointer } => Some(pointer.as_ref()),
+            Expression::Index { base, .. } => Some(base.as_ref()),
+            _ => None,
+        };
+        if let Some(base) = pointer_base {
+            if let Ok(pointee) = self.pointee_of(base) {
                 if pointee.element().width() == width {
                     return self.evaluate_general(expression, result);
                 }

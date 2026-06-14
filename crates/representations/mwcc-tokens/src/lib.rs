@@ -21,6 +21,8 @@ pub enum Token {
     ParenClose,
     BraceOpen,
     BraceClose,
+    BracketOpen,
+    BracketClose,
     Semicolon,
     Comma,
     Equals,

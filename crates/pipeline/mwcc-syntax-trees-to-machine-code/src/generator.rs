@@ -109,17 +109,19 @@ impl Generator {
                 Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?)
             }
             Expression::Cast { target_type, .. } => Ok(self.signed_of(*target_type)),
-            // `*p` has the signedness of the pointee.
-            Expression::Dereference { pointer } => {
-                let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("dereference needs a pointer variable (roadmap)"))?;
-                let pointee = self
-                    .locations
-                    .get(name)
-                    .and_then(|location| location.pointee)
-                    .ok_or_else(|| Diagnostic::error(format!("'{name}' is not a pointer")))?;
-                Ok(pointee.element().is_signed())
-            }
+            // `*p` and `p[i]` have the signedness of the pointee.
+            Expression::Dereference { pointer } => Ok(self.pointee_of(pointer)?.element().is_signed()),
+            Expression::Index { base, .. } => Ok(self.pointee_of(base)?.element().is_signed()),
         }
+    }
+
+    /// The pointee type of a pointer leaf variable.
+    pub(crate) fn pointee_of(&self, pointer: &Expression) -> Compilation<mwcc_syntax_trees::Pointee> {
+        let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("pointer access needs a pointer variable (roadmap)"))?;
+        self.locations
+            .get(name)
+            .and_then(|location| location.pointee)
+            .ok_or_else(|| Diagnostic::error(format!("'{name}' is not a pointer")))
     }
 
     /// (register, width-bits, signed) for a general-register leaf variable.

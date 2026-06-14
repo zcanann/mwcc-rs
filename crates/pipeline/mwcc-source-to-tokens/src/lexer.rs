@@ -113,6 +113,8 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             ')' => Token::ParenClose,
             '{' => Token::BraceOpen,
             '}' => Token::BraceClose,
+            '[' => Token::BracketOpen,
+            ']' => Token::BracketClose,
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             '=' => Token::Equals,

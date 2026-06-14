@@ -7,6 +7,28 @@ use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
 
+/// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
+fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction {
+    match pointee {
+        Pointee::Int | Pointee::UnsignedInt => Instruction::LoadWord { d, a, offset },
+        Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZero { d, a, offset },
+        Pointee::Short => Instruction::LoadHalfwordAlgebraic { d, a, offset },
+        Pointee::UnsignedShort => Instruction::LoadHalfwordZero { d, a, offset },
+        Pointee::Float => Instruction::LoadFloatSingle { d, a, offset },
+    }
+}
+
+/// The indexed load for a pointee type (`lwzx`/`lbzx`/`lhax`/`lhzx`/`lfsx`).
+fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Instruction {
+    match pointee {
+        Pointee::Int | Pointee::UnsignedInt => Instruction::LoadWordIndexed { d, a, b },
+        Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZeroIndexed { d, a, b },
+        Pointee::Short => Instruction::LoadHalfwordAlgebraicIndexed { d, a, b },
+        Pointee::UnsignedShort => Instruction::LoadHalfwordZeroIndexed { d, a, b },
+        Pointee::Float => Instruction::LoadFloatSingleIndexed { d, a, b },
+    }
+}
+
 impl Generator {
 
     /// Evaluate an integer expression into general register `destination`.
@@ -31,6 +53,7 @@ impl Generator {
             }
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
+            Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Binary { operator, left, right } => {
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
@@ -77,20 +100,44 @@ impl Generator {
     /// must be a leaf variable holding the address; richer addressing is on the
     /// roadmap.
     pub(crate) fn emit_load_from_pointer(&mut self, pointer: &Expression, destination: u8) -> Compilation<()> {
-        let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("dereference needs a pointer variable (roadmap)"))?;
+        let (pointee, address) = self.pointer_leaf(pointer)?;
+        self.output.instructions.push(displacement_load(pointee, destination, address, 0));
+        Ok(())
+    }
+
+    /// Emit `base[index]` into `destination`. A constant index folds into the load
+    /// displacement (`lwz r3,8(r3)`); a variable index is scaled by the element
+    /// size and uses an indexed load (`slwi r0,rI,2; lwzx r3,rBase,r0`).
+    pub(crate) fn emit_subscript(&mut self, base: &Expression, index: &Expression, destination: u8) -> Compilation<()> {
+        let (pointee, address) = self.pointer_leaf(base)?;
+        if let Some(constant) = constant_value(index) {
+            let offset = constant * pointee.size() as i64;
+            let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("subscript offset out of range (roadmap)"))?;
+            self.output.instructions.push(displacement_load(pointee, destination, address, offset));
+            return Ok(());
+        }
+        let index_register = self.general_register_of_leaf(index)?;
+        let size = pointee.size();
+        let scaled = if size == 1 {
+            index_register
+        } else {
+            self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                a: GENERAL_SCRATCH,
+                s: index_register,
+                shift: size.trailing_zeros() as u8,
+            });
+            GENERAL_SCRATCH
+        };
+        self.output.instructions.push(indexed_load(pointee, destination, address, scaled));
+        Ok(())
+    }
+
+    /// `(pointee, address register)` for a pointer leaf variable.
+    fn pointer_leaf(&self, base: &Expression) -> Compilation<(Pointee, u8)> {
+        let name = leaf_name(base).ok_or_else(|| Diagnostic::error("pointer access needs a pointer variable (roadmap)"))?;
         let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         let pointee = location.pointee.ok_or_else(|| Diagnostic::error(format!("'{name}' is not a pointer")))?;
-        let address = location.register;
-        let offset = 0;
-        let instruction = match pointee {
-            Pointee::Int | Pointee::UnsignedInt => Instruction::LoadWord { d: destination, a: address, offset },
-            Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZero { d: destination, a: address, offset },
-            Pointee::Short => Instruction::LoadHalfwordAlgebraic { d: destination, a: address, offset },
-            Pointee::UnsignedShort => Instruction::LoadHalfwordZero { d: destination, a: address, offset },
-            Pointee::Float => Instruction::LoadFloatSingle { d: destination, a: address, offset },
-        };
-        self.output.instructions.push(instruction);
-        Ok(())
+        Ok((pointee, location.register))
     }
 
     pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {

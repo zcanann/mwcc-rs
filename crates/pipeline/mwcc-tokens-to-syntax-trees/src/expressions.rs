@@ -84,24 +84,32 @@ impl Parser {
             return Ok(Expression::Unary { operator, operand: Box::new(operand) });
         }
 
-        match self.advance() {
-            Token::IntegerLiteral(value) => Ok(Expression::IntegerLiteral(value)),
-            Token::FloatLiteral(value) => Ok(Expression::FloatLiteral(value)),
-            Token::Identifier(name) => Ok(Expression::Variable(name)),
+        let mut expression = match self.advance() {
+            Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
+            Token::FloatLiteral(value) => Expression::FloatLiteral(value),
+            Token::Identifier(name) => Expression::Variable(name),
             Token::ParenOpen => {
                 // `(type) expr` is a cast; otherwise a parenthesised expression.
                 if self.peek_is_type() {
                     let target_type = self.parse_type()?;
                     self.expect(Token::ParenClose)?;
                     let operand = self.factor()?;
-                    Ok(Expression::Cast { target_type, operand: Box::new(operand) })
+                    Expression::Cast { target_type, operand: Box::new(operand) }
                 } else {
                     let inner = self.expression()?;
                     self.expect(Token::ParenClose)?;
-                    Ok(inner)
+                    inner
                 }
             }
-            other => Err(Diagnostic::error(format!("expected an expression, found {other}"))),
+            other => return Err(Diagnostic::error(format!("expected an expression, found {other}"))),
+        };
+        // postfix subscript `base[index]`, left-associative
+        while *self.peek() == Token::BracketOpen {
+            self.advance();
+            let index = self.expression()?;
+            self.expect(Token::BracketClose)?;
+            expression = Expression::Index { base: Box::new(expression), index: Box::new(index) };
         }
+        Ok(expression)
     }
 }

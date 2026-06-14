@@ -31,4 +31,9 @@ pub enum Expression {
     Dereference {
         pointer: Box<Expression>,
     },
+    /// `base[index]` — load `*(base + index)`, the index scaled by element size.
+    Index {
+        base: Box<Expression>,
+        index: Box<Expression>,
+    },
 }

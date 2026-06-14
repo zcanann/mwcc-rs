@@ -109,6 +109,16 @@ pub enum Instruction {
     LoadHalfwordAlgebraic { d: u8, a: u8, offset: i16 },
     /// `lfs frD, offset(rA)` — load float single.
     LoadFloatSingle { d: u8, a: u8, offset: i16 },
+    /// `lwzx rD, rA, rB` — load word indexed.
+    LoadWordIndexed { d: u8, a: u8, b: u8 },
+    /// `lbzx rD, rA, rB` — load byte indexed, zero-extended.
+    LoadByteZeroIndexed { d: u8, a: u8, b: u8 },
+    /// `lhzx rD, rA, rB` — load halfword indexed, zero-extended.
+    LoadHalfwordZeroIndexed { d: u8, a: u8, b: u8 },
+    /// `lhax rD, rA, rB` — load halfword indexed, sign-extended.
+    LoadHalfwordAlgebraicIndexed { d: u8, a: u8, b: u8 },
+    /// `lfsx frD, rA, rB` — load float single indexed.
+    LoadFloatSingleIndexed { d: u8, a: u8, b: u8 },
     /// `stfd frS, offset(rA)` — store float double.
     StoreFloatDouble { s: u8, a: u8, offset: i16 },
     /// `fcmpo crf0, frA, frB` — ordered float compare.

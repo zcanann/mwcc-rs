@@ -20,6 +20,7 @@ impl Generator {
                 Ok(())
             }
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
+            Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Binary { operator, left, right } => {
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
                     && self.try_emit_float_fused(*operator, left, right, destination)?
