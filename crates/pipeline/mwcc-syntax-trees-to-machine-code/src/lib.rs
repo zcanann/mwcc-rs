@@ -769,6 +769,11 @@ impl Generator {
         let d = destination;
         match operator {
             UnaryOperator::Negate => {
+                // Negating a literal folds to loading the negated constant.
+                if let Expression::IntegerLiteral(value) = operand {
+                    self.load_integer_constant(d, -*value);
+                    return Ok(());
+                }
                 let Some(source) = self.place_operand(operand, d, false)? else {
                     return Err(Diagnostic::error("negation operand needs the full register allocator (roadmap M1)"));
                 };
