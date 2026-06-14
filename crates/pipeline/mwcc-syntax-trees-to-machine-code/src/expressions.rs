@@ -30,6 +30,20 @@ fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Instruction {
     }
 }
 
+/// A scalar type as the matching [`Pointee`] (for global loads/stores).
+fn pointee_of_type(value_type: Type) -> Option<Pointee> {
+    Some(match value_type {
+        Type::Int => Pointee::Int,
+        Type::UnsignedInt => Pointee::UnsignedInt,
+        Type::Char => Pointee::Char,
+        Type::UnsignedChar => Pointee::UnsignedChar,
+        Type::Short => Pointee::Short,
+        Type::UnsignedShort => Pointee::UnsignedShort,
+        Type::Float => Pointee::Float,
+        _ => return None,
+    })
+}
+
 /// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
 fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instruction {
     match pointee {
@@ -161,10 +175,20 @@ impl Generator {
     /// place addressed by the pointer (with a folded displacement for a constant
     /// index, or a scaled indexed store for a variable one).
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
+        // `g = v;` — a store to a file-scope global (SDA21 placeholder `0(r0)`).
+        if let Expression::Variable(name) = target {
+            if let Some(&global_type) = self.globals.get(name.as_str()) {
+                let pointee = pointee_of_type(global_type)
+                    .ok_or_else(|| Diagnostic::error("global store of this type is not supported yet"))?;
+                let source = self.place_store_value(value, pointee)?;
+                self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                return Ok(());
+            }
+        }
         let (base, index) = match target {
             Expression::Dereference { pointer } => (pointer.as_ref(), None),
             Expression::Index { base, index } => (base.as_ref(), Some(index.as_ref())),
-            _ => return Err(Diagnostic::error("store target must be `*p` or `p[i]`")),
+            _ => return Err(Diagnostic::error("store target must be `*p`, `p[i]`, or a global")),
         };
         let (pointee, address) = self.pointer_leaf(base)?;
         match index {
@@ -296,6 +320,13 @@ impl Generator {
 
     pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
         if let Expression::Variable(name) = operand {
+            // A global is loaded into the consumer's register (the destination for
+            // addi-family consumers, otherwise the scratch), like a dereference.
+            if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str()) {
+                let target = if prefer_destination { destination } else { GENERAL_SCRATCH };
+                self.emit_global_load(name, target)?;
+                return Ok(Some(target));
+            }
             let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
             let (register, width, signed) = (location.register, location.width, location.signed);
             if width == 32 {
