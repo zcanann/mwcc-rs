@@ -655,8 +655,19 @@ impl Generator {
             let divisor = *divisor;
             if divisor >= 2 && (divisor as u64).is_power_of_two() {
                 if !signed {
+                    let shift = divisor.trailing_zeros() as u8;
+                    // Unsigned `/2^k` is a logical right shift; a narrow operand
+                    // fuses the extension and shift into one rlwinm like `>>`.
+                    if let Ok((register, width, _)) = self.leaf_info(left) {
+                        if width < 32 {
+                            if self.emit_narrow_unsigned_shift(d, register, width, false, shift) {
+                                return Ok(());
+                            }
+                            return Err(Diagnostic::error("narrow unsigned divide out of the single-rlwinm range (roadmap)"));
+                        }
+                    }
                     self.evaluate_general(left, d)?;
-                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift: divisor.trailing_zeros() as u8 });
+                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift });
                     return Ok(());
                 }
                 if divisor == 2 {
