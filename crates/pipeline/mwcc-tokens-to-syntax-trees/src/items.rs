@@ -1,7 +1,7 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Function, GuardedReturn, LocalDeclaration, Parameter, Pointee, Type};
+use mwcc_syntax_trees::{Function, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::Parser;
@@ -92,6 +92,16 @@ impl Parser {
             locals.push(LocalDeclaration { declared_type, name, initializer });
         }
 
+        // Zero or more store statements: `*p = v;` / `p[i] = v;`.
+        let mut statements = Vec::new();
+        while !matches!(self.peek(), Token::KeywordReturn | Token::KeywordIf | Token::BraceClose) {
+            let target = self.factor()?;
+            self.expect(Token::Equals)?;
+            let value = self.expression()?;
+            self.expect(Token::Semicolon)?;
+            statements.push(Statement::Store { target, value });
+        }
+
         // Zero or more guarded early returns: `if (condition) return value;`.
         let mut guards = Vec::new();
         while *self.peek() == Token::KeywordIf {
@@ -105,12 +115,19 @@ impl Parser {
             guards.push(GuardedReturn { condition, value });
         }
 
-        self.expect(Token::KeywordReturn)?;
-        let return_expression = self.expression()?;
-        self.expect(Token::Semicolon)?;
+        // The final `return <expr>;` is optional — a `void` function may end after
+        // its statements.
+        let return_expression = if *self.peek() == Token::KeywordReturn {
+            self.advance();
+            let value = self.expression()?;
+            self.expect(Token::Semicolon)?;
+            Some(value)
+        } else {
+            None
+        };
         self.expect(Token::BraceClose)?;
 
-        Ok(Function { return_type, name, parameters, locals, guards, return_expression })
+        Ok(Function { return_type, name, parameters, locals, statements, guards, return_expression })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

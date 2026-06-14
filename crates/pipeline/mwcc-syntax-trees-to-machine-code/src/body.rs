@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, Statement, Type};
 use mwcc_target::Eabi;
 use crate::analysis::*;
 use crate::generator::*;
@@ -41,14 +41,25 @@ impl Generator {
 
     /// Emit the whole function body, including its `blr`(s).
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        // Body statements (stores) run first.
+        for statement in &function.statements {
+            self.emit_statement(statement)?;
+        }
+
+        // A `void` function ends after its statements.
+        if function.return_type == Type::Void {
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
+
         let result = match function.return_type {
             Type::Float => Eabi::float_result().number,
-            Type::Void => {
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
-                return Ok(());
-            }
             _ => Eabi::general_result().number,
         };
+        let return_expression = function
+            .return_expression
+            .as_ref()
+            .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
 
         if !function.guards.is_empty() {
             if !function.locals.is_empty() {
@@ -60,26 +71,37 @@ impl Generator {
                 let select = Expression::Conditional {
                     condition: Box::new(guard.condition.clone()),
                     when_true: Box::new(guard.value.clone()),
-                    when_false: Box::new(function.return_expression.clone()),
+                    when_false: Box::new(return_expression.clone()),
                 };
                 self.evaluate_tail(&select, function.return_type, result)?;
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
                 return Ok(());
             }
-            return self.emit_guard_sequence(&function.guards, &function.return_expression, function.return_type, result);
+            return self.emit_guard_sequence(&function.guards, return_expression, function.return_type, result);
         }
 
         match function.locals.as_slice() {
-            [] => self.evaluate_tail(&function.return_expression, function.return_type, result)?,
-            [local] => self.evaluate_single_local(local, &function.return_expression, function.return_type, result)?,
+            [] => self.evaluate_tail(return_expression, function.return_type, result)?,
+            [local] => self.evaluate_single_local(local, return_expression, function.return_type, result)?,
             _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
         }
-        // Tear down the stack frame, if one was allocated.
+        self.emit_epilogue_and_return();
+        Ok(())
+    }
+
+    /// Tear down the stack frame (if one was allocated) and return.
+    fn emit_epilogue_and_return(&mut self) {
         if self.frame_size != 0 {
             self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
         }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
-        Ok(())
+    }
+
+    /// Emit a body statement.
+    pub(crate) fn emit_statement(&mut self, statement: &Statement) -> Compilation<()> {
+        match statement {
+            Statement::Store { target, value } => self.emit_store(target, value),
+        }
     }
 
     /// Emit a sequence of `if (c) return v;` guards followed by the final return.

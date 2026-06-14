@@ -67,6 +67,20 @@ pub enum Instruction {
     XorImmediateShifted { a: u8, s: u8, immediate: u16 },
     /// `stw rS, offset(rA)` — store word.
     StoreWord { s: u8, a: u8, offset: i16 },
+    /// `stb rS, offset(rA)` — store byte.
+    StoreByte { s: u8, a: u8, offset: i16 },
+    /// `sth rS, offset(rA)` — store halfword.
+    StoreHalfword { s: u8, a: u8, offset: i16 },
+    /// `stfs frS, offset(rA)` — store float single.
+    StoreFloatSingle { s: u8, a: u8, offset: i16 },
+    /// `stwx rS, rA, rB` — store word indexed.
+    StoreWordIndexed { s: u8, a: u8, b: u8 },
+    /// `stbx rS, rA, rB` — store byte indexed.
+    StoreByteIndexed { s: u8, a: u8, b: u8 },
+    /// `sthx rS, rA, rB` — store halfword indexed.
+    StoreHalfwordIndexed { s: u8, a: u8, b: u8 },
+    /// `stfsx frS, rA, rB` — store float single indexed.
+    StoreFloatSingleIndexed { s: u8, a: u8, b: u8 },
     /// `lfd frD, offset(rA)` — load float double.
     LoadFloatDouble { d: u8, a: u8, offset: i16 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.

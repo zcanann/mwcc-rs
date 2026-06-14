@@ -29,6 +29,26 @@ fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Instruction {
     }
 }
 
+/// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
+fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instruction {
+    match pointee {
+        Pointee::Int | Pointee::UnsignedInt => Instruction::StoreWord { s, a, offset },
+        Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByte { s, a, offset },
+        Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfword { s, a, offset },
+        Pointee::Float => Instruction::StoreFloatSingle { s, a, offset },
+    }
+}
+
+/// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
+fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
+    match pointee {
+        Pointee::Int | Pointee::UnsignedInt => Instruction::StoreWordIndexed { s, a, b },
+        Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByteIndexed { s, a, b },
+        Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfwordIndexed { s, a, b },
+        Pointee::Float => Instruction::StoreFloatSingleIndexed { s, a, b },
+    }
+}
+
 impl Generator {
 
     /// Evaluate an integer expression into general register `destination`.
@@ -130,6 +150,68 @@ impl Generator {
         };
         self.output.instructions.push(indexed_load(pointee, destination, address, scaled));
         Ok(())
+    }
+
+    /// Emit a store: `*p = v;` or `p[i] = v;`. The value goes to memory at the
+    /// place addressed by the pointer (with a folded displacement for a constant
+    /// index, or a scaled indexed store for a variable one).
+    pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
+        let (base, index) = match target {
+            Expression::Dereference { pointer } => (pointer.as_ref(), None),
+            Expression::Index { base, index } => (base.as_ref(), Some(index.as_ref())),
+            _ => return Err(Diagnostic::error("store target must be `*p` or `p[i]`")),
+        };
+        let (pointee, address) = self.pointer_leaf(base)?;
+        match index {
+            None => {
+                let source = self.place_store_value(value, pointee)?;
+                self.output.instructions.push(displacement_store(pointee, source, address, 0));
+            }
+            Some(index) if constant_value(index).is_some() => {
+                let offset = i16::try_from(constant_value(index).unwrap() * pointee.size() as i64)
+                    .map_err(|_| Diagnostic::error("store offset out of range (roadmap)"))?;
+                let source = self.place_store_value(value, pointee)?;
+                self.output.instructions.push(displacement_store(pointee, source, address, offset));
+            }
+            Some(index) => {
+                // A variable index uses the scratch for scaling, so the value must
+                // be a leaf (it stays in its own register).
+                if !matches!(value, Expression::Variable(_)) {
+                    return Err(Diagnostic::error("store with a variable index needs a simple value (roadmap)"));
+                }
+                let source = self.place_store_value(value, pointee)?;
+                let index_register = self.general_register_of_leaf(index)?;
+                let size = pointee.size();
+                let scaled = if size == 1 {
+                    index_register
+                } else {
+                    self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: index_register,
+                        shift: size.trailing_zeros() as u8,
+                    });
+                    GENERAL_SCRATCH
+                };
+                self.output.instructions.push(indexed_store(pointee, source, address, scaled));
+            }
+        }
+        Ok(())
+    }
+
+    /// The register holding the value to store: a leaf in its own register, or an
+    /// integer constant materialized into the scratch.
+    fn place_store_value(&mut self, value: &Expression, pointee: Pointee) -> Compilation<u8> {
+        if pointee == Pointee::Float {
+            return self.float_register_of_leaf(value);
+        }
+        if matches!(value, Expression::Variable(_)) {
+            return self.general_register_of_leaf(value);
+        }
+        if let Some(constant) = constant_value(value) {
+            self.load_integer_constant(GENERAL_SCRATCH, constant);
+            return Ok(GENERAL_SCRATCH);
+        }
+        Err(Diagnostic::error("store value needs the full register allocator (roadmap)"))
     }
 
     /// `(pointee, address register)` for a pointer leaf variable.

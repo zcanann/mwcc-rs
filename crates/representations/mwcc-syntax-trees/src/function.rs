@@ -25,14 +25,24 @@ pub struct GuardedReturn {
     pub value: Expression,
 }
 
+/// A body statement (beyond declarations, guards, and the return).
+#[derive(Debug, Clone)]
+pub enum Statement {
+    /// `*pointer = value;` or `base[index] = value;` — a store to memory. The
+    /// target is a `Dereference` or `Index` expression.
+    Store { target: Expression, value: Expression },
+}
+
 /// A function definition. Bodies are zero or more local declarations, then zero
-/// or more `if (...) return ...;` guards, then a final `return <expression>;`.
+/// or more statements, then zero or more `if (...) return ...;` guards, then an
+/// optional final `return <expression>;` (absent for a `void` function).
 #[derive(Debug, Clone)]
 pub struct Function {
     pub return_type: Type,
     pub name: String,
     pub parameters: Vec<Parameter>,
     pub locals: Vec<LocalDeclaration>,
+    pub statements: Vec<Statement>,
     pub guards: Vec<GuardedReturn>,
-    pub return_expression: Expression,
+    pub return_expression: Option<Expression>,
 }

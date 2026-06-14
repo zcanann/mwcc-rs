@@ -8,6 +8,6 @@ mod operators;
 mod types;
 
 pub use expression::Expression;
-pub use function::{Function, GuardedReturn, LocalDeclaration, Parameter};
+pub use function::{Function, GuardedReturn, LocalDeclaration, Parameter, Statement};
 pub use operators::{BinaryOperator, UnaryOperator};
 pub use types::{Pointee, Type};

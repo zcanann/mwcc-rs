@@ -49,6 +49,13 @@ impl Instruction {
             Instruction::XorImmediate { a, s, immediate } => d_form(26, s, a, immediate),
             Instruction::XorImmediateShifted { a, s, immediate } => d_form(27, s, a, immediate),
             Instruction::StoreWord { s, a, offset } => d_form(36, s, a, offset as u16),
+            Instruction::StoreByte { s, a, offset } => d_form(38, s, a, offset as u16),
+            Instruction::StoreHalfword { s, a, offset } => d_form(44, s, a, offset as u16),
+            Instruction::StoreFloatSingle { s, a, offset } => d_form(52, s, a, offset as u16),
+            Instruction::StoreWordIndexed { s, a, b } => xo_form(s, a, b, 151),
+            Instruction::StoreByteIndexed { s, a, b } => xo_form(s, a, b, 215),
+            Instruction::StoreHalfwordIndexed { s, a, b } => xo_form(s, a, b, 407),
+            Instruction::StoreFloatSingleIndexed { s, a, b } => xo_form(s, a, b, 663),
             Instruction::LoadFloatDouble { d, a, offset } => d_form(50, d, a, offset as u16),
             // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
             Instruction::ClearLeftImmediate { a, s, clear } => {
