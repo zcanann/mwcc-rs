@@ -58,6 +58,12 @@ pub enum Instruction {
     ShiftRightLogicalImmediate { a: u8, s: u8, shift: u8 },
     /// `xori rA, rS, UIMM`
     XorImmediate { a: u8, s: u8, immediate: u16 },
+    /// `xoris rA, rS, UIMM`
+    XorImmediateShifted { a: u8, s: u8, immediate: u16 },
+    /// `stw rS, offset(rA)` — store word.
+    StoreWord { s: u8, a: u8, offset: i16 },
+    /// `lfd frD, offset(rA)` — load float double.
+    LoadFloatDouble { d: u8, a: u8, offset: i16 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
     ClearLeftImmediate { a: u8, s: u8, clear: u8 },
     /// `fadds frD, frA, frB`
@@ -149,6 +155,9 @@ impl Instruction {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (rotate << 11) | ((shift as u32) << 6) | (31 << 1)
             }
             Instruction::XorImmediate { a, s, immediate } => d_form(26, s, a, immediate),
+            Instruction::XorImmediateShifted { a, s, immediate } => d_form(27, s, a, immediate),
+            Instruction::StoreWord { s, a, offset } => d_form(36, s, a, offset as u16),
+            Instruction::LoadFloatDouble { d, a, offset } => d_form(50, d, a, offset as u16),
             // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
             Instruction::ClearLeftImmediate { a, s, clear } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1)
