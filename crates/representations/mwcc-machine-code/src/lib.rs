@@ -36,6 +36,10 @@ pub enum Instruction {
     OrComplement { a: u8, s: u8, b: u8 },
     /// `subfic rD, rA, SIMM` => rD = SIMM - rA.
     SubtractFromImmediate { d: u8, a: u8, immediate: i16 },
+    /// `subfc rD, rA, rB` => rD = rB - rA, setting the carry.
+    SubtractFromCarrying { d: u8, a: u8, b: u8 },
+    /// `adde rD, rA, rB` => rD = rA + rB + carry.
+    AddExtended { d: u8, a: u8, b: u8 },
     /// `mullw rD, rA, rB`
     MultiplyLow { d: u8, a: u8, b: u8 },
     /// `mulli rD, rA, SIMM`
@@ -150,6 +154,8 @@ impl Instruction {
             Instruction::AndComplement { a, s, b } => logical_form(s, a, b, 60),
             Instruction::OrComplement { a, s, b } => logical_form(s, a, b, 412),
             Instruction::SubtractFromImmediate { d, a, immediate } => d_form(8, d, a, immediate as u16),
+            Instruction::SubtractFromCarrying { d, a, b } => xo_form(d, a, b, 8),
+            Instruction::AddExtended { d, a, b } => xo_form(d, a, b, 138),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
             Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
             Instruction::DivideWord { d, a, b } => xo_form(d, a, b, 491),

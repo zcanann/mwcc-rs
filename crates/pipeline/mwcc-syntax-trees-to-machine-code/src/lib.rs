@@ -988,6 +988,28 @@ impl Generator {
                 }
                 Ok(())
             }
+            // signed a <= b / a >= b : carry-based, with two temporaries.
+            BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
+                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some() =>
+            {
+                let left_register = self.general_register_of_leaf(left)?;
+                let right_register = self.general_register_of_leaf(right)?;
+                let mut free = (3u8..=12).filter(|r| ![left_register, right_register, GENERAL_SCRATCH].contains(r));
+                let (Some(lower), Some(higher)) = (free.next(), free.next()) else {
+                    return Err(Diagnostic::error("out of registers for comparison"));
+                };
+                // For a<=b: high = sign(b), low = sign(a), carry from (b - a).
+                // For a>=b the operands swap.
+                let (sign_high, sign_low, subtrahend, minuend) = match operator {
+                    BinaryOperator::LessEqual => (right_register, left_register, left_register, right_register),
+                    _ => (left_register, right_register, right_register, left_register),
+                };
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: higher, s: sign_high, shift: 31 });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: lower, s: sign_low, shift: 31 });
+                self.output.instructions.push(Instruction::SubtractFromCarrying { d: GENERAL_SCRATCH, a: subtrahend, b: minuend });
+                self.output.instructions.push(Instruction::AddExtended { d, a: higher, b: lower });
+                Ok(())
+            }
             _ => Err(Diagnostic::error("this comparison needs the branchless compare idioms (roadmap)")),
         }
     }
