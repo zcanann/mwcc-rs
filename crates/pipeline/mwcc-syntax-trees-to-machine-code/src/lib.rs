@@ -659,24 +659,24 @@ impl Generator {
         Ok(())
     }
 
-    /// Place an operand and return the register holding it: a leaf stays in its
-    /// own register, a unary sub-expression is computed into `destination`, and a
-    /// binary sub-expression is computed into the scratch register (mwcc's rule).
-    /// Returns `None` when a binary operand does not fit the single-scratch model.
-    fn place_operand(&mut self, operand: &Expression, destination: u8) -> Compilation<Option<u8>> {
-        match operand {
-            Expression::Variable(_) => Ok(Some(self.general_register_of_leaf(operand)?)),
-            Expression::Binary { .. } => {
-                if !fits_single_scratch(operand, true) {
-                    return Ok(None);
-                }
-                self.evaluate_general(operand, GENERAL_SCRATCH)?;
-                Ok(Some(GENERAL_SCRATCH))
+    /// Place an operand and return the register holding it. A leaf stays in its
+    /// own register. A sub-expression is computed into the destination when the
+    /// consumer can fold it there (`addi`), otherwise into the scratch register —
+    /// mwcc keeps `addi` operands in place but routes `rlwinm`/logical operands
+    /// through `r0`. Returns `None` when a scratch operand does not fit.
+    fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
+        if let Expression::Variable(_) = operand {
+            return Ok(Some(self.general_register_of_leaf(operand)?));
+        }
+        if prefer_destination {
+            self.evaluate_general(operand, destination)?;
+            Ok(Some(destination))
+        } else {
+            if !fits_single_scratch(operand, true) {
+                return Ok(None);
             }
-            _ => {
-                self.evaluate_general(operand, destination)?;
-                Ok(Some(destination))
-            }
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            Ok(Some(GENERAL_SCRATCH))
         }
     }
 
@@ -685,7 +685,7 @@ impl Generator {
         let d = destination;
         match operator {
             UnaryOperator::Negate => {
-                let Some(source) = self.place_operand(operand, d)? else {
+                let Some(source) = self.place_operand(operand, d, false)? else {
                     return Err(Diagnostic::error("negation operand needs the full register allocator (roadmap M1)"));
                 };
                 self.output.instructions.push(Instruction::Negate { d, a: source });
@@ -890,7 +890,8 @@ impl Generator {
             _ => return Ok(false),
         };
 
-        let Some(source) = self.place_operand(variable, destination)? else {
+        let prefer_destination = matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract);
+        let Some(source) = self.place_operand(variable, destination, prefer_destination)? else {
             return Ok(false);
         };
         let d = destination;
