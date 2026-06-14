@@ -1,0 +1,12 @@
+[package]
+name = "mwcc-rs"
+version = "0.0.1"
+edition = "2021"
+description = "A byte-matching reimplementation of Metrowerks CodeWarrior for Embedded PowerPC (mwcceppc), targeting GameCube/Wii decompilation. Starting with GC/1.3.2 (2.4.2 build 81)."
+
+[[bin]]
+name = "mwcc"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
