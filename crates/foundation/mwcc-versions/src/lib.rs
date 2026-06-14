@@ -29,6 +29,11 @@ pub struct CompilerBuild {
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed.
     /// The lone codegen knob distinguishing GC builds 53..=108.
     pub char_is_signed: bool,
+    /// In the int→float conversion, whether the value store (`stw rX,12(r1)`) is
+    /// scheduled before the bias load (`lfd f1,0(0)`). GC/2.0p1 orders it this
+    /// way; every other supported build loads the bias first. The first observed
+    /// instruction-scheduling difference between builds.
+    pub float_cast_value_store_first: bool,
 }
 
 /// GC/1.3 — mwcceppc 2.4.2 build 53. The earliest preserved 2.4.2 build; the
@@ -39,6 +44,7 @@ pub const GC_1_3: CompilerBuild = CompilerBuild {
     version: (2, 4, 2),
     build: 53,
     char_is_signed: false,
+    float_cast_value_store_first: false,
 };
 
 /// GC/1.3.2 — mwcceppc 2.4.2 build 81 (built 2002-05-07). The first target and
@@ -49,6 +55,7 @@ pub const GC_1_3_2: CompilerBuild = CompilerBuild {
     version: (2, 4, 2),
     build: 81,
     char_is_signed: true,
+    float_cast_value_store_first: false,
 };
 
 /// GC/1.3.2r — mwcceppc 2.4.2 build 81, byte-identical to GC/1.3.2 across the
@@ -59,6 +66,7 @@ pub const GC_1_3_2R: CompilerBuild = CompilerBuild {
     version: (2, 4, 2),
     build: 81,
     char_is_signed: true,
+    float_cast_value_store_first: false,
 };
 
 /// GC/2.0 — mwcceppc 2.4.7 build 92.
@@ -68,6 +76,18 @@ pub const GC_2_0: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 92,
     char_is_signed: true,
+    float_cast_value_store_first: false,
+};
+
+/// GC/2.0p1 — mwcceppc 2.4.7 build 92. Identical to GC/2.0 except the int→float
+/// conversion schedules the value store before the bias load.
+pub const GC_2_0P1: CompilerBuild = CompilerBuild {
+    label: "GC/2.0p1",
+    product: "CodeWarrior for GameCube 2.0 (patch 1)",
+    version: (2, 4, 7),
+    build: 92,
+    char_is_signed: true,
+    float_cast_value_store_first: true,
 };
 
 /// GC/2.5 — mwcceppc 2.4.7 build 105.
@@ -77,6 +97,7 @@ pub const GC_2_5: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 105,
     char_is_signed: true,
+    float_cast_value_store_first: false,
 };
 
 /// GC/2.6 — mwcceppc 2.4.7 build 107.
@@ -86,6 +107,7 @@ pub const GC_2_6: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 107,
     char_is_signed: true,
+    float_cast_value_store_first: false,
 };
 
 /// GC/2.7 — mwcceppc 2.4.7 build 108.
@@ -95,10 +117,11 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
     version: (2, 4, 7),
     build: 108,
     char_is_signed: true,
+    float_cast_value_store_first: false,
 };
 
 /// Every build the generator reproduces byte-for-byte across the canary suite.
-pub const SUPPORTED: &[CompilerBuild] = &[GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_5, GC_2_6, GC_2_7];
+pub const SUPPORTED: &[CompilerBuild] = &[GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_0P1, GC_2_5, GC_2_6, GC_2_7];
 
 /// The default build new compilations target until one is selected.
 pub const DEFAULT: CompilerBuild = GC_1_3_2;
