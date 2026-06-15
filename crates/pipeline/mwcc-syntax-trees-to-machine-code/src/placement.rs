@@ -55,7 +55,7 @@ impl Generator {
         }
         // A global operand also loads into a register (from the small-data area).
         if self.is_global(left) || self.is_global(right) {
-            return self.place_global_operands(operator, left, right, destination);
+            return self.place_global_operands(operator, left, right);
         }
         // A struct-member operand loads into a register, like a dereference.
         if as_member(left).is_some() || as_member(right).is_some() {
@@ -206,7 +206,7 @@ impl Generator {
     /// load left into the destination and right into the scratch, except for
     /// subtraction, which loads the right into the destination and left into the
     /// scratch (a global has no address register to keep it in place).
-    fn place_global_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    fn place_global_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
         let subtract = operator == BinaryOperator::Subtract;
         // One global with one struct member: handled by the anchor placement below.
         if (self.is_global(left) && as_member(right).is_some()) || (self.is_global(right) && as_member(left).is_some()) {
@@ -214,28 +214,29 @@ impl Generator {
         }
         match (self.is_global(left), self.is_global(right)) {
             (true, true) => {
-                if destination == GENERAL_SCRATCH {
-                    return Err(Diagnostic::error("two globals need a non-scratch destination (roadmap)"));
-                }
                 let left_name = leaf_name(left).unwrap();
                 let right_name = leaf_name(right).unwrap();
                 // mwcc loads both globals first, then applies any signed-char
                 // sign-extensions — the loads are batched ahead of the extends.
-                // The anchor (left for commutative, right for subtraction) takes
-                // the destination; the other takes the scratch.
+                // The anchor (left for commutative, right for subtraction) loads
+                // into a fresh virtual register the allocator places — so this no
+                // longer needs the result register to be non-scratch (a two-global
+                // sub-expression like `(g+h)*x` now lowers instead of deferring),
+                // and the other operand takes the scratch.
+                let anchor_register = self.fresh_virtual_general();
                 let (first, first_register, second, second_register) = if subtract {
-                    (right_name, destination, left_name, GENERAL_SCRATCH)
+                    (right_name, anchor_register, left_name, GENERAL_SCRATCH)
                 } else {
-                    (left_name, destination, right_name, GENERAL_SCRATCH)
+                    (left_name, anchor_register, right_name, GENERAL_SCRATCH)
                 };
                 self.emit_global_load_value(first, first_register)?;
                 self.emit_global_load_value(second, second_register)?;
                 if self.global_char_extend(first)? { self.emit_widen(first_register, first_register, 8, true); }
                 if self.global_char_extend(second)? { self.emit_widen(second_register, second_register, 8, true); }
                 if subtract {
-                    Operands::ordered(GENERAL_SCRATCH, destination)
+                    Operands::ordered(GENERAL_SCRATCH, anchor_register)
                 } else {
-                    Operands::ordered(destination, GENERAL_SCRATCH)
+                    Operands::ordered(anchor_register, GENERAL_SCRATCH)
                 }
             }
             (true, false) => {
