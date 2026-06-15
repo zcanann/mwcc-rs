@@ -22,6 +22,10 @@ impl Generator {
                 }
             }
         }
+        // The address of an array member subscripts to its element.
+        if let Expression::MemberAddress { element, .. } = pointer {
+            return Some(element.element().width());
+        }
         self.pointee_of(pointer).ok().map(|pointee| pointee.element().width())
     }
 

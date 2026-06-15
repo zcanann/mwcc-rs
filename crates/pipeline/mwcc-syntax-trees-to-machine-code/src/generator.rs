@@ -154,6 +154,8 @@ impl Generator {
             Expression::Index { base, .. } => Ok(self.pointee_of(base)?.element().is_signed()),
             // `p->field` has the signedness of the member type.
             Expression::Member { member_type, .. } => Ok(self.signed_of(*member_type)),
+            // An array member's address is an unsigned pointer.
+            Expression::MemberAddress { .. } => Ok(false),
             // A call returns an int by default (we have no prototype types yet).
             Expression::Call { .. } => Ok(true),
         }

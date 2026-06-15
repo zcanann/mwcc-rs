@@ -92,6 +92,19 @@ impl Generator {
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
             Expression::Member { base, offset, member_type } => self.emit_member_load(base, *offset, *member_type, destination),
+            Expression::MemberAddress { base, offset, .. } => {
+                // The array's address: `base + offset` (a `mr` when the array is at
+                // the start of the struct).
+                let base_register = self.member_base_register(base)?;
+                if *offset == 0 {
+                    if base_register != destination {
+                        self.output.instructions.push(Instruction::move_register(destination, base_register));
+                    }
+                } else {
+                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: base_register, immediate: *offset as i16 });
+                }
+                Ok(())
+            }
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), false),
             Expression::Binary { operator, left, right } => {
@@ -191,6 +204,32 @@ impl Generator {
     /// displacement (`lwz r3,8(r3)`); a variable index is scaled by the element
     /// size and uses an indexed load (`slwi r0,rI,2; lwzx r3,rBase,r0`).
     pub(crate) fn emit_subscript(&mut self, base: &Expression, index: &Expression, destination: u8) -> Compilation<()> {
+        // `base->arr[index]` — the array address (`base + offset`) folds into the
+        // subscript: the array offset rides in the load displacement.
+        if let Expression::MemberAddress { base: struct_base, offset, element } = base {
+            let address = self.member_base_register(struct_base)?;
+            if let Some(constant) = constant_value(index) {
+                let total = *offset as i64 + constant * element.size() as i64;
+                let total = i16::try_from(total).map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
+                self.output.instructions.push(displacement_load(*element, destination, address, total));
+                return Ok(());
+            }
+            let index_register = self.general_register_of_leaf(index)?;
+            let size = element.size();
+            let scaled = if size == 1 {
+                index_register
+            } else {
+                self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: size.trailing_zeros() as u8 });
+                GENERAL_SCRATCH
+            };
+            if *offset == 0 {
+                self.output.instructions.push(indexed_load(*element, destination, address, scaled));
+            } else {
+                self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
+                self.output.instructions.push(displacement_load(*element, destination, address, *offset as i16));
+            }
+            return Ok(());
+        }
         let (pointee, address) = self.resolve_pointer(base)?;
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
@@ -237,6 +276,39 @@ impl Generator {
             let source = self.place_store_value(value, pointee)?;
             self.output.instructions.push(displacement_store(pointee, source, address, *offset as i16));
             return Ok(());
+        }
+        // `p->arr[index] = value` — store to an array member, folding the array
+        // offset into the displacement just like the array load.
+        if let Expression::Index { base: index_base, index } = target {
+            if let Expression::MemberAddress { base: struct_base, offset, element } = index_base.as_ref() {
+                let address = self.member_base_register(struct_base)?;
+                if let Some(constant) = constant_value(index) {
+                    let total = i16::try_from(*offset as i64 + constant * element.size() as i64)
+                        .map_err(|_| Diagnostic::error("array store out of range (roadmap)"))?;
+                    let source = self.place_store_value(value, *element)?;
+                    self.output.instructions.push(displacement_store(*element, source, address, total));
+                    return Ok(());
+                }
+                if !matches!(value, Expression::Variable(_)) {
+                    return Err(Diagnostic::error("array store with a variable index needs a simple value (roadmap)"));
+                }
+                let source = self.place_store_value(value, *element)?;
+                let index_register = self.general_register_of_leaf(index)?;
+                let size = element.size();
+                let scaled = if size == 1 {
+                    index_register
+                } else {
+                    self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: size.trailing_zeros() as u8 });
+                    GENERAL_SCRATCH
+                };
+                if *offset == 0 {
+                    self.output.instructions.push(indexed_store(*element, source, address, scaled));
+                } else {
+                    self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
+                    self.output.instructions.push(displacement_store(*element, source, address, *offset as i16));
+                }
+                return Ok(());
+            }
         }
         let (base, index) = match target {
             Expression::Dereference { pointer } => (pointer.as_ref(), None),

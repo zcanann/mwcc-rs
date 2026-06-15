@@ -1,7 +1,7 @@
 //! The expression tree.
 
 use crate::operators::{BinaryOperator, UnaryOperator};
-use crate::types::Type;
+use crate::types::{Pointee, Type};
 
 /// An expression.
 #[derive(Debug, Clone)]
@@ -43,6 +43,13 @@ pub enum Expression {
         base: Box<Expression>,
         offset: u16,
         member_type: Type,
+    },
+    /// `base->arr` where `arr` is an array member — the *address* of the array
+    /// (`base + offset`), an `element`-typed pointer that decays for subscripting.
+    MemberAddress {
+        base: Box<Expression>,
+        offset: u16,
+        element: Pointee,
     },
     /// `name(arguments)` — a direct call.
     Call {

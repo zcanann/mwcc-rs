@@ -88,12 +88,26 @@ impl Parser {
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
             let field_name = self.parse_identifier()?;
+            // An array member `type name[N]` occupies `N` elements; its access
+            // yields the array address rather than a loaded value.
+            let mut array_element = None;
+            let mut size = type_size(field_type);
+            let element_size = size;
+            if *self.peek() == Token::BracketOpen {
+                self.advance();
+                let count = match self.advance() {
+                    Token::IntegerLiteral(value) => value as u16,
+                    other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
+                };
+                self.expect(Token::BracketClose)?;
+                array_element = Some(pointee_of(field_type)?);
+                size = count * element_size;
+            }
             self.expect(Token::Semicolon)?;
-            let size = type_size(field_type);
-            // Natural alignment: a member starts at the next multiple of its size.
-            let alignment = size.max(1);
+            // Natural alignment: to the element size (for an array, that element).
+            let alignment = element_size.max(1);
             offset = offset.div_ceil(alignment) * alignment;
-            layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag });
+            layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag, array_element });
             offset += size;
         }
         self.expect(Token::BraceClose)?;

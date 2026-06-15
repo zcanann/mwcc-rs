@@ -147,8 +147,13 @@ impl Parser {
                         .fields
                         .get(&field)
                         .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
-                    let (offset, member_type, next_tag) = (member.offset, member.member_type, member.struct_tag.clone());
-                    expression = Expression::Member { base: Box::new(expression), offset, member_type };
+                    let (offset, member_type, next_tag, array_element) =
+                        (member.offset, member.member_type, member.struct_tag.clone(), member.array_element);
+                    expression = match array_element {
+                        // An array member decays to the address of its first element.
+                        Some(element) => Expression::MemberAddress { base: Box::new(expression), offset, element },
+                        None => Expression::Member { base: Box::new(expression), offset, member_type },
+                    };
                     struct_tag = next_tag;
                 }
                 _ => break,

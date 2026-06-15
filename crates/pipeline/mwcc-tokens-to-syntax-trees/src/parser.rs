@@ -2,16 +2,17 @@
 
 use std::collections::HashMap;
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::Type;
+use mwcc_syntax_trees::{Pointee, Type};
 use mwcc_tokens::Token;
 
 /// One resolved struct member: its type and byte offset within the struct, plus
 /// the struct tag it points to when the member is itself a struct pointer (so
-/// chained access `a->b->c` resolves).
+/// chained access `a->b->c` resolves), or the element type when it is an array.
 pub(crate) struct StructField {
     pub(crate) member_type: Type,
     pub(crate) offset: u16,
     pub(crate) struct_tag: Option<String>,
+    pub(crate) array_element: Option<Pointee>,
 }
 
 /// A struct's layout: members by name, plus the total size (for `sizeof`/arrays,
