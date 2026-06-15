@@ -69,7 +69,7 @@ impl Generator {
             Expression::Conditional { condition, when_true, when_false } => {
                 self.emit_float_conditional(condition, when_true, when_false, destination, false)
             }
-            Expression::Cast { operand, .. } => self.emit_cast_to_float(operand, destination),
+            Expression::Cast { operand, target_type } => self.emit_cast_to_float(operand, destination, *target_type == Type::Double),
             Expression::FloatLiteral(value) => {
                 self.load_float_constant(destination, *value as f32);
                 Ok(())

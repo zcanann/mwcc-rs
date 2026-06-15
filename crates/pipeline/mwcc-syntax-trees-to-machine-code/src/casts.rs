@@ -13,7 +13,7 @@ impl Generator {
     /// `0x4330000000000000`. The bias double lives in `.sdata2`; the `lfd dest,0(0)`
     /// is byte-correct here, but its `R_PPC_EMB_SDA21` relocation and the constant
     /// pool are the next M3 step. Leaf integer operands only.
-    pub(crate) fn emit_cast_to_float(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_cast_to_float(&mut self, operand: &Expression, destination: u8, double: bool) -> Compilation<()> {
         // `(float)` of a double rounds it to single precision with `frsp`. A leaf
         // rounds in place from its own register; a sub-expression is computed into
         // the destination first (mwcc keeps that intermediate in the destination,
@@ -53,7 +53,13 @@ impl Generator {
         }
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
         self.output.instructions.push(Instruction::LoadFloatDouble { d: FLOAT_SCRATCH, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::FloatSubtractSingle { d: destination, a: FLOAT_SCRATCH, b: destination });
+        // The bias subtract yields the result at the requested precision: `fsub`
+        // for an int->double conversion, `fsubs` for int->float.
+        self.output.instructions.push(if double {
+            Instruction::FloatSubtractDouble { d: destination, a: FLOAT_SCRATCH, b: destination }
+        } else {
+            Instruction::FloatSubtractSingle { d: destination, a: FLOAT_SCRATCH, b: destination }
+        });
         Ok(())
     }
 
