@@ -43,6 +43,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
     allocate_registers(&mut generator)?;
+    schedule_instructions(&mut generator);
 
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag
@@ -80,4 +81,16 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
         .map_err(|error| mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}")))?;
     mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
     Ok(())
+}
+
+/// The instruction-scheduling pass (Phase E): reorder instructions within the
+/// block to mwcc's pipeline schedule, then remap any relocation's instruction
+/// index through the permutation so it still points at its instruction. With the
+/// scheduler's identity policy this is a no-op; it becomes active as the policy
+/// is tuned against the oracle.
+fn schedule_instructions(generator: &mut Generator) {
+    let permutation = mwcc_vreg::schedule(&mut generator.output.instructions);
+    for relocation in &mut generator.output.relocations {
+        relocation.instruction_index = permutation[relocation.instruction_index];
+    }
 }
