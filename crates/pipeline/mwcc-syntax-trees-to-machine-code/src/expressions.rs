@@ -363,6 +363,9 @@ impl Generator {
                         let source = self.place_store_value(value, pointee)?;
                         self.record_relocation(RelocationKind::EmbSda21, name);
                         self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                        // The stored value is still in `source`; a following read of
+                        // this global reuses it (mwcc does not reload here).
+                        self.stored_globals.insert(name.clone(), (source, self.output.instructions.len()));
                     }
                     GlobalAddressing::Absolute => {
                         // mwcc materializes the address base before the value, so the
@@ -684,11 +687,31 @@ impl Generator {
         self.pointer_leaf(base)
     }
 
+    /// The register a just-stored global is still live in, if reading it now would
+    /// reuse it correctly: the value must not have been touched since the store (no
+    /// instruction emitted), and a scratch (`r0`) value can only feed a consumer
+    /// that does not use it as an `addi` base (where `r0` reads as literal zero).
+    fn live_global_register(&self, name: &str, prefer_destination: bool) -> Option<u8> {
+        let &(register, at) = self.stored_globals.get(name)?;
+        if at != self.output.instructions.len() {
+            return None;
+        }
+        if register == GENERAL_SCRATCH && prefer_destination {
+            return None;
+        }
+        Some(register)
+    }
+
     pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
         if let Expression::Variable(name) = operand {
             // A global is loaded into the consumer's register (the destination for
-            // addi-family consumers, otherwise the scratch), like a dereference.
+            // addi-family consumers, otherwise the scratch), like a dereference —
+            // unless it was just stored and is still live in a register, which is
+            // reused (no reload), reproducing mwcc.
             if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str()) {
+                if let Some(register) = self.live_global_register(name, prefer_destination) {
+                    return Ok(Some(register));
+                }
                 let target = if prefer_destination { destination } else { GENERAL_SCRATCH };
                 self.emit_global_load(name, target)?;
                 return Ok(Some(target));

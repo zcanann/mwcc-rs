@@ -40,6 +40,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
         non_leaf: false,
         next_virtual: 0,
         register_avoid: HashMap::new(),
+        stored_globals: HashMap::new(),
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;

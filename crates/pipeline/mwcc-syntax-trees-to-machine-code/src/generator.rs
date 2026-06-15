@@ -63,6 +63,12 @@ pub(crate) struct Generator {
     /// avoid the destination") so the allocation pass reproduces mwcc's coalescing
     /// of result-path temporaries onto the destination register.
     pub(crate) register_avoid: HashMap<u32, Vec<u8>>,
+    /// A global just stored, with the register holding the stored value and the
+    /// instruction count at the moment of the store. A subsequent read of the
+    /// global reuses that register instead of reloading — but only while no
+    /// instruction has been emitted since (so the value is provably still there).
+    /// This reproduces mwcc keeping a just-written global live in its register.
+    pub(crate) stored_globals: HashMap<String, (u8, usize)>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
