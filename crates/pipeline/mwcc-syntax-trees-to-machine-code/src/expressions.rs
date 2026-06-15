@@ -551,10 +551,17 @@ impl Generator {
                 self.record_relocation(RelocationKind::EmbSda21, name);
                 let instruction = self.global_load_instruction(global_type, destination, 0)?;
                 self.output.instructions.push(instruction);
-                Ok(())
             }
-            GlobalAddressing::Absolute => self.emit_global_load_absolute(name, global_type, destination),
+            GlobalAddressing::Absolute => self.emit_global_load_absolute(name, global_type, destination)?,
         }
+        // A signed `char` global promotes to int with a trailing sign-extension:
+        // `lbz` zero-extends the byte, so the value must be re-signed (`extsb`).
+        // Unsigned char (and build 53's unsigned plain char) needs nothing, and
+        // the half/word loads already extend to 32 bits.
+        if global_type == Type::Char && self.behavior.char_is_signed {
+            self.emit_widen(destination, destination, 8, true);
+        }
+        Ok(())
     }
 
     /// The type-appropriate load of a global from base register `a` (displacement
