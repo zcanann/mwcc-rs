@@ -48,10 +48,9 @@ impl Generator {
                         return Err(Diagnostic::error("narrow unsigned shift out of the single-rlwinm range (roadmap)"));
                     }
                 }
-                // The shifted value: a leaf stays put, a sub-expression goes to scratch.
-                let Some(source) = self.place_operand(left, d, false)? else {
-                    return Err(Diagnostic::error("shift value needs the full register allocator (roadmap M1)"));
-                };
+                // The shifted value: a leaf stays put, a sub-expression goes to the
+                // scratch (its temporaries are virtuals the allocator places).
+                let source = self.place_operand_or_scratch(left, d)?;
                 let shift = *amount as u8;
                 self.output.instructions.push(if signed {
                     Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift }
