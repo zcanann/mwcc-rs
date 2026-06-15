@@ -122,6 +122,14 @@ impl Generator {
                 if *operator == BinaryOperator::Modulo {
                     return self.emit_modulo(left, right, destination);
                 }
+                // Pointer arithmetic scales the integer operand by the pointee
+                // size (e.g. `int* + i` -> `slwi i,2; add`); byte pointers need no
+                // scaling and fall through to plain addition.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
+                    && self.try_emit_pointer_arithmetic(*operator, left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // `x & ~y` / `x | ~y` fuse into andc/orc.
                 if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr)
                     && self.try_emit_complement_logical(*operator, left, right, destination)
@@ -183,6 +191,53 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
         self.output.instructions.push(displacement_load(pointee, destination, address, offset as i16));
         Ok(())
+    }
+
+    /// The pointee size of a leaf pointer variable, when greater than one byte
+    /// (so its arithmetic needs scaling). A byte pointer returns `None` — its
+    /// arithmetic is a plain add.
+    fn scaled_pointer(&self, operand: &Expression) -> Option<u8> {
+        if let Expression::Variable(name) = operand {
+            if let Some(location) = self.locations.get(name) {
+                let size = location.pointee?.size();
+                if size > 1 {
+                    return Some(size);
+                }
+            }
+        }
+        None
+    }
+
+    /// Try to emit `pointer ± integer` with the integer scaled by the pointee
+    /// size. Returns `false` for non-pointer (or byte-pointer) operands.
+    fn try_emit_pointer_arithmetic(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        // Identify the pointer and integer operands (`i + p` is commutative).
+        let (pointer, integer) = if self.scaled_pointer(left).is_some() {
+            (left, right)
+        } else if operator == BinaryOperator::Add && self.scaled_pointer(right).is_some() {
+            (right, left)
+        } else {
+            return Ok(false);
+        };
+        let size = self.scaled_pointer(pointer).unwrap();
+        let pointer_register = self.general_register_of_leaf(pointer)?;
+        // A constant index folds its scaled value into an `addi`.
+        if let Some(constant) = constant_value(integer) {
+            let scaled = constant * size as i64;
+            let immediate = i16::try_from(if operator == BinaryOperator::Subtract { -scaled } else { scaled })
+                .map_err(|_| Diagnostic::error("pointer offset out of range (roadmap)"))?;
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: pointer_register, immediate });
+            return Ok(true);
+        }
+        let integer_register = self.general_register_of_leaf(integer)?;
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: integer_register, shift: size.trailing_zeros() as u8 });
+        match operator {
+            BinaryOperator::Add => self.output.instructions.push(Instruction::Add { d: destination, a: pointer_register, b: GENERAL_SCRATCH }),
+            // `p - i`: `subf d, scaled, p` computes `p - scaled`.
+            BinaryOperator::Subtract => self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: GENERAL_SCRATCH, b: pointer_register }),
+            _ => unreachable!("caller restricts to add/subtract"),
+        }
+        Ok(true)
     }
 
     /// The register holding a struct pointer for member access. A plain variable
