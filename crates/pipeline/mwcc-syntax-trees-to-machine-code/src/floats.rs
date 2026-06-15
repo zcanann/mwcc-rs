@@ -240,9 +240,10 @@ impl Generator {
             (true, true) => {
                 // The left side computes into a fresh float virtual the allocator
                 // places (keeping the right's inputs live); the right into the
-                // scratch. The float analog of the integer both-complex temp — so a
-                // both-complex float expression can land in the scratch, unlocking
-                // float negation and float sub-expressions over it.
+                // scratch. (Sethi-Ullman heavier-first — as done for the integer
+                // case — gets the float *registers* right here but not the order:
+                // mwcc emits the lighter operand's add before the heavier product,
+                // a scheduler nuance not yet pinned down, so left-to-right stands.)
                 let temp = self.with_reserved_inputs(right, |generator| {
                     let temp = generator.fresh_virtual_float();
                     generator.evaluate_float(left, temp)?;
