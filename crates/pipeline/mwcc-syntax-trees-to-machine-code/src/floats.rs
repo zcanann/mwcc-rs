@@ -45,8 +45,12 @@ impl Generator {
                 if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = operand.as_ref() {
                     return self.evaluate_float(inner, destination);
                 }
-                // A leaf negates in place; a sub-expression goes through the scratch.
-                let source = if is_complex(operand) {
+                // A leaf negates in place; a memory load or sub-expression goes
+                // through the scratch.
+                let source = if self.is_float_located(operand) {
+                    self.emit_located_operand(operand, FLOAT_SCRATCH)?;
+                    FLOAT_SCRATCH
+                } else if is_complex(operand) {
                     if !fits_single_scratch(operand, true) {
                         return Err(Diagnostic::error("float negation operand needs the full register allocator (roadmap M1)"));
                     }
