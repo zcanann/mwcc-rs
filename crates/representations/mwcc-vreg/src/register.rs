@@ -39,6 +39,16 @@ pub enum Reg {
     Physical(u8),
 }
 
+/// Register-field values below this are physical registers (0..=31, in either
+/// file); from here up, a value encodes a virtual register (`id = value -
+/// VIRTUAL_BASE`) directly in the u8 instruction field that selection emits,
+/// before allocation resolves it. This is the transitional bridge that lets the
+/// existing `Instruction` (with `u8` fields) carry virtuals without being
+/// parameterized over its register type; it bounds a function to 224 virtuals
+/// per class — ample for the migration's slices, widened later if a real
+/// function needs more (by moving to `Instruction<Reg>` or wider fields).
+pub const VIRTUAL_BASE: u8 = 32;
+
 impl Reg {
     pub fn general(id: u32) -> Self {
         Reg::Virtual(VirtualRegister::new(id, Class::General))
@@ -62,6 +72,34 @@ impl Reg {
             Reg::Physical(number) => Some(number),
             Reg::Virtual(_) => None,
         }
+    }
+
+    /// Decode a register-field value of a known [`Class`]: physical below
+    /// [`VIRTUAL_BASE`], virtual at or above it.
+    pub fn from_field(value: u8, class: Class) -> Reg {
+        if value >= VIRTUAL_BASE {
+            Reg::Virtual(VirtualRegister::new((value - VIRTUAL_BASE) as u32, class))
+        } else {
+            Reg::Physical(value)
+        }
+    }
+
+    /// Encode back into a u8 instruction field. Panics if a virtual id exceeds
+    /// the field's capacity — an honest ceiling, not silent truncation.
+    pub fn to_field(self) -> u8 {
+        match self {
+            Reg::Physical(number) => number,
+            Reg::Virtual(register) => {
+                let encoded = VIRTUAL_BASE as u32 + register.id;
+                assert!(encoded <= u8::MAX as u32, "virtual register id {} exceeds the u8 field ceiling", register.id);
+                encoded as u8
+            }
+        }
+    }
+
+    /// Whether a register-field value denotes a virtual register.
+    pub fn is_virtual_field(value: u8) -> bool {
+        value >= VIRTUAL_BASE
     }
 }
 
