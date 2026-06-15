@@ -238,16 +238,17 @@ impl Generator {
                 Operands::ordered(self.float_register_of_leaf(left)?, FLOAT_SCRATCH)
             }
             (true, true) => {
+                // The left side computes into a fresh float virtual the allocator
+                // places (keeping the right's inputs live); the right into the
+                // scratch. The float analog of the integer both-complex temp — so a
+                // both-complex float expression can land in the scratch, unlocking
+                // float negation and float sub-expressions over it.
                 let temp = self.with_reserved_inputs(right, |generator| {
-                    let temp = generator.lowest_free_float()?;
+                    let temp = generator.fresh_virtual_float();
                     generator.evaluate_float(left, temp)?;
                     Ok(temp)
                 })?;
-                let temp_added = self.reserved.insert(temp);
                 self.evaluate_float(right, FLOAT_SCRATCH)?;
-                if temp_added {
-                    self.reserved.remove(&temp);
-                }
                 Operands::ordered(temp, FLOAT_SCRATCH)
             }
         }
