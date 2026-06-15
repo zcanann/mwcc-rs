@@ -90,6 +90,15 @@ impl Generator {
         register.to_field()
     }
 
+    /// A fresh floating-point virtual register. The allocator draws float homes
+    /// from the FPR pool, kept distinct from the general pool by the class the
+    /// machine description reports for each operand.
+    pub(crate) fn fresh_virtual_float(&mut self) -> u8 {
+        let register = Reg::float(self.next_virtual);
+        self.next_virtual += 1;
+        register.to_field()
+    }
+
     /// Whether `expression` is a float-valued leaf.
     pub(crate) fn is_float_leaf(&self, expression: &Expression) -> bool {
         matches!(expression, Expression::Variable(name) if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::Float))

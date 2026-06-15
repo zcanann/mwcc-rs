@@ -155,15 +155,21 @@ impl Generator {
     /// the scratch, and a located-with-constant loads the constant first.
     fn place_float_located_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
         if self.is_float_located(left) && self.is_float_located(right) {
-            if destination == FLOAT_SCRATCH {
-                return Err(Diagnostic::error("two float loads need a non-scratch destination (roadmap)"));
-            }
-            self.emit_located_operand(left, destination)?;
+            // The left load goes to a fresh virtual the allocator places (it
+            // coalesces onto a free FPR, or the result register when that is free);
+            // the right to the scratch. No longer needs a non-scratch result, so a
+            // two-float-load sub-expression like `(*p + *q) * z` lowers.
+            let anchor = self.fresh_virtual_float();
+            self.emit_located_operand(left, anchor)?;
             self.emit_located_operand(right, FLOAT_SCRATCH)?;
-            return Operands::ordered(destination, FLOAT_SCRATCH);
+            return Operands::ordered(anchor, FLOAT_SCRATCH);
         }
         if self.is_float_located(left) {
             if let Expression::FloatLiteral(value) = right {
+                // The standalone form works (the constant loads into the result
+                // register); as a sub-expression the outer operation reorders its
+                // operands depending on the constant-folded inner (a scheduler
+                // concern, Phase E), so defer rather than emit a non-matching order.
                 if destination == FLOAT_SCRATCH {
                     return Err(Diagnostic::error("float load with constant needs a non-scratch destination (roadmap)"));
                 }
