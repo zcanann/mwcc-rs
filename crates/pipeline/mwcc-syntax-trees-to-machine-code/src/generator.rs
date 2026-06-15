@@ -91,9 +91,17 @@ impl Generator {
     /// Emit a load of a single-precision constant from `.sdata2`: `lfs fD, 0(r0)`
     /// (the zero placeholder the SDA21 relocation patches), pooling the value.
     pub(crate) fn load_float_constant(&mut self, destination: u8, value: f32) {
-        let index = self.output.intern_constant(value.to_bits());
+        let index = self.output.intern_constant(value.to_bits() as u64, 4);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
         self.output.instructions.push(Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 });
+    }
+
+    /// Emit a load of a double-precision constant from `.sdata2`: `lfd fD, 0(r0)`
+    /// with the SDA21 relocation the pooled value needs.
+    pub(crate) fn load_double_constant(&mut self, destination: u8, bits: u64) {
+        let index = self.output.intern_constant(bits, 8);
+        self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 });
     }
 
     pub(crate) fn lookup_general(&self, name: &str) -> Option<u8> {

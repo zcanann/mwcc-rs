@@ -14,7 +14,11 @@ impl Generator {
     /// is byte-correct here, but its `R_PPC_EMB_SDA21` relocation and the constant
     /// pool are the next M3 step. Leaf integer operands only.
     pub(crate) fn emit_cast_to_float(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
+        // The conversion subtracts this magic double `0x43300000_80000000`, pooled
+        // in `.sdata2`; it also bumps the anonymous-symbol counter.
+        const INT_TO_FLOAT_BIAS: u64 = 0x4330_0000_8000_0000;
         let source = self.general_register_of_leaf(operand)?;
+        self.output.has_conversion = true;
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::XorImmediateShifted { a: source, s: source, immediate: 0x8000 });
@@ -23,9 +27,9 @@ impl Generator {
         // in opposite orders (GC/2.0p1 stores first, every other build loads first).
         if self.build.profile.float_cast_value_store_first() {
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 }); // bias (needs reloc)
+            self.load_double_constant(destination, INT_TO_FLOAT_BIAS);
         } else {
-            self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 }); // bias (needs reloc)
+            self.load_double_constant(destination, INT_TO_FLOAT_BIAS);
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
         }
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
@@ -42,6 +46,7 @@ impl Generator {
         if self.is_float_leaf(operand) {
             // float -> int: convert, bounce through the frame, then narrow if needed.
             let source = self.float_register_of_leaf(operand)?;
+            self.output.has_conversion = true;
             self.frame_size = 16;
             self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: FLOAT_SCRATCH, b: source });
             self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });

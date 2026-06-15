@@ -4,6 +4,14 @@ use crate::frame::FrameInfo;
 use crate::instruction::Instruction;
 use crate::relocation::Relocation;
 
+/// A read-only constant in the `.sdata2` pool: its big-endian bit pattern and
+/// byte width (4 for a single-precision float, 8 for the int->float bias double).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolConstant {
+    pub bits: u64,
+    pub byte_width: u8,
+}
+
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
@@ -11,26 +19,36 @@ pub struct MachineFunction {
     pub instructions: Vec<Instruction>,
     /// `.text` relocations, by the instruction they patch.
     pub relocations: Vec<Relocation>,
-    /// Read-only single-precision constants this function loads from `.sdata2`,
-    /// as raw IEEE-754 bit patterns. Each becomes an anonymous `@N` object that
-    /// the function's `R_PPC_EMB_SDA21` loads reference.
-    pub constants: Vec<u32>,
+    /// Read-only constants this function loads from `.sdata2`. Each becomes an
+    /// anonymous `@N` object that the function's `R_PPC_EMB_SDA21` loads reference.
+    pub constants: Vec<PoolConstant>,
+    /// Whether the function performs an int<->float conversion. mwcc's anonymous
+    /// `@N` counter starts one higher for such functions.
+    pub has_conversion: bool,
     /// Frame metadata for the unwind tables; `None` for a leaf with no frame.
     pub frame: Option<FrameInfo>,
 }
 
 impl MachineFunction {
     pub fn new(name: impl Into<String>) -> Self {
-        MachineFunction { name: name.into(), instructions: Vec::new(), relocations: Vec::new(), constants: Vec::new(), frame: None }
+        MachineFunction {
+            name: name.into(),
+            instructions: Vec::new(),
+            relocations: Vec::new(),
+            constants: Vec::new(),
+            has_conversion: false,
+            frame: None,
+        }
     }
 
-    /// Intern a single-precision constant, returning its constant-pool index.
-    /// Equal bit patterns share one slot (mwcc pools identical constants).
-    pub fn intern_constant(&mut self, bits: u32) -> usize {
-        if let Some(index) = self.constants.iter().position(|existing| *existing == bits) {
+    /// Intern a pool constant, returning its index. Equal constants share one slot
+    /// (mwcc pools identical constants).
+    pub fn intern_constant(&mut self, bits: u64, byte_width: u8) -> usize {
+        let constant = PoolConstant { bits, byte_width };
+        if let Some(index) = self.constants.iter().position(|existing| *existing == constant) {
             return index;
         }
-        self.constants.push(bits);
+        self.constants.push(constant);
         self.constants.len() - 1
     }
 

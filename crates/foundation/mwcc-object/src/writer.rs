@@ -96,6 +96,22 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let has_frame = input.frame.is_some();
     let has_constants = !input.constants.is_empty();
 
+    // `.sdata2` payload and each constant's offset (constants are placed at their
+    // natural alignment, so an 8-byte double may pad after a 4-byte float).
+    let mut sdata2 = Vec::new();
+    let mut constant_offsets: Vec<u32> = Vec::new();
+    for constant in &input.constants {
+        let alignment = constant.byte_width as usize;
+        while sdata2.len() % alignment != 0 {
+            sdata2.push(0);
+        }
+        constant_offsets.push(sdata2.len() as u32);
+        match constant.byte_width {
+            8 => sdata2.extend_from_slice(&constant.bits.to_be_bytes()),
+            _ => sdata2.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
+        }
+    }
+
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The
     //    unwind tables sit right after `.text`, then the `.sdata2` constant pool;
     //    their `.rela` and everything downstream key off this order, by name.
@@ -141,11 +157,11 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     // first (visible objects in `.sdata2`), then the hidden unwind entries. mwcc
     // emits them in this order, so the numbering follows it.
     let mut constant_symbols: Vec<u32> = Vec::new();
-    for index in 0..input.constants.len() {
+    for (index, constant) in input.constants.iter().enumerate() {
         let number = input.anonymous_base + index as u32;
         constant_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
         let name = strtab.add(&format!("@{number}"));
-        write_symbol(&mut symtab, name, index as u32 * 4, 4, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
+        write_symbol(&mut symtab, name, constant_offsets[index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
     }
     let mut extab_entry_symbol = 0u32;
     if has_frame {
@@ -197,11 +213,6 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         write_u32(&mut extabindex, 0); // -> the function
         write_u32(&mut extabindex, text_size);
         write_u32(&mut extabindex, 0); // -> the extab entry
-    }
-    // `.sdata2` — the pooled single-precision constants, one big-endian word each.
-    let mut sdata2 = Vec::new();
-    for bits in &input.constants {
-        write_u32(&mut sdata2, *bits);
     }
 
     // 5. `.shstrtab` — section names in section order; record each name's offset.

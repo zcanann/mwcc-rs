@@ -22,9 +22,9 @@ pub struct ObjectInput<'a> {
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants.
     pub relocations: Vec<TextRelocation>,
-    /// Single-precision constants this function loads from `.sdata2`, as raw
-    /// IEEE-754 bit patterns. Each becomes an anonymous `@N` object.
-    pub constants: Vec<u32>,
+    /// Constants this function loads from `.sdata2`. Each becomes an anonymous
+    /// `@N` object.
+    pub constants: Vec<Sdata2Constant>,
     /// The starting number for this object's anonymous `@N` symbols (constants,
     /// then unwind entries). mwcceppc's internal counter begins at 5, plus one
     /// when the function contains a float<->int conversion.
@@ -46,6 +46,13 @@ pub struct TextRelocation {
     pub offset: u32,
     pub elf_type: u32,
     pub target: RelocationTarget,
+}
+
+/// A constant placed in `.sdata2`: its big-endian bit pattern and byte width
+/// (4 for a single-precision float, 8 for a double).
+pub struct Sdata2Constant {
+    pub bits: u64,
+    pub byte_width: u8,
 }
 
 /// The `extab`/`extabindex` unwind tables a stack-frame function carries. The

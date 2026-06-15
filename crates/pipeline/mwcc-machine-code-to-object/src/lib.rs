@@ -5,7 +5,7 @@
 //! relocations, and the Metrowerks metadata records).
 
 use mwcc_machine_code::{MachineFunction, RelocationTarget as MachineTarget};
-use mwcc_object::{FrameLayout, ObjectInput, RelocationTarget, TextRelocation};
+use mwcc_object::{FrameLayout, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation};
 
 /// Assemble a relocatable object. `source_name` is the source file's base name
 /// (e.g. "foo.c"), used for the object's `FILE` symbol; `version` is the compiler
@@ -34,9 +34,14 @@ pub fn assemble_object(function: &MachineFunction, source_name: &str, version: (
         version,
         build,
         relocations,
-        constants: function.constants.clone(),
-        // mwcceppc's anonymous-symbol counter starts at 5 for a plain function.
-        anonymous_base: 5,
+        constants: function
+            .constants
+            .iter()
+            .map(|constant| Sdata2Constant { bits: constant.bits, byte_width: constant.byte_width })
+            .collect(),
+        // mwcceppc's anonymous-symbol counter starts at 5, plus one when the
+        // function contains an int<->float conversion.
+        anonymous_base: if function.has_conversion { 6 } else { 5 },
         frame,
     })
 }
