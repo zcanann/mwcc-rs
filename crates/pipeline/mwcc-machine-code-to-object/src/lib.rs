@@ -39,9 +39,9 @@ pub fn assemble_object(function: &MachineFunction, source_name: &str, version: (
             .iter()
             .map(|constant| Sdata2Constant { bits: constant.bits, byte_width: constant.byte_width })
             .collect(),
-        // mwcceppc's anonymous-symbol counter starts at 5, plus one when the
-        // function contains an int<->float conversion.
-        anonymous_base: if function.has_conversion { 6 } else { 5 },
+        // mwcceppc's anonymous-symbol counter starts at 5, advancing by one for an
+        // int<->float conversion and by three for a float conditional branch.
+        anonymous_base: 5 + if function.has_conversion { 1 } else { 0 } + if function.has_float_branch { 3 } else { 0 },
         frame,
     })
 }

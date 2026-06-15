@@ -211,6 +211,8 @@ impl Generator {
         if !is_comparison(*operator) {
             return Err(Diagnostic::error("float conditional needs a comparison condition"));
         }
+        // A float conditional branch advances mwcc's anonymous-`@N` counter by 3.
+        self.output.has_float_branch = true;
         let true_register = self.float_register_of_leaf(when_true)?;
         let false_register = self.float_register_of_leaf(when_false)?;
         // The condition operands may be memory loads: a located left operand loads

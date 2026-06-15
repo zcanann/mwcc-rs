@@ -25,6 +25,9 @@ pub struct MachineFunction {
     /// Whether the function performs an int<->float conversion. mwcc's anonymous
     /// `@N` counter starts one higher for such functions.
     pub has_conversion: bool,
+    /// Whether the function emits a floating-point conditional branch. mwcc's
+    /// anonymous `@N` counter advances by three for such a branch.
+    pub has_float_branch: bool,
     /// Frame metadata for the unwind tables; `None` for a leaf with no frame.
     pub frame: Option<FrameInfo>,
 }
@@ -37,6 +40,7 @@ impl MachineFunction {
             relocations: Vec::new(),
             constants: Vec::new(),
             has_conversion: false,
+            has_float_branch: false,
             frame: None,
         }
     }
