@@ -36,7 +36,7 @@ impl Generator {
                 if !fits_single_scratch(expression, destination == FLOAT_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
-                let operands = self.place_float_operands(left, right, destination)?;
+                let operands = self.place_float_operands(*operator, left, right, destination)?;
                 self.output.instructions.push(float_combine(*operator, destination, operands)?);
                 Ok(())
             }
@@ -118,19 +118,73 @@ impl Generator {
         }
     }
 
-    pub(crate) fn place_float_operands(&mut self, left: &Expression, right: &Expression, _destination: u8) -> Compilation<Operands> {
+    /// Place float operands when at least one is a struct member. A member loads
+    /// into a register: a single member loads into the scratch (its leaf partner
+    /// stays home), two members load left into the destination and right into the
+    /// scratch, and a member-with-constant loads the constant first (matching mwcc).
+    fn place_float_member_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        if let (Some((left_base, left_offset, left_type)), Some((right_base, right_offset, right_type))) = (as_member(left), as_member(right)) {
+            if destination == FLOAT_SCRATCH {
+                return Err(Diagnostic::error("two float members need a non-scratch destination (roadmap)"));
+            }
+            self.emit_member_load(left_base, left_offset, left_type, destination)?;
+            self.emit_member_load(right_base, right_offset, right_type, FLOAT_SCRATCH)?;
+            return Operands::ordered(destination, FLOAT_SCRATCH);
+        }
+        if let Some((base, offset, member_type)) = as_member(left) {
+            if let Expression::FloatLiteral(value) = right {
+                if destination == FLOAT_SCRATCH {
+                    return Err(Diagnostic::error("float member with constant needs a non-scratch destination (roadmap)"));
+                }
+                // mwcc loads the constant first, then the member.
+                self.load_float_constant(destination, *value as f32);
+                self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
+                // Commutative ops lead with the constant; subtraction is member - constant.
+                return if operator == BinaryOperator::Subtract {
+                    Operands::ordered(FLOAT_SCRATCH, destination)
+                } else {
+                    Operands::ordered(destination, FLOAT_SCRATCH)
+                };
+            }
+            let right_register = self.float_register_of_leaf(right)?;
+            self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
+            return Operands::ordered(FLOAT_SCRATCH, right_register);
+        }
+        if let Some((base, offset, member_type)) = as_member(right) {
+            if let Expression::FloatLiteral(value) = left {
+                if destination == FLOAT_SCRATCH {
+                    return Err(Diagnostic::error("float member with constant needs a non-scratch destination (roadmap)"));
+                }
+                self.load_float_constant(destination, *value as f32);
+                self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
+                return Operands::ordered(destination, FLOAT_SCRATCH);
+            }
+            let left_register = self.float_register_of_leaf(left)?;
+            self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
+            return Operands::ordered(left_register, FLOAT_SCRATCH);
+        }
+        unreachable!("caller checked one side is a member")
+    }
+
+    pub(crate) fn place_float_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        // A float member operand loads from `.sdata2`/memory into a register, like
+        // a dereference. The struct base is a general register, so a member can
+        // load straight into the float destination without clobbering it.
+        if as_member(left).is_some() || as_member(right).is_some() {
+            return self.place_float_member_operands(operator, left, right, destination);
+        }
         // A float constant operand is loaded from `.sdata2` into the scratch
-        // register; the other operand stays in place. mwcc emits the constant as
-        // the first source of the (commutative) operation, so its register leads.
+        // register; the other (leaf-variable) operand stays in place. mwcc emits
+        // the constant as the first source of the (commutative) operation.
         if let Expression::FloatLiteral(value) = right {
-            if !is_complex(left) {
+            if matches!(left, Expression::Variable(_)) {
                 let left_register = self.float_register_of_leaf(left)?;
                 self.load_float_constant(FLOAT_SCRATCH, *value as f32);
                 return Operands::reversed(left_register, FLOAT_SCRATCH);
             }
         }
         if let Expression::FloatLiteral(value) = left {
-            if !is_complex(right) {
+            if matches!(right, Expression::Variable(_)) {
                 let right_register = self.float_register_of_leaf(right)?;
                 self.load_float_constant(FLOAT_SCRATCH, *value as f32);
                 return Operands::ordered(FLOAT_SCRATCH, right_register);
