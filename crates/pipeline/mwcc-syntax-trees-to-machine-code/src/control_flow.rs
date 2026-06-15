@@ -119,6 +119,19 @@ impl Generator {
             }
         }
 
+        // For a non-comparison condition, `cond ? 1 : 0` is the truthiness `cond != 0`
+        // and `cond ? 0 : 1` is `cond == 0` — and the value (even a complex one) now
+        // computes through the comparison idioms, which the allocator unlocked.
+        let condition_is_comparison = matches!(condition, Expression::Binary { operator, .. } if is_comparison(*operator));
+        if !condition_is_comparison {
+            let zero = Expression::IntegerLiteral(0);
+            match (constant_value(when_true), constant_value(when_false)) {
+                (Some(1), Some(0)) => return self.emit_comparison(BinaryOperator::NotEqual, condition, &zero, destination),
+                (Some(0), Some(1)) => return self.emit_comparison(BinaryOperator::Equal, condition, &zero, destination),
+                _ => {}
+            }
+        }
+
         // `cond ? x : 0` with a plain truth condition is branchless: AND x with a
         // mask that is all-ones when cond != 0.
         if is_zero_literal(when_false) {
