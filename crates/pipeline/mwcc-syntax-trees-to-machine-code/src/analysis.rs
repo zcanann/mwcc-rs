@@ -47,10 +47,6 @@ pub(crate) fn is_complex(expression: &Expression) -> bool {
 /// side absorbs the lighter for free. Loads/calls are approximated as leaves;
 /// refine when the placement restructure consumes this.
 ///
-/// Built and tested ahead of its use: the operand-placement restructure that
-/// evaluates the heavier operand first (and the matching Sethi-Ullman register
-/// scheme) is the next subsystem for nested arithmetic — see the design notes.
-#[allow(dead_code)]
 pub(crate) fn register_need(expression: &Expression) -> u32 {
     match expression {
         Expression::Binary { left, right, .. } => {

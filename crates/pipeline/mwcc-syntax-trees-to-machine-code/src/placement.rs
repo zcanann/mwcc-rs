@@ -78,11 +78,27 @@ impl Generator {
                 Operands::ordered(self.general_register_of_leaf(left)?, GENERAL_SCRATCH)
             }
             (true, true) => {
-                // Compute the left side into a fresh virtual register, keeping the
-                // right side's inputs live so any physical temporary it needs avoids
-                // them; then the right side into the scratch. The allocation pass
-                // gives the virtual its physical home — the first selection site
-                // migrated off inline register choice onto the allocator.
+                // Sethi-Ullman for a commutative node with operands of different
+                // register need: mwcc evaluates the heavier operand first and keeps
+                // its result in the scratch, while the lighter goes to a fresh
+                // virtual the allocator coalesces onto the destination — emitting
+                // `op dest, lighter, heavier`. Both `((c+d)*(e+f))*(a+b)` and its
+                // mirror reduce to this. Only safe when the lighter (evaluated
+                // second) does not itself need the scratch, or it would clobber the
+                // heavier's result there.
+                let left_need = register_need(left);
+                let right_need = register_need(right);
+                if is_commutative(operator) && left_need != right_need {
+                    let (heavier, lighter) = if left_need > right_need { (left, right) } else { (right, left) };
+                    if !needs_scratch(lighter) {
+                        self.with_reserved_inputs(lighter, |generator| generator.evaluate_general(heavier, GENERAL_SCRATCH))?;
+                        let lighter_register = self.fresh_virtual_general();
+                        self.evaluate_general(lighter, lighter_register)?;
+                        return Operands::ordered(lighter_register, GENERAL_SCRATCH);
+                    }
+                }
+                // Default: the left operand into a virtual (keeping the right's
+                // inputs live), the right into the scratch.
                 let temp = self.with_reserved_inputs(right, |generator| {
                     let temp = generator.fresh_virtual_general();
                     generator.evaluate_general(left, temp)?;
