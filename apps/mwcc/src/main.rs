@@ -146,7 +146,19 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         .iter()
         .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, config))
         .collect::<Compilation<_>>()?;
-    let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, source_name, config.build.version, config.build.build);
+    // File-scope variables defined here (not `extern`/`static`, scalar, no array)
+    // are placed in `.sbss` as defined symbols; their declaration order is kept so
+    // the writer can lay them out (in reverse) the way mwcc does.
+    let defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = unit
+        .globals
+        .iter()
+        .filter(|global| !global.is_extern && !global.is_static && global.array_length.is_none() && !matches!(global.declared_type, mwcc_syntax_trees::Type::Void))
+        .map(|global| {
+            let size = (global.declared_type.width() / 8) as u32;
+            mwcc_machine_code_to_object::DefinedGlobal { name: global.name.clone(), size, alignment: size }
+        })
+        .collect();
+    let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, source_name, config.build.version, config.build.build);
 
     if let Some(directory) = artifacts {
         write_artifacts(directory, config, &tokens, &unit.functions, &machine_functions, &object);

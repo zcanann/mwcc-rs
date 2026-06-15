@@ -125,8 +125,17 @@ impl Parser {
         let mut globals = Vec::new();
         let mut functions = Vec::new();
         while *self.peek() != Token::EndOfFile {
-            // `extern`/`static` storage qualifiers don't change codegen here.
-            while matches!(self.peek(), Token::Identifier(word) if word == "extern" || word == "static") {
+            // `extern`/`static` storage qualifiers: `extern` makes the declaration a
+            // reference to a symbol defined elsewhere; `static` makes a definition
+            // local. Both are recorded so the object can classify the symbol.
+            let mut is_extern = false;
+            let mut is_static = false;
+            while let Token::Identifier(word) = self.peek() {
+                match word.as_str() {
+                    "extern" => is_extern = true,
+                    "static" => is_static = true,
+                    _ => break,
+                }
                 self.advance();
             }
             if *self.peek() == Token::EndOfFile {
@@ -140,13 +149,31 @@ impl Parser {
             }
             let return_type = self.parse_type()?;
             let name = self.parse_identifier()?;
-            // `type name;` or `type a, b, c;` is a global variable declaration.
-            if matches!(self.peek(), Token::Semicolon | Token::Comma) {
-                globals.push(GlobalDeclaration { declared_type: return_type, name });
-                while *self.peek() == Token::Comma {
-                    self.advance();
-                    let next = self.parse_identifier()?;
-                    globals.push(GlobalDeclaration { declared_type: return_type, name: next });
+            // `type name;`, `type name[N];`, or comma-separated declarators is a
+            // global variable declaration. A `(` instead begins a function. (An
+            // initialized global `type name = …;` is not in the subset yet and
+            // falls through to the function path, which reports it.)
+            if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen) {
+                let mut declarator_name = name;
+                loop {
+                    let array_length = if *self.peek() == Token::BracketOpen {
+                        self.advance();
+                        let count = match self.advance() {
+                            Token::IntegerLiteral(value) => value as u16,
+                            other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
+                        };
+                        self.expect(Token::BracketClose)?;
+                        Some(count)
+                    } else {
+                        None
+                    };
+                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length });
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                        declarator_name = self.parse_identifier()?;
+                    } else {
+                        break;
+                    }
                 }
                 self.expect(Token::Semicolon)?;
                 continue;

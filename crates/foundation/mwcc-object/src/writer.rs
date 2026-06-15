@@ -18,6 +18,7 @@ const SHT_PROGBITS: u32 = 1;
 const SHT_SYMTAB: u32 = 2;
 const SHT_STRTAB: u32 = 3;
 const SHT_RELA: u32 = 4;
+const SHT_NOBITS: u32 = 8; // .sbss/.bss: a size but no file content
 
 const SHF_WRITE_EXEC: u32 = 0x6; // ALLOC | EXECINSTR for .text
 const SHF_ALLOC: u32 = 0x2; // ALLOC for the unwind tables (read-only data)
@@ -30,6 +31,7 @@ const STT_FILE: u8 = 4; // STB_LOCAL (0<<4) | STT_FILE
 const STT_SECTION: u8 = 3; // STB_LOCAL | STT_SECTION
 const STB_LOCAL_OBJECT: u8 = 1; // STB_LOCAL | STT_OBJECT (the @N unwind entries)
 const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
+const STB_GLOBAL_OBJECT: u8 = (1 << 4) | 1; // STB_GLOBAL | STT_OBJECT (a defined global)
 const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
 const STV_HIDDEN: u8 = 2; // st_other visibility for the @N unwind entries
 
@@ -87,6 +89,10 @@ struct Section {
     align: u32,
     entry_size: u32,
     payload: Vec<u8>,
+    /// `sh_size`. Equals `payload.len()` for a section with file content; for a
+    /// NOBITS section (`.sbss`/`.bss`) the payload is empty but the size is the
+    /// in-memory byte count.
+    size: u32,
 }
 
 pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
@@ -105,22 +111,24 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         text.extend_from_slice(function.text);
     }
 
-    // External symbols referenced by any function's relocations, in first-
-    // appearance order across the whole unit (the order mwcc emits them in the
-    // GLOBAL symbol run, interleaved with the function symbols).
-    let mut externals: Vec<&str> = Vec::new();
-    for function in functions {
-        for relocation in &function.relocations {
-            if let RelocationTarget::External(symbol) = &relocation.target {
-                if !externals.iter().any(|name| *name == symbol.as_str()) {
-                    externals.push(symbol);
-                }
-            }
-        }
-    }
     let has_text_relocations = functions.iter().any(|function| !function.relocations.is_empty());
     let has_frame = functions.iter().any(|function| function.frame.is_some());
     let has_constants = functions.iter().any(|function| !function.constants.is_empty());
+    let has_data_objects = !input.data_objects.is_empty();
+
+    // `.sbss` layout: mwcc places defined uninitialized variables in *reverse*
+    // declaration order, each at its natural alignment. The section is NOBITS, so
+    // only its size and the per-object offsets matter (no file bytes).
+    let mut sbss_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut sbss_sizes: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut sbss_size = 0u32;
+    for object in input.data_objects.iter().rev() {
+        let alignment = object.alignment.max(1);
+        sbss_size = sbss_size.div_ceil(alignment) * alignment;
+        sbss_offsets.insert(object.name, sbss_size);
+        sbss_sizes.insert(object.name, object.size);
+        sbss_size += object.size;
+    }
 
     // `.sdata2` constant pool — every function's constants appended in source
     // order, each at its natural alignment. Record the byte offset of each
@@ -194,6 +202,9 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     if has_constants {
         order.push(".sdata2");
     }
+    if has_data_objects {
+        order.push(".sbss");
+    }
     order.push(".mwcats.text");
     if has_text_relocations {
         order.push(".rela.text");
@@ -214,7 +225,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".sdata2", ".mwcats.text"]
+    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".sdata2", ".sbss", ".mwcats.text"]
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
@@ -248,22 +259,36 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         }
     }
     // The GLOBAL run: walk functions in order, emitting each newly-referenced
-    // external just before the function symbol that first uses it.
+    // global just before the function symbol that first uses it. A name defined in
+    // this unit (in `.sbss`) becomes a defined OBJECT symbol; any other name is an
+    // undefined external. A defined global never referenced is emitted at the end.
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
-    let mut external_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut global_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let sbss_index = if has_data_objects { index_of(".sbss") as u16 } else { 0 };
     let mut function_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         for relocation in &function.relocations {
-            if let RelocationTarget::External(name) = &relocation.target {
-                if !external_symbols.contains_key(name.as_str()) {
-                    let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                    external_symbols.insert(name.as_str(), symbol);
-                    write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
-                }
+            let RelocationTarget::External(name) = &relocation.target else { continue };
+            if global_symbols.contains_key(name.as_str()) {
+                continue;
+            }
+            global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+            match sbss_offsets.get(name.as_str()) {
+                Some(&offset) => write_symbol(&mut symtab, strtab.add(name), offset, sbss_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, sbss_index),
+                None => write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF),
             }
         }
         function_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
+    }
+    // Defined globals that no function referenced trail the function symbols, in
+    // declaration order.
+    for object in &input.data_objects {
+        if global_symbols.contains_key(object.name) {
+            continue;
+        }
+        global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(&mut symtab, strtab.add(object.name), sbss_offsets[object.name], sbss_sizes[object.name], STB_GLOBAL_OBJECT, 0, sbss_index);
     }
 
     // 3. Relocation payloads (now that symbol indices are fixed). Each function's
@@ -273,7 +298,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     for (index, function) in functions.iter().enumerate() {
         for relocation in &function.relocations {
             let symbol = match &relocation.target {
-                RelocationTarget::External(name) => external_symbols[name.as_str()],
+                RelocationTarget::External(name) => global_symbols[name.as_str()],
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
             };
             write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, 0);
@@ -319,31 +344,39 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
 
     // 6. Assemble the full section table (NULL first), each with its payload.
     let symtab_section = index_of(".symtab");
-    let mut sections = vec![Section { name_offset: 0, sh_type: 0, flags: 0, link: 0, info: 0, align: 0, entry_size: 0, payload: Vec::new() }];
-    let mut push = |name: &str, sh_type, flags, link, info, align, entry_size, payload: Vec<u8>| {
-        sections.push(Section { name_offset: offset_of(name), sh_type, flags, link, info, align, entry_size, payload });
+    let mut sections = vec![Section { name_offset: 0, sh_type: 0, flags: 0, link: 0, info: 0, align: 0, entry_size: 0, payload: Vec::new(), size: 0 }];
+    // `mem_size` is the in-memory size; it overrides `payload.len()` only when the
+    // payload is empty, which is how a NOBITS section (`.sbss`) carries a size with
+    // no file bytes. Every other section passes 0 and takes its payload length.
+    let mut push = |name: &str, sh_type, flags, link, info, align, entry_size, payload: Vec<u8>, mem_size: u32| {
+        let size = if payload.is_empty() { mem_size } else { payload.len() as u32 };
+        sections.push(Section { name_offset: offset_of(name), sh_type, flags, link, info, align, entry_size, payload, size });
     };
-    push(".text", SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec());
+    push(".text", SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
     if has_frame {
-        push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab);
-        push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex);
+        push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
+        push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex, 0);
     }
     if has_constants {
-        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2);
+        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2, 0);
     }
-    push(".mwcats.text", SHT_MWCATS, 0, index_of(".text"), 0, 4, 1, mwcats);
+    if has_data_objects {
+        // `.sbss` is NOBITS: no file bytes, but `sh_size` is the in-memory size.
+        push(".sbss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, Vec::new(), sbss_size);
+    }
+    push(".mwcats.text", SHT_MWCATS, 0, index_of(".text"), 0, 4, 1, mwcats, 0);
     if has_text_relocations {
-        push(".rela.text", SHT_RELA, 0, symtab_section, index_of(".text"), 4, 12, rela_text);
+        push(".rela.text", SHT_RELA, 0, symtab_section, index_of(".text"), 4, 12, rela_text, 0);
     }
     if has_frame {
-        push(".relaextabindex", SHT_RELA, 0, symtab_section, index_of("extabindex"), 4, 12, rela_extabindex);
+        push(".relaextabindex", SHT_RELA, 0, symtab_section, index_of("extabindex"), 4, 12, rela_extabindex, 0);
     }
-    push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats);
-    push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab);
+    push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);
+    push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab, 0);
     // Metrowerks stamps string tables with sh_entsize = 1.
-    push(".strtab", SHT_STRTAB, 0, 0, 0, 1, 1, strtab.bytes);
-    push(".shstrtab", SHT_STRTAB, 0, 0, 0, 1, 1, shstrtab.bytes);
-    push(".comment", SHT_PROGBITS, 0, 0, 0, 1, 1, comment.to_vec());
+    push(".strtab", SHT_STRTAB, 0, 0, 0, 1, 1, strtab.bytes, 0);
+    push(".shstrtab", SHT_STRTAB, 0, 0, 0, 1, 1, shstrtab.bytes, 0);
+    push(".comment", SHT_PROGBITS, 0, 0, 0, 1, 1, comment.to_vec(), 0);
 
     // 7. File offsets — sections pack contiguously (all word-aligned sections have
     //    word-aligned sizes); the section-header table is padded to 8.
@@ -381,9 +414,8 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         output.push(0);
     }
     for (section, &section_offset) in sections.iter().zip(&offsets) {
-        let size = section.payload.len() as u32;
         write_section_header(
-            &mut output, section.name_offset, section.sh_type, section.flags, section_offset, size,
+            &mut output, section.name_offset, section.sh_type, section.flags, section_offset, section.size,
             section.link, section.info, section.align, section.entry_size,
         );
     }

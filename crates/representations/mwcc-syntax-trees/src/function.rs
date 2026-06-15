@@ -38,11 +38,17 @@ pub enum Statement {
     Expression(Expression),
 }
 
-/// A file-scope global variable, e.g. `int g;` or `extern int g;`.
+/// A file-scope global variable, e.g. `int g;`, `extern int g;`, or `static int
+/// g;`. A non-`extern` declaration is a (tentative) definition that the object
+/// places in a data section; an `extern` one is just a reference to a symbol
+/// defined elsewhere. `array_length` is set for `type g[N];`.
 #[derive(Debug, Clone)]
 pub struct GlobalDeclaration {
     pub declared_type: Type,
     pub name: String,
+    pub is_extern: bool,
+    pub is_static: bool,
+    pub array_length: Option<u16>,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved

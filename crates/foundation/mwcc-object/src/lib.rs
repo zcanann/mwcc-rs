@@ -23,6 +23,18 @@ pub struct ObjectInput<'a> {
     /// one `.sdata2` constant pool, one `.mwcats.text` (a record each), and the
     /// `extab`/`extabindex` unwind sections.
     pub functions: Vec<FunctionObject<'a>>,
+    /// File-scope variables *defined* in this unit (not `extern`), in declaration
+    /// order. Each becomes a defined symbol in a data section; uninitialized ones
+    /// live in `.sbss`. mwcc lays them out in *reverse* declaration order.
+    pub data_objects: Vec<DataObject<'a>>,
+}
+
+/// A file-scope variable defined in this object: its name, byte size, and natural
+/// alignment. Placed in `.sbss` (uninitialized small data) for now.
+pub struct DataObject<'a> {
+    pub name: &'a str,
+    pub size: u32,
+    pub alignment: u32,
 }
 
 /// One function's contribution to the object: its name, encoded `.text`, and the

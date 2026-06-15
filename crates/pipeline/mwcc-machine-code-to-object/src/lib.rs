@@ -5,14 +5,24 @@
 //! relocations, and the Metrowerks metadata records).
 
 use mwcc_machine_code::{MachineFunction, RelocationTarget as MachineTarget};
-use mwcc_object::{FrameLayout, FunctionObject, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation};
+use mwcc_object::{DataObject, FrameLayout, FunctionObject, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation};
+
+/// A file-scope variable *defined* in this unit (placed in a data section), in
+/// declaration order. The caller decides which globals qualify (non-`extern`,
+/// laid out); the object writer assigns their section offsets and symbols.
+pub struct DefinedGlobal {
+    pub name: String,
+    pub size: u32,
+    pub alignment: u32,
+}
 
 /// Assemble a relocatable object from one or more lowered functions (in source
-/// order). `source_name` is the source file's base name (e.g. "foo.c"), used for
-/// the object's `FILE` symbol; `version` is the compiler version being reproduced,
-/// stamped into `.comment`. The functions share one `.text`, one `.sdata2`
-/// constant pool, one `.mwcats.text`, and the unwind sections.
-pub fn assemble_object(functions: &[MachineFunction], source_name: &str, version: (u8, u8, u8), build: u16) -> Vec<u8> {
+/// order) plus the file-scope variables defined in the unit. `source_name` is the
+/// source file's base name (e.g. "foo.c"), used for the object's `FILE` symbol;
+/// `version` is the compiler version being reproduced, stamped into `.comment`.
+/// The functions share one `.text`, one `.sdata2` constant pool, one
+/// `.mwcats.text`, the unwind sections, and the `.sbss` data section.
+pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[DefinedGlobal], source_name: &str, version: (u8, u8, u8), build: u16) -> Vec<u8> {
     // The encoded text is owned here so the borrowed `FunctionObject` can point at
     // it for the lifetime of the call.
     let texts: Vec<Vec<u8>> = functions.iter().map(|function| function.encode_text()).collect();
@@ -50,5 +60,9 @@ pub fn assemble_object(functions: &[MachineFunction], source_name: &str, version
             anonymous_bump: if function.has_conversion { 1 } else { 0 } + if function.has_float_branch { 3 } else { 0 },
         })
         .collect();
-    mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects })
+    let data_objects = defined_globals
+        .iter()
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment })
+        .collect();
+    mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects })
 }
