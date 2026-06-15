@@ -18,7 +18,9 @@ pub fn assemble_object(function: &MachineFunction, source_name: &str, version: (
         .relocations
         .iter()
         .map(|relocation| TextRelocation {
-            offset: relocation.instruction_index as u32 * 4,
+            // The instruction's byte offset plus the kind's field offset (the
+            // ADDR16 immediate sits in the low halfword, at instruction+2).
+            offset: relocation.instruction_index as u32 * 4 + relocation.kind.field_offset(),
             elf_type: relocation.kind.elf_type(),
             target: match &relocation.target {
                 MachineTarget::External(symbol) => RelocationTarget::External(symbol.clone()),

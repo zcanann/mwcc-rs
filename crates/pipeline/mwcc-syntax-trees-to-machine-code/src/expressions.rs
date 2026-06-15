@@ -4,6 +4,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use mwcc_target::Eabi;
+use mwcc_versions::GlobalAddressing;
 use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
@@ -273,8 +274,7 @@ impl Generator {
                 let pointee = pointee_of_type(global_type)
                     .ok_or_else(|| Diagnostic::error("global assignment of this type is not supported yet"))?;
                 self.evaluate_general(value, destination)?;
-                self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(displacement_store(pointee, destination, 0, 0));
+                self.emit_global_store(name, pointee, destination)?;
                 return Ok(());
             }
         }
@@ -353,14 +353,30 @@ impl Generator {
     /// place addressed by the pointer (with a folded displacement for a constant
     /// index, or a scaled indexed store for a variable one).
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
-        // `g = v;` — a store to a file-scope global (SDA21 placeholder `0(r0)`).
+        // `g = v;` — a store to a file-scope global.
         if let Expression::Variable(name) = target {
             if let Some(&global_type) = self.globals.get(name.as_str()) {
                 let pointee = pointee_of_type(global_type)
                     .ok_or_else(|| Diagnostic::error("global store of this type is not supported yet"))?;
-                let source = self.place_store_value(value, pointee)?;
-                self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                match self.behavior.global_addressing {
+                    GlobalAddressing::SmallData => {
+                        let source = self.place_store_value(value, pointee)?;
+                        self.record_relocation(RelocationKind::EmbSda21, name);
+                        self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                    }
+                    GlobalAddressing::Absolute => {
+                        // mwcc materializes the address base before the value, so the
+                        // base GPR (chosen to avoid the value's input registers) is
+                        // reserved while the value is placed.
+                        let base = self.free_register_avoiding(&[value])?;
+                        let restore = self.reserved.insert(base);
+                        self.emit_address_high(base, name);
+                        let source = self.place_store_value(value, pointee)?;
+                        if restore { self.reserved.remove(&base); }
+                        self.record_relocation(RelocationKind::Addr16Lo, name);
+                        self.output.instructions.push(displacement_store(pointee, source, base, 0));
+                    }
+                }
                 return Ok(());
             }
         }
@@ -523,23 +539,92 @@ impl Generator {
         }
     }
 
-    /// Load a file-scope global into `destination`. The instruction carries the
-    /// `0(r0)` placeholder that an `R_PPC_EMB_SDA21` relocation fills (r13 + the
-    /// small-data offset); the load is chosen by the global's type.
+    /// Load a file-scope global into `destination`. Under small-data addressing a
+    /// single instruction carries the `0(r0)` placeholder an `R_PPC_EMB_SDA21`
+    /// relocation fills (r13 + the small-data offset); under absolute addressing
+    /// (`-sdata 0`) the address is materialized with a `lis`/`addi` pair (see
+    /// [`Self::emit_global_load_absolute`]). The load is chosen by the global's type.
     pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
         let global_type = *self.globals.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
-        self.record_relocation(RelocationKind::EmbSda21, name);
-        let instruction = match global_type {
-            Type::Int | Type::UnsignedInt => Instruction::LoadWord { d: destination, a: 0, offset: 0 },
-            Type::Char | Type::UnsignedChar => Instruction::LoadByteZero { d: destination, a: 0, offset: 0 },
-            Type::Short => Instruction::LoadHalfwordAlgebraic { d: destination, a: 0, offset: 0 },
-            Type::UnsignedShort => Instruction::LoadHalfwordZero { d: destination, a: 0, offset: 0 },
-            Type::Float => Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 },
+        match self.behavior.global_addressing {
+            GlobalAddressing::SmallData => {
+                self.record_relocation(RelocationKind::EmbSda21, name);
+                let instruction = self.global_load_instruction(global_type, destination, 0)?;
+                self.output.instructions.push(instruction);
+                Ok(())
+            }
+            GlobalAddressing::Absolute => self.emit_global_load_absolute(name, global_type, destination),
+        }
+    }
+
+    /// The type-appropriate load of a global from base register `a` (displacement
+    /// zero): the small-data and absolute paths share the instruction choice and
+    /// differ only in how `a`/the relocation are set up.
+    fn global_load_instruction(&self, global_type: Type, d: u8, a: u8) -> Compilation<Instruction> {
+        Ok(match global_type {
+            Type::Int | Type::UnsignedInt => Instruction::LoadWord { d, a, offset: 0 },
+            Type::Char | Type::UnsignedChar => Instruction::LoadByteZero { d, a, offset: 0 },
+            Type::Short => Instruction::LoadHalfwordAlgebraic { d, a, offset: 0 },
+            Type::UnsignedShort => Instruction::LoadHalfwordZero { d, a, offset: 0 },
+            Type::Float => Instruction::LoadFloatSingle { d, a, offset: 0 },
             // A pointer global is a 32-bit address word.
-            Type::Pointer(_) | Type::StructPointer => Instruction::LoadWord { d: destination, a: 0, offset: 0 },
+            Type::Pointer(_) | Type::StructPointer => Instruction::LoadWord { d, a, offset: 0 },
             other => return Err(Diagnostic::error(format!("global of type {other:?} is not supported yet"))),
-        };
-        self.output.instructions.push(instruction);
+        })
+    }
+
+    /// Emit `lis base, name@ha` — the high-adjusted half of an absolute address,
+    /// with its `R_PPC_ADDR16_HA` relocation. `base` must never be r0: an `addi`
+    /// or load based on r0 reads literal zero, not the register (the `li` trap).
+    fn emit_address_high(&mut self, base: u8, name: &str) {
+        self.record_relocation(RelocationKind::Addr16Ha, name);
+        self.output.instructions.push(Instruction::load_immediate_shifted(base, 0));
+    }
+
+    /// Load a global under absolute (`-sdata 0`) addressing. mwcc's address-mode
+    /// selection follows from r0 never being a usable base: when the destination
+    /// is a non-r0 GPR, the address materializes into it (`lis dest; addi dest;
+    /// load 0(dest)`) — base and destination coincide, so nothing folds; a float
+    /// destination (an FPR) takes a separate free GPR base with `name@l` folded
+    /// into the load. An integer load whose destination is the scratch r0 would
+    /// need a separate base that avoids the (un-reserved) sibling operand — that
+    /// liveness is the register allocator's to track, so it defers for now.
+    fn emit_global_load_absolute(&mut self, name: &str, global_type: Type, destination: u8) -> Compilation<()> {
+        if global_type == Type::Float {
+            let base = self.lowest_free_general()?;
+            self.emit_address_high(base, name);
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            let load = self.global_load_instruction(global_type, destination, base)?;
+            self.output.instructions.push(load);
+            return Ok(());
+        }
+        if destination != GENERAL_SCRATCH {
+            self.emit_address_high(destination, name);
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: 0 });
+            let load = self.global_load_instruction(global_type, destination, destination)?;
+            self.output.instructions.push(load);
+            return Ok(());
+        }
+        Err(Diagnostic::error("absolute addressing for a global operand needs the register allocator (roadmap: Phase D)"))
+    }
+
+    /// Store `source` to a file-scope global. Small-data uses the `0(r0)` SDA21
+    /// placeholder; absolute addressing materializes the high half into a free
+    /// base GPR (avoiding the value register) and folds `name@l` into the store.
+    pub(crate) fn emit_global_store(&mut self, name: &str, pointee: Pointee, source: u8) -> Compilation<()> {
+        match self.behavior.global_addressing {
+            GlobalAddressing::SmallData => {
+                self.record_relocation(RelocationKind::EmbSda21, name);
+                self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+            }
+            GlobalAddressing::Absolute => {
+                let base = self.free_general_excluding(source)?;
+                self.emit_address_high(base, name);
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(displacement_store(pointee, source, base, 0));
+            }
+        }
         Ok(())
     }
 

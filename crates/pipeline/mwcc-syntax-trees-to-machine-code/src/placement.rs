@@ -183,7 +183,7 @@ impl Generator {
 
     /// The lowest free general register that avoids the registers read by the
     /// given base expressions (so a member's shared base survives the first load).
-    fn free_register_avoiding(&mut self, bases: &[&Expression]) -> Compilation<u8> {
+    pub(crate) fn free_register_avoiding(&mut self, bases: &[&Expression]) -> Compilation<u8> {
         let mut reserved_registers = HashSet::new();
         for base in bases {
             reserved_registers.extend(self.registers_used_by(base));
