@@ -30,6 +30,8 @@ pub(crate) struct Parser {
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
     pub(crate) variable_structs: HashMap<String, String>,
+    /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
+    pub(crate) typedefs: HashMap<String, Type>,
     /// Set by [`Parser::parse_type`] when it just parsed a `struct Name*`, so the
     /// declarator parser can associate the variable name with the struct tag.
     pub(crate) last_struct_tag: Option<String>,

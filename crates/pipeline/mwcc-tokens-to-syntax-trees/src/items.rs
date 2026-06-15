@@ -30,6 +30,37 @@ fn type_size(declared: Type) -> u16 {
 }
 
 impl Parser {
+    /// Consume an identifier token if it matches `word` (used for the `long` and
+    /// `signed`/`unsigned` specifier words that aren't dedicated keywords).
+    fn eat_word(&mut self, word: &str) -> bool {
+        if matches!(self.peek(), Token::Identifier(found) if found == word) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Consume `token` if it is next; report whether it was.
+    fn eat_keyword(&mut self, token: Token) -> bool {
+        if *self.peek() == token {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Parse a scalar constant initializer: an integer literal, optionally negated.
+    /// Aggregate and computed initializers are not in the subset yet.
+    fn parse_integer_initializer(&mut self) -> Compilation<i64> {
+        let negative = self.eat_keyword(Token::Minus);
+        match self.advance() {
+            Token::IntegerLiteral(value) => Ok(if negative { -(value as i64) } else { value as i64 }),
+            other => Err(Diagnostic::error(format!("only integer-constant global initializers are supported, found {other}"))),
+        }
+    }
+
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
         // `struct Name*` — a pointer to a (already declared) struct. The tag is
@@ -44,11 +75,26 @@ impl Parser {
             self.last_struct_tag = Some(tag);
             return Ok(Type::StructPointer);
         }
+        // A `typedef`-declared alias resolves to its underlying type.
+        if let Token::Identifier(name) = self.peek() {
+            if let Some(&aliased) = self.typedefs.get(name) {
+                self.advance();
+                if *self.peek() == Token::Star {
+                    self.advance();
+                    return Ok(Type::Pointer(pointee_of(aliased)?));
+                }
+                return Ok(aliased);
+            }
+        }
         let base = match self.advance() {
             Token::KeywordInt => Type::Int,
             Token::KeywordChar => Type::Char,
-            Token::KeywordShort => Type::Short,
-            // `unsigned` may be followed by char/short/int.
+            // `short` / `short int`.
+            Token::KeywordShort => {
+                let _ = self.eat_keyword(Token::KeywordInt);
+                Type::Short
+            }
+            // `unsigned` and its widths, including `unsigned long [long] [int]`.
             Token::KeywordUnsigned => match self.peek() {
                 Token::KeywordChar => {
                     self.advance();
@@ -56,16 +102,46 @@ impl Parser {
                 }
                 Token::KeywordShort => {
                     self.advance();
+                    let _ = self.eat_keyword(Token::KeywordInt);
                     Type::UnsignedShort
                 }
                 Token::KeywordInt => {
                     self.advance();
                     Type::UnsignedInt
                 }
+                // `unsigned long`, `unsigned long long`, `unsigned long int` — all
+                // 32-bit unsigned on this target.
+                Token::Identifier(word) if word == "long" => {
+                    while self.eat_word("long") {}
+                    let _ = self.eat_keyword(Token::KeywordInt);
+                    Type::UnsignedInt
+                }
                 _ => Type::UnsignedInt,
             },
             Token::KeywordFloat => Type::Float,
             Token::KeywordVoid => Type::Void,
+            // `long`, `long long`, `long int` — 32-bit signed on this target.
+            Token::Identifier(word) if word == "long" => {
+                while self.eat_word("long") {}
+                let _ = self.eat_keyword(Token::KeywordInt);
+                Type::Int
+            }
+            // `signed [char|short|int|long]`.
+            Token::Identifier(word) if word == "signed" => match self.peek() {
+                Token::KeywordChar => {
+                    self.advance();
+                    Type::Char
+                }
+                Token::KeywordShort => {
+                    self.advance();
+                    let _ = self.eat_keyword(Token::KeywordInt);
+                    Type::Short
+                }
+                _ => {
+                    let _ = self.eat_keyword(Token::KeywordInt) || self.eat_word("long");
+                    Type::Int
+                }
+            },
             other => return Err(Diagnostic::error(format!("expected a type, found {other}"))),
         };
         // A trailing `*` makes it a pointer to that scalar.
@@ -141,6 +217,15 @@ impl Parser {
             if *self.peek() == Token::EndOfFile {
                 break;
             }
+            // `typedef <type> <name>;` registers a type alias. (Function-pointer and
+            // array typedefs are not in the subset yet.)
+            if self.eat_word("typedef") {
+                let aliased = self.parse_type()?;
+                let name = self.parse_identifier()?;
+                self.expect(Token::Semicolon)?;
+                self.typedefs.insert(name, aliased);
+                continue;
+            }
             // A `struct Name { ... };` definition registers a layout. A `struct
             // Name*` use (function return or parameter) falls through to parse_type.
             if *self.peek() == Token::KeywordStruct && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
@@ -153,7 +238,7 @@ impl Parser {
             // global variable declaration. A `(` instead begins a function. (An
             // initialized global `type name = …;` is not in the subset yet and
             // falls through to the function path, which reports it.)
-            if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen) {
+            if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals) {
                 let mut declarator_name = name;
                 loop {
                     let array_length = if *self.peek() == Token::BracketOpen {
@@ -167,7 +252,13 @@ impl Parser {
                     } else {
                         None
                     };
-                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length });
+                    // `= <constant>` scalar initializer (optionally negative).
+                    let initializer = if self.eat_keyword(Token::Equals) {
+                        Some(self.parse_integer_initializer()?)
+                    } else {
+                        None
+                    };
+                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         declarator_name = self.parse_identifier()?;
@@ -293,15 +384,17 @@ impl Parser {
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {
-        matches!(
-            self.peek(),
+        match self.peek() {
             Token::KeywordInt
-                | Token::KeywordChar
-                | Token::KeywordShort
-                | Token::KeywordUnsigned
-                | Token::KeywordFloat
-                | Token::KeywordVoid
-                | Token::KeywordStruct
-        )
+            | Token::KeywordChar
+            | Token::KeywordShort
+            | Token::KeywordUnsigned
+            | Token::KeywordFloat
+            | Token::KeywordVoid
+            | Token::KeywordStruct => true,
+            // The `long`/`signed` specifier words and any registered typedef name.
+            Token::Identifier(word) => word == "long" || word == "signed" || self.typedefs.contains_key(word),
+            _ => false,
+        }
     }
 }

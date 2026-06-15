@@ -14,6 +14,7 @@ pub struct DefinedGlobal {
     pub name: String,
     pub size: u32,
     pub alignment: u32,
+    pub initializer: Option<i64>,
 }
 
 /// Assemble a relocatable object from one or more lowered functions (in source
@@ -62,7 +63,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment })
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initializer: global.initializer })
         .collect();
     mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects })
 }

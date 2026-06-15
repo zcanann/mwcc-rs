@@ -8,7 +8,7 @@
 //! Float/stack-frame functions add `.sdata2` / `extab` / `extabindex` sections,
 //! pooled across all functions in the unit.
 
-use crate::{ObjectInput, RelocationTarget};
+use crate::{DataObject, ObjectInput, RelocationTarget};
 
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
 /// "LOUSER+0x4a2a82c2").
@@ -106,22 +106,41 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let has_text_relocations = functions.iter().any(|function| !function.relocations.is_empty());
     let has_frame = functions.iter().any(|function| function.frame.is_some());
     let has_constants = functions.iter().any(|function| !function.constants.is_empty());
-    let has_data_objects = !input.data_objects.is_empty();
+    // A non-zero scalar initializer lands in `.sdata` (with bytes); everything
+    // else (uninitialized or zero) lands in `.sbss` (NOBITS).
+    let is_sdata = |object: &DataObject| matches!(object.initializer, Some(value) if value != 0);
+    let has_sdata = input.data_objects.iter().any(is_sdata);
+    let has_sbss = input.data_objects.iter().any(|object| !is_sdata(object));
 
-    // `.sbss` layout: mwcc places defined uninitialized variables in *reverse*
-    // declaration order, each at its natural alignment. The section is NOBITS, so
-    // only its size and the per-object offsets matter (no file bytes).
-    let mut sbss_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    let mut sbss_sizes: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    let mut sbss_aligns: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    // Data layout: mwcc places defined variables in *reverse* declaration order
+    // within each data section, at natural alignment. Records each object's home
+    // section, offset, size, and alignment.
+    let mut data_section: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let mut data_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut data_sizes: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut data_aligns: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut sdata_size = 0u32;
     let mut sbss_size = 0u32;
     for object in input.data_objects.iter().rev() {
         let alignment = object.alignment.max(1);
-        sbss_size = sbss_size.div_ceil(alignment) * alignment;
-        sbss_offsets.insert(object.name, sbss_size);
-        sbss_sizes.insert(object.name, object.size);
-        sbss_aligns.insert(object.name, alignment);
-        sbss_size += object.size;
+        let (section, cursor) = if is_sdata(object) { (".sdata", &mut sdata_size) } else { (".sbss", &mut sbss_size) };
+        *cursor = cursor.div_ceil(alignment) * alignment;
+        data_section.insert(object.name, section);
+        data_offsets.insert(object.name, *cursor);
+        data_sizes.insert(object.name, object.size);
+        data_aligns.insert(object.name, alignment);
+        *cursor += object.size;
+    }
+    // `.sdata` file bytes: each initialized object's value at its offset.
+    let mut sdata = vec![0u8; sdata_size as usize];
+    for object in &input.data_objects {
+        if is_sdata(object) {
+            let offset = data_offsets[object.name] as usize;
+            let value = object.initializer.unwrap() as u64;
+            let bytes = value.to_be_bytes();
+            let width = object.size as usize;
+            sdata[offset..offset + width].copy_from_slice(&bytes[8 - width..]);
+        }
     }
 
     // `.sdata2` constant pool — every function's constants appended in source
@@ -196,7 +215,10 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     if has_constants {
         order.push(".sdata2");
     }
-    if has_data_objects {
+    if has_sdata {
+        order.push(".sdata");
+    }
+    if has_sbss {
         order.push(".sbss");
     }
     order.push(".mwcats.text");
@@ -219,7 +241,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".sdata2", ".sbss", ".mwcats.text"]
+    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".sdata2", ".sdata", ".sbss", ".mwcats.text"]
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
@@ -229,7 +251,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let mut comment_values: Vec<u32> = Vec::new();
     let section_align = |name: &str| -> u32 {
         match name {
-            ".sdata2" | ".sbss" => 8,
+            ".sdata2" | ".sdata" | ".sbss" => 8,
             _ => 4,
         }
     };
@@ -273,7 +295,6 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     // undefined external. A defined global never referenced is emitted at the end.
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
     let mut global_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    let sbss_index = if has_data_objects { index_of(".sbss") as u16 } else { 0 };
     let mut function_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         for relocation in &function.relocations {
@@ -282,10 +303,11 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
                 continue;
             }
             global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-            match sbss_offsets.get(name.as_str()) {
+            match data_offsets.get(name.as_str()) {
                 Some(&offset) => {
-                    write_symbol(&mut symtab, strtab.add(name), offset, sbss_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, sbss_index);
-                    comment_values.push(sbss_aligns[name.as_str()]);
+                    let section = index_of(data_section[name.as_str()]) as u16;
+                    write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, section);
+                    comment_values.push(data_aligns[name.as_str()]);
                 }
                 None => {
                     write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
@@ -304,8 +326,9 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
             continue;
         }
         global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-        write_symbol(&mut symtab, strtab.add(object.name), sbss_offsets[object.name], sbss_sizes[object.name], STB_GLOBAL_OBJECT, 0, sbss_index);
-        comment_values.push(sbss_aligns[object.name]);
+        let section = index_of(data_section[object.name]) as u16;
+        write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
+        comment_values.push(data_aligns[object.name]);
     }
     // The `.comment` trailer is now fully determined by the symbol alignments.
     let comment = comment_record(input.version, input.build, &comment_values);
@@ -379,7 +402,11 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     if has_constants {
         push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2, 0);
     }
-    if has_data_objects {
+    if has_sdata {
+        // `.sdata` holds the initialized values as file bytes.
+        push(".sdata", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata, 0);
+    }
+    if has_sbss {
         // `.sbss` is NOBITS: no file bytes, but `sh_size` is the in-memory size.
         push(".sbss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, Vec::new(), sbss_size);
     }

@@ -155,7 +155,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         .filter(|global| !global.is_extern && !global.is_static && global.array_length.is_none() && !matches!(global.declared_type, mwcc_syntax_trees::Type::Void))
         .map(|global| {
             let size = (global.declared_type.width() / 8) as u32;
-            mwcc_machine_code_to_object::DefinedGlobal { name: global.name.clone(), size, alignment: size }
+            mwcc_machine_code_to_object::DefinedGlobal { name: global.name.clone(), size, alignment: size, initializer: global.initializer }
         })
         .collect();
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, source_name, config.build.version, config.build.build);

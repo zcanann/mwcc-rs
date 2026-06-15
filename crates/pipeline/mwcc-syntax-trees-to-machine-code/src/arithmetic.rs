@@ -159,15 +159,19 @@ impl Generator {
                 return Ok(true);
             }
             if self.is_global(variable) {
-                // Global operand: mwcc loads the constant high into the destination,
-                // the global into a free register, the constant low into the scratch,
-                // then multiplies.
+                // Global operand: mwcc builds the constant high in one register and
+                // loads the global into another, then assembles the low half in the
+                // scratch and multiplies: `lis t,ha; lwz g,sym; addi r0,t,lo; mullw
+                // d,g,r0`. The high-temp and the load go to fresh virtuals so the
+                // allocator keeps them distinct (and off the scratch) — the inline
+                // version collided when the destination was the scratch.
                 let name = leaf_name(variable).unwrap();
-                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high));
-                let free = self.free_general_excluding(destination)?;
-                self.emit_global_load(name, free)?;
-                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: destination, immediate: low });
-                self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: free, b: GENERAL_SCRATCH });
+                let high_temp = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::load_immediate_shifted(high_temp, high));
+                let operand = self.fresh_virtual_general();
+                self.emit_global_load(name, operand)?;
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: high_temp, immediate: low });
+                self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: operand, b: GENERAL_SCRATCH });
                 return Ok(true);
             }
         }

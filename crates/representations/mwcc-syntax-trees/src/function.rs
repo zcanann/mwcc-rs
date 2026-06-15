@@ -49,6 +49,10 @@ pub struct GlobalDeclaration {
     pub is_extern: bool,
     pub is_static: bool,
     pub array_length: Option<u16>,
+    /// A scalar `= <constant>` initializer's value. `Some(non-zero)` places the
+    /// global in `.sdata` (initialized data); `None` or `Some(0)` leaves it in
+    /// `.sbss` (zero-initialized).
+    pub initializer: Option<i64>,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved

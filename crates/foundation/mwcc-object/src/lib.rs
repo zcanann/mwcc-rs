@@ -29,12 +29,14 @@ pub struct ObjectInput<'a> {
     pub data_objects: Vec<DataObject<'a>>,
 }
 
-/// A file-scope variable defined in this object: its name, byte size, and natural
-/// alignment. Placed in `.sbss` (uninitialized small data) for now.
+/// A file-scope variable defined in this object: its name, byte size, natural
+/// alignment, and optional scalar initializer. A non-zero initializer places it
+/// in `.sdata` (with the value as bytes); otherwise it lives in `.sbss` (NOBITS).
 pub struct DataObject<'a> {
     pub name: &'a str,
     pub size: u32,
     pub alignment: u32,
+    pub initializer: Option<i64>,
 }
 
 /// One function's contribution to the object: its name, encoded `.text`, and the
