@@ -224,6 +224,7 @@ impl Parser {
         // order.
         let mut globals = Vec::new();
         let mut functions = Vec::new();
+        let mut prototypes = Vec::new();
         while *self.peek() != Token::EndOfFile {
             // `extern`/`static` storage qualifiers: `extern` makes the declaration a
             // reference to a symbol defined elsewhere; `static` makes a definition
@@ -360,12 +361,13 @@ impl Parser {
             self.expect(Token::ParenClose)?;
 
             if *self.peek() == Token::Semicolon {
-                self.advance(); // a prototype — keep looking for the definition
+                self.advance(); // a prototype — record its return type, keep looking
+                prototypes.push((name, return_type));
                 continue;
             }
             functions.push(self.function_body(return_type, name, parameters)?);
         }
-        Ok(TranslationUnit { globals, functions })
+        Ok(TranslationUnit { globals, functions, prototypes })
     }
 
     /// Parse a function definition's body, given its already-parsed signature.

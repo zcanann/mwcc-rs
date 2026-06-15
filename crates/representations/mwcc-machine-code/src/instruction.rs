@@ -209,6 +209,12 @@ impl Instruction {
                 | FloatMultiplyAddSingle { .. }
                 | FloatMultiplySubtractSingle { .. }
                 | FloatNegativeMultiplySubtractSingle { .. }
+                | FloatAddDouble { .. }
+                | FloatSubtractDouble { .. }
+                | FloatMultiplyDouble { .. }
+                | FloatMultiplyAddDouble { .. }
+                | FloatMultiplySubtractDouble { .. }
+                | RoundToSingle { .. }
                 | FloatMove { .. }
                 | FloatNegate { .. }
                 | FloatCompareOrdered { .. }

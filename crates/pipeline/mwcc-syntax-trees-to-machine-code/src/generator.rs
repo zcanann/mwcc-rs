@@ -63,6 +63,9 @@ pub(crate) struct Generator {
     /// avoid the destination") so the allocation pass reproduces mwcc's coalescing
     /// of result-path temporaries onto the destination register.
     pub(crate) register_avoid: HashMap<u32, Vec<u8>>,
+    /// Return type of each callable name (prototypes + definitions), so a call's
+    /// result type is known — e.g. `(float)cos(x)` rounds a double with `frsp`.
+    pub(crate) call_return_types: HashMap<String, Type>,
     /// A global just stored, with the register holding the stored value and the
     /// instruction count at the moment of the store. A subsequent read of the
     /// global reuses that register instead of reloading — but only while no

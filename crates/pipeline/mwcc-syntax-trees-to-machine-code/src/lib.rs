@@ -28,7 +28,10 @@ mod value_tracking;
 use generator::Generator;
 
 /// Lower a parsed function to machine code for the given compiler configuration.
-pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config: CompilerConfig) -> Compilation<MachineFunction> {
+/// `call_return_types` maps callable names (prototypes and definitions) to their
+/// return type, so a call's result type is known (e.g. a `double`-returning math
+/// routine drives the `frsp` of `(float)cos(x)`).
+pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, config: CompilerConfig) -> Compilation<MachineFunction> {
     let mut generator = Generator {
         output: MachineFunction::new(function.name.clone()),
         locations: HashMap::new(),
@@ -41,6 +44,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
         next_virtual: 0,
         register_avoid: HashMap::new(),
         stored_globals: HashMap::new(),
+        call_return_types: call_return_types.clone(),
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;

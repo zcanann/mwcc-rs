@@ -64,6 +64,10 @@ pub struct GlobalDeclaration {
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
+    /// Function prototypes (`type name(params);`) by name and return type, so a
+    /// call to an externally-defined function knows its result type (e.g. a
+    /// `double`-returning math routine).
+    pub prototypes: Vec<(String, Type)>,
 }
 
 /// A function definition. Bodies are zero or more local declarations, then zero

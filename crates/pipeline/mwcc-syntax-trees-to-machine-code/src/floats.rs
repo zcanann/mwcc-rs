@@ -136,6 +136,7 @@ impl Generator {
             Expression::Conditional { when_true, when_false, .. } => self.is_double_value(when_true) || self.is_double_value(when_false),
             Expression::Cast { target_type, .. } => *target_type == Type::Double,
             Expression::Member { member_type, .. } => *member_type == Type::Double,
+            Expression::Call { name, .. } => self.call_return_types.get(name) == Some(&Type::Double),
             _ => false,
         }
     }

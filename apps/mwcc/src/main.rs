@@ -140,11 +140,19 @@ fn main() -> ExitCode {
 fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfig, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
     let tokens = mwcc_source_to_tokens::tokenize(source)?;
     let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(tokens.clone())?;
+    // Every callable's return type (prototypes + this unit's definitions) so a
+    // call's result type is known during lowering.
+    let call_return_types: std::collections::HashMap<String, mwcc_syntax_trees::Type> = unit
+        .prototypes
+        .iter()
+        .cloned()
+        .chain(unit.functions.iter().map(|function| (function.name.clone(), function.return_type)))
+        .collect();
     // Lower every function definition in source order; they share one object.
     let machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
         .functions
         .iter()
-        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, config))
+        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, config))
         .collect::<Compilation<_>>()?;
     // File-scope variables defined here (not `extern`/`static`, scalar, no array)
     // are placed in `.sbss` as defined symbols; their declaration order is kept so
