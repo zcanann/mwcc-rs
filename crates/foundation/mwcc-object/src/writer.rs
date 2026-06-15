@@ -1,10 +1,12 @@
-//! Assembly of a single-function relocatable object, byte-for-byte as mwcceppc
-//! emits it. Every object carries `.text`, the Metrowerks `.mwcats.text` record
-//! (a `(0x02000000 | text_size, &function)` pair) with its relocation, a symbol
-//! table (file, section, and function symbols), and the `.comment` record.
+//! Assembly of a relocatable object, byte-for-byte as mwcceppc emits it. The
+//! object holds one or more functions sharing a single `.text`; the Metrowerks
+//! `.mwcats.text` section carries one `(0x02000000 | function size, &function)`
+//! record per function, each with its relocation, alongside a symbol table (file,
+//! section, the anonymous `@N` locals, the undefined externals, and a symbol per
+//! function) and the `.comment` record.
 //!
-//! Float/stack-frame functions add `.sdata2` / `extab` / `extabindex` sections;
-//! those are the next layer and not emitted yet.
+//! Float/stack-frame functions add `.sdata2` / `extab` / `extabindex` sections,
+//! pooled across all functions in the unit.
 
 use crate::{ObjectInput, RelocationTarget};
 
@@ -33,9 +35,11 @@ const STV_HIDDEN: u8 = 2; // st_other visibility for the @N unwind entries
 
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
 /// compiler version (`02 04 0X` = 2.4.X) and byte 11 is a format marker that
-/// tracks the version line; [`comment_record`] patches them per build. The record
-/// grows for objects with extra sections (float/frame); that variant arrives with
-/// those sections.
+/// tracks the version line; [`comment_record`] patches them per build. After the
+/// fixed 56-byte prefix (ending `…00 00 00 01`) come `function_count + 2`
+/// eight-byte records of `00 00 00 00 00 00 00 04`, then a trailing zero word, so
+/// the record grows by eight bytes per additional function. This array is the
+/// single-function form (three records); [`comment_record`] reuses its prefix.
 const COMMENT_BASE: [u8; 84] = [
     b'C', b'o', b'd', b'e', b'W', b'a', b'r', b'r', b'i', b'o', b'r', b'\n', //
     0x02, 0x04, 0x02, 0x01, 0x01, 0x02, 0x00, 0x16, 0x2c, 0x00, 0x00, 0x00, //
@@ -45,15 +49,26 @@ const COMMENT_BASE: [u8; 84] = [
     0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// The `.comment` record for a specific compiler version and build.
-fn comment_record(version: (u8, u8, u8), build: u16) -> [u8; 84] {
-    let mut record = COMMENT_BASE;
+/// The fixed prefix length: the banner, version line, and framing word ending
+/// `00 00 00 01` (the first 56 bytes of [`COMMENT_BASE`]).
+const COMMENT_PREFIX_LEN: usize = 56;
+
+/// The `.comment` record for a specific compiler version, build, and function
+/// count.
+fn comment_record(version: (u8, u8, u8), build: u16, function_count: usize) -> Vec<u8> {
+    let mut record = COMMENT_BASE[..COMMENT_PREFIX_LEN].to_vec();
     // Byte 11 is a format marker: 0x0a for every supported build except GC/2.7
     // (build 108), which bumped it to 0x0b. Bytes 12..15 are the version itself.
     record[11] = if build == 108 { 0x0b } else { 0x0a };
     record[12] = version.0;
     record[13] = version.1;
     record[14] = version.2;
+    // One eight-byte `…04` record per function plus two fixed framing records,
+    // then a trailing zero word.
+    for _ in 0..function_count + 2 {
+        record.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 4]);
+    }
+    record.extend_from_slice(&[0, 0, 0, 0]);
     record
 }
 
@@ -75,41 +90,97 @@ struct Section {
 }
 
 pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
-    let text = input.text;
-    let text_size = text.len() as u32;
-    let comment = comment_record(input.version, input.build);
+    let functions = &input.functions;
+    let comment = comment_record(input.version, input.build, functions.len());
 
-    // External symbols referenced by `.text` relocations (globals, callees), in
-    // first-reference order. With none, this is the original leaf layout and the
-    // bytes are produced identically to before (no `.rela.text`, no extra symbols).
+    // `.text` is the functions concatenated in source order (each function's text
+    // size is a multiple of 4, so they pack contiguously). Track each function's
+    // byte offset and size for its symbol, relocations, and `.mwcats` record.
+    let mut text = Vec::new();
+    let mut function_offset: Vec<u32> = Vec::new();
+    let mut function_size: Vec<u32> = Vec::new();
+    for function in functions {
+        function_offset.push(text.len() as u32);
+        function_size.push(function.text.len() as u32);
+        text.extend_from_slice(function.text);
+    }
+
+    // External symbols referenced by any function's relocations, in first-
+    // appearance order across the whole unit (the order mwcc emits them in the
+    // GLOBAL symbol run, interleaved with the function symbols).
     let mut externals: Vec<&str> = Vec::new();
-    for relocation in &input.relocations {
-        if let RelocationTarget::External(symbol) = &relocation.target {
-            if !externals.iter().any(|name| *name == symbol.as_str()) {
-                externals.push(symbol);
+    for function in functions {
+        for relocation in &function.relocations {
+            if let RelocationTarget::External(symbol) = &relocation.target {
+                if !externals.iter().any(|name| *name == symbol.as_str()) {
+                    externals.push(symbol);
+                }
             }
         }
     }
-    // `.rela.text` is needed for any relocation — external (global/call) or a
-    // pooled-constant load.
-    let has_text_relocations = !input.relocations.is_empty();
-    let has_frame = input.frame.is_some();
-    let has_constants = !input.constants.is_empty();
+    let has_text_relocations = functions.iter().any(|function| !function.relocations.is_empty());
+    let has_frame = functions.iter().any(|function| function.frame.is_some());
+    let has_constants = functions.iter().any(|function| !function.constants.is_empty());
 
-    // `.sdata2` payload and each constant's offset (constants are placed at their
-    // natural alignment, so an 8-byte double may pad after a 4-byte float).
+    // `.sdata2` constant pool — every function's constants appended in source
+    // order, each at its natural alignment. Record the byte offset of each
+    // function's j-th constant.
     let mut sdata2 = Vec::new();
-    let mut constant_offsets: Vec<u32> = Vec::new();
-    for constant in &input.constants {
-        let alignment = constant.byte_width as usize;
-        while sdata2.len() % alignment != 0 {
-            sdata2.push(0);
+    let mut constant_offsets: Vec<Vec<u32>> = Vec::new();
+    for function in functions {
+        let mut offsets = Vec::new();
+        for constant in &function.constants {
+            let alignment = constant.byte_width as usize;
+            while sdata2.len() % alignment != 0 {
+                sdata2.push(0);
+            }
+            offsets.push(sdata2.len() as u32);
+            match constant.byte_width {
+                8 => sdata2.extend_from_slice(&constant.bits.to_be_bytes()),
+                _ => sdata2.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
+            }
         }
-        constant_offsets.push(sdata2.len() as u32);
-        match constant.byte_width {
-            8 => sdata2.extend_from_slice(&constant.bits.to_be_bytes()),
-            _ => sdata2.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
+        constant_offsets.push(offsets);
+    }
+
+    // The anonymous `@N` counter, walked once over the functions. Each function's
+    // constants are numbered first, then its (hidden) unwind entries; the counter
+    // starts at 5, is bumped per function by its conversions/float-branches, and
+    // advances by 4 past each function beyond what that function consumed.
+    struct FrameNumbers {
+        extab: u32,
+        extabindex: u32,
+        extab_entry_offset: u32,
+        extabindex_entry_offset: u32,
+    }
+    let mut constant_numbers: Vec<Vec<u32>> = Vec::new();
+    let mut frame_numbers: Vec<Option<FrameNumbers>> = Vec::new();
+    let mut extab_payload_offset = 0u32;
+    let mut extabindex_payload_offset = 0u32;
+    let mut counter = 5u32;
+    for function in functions {
+        let mut number = counter + function.anonymous_bump;
+        let mut numbers = Vec::new();
+        for _ in &function.constants {
+            numbers.push(number);
+            number += 1;
         }
+        constant_numbers.push(numbers);
+        if function.frame.is_some() {
+            let frame = FrameNumbers {
+                extab: number,
+                extabindex: number + 1,
+                extab_entry_offset: extab_payload_offset,
+                extabindex_entry_offset: extabindex_payload_offset,
+            };
+            number += 2;
+            extab_payload_offset += 8;
+            extabindex_payload_offset += 12;
+            frame_numbers.push(Some(frame));
+        } else {
+            frame_numbers.push(None);
+        }
+        counter = number + 4;
     }
 
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The
@@ -139,9 +210,10 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let index_of = |name: &str| order.iter().position(|entry| *entry == name).unwrap() as u32 + 1;
 
     // 2. Symbols, building `.strtab` alongside. Order: null, FILE, one SECTION
-    //    symbol per content section (in section order), the local `@N` unwind
-    //    entries, the undefined externals, then the function. The externals/function
-    //    are the GLOBAL symbols, so the first of them is `sh_info` for `.symtab`.
+    //    symbol per content section (in section order), the local `@N` entries
+    //    grouped by function (constants then unwind), then the GLOBAL run — each
+    //    function's not-yet-seen externals followed by the function symbol, in
+    //    source order. The first GLOBAL is `sh_info` for `.symtab`.
     let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".sdata2", ".mwcats.text"]
         .into_iter()
         .filter(|name| order.contains(name))
@@ -153,66 +225,91 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     for name in &content_sections {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
     }
-    // Anonymous `@N` locals, numbered from `anonymous_base`: pooled constants
-    // first (visible objects in `.sdata2`), then the hidden unwind entries. mwcc
-    // emits them in this order, so the numbering follows it.
-    let mut constant_symbols: Vec<u32> = Vec::new();
-    for (index, constant) in input.constants.iter().enumerate() {
-        let number = input.anonymous_base + index as u32;
-        constant_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
-        let name = strtab.add(&format!("@{number}"));
-        write_symbol(&mut symtab, name, constant_offsets[index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
+    // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
+    // then its hidden unwind entries.
+    let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
+    let mut extab_entry_symbols: Vec<u32> = Vec::new();
+    for (index, function) in functions.iter().enumerate() {
+        let mut symbols = Vec::new();
+        for (constant_index, constant) in function.constants.iter().enumerate() {
+            symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
+            let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
+            write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
+        }
+        constant_symbols.push(symbols);
+        if let Some(frame) = &frame_numbers[index] {
+            extab_entry_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
+            let extab_name = strtab.add(&format!("@{}", frame.extab));
+            write_symbol(&mut symtab, extab_name, frame.extab_entry_offset, 8, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extab") as u16);
+            let extabindex_name = strtab.add(&format!("@{}", frame.extabindex));
+            write_symbol(&mut symtab, extabindex_name, frame.extabindex_entry_offset, 12, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extabindex") as u16);
+        } else {
+            extab_entry_symbols.push(0);
+        }
     }
-    let mut extab_entry_symbol = 0u32;
-    if has_frame {
-        let extab_number = input.anonymous_base + input.constants.len() as u32;
-        extab_entry_symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-        let extab_name = strtab.add(&format!("@{extab_number}"));
-        write_symbol(&mut symtab, extab_name, 0, 8, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extab") as u16);
-        let extabindex_name = strtab.add(&format!("@{}", extab_number + 1));
-        write_symbol(&mut symtab, extabindex_name, 0, 12, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extabindex") as u16);
-    }
+    // The GLOBAL run: walk functions in order, emitting each newly-referenced
+    // external just before the function symbol that first uses it.
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
-    for name in &externals {
-        write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
-    }
-    let function_symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-    write_symbol(&mut symtab, strtab.add(input.function_name), 0, text_size, STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
-
-    // 3. Relocation payloads (now that symbol indices are fixed). A relocation
-    //    targets either an external (the i-th global symbol) or a pooled constant.
-    let mut rela_text = Vec::new();
-    for relocation in &input.relocations {
-        let symbol = match &relocation.target {
-            RelocationTarget::External(name) => {
-                let position = externals.iter().position(|external| *external == name.as_str()).unwrap();
-                first_global_index + position as u32
+    let mut external_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut function_symbols: Vec<u32> = Vec::new();
+    for (index, function) in functions.iter().enumerate() {
+        for relocation in &function.relocations {
+            if let RelocationTarget::External(name) = &relocation.target {
+                if !external_symbols.contains_key(name.as_str()) {
+                    let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                    external_symbols.insert(name.as_str(), symbol);
+                    write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+                }
             }
-            RelocationTarget::Constant(index) => constant_symbols[*index],
-        };
-        write_rela(&mut rela_text, relocation.offset, symbol, relocation.elf_type, 0);
+        }
+        function_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
+    }
+
+    // 3. Relocation payloads (now that symbol indices are fixed). Each function's
+    //    `.text` relocations are rebased by its `.text` offset; a relocation
+    //    targets either an external or one of that function's pooled constants.
+    let mut rela_text = Vec::new();
+    for (index, function) in functions.iter().enumerate() {
+        for relocation in &function.relocations {
+            let symbol = match &relocation.target {
+                RelocationTarget::External(name) => external_symbols[name.as_str()],
+                RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
+            };
+            write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, 0);
+        }
     }
     let mut rela_extabindex = Vec::new();
-    if has_frame {
-        write_rela(&mut rela_extabindex, 0, function_symbol, R_PPC_ADDR32, 0); // -> the function
-        write_rela(&mut rela_extabindex, 8, extab_entry_symbol, R_PPC_ADDR32, 0); // -> its extab entry
+    for (index, frame) in frame_numbers.iter().enumerate() {
+        if let Some(frame) = frame {
+            write_rela(&mut rela_extabindex, frame.extabindex_entry_offset, function_symbols[index], R_PPC_ADDR32, 0); // -> the function
+            write_rela(&mut rela_extabindex, frame.extabindex_entry_offset + 8, extab_entry_symbols[index], R_PPC_ADDR32, 0); // -> its extab entry
+        }
     }
     let mut rela_mwcats = Vec::new();
-    write_rela(&mut rela_mwcats, 4, function_symbol, R_PPC_ADDR32, 0);
+    for (index, _) in functions.iter().enumerate() {
+        write_rela(&mut rela_mwcats, index as u32 * 8 + 4, function_symbols[index], R_PPC_ADDR32, 0);
+    }
 
-    // 4. Content payloads. The unwind header is a deterministic function of the
-    //    saved-register shape; `extabindex` is (function, function size, extab).
+    // 4. Content payloads. One `.mwcats` record per function: `(0x02000000 | its
+    //    text size, &function)`. The unwind header is a deterministic function of
+    //    the saved-register shape; each `extabindex` entry is (function, function
+    //    size, extab entry).
     let mut mwcats = Vec::new();
-    write_u32(&mut mwcats, 0x0200_0000 | text_size);
-    write_u32(&mut mwcats, 0);
+    for (index, _) in functions.iter().enumerate() {
+        write_u32(&mut mwcats, 0x0200_0000 | function_size[index]);
+        write_u32(&mut mwcats, 0);
+    }
     let mut extab = Vec::new();
     let mut extabindex = Vec::new();
-    if let Some(frame) = &input.frame {
-        write_u32(&mut extab, frame.extab_header);
-        write_u32(&mut extab, 0);
-        write_u32(&mut extabindex, 0); // -> the function
-        write_u32(&mut extabindex, text_size);
-        write_u32(&mut extabindex, 0); // -> the extab entry
+    for (index, function) in functions.iter().enumerate() {
+        if let Some(frame) = &function.frame {
+            write_u32(&mut extab, frame.extab_header);
+            write_u32(&mut extab, 0);
+            write_u32(&mut extabindex, 0); // -> the function
+            write_u32(&mut extabindex, function_size[index]);
+            write_u32(&mut extabindex, 0); // -> the extab entry
+        }
     }
 
     // 5. `.shstrtab` — section names in section order; record each name's offset.

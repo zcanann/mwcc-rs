@@ -117,13 +117,20 @@ impl Parser {
     }
 
     pub(crate) fn translation_unit(&mut self) -> Compilation<TranslationUnit> {
-        // Collect file-scope globals and skip prototype declarations until the
-        // function *definition* (the signature followed by `{`).
+        // Walk the top level in source order: struct definitions register layouts,
+        // `type name;` lines are globals, `type name(params);` are prototypes, and
+        // `type name(params) { ... }` are function definitions. Each definition is
+        // lowered to its own object symbol downstream, so they are collected in
+        // order.
         let mut globals = Vec::new();
-        let (return_type, name, parameters) = loop {
+        let mut functions = Vec::new();
+        while *self.peek() != Token::EndOfFile {
             // `extern`/`static` storage qualifiers don't change codegen here.
             while matches!(self.peek(), Token::Identifier(word) if word == "extern" || word == "static") {
                 self.advance();
+            }
+            if *self.peek() == Token::EndOfFile {
+                break;
             }
             // A `struct Name { ... };` definition registers a layout. A `struct
             // Name*` use (function return or parameter) falls through to parse_type.
@@ -178,9 +185,15 @@ impl Parser {
                 self.advance(); // a prototype — keep looking for the definition
                 continue;
             }
-            break (return_type, name, parameters);
-        };
+            functions.push(self.function_body(return_type, name, parameters)?);
+        }
+        Ok(TranslationUnit { globals, functions })
+    }
 
+    /// Parse a function definition's body, given its already-parsed signature.
+    /// `{` then zero or more local declarations, statements, `if (...) return ...;`
+    /// guards, and an optional final `return <expression>;`.
+    fn function_body(&mut self, return_type: Type, name: String, parameters: Vec<Parameter>) -> Compilation<Function> {
         self.expect(Token::BraceOpen)?;
 
         // Zero or more local declarations precede the return statement. A
@@ -249,8 +262,7 @@ impl Parser {
         };
         self.expect(Token::BraceClose)?;
 
-        let function = Function { return_type, name, parameters, locals, statements, guards, return_expression };
-        Ok(TranslationUnit { globals, function })
+        Ok(Function { return_type, name, parameters, locals, statements, guards, return_expression })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

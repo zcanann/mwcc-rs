@@ -140,12 +140,16 @@ fn main() -> ExitCode {
 fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfig, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
     let tokens = mwcc_source_to_tokens::tokenize(source)?;
     let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(tokens.clone())?;
-    let function = &unit.function;
-    let machine_code = mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, config)?;
-    let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name, config.build.version, config.build.build);
+    // Lower every function definition in source order; they share one object.
+    let machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
+        .functions
+        .iter()
+        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, config))
+        .collect::<Compilation<_>>()?;
+    let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, source_name, config.build.version, config.build.build);
 
     if let Some(directory) = artifacts {
-        write_artifacts(directory, config, &tokens, &function, &machine_code, &object);
+        write_artifacts(directory, config, &tokens, &unit.functions, &machine_functions, &object);
     }
     Ok(object)
 }
@@ -154,8 +158,8 @@ fn write_artifacts(
     directory: &str,
     config: mwcc_versions::CompilerConfig,
     tokens: &[mwcc_tokens::Token],
-    function: &mwcc_syntax_trees::Function,
-    machine_code: &mwcc_machine_code::MachineFunction,
+    functions: &[mwcc_syntax_trees::Function],
+    machine_functions: &[mwcc_machine_code::MachineFunction],
     object: &[u8],
 ) {
     let directory = PathBuf::from(directory);
@@ -182,13 +186,19 @@ fn write_artifacts(
     }
     dump("00_build.txt", report);
     dump("01_tokens.txt", tokens.iter().map(|token| format!("{token}\n")).collect());
-    dump("02_syntax_tree.txt", format!("{function:#?}\n"));
+    dump("02_syntax_tree.txt", format!("{functions:#?}\n"));
     dump(
         "03_machine_code.txt",
-        machine_code
-            .instructions
+        machine_functions
             .iter()
-            .map(|instruction| format!("{:08x}  {instruction:?}\n", instruction.encode()))
+            .map(|machine_code| {
+                let body: String = machine_code
+                    .instructions
+                    .iter()
+                    .map(|instruction| format!("{:08x}  {instruction:?}\n", instruction.encode()))
+                    .collect();
+                format!("{}:\n{body}\n", machine_code.name)
+            })
             .collect(),
     );
     dump("04_object.txt", format!("ELF32 BE PowerPC relocatable object, {} bytes\n", object.len()));

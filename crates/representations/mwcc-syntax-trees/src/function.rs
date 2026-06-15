@@ -45,12 +45,12 @@ pub struct GlobalDeclaration {
     pub name: String,
 }
 
-/// A translation unit: file-scope globals (and skipped prototypes) followed by a
-/// single function definition.
+/// A translation unit: file-scope globals (and skipped prototypes) interleaved
+/// with one or more function definitions, in source order.
 #[derive(Debug, Clone)]
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
-    pub function: Function,
+    pub functions: Vec<Function>,
 }
 
 /// A function definition. Bodies are zero or more local declarations, then zero
