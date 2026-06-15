@@ -211,16 +211,19 @@ impl Generator {
             }
         }
         let prefer_destination = matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract);
-        let Some(source) = self.place_operand(variable, destination, prefer_destination)? else {
+        // `addi d, r0, imm` is `li d, imm` — it drops the source. So when an
+        // add-immediate's own result lands in the scratch (it is a sub-expression),
+        // its operand must still go to a non-scratch register. Place it in a fresh
+        // virtual the allocator assigns, exactly as mwcc keeps such an operand in a
+        // real register (g*BIG + 0x3039 -> the product in r3, then addi r0,r3,...).
+        let operand_target = if matches!(kind, Immediate::Add) && destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            destination
+        };
+        let Some(source) = self.place_operand(variable, operand_target, prefer_destination)? else {
             return Ok(false);
         };
-        // `addi d, r0, imm` is `li d, imm` — it drops the source. So an `addi` whose
-        // operand was computed into the scratch (r0) would silently ignore it;
-        // mwcc keeps such an operand in a non-scratch register, which needs the
-        // allocator. Defer rather than miscompile.
-        if matches!(kind, Immediate::Add) && source == GENERAL_SCRATCH {
-            return Err(Diagnostic::error("add-immediate operand landed in r0 (needs the register allocator, roadmap)"));
-        }
         let d = destination;
         let instruction = match kind {
             Immediate::Add => Instruction::AddImmediate { d, a: source, immediate: constant as i16 },
