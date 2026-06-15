@@ -208,19 +208,36 @@ impl Generator {
         None
     }
 
+    /// The (register, element size) of a pointer operand for arithmetic: a leaf
+    /// pointer wider than a byte, or an array member at offset 0 (which decays to a
+    /// pointer in its base register). A byte leaf pointer returns `None` (its
+    /// arithmetic is a plain add handled elsewhere); a byte *array* member is
+    /// handled here, since it is not a plain leaf.
+    fn pointer_arithmetic_base(&mut self, operand: &Expression) -> Compilation<Option<(u8, u8)>> {
+        if let Expression::MemberAddress { base, offset: 0, element } = operand {
+            let register = self.member_base_register(base)?;
+            return Ok(Some((register, element.size())));
+        }
+        if let Some(size) = self.scaled_pointer(operand) {
+            return Ok(Some((self.general_register_of_leaf(operand)?, size)));
+        }
+        Ok(None)
+    }
+
     /// Try to emit `pointer ± integer` with the integer scaled by the pointee
-    /// size. Returns `false` for non-pointer (or byte-pointer) operands.
+    /// size. Returns `false` for non-pointer (or byte leaf-pointer) operands.
     fn try_emit_pointer_arithmetic(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
         // Identify the pointer and integer operands (`i + p` is commutative).
-        let (pointer, integer) = if self.scaled_pointer(left).is_some() {
-            (left, right)
-        } else if operator == BinaryOperator::Add && self.scaled_pointer(right).is_some() {
-            (right, left)
+        let (pointer_register, size, integer) = if let Some((register, size)) = self.pointer_arithmetic_base(left)? {
+            (register, size, right)
+        } else if operator == BinaryOperator::Add {
+            match self.pointer_arithmetic_base(right)? {
+                Some((register, size)) => (register, size, left),
+                None => return Ok(false),
+            }
         } else {
             return Ok(false);
         };
-        let size = self.scaled_pointer(pointer).unwrap();
-        let pointer_register = self.general_register_of_leaf(pointer)?;
         // A constant index folds its scaled value into an `addi`.
         if let Some(constant) = constant_value(integer) {
             let scaled = constant * size as i64;
@@ -230,11 +247,17 @@ impl Generator {
             return Ok(true);
         }
         let integer_register = self.general_register_of_leaf(integer)?;
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: integer_register, shift: size.trailing_zeros() as u8 });
+        // Scale the index by the element size (a byte element needs no shift).
+        let scaled_register = if size > 1 {
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: integer_register, shift: size.trailing_zeros() as u8 });
+            GENERAL_SCRATCH
+        } else {
+            integer_register
+        };
         match operator {
-            BinaryOperator::Add => self.output.instructions.push(Instruction::Add { d: destination, a: pointer_register, b: GENERAL_SCRATCH }),
+            BinaryOperator::Add => self.output.instructions.push(Instruction::Add { d: destination, a: pointer_register, b: scaled_register }),
             // `p - i`: `subf d, scaled, p` computes `p - scaled`.
-            BinaryOperator::Subtract => self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: GENERAL_SCRATCH, b: pointer_register }),
+            BinaryOperator::Subtract => self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: scaled_register, b: pointer_register }),
             _ => unreachable!("caller restricts to add/subtract"),
         }
         Ok(true)
