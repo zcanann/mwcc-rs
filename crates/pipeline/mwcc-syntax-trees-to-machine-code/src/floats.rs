@@ -39,7 +39,7 @@ impl Generator {
                 if !fits_single_scratch(expression, destination == FLOAT_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
-                let operands = self.place_float_operands(*operator, left, right, destination)?;
+                let operands = self.place_float_operands(*operator, left, right, destination, double)?;
                 self.output.instructions.push(float_combine(*operator, destination, operands, double)?);
                 Ok(())
             }
@@ -231,7 +231,7 @@ impl Generator {
         unreachable!("caller checked one side is a float load")
     }
 
-    pub(crate) fn place_float_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    pub(crate) fn place_float_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8, double: bool) -> Compilation<Operands> {
         // A float operand loaded from memory (a member or `*float_pointer`) loads
         // into a float register; the general base register is untouched, so it can
         // even land straight in the float destination.
@@ -239,19 +239,20 @@ impl Generator {
             return self.place_float_located_operands(operator, left, right, destination);
         }
         // A float constant operand is loaded from `.sdata2` into the scratch
-        // register; the other (leaf-variable) operand stays in place. mwcc emits
-        // the constant as the first source of the (commutative) operation.
+        // register (an 8-byte `lfd` in a double op, a 4-byte `lfs` otherwise); the
+        // other (leaf-variable) operand stays in place. mwcc emits the constant as
+        // the first source of the (commutative) operation.
         if let Expression::FloatLiteral(value) = right {
             if matches!(left, Expression::Variable(_)) {
                 let left_register = self.float_register_of_leaf(left)?;
-                self.load_float_constant(FLOAT_SCRATCH, *value as f32);
+                self.load_float_literal(FLOAT_SCRATCH, *value, double);
                 return Operands::reversed(left_register, FLOAT_SCRATCH);
             }
         }
         if let Expression::FloatLiteral(value) = left {
             if matches!(right, Expression::Variable(_)) {
                 let right_register = self.float_register_of_leaf(right)?;
-                self.load_float_constant(FLOAT_SCRATCH, *value as f32);
+                self.load_float_literal(FLOAT_SCRATCH, *value, double);
                 return Operands::ordered(FLOAT_SCRATCH, right_register);
             }
         }

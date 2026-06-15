@@ -153,6 +153,16 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 });
     }
 
+    /// Load a float-literal operand, choosing 8-byte `lfd` in a double context and
+    /// 4-byte `lfs` (the value rounded to single) otherwise.
+    pub(crate) fn load_float_literal(&mut self, destination: u8, value: f64, double: bool) {
+        if double {
+            self.load_double_constant(destination, value.to_bits());
+        } else {
+            self.load_float_constant(destination, value as f32);
+        }
+    }
+
     pub(crate) fn lookup_general(&self, name: &str) -> Option<u8> {
         self.locations.get(name).filter(|location| location.class == ValueClass::General).map(|location| location.register)
     }
