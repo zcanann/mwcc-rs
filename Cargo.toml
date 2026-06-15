@@ -11,6 +11,7 @@ members = [
     "crates/representations/mwcc-tokens",
     "crates/representations/mwcc-syntax-trees",
     "crates/representations/mwcc-machine-code",
+    "crates/representations/mwcc-vreg",
 
     # pipeline — the transforms between representations (named input-to-output)
     "crates/pipeline/mwcc-source-to-tokens",
@@ -38,6 +39,7 @@ mwcc-object = { path = "crates/foundation/mwcc-object" }
 mwcc-tokens = { path = "crates/representations/mwcc-tokens" }
 mwcc-syntax-trees = { path = "crates/representations/mwcc-syntax-trees" }
 mwcc-machine-code = { path = "crates/representations/mwcc-machine-code" }
+mwcc-vreg = { path = "crates/representations/mwcc-vreg" }
 mwcc-source-to-tokens = { path = "crates/pipeline/mwcc-source-to-tokens" }
 mwcc-tokens-to-syntax-trees = { path = "crates/pipeline/mwcc-tokens-to-syntax-trees" }
 mwcc-syntax-trees-to-machine-code = { path = "crates/pipeline/mwcc-syntax-trees-to-machine-code" }

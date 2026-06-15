@@ -1,0 +1,8 @@
+[package]
+name = "mwcc-vreg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mwcc-core.workspace = true
