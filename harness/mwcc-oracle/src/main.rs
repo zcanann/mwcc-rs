@@ -62,9 +62,16 @@ fn main() -> std::process::ExitCode {
         let _ = std::fs::remove_file(&reference_object);
         let _ = std::fs::remove_file(&our_object);
 
-        // Oracle: wibo sjiswrap mwcceppc FLAGS -c source -o reference.o
+        // A canary may pin extra build-line flags (e.g. `-sdata 0`, `-char
+        // unsigned`, `-O1`) via a `// flags:` directive. The same flags are
+        // handed to both compilers — the real one models all of them, ours
+        // parses the codegen-affecting subset — so the matrix beyond the default
+        // -O4 small-data configuration is verifiable from a canary file alone.
+        let extra_flags = flag_directive(&source);
+
+        // Oracle: wibo sjiswrap mwcceppc FLAGS [extra] -c source -o reference.o
         let mut oracle = Command::new(&wibo);
-        oracle.arg(&sjis).arg(&real_compiler).args(COMPILE_FLAGS)
+        oracle.arg(&sjis).arg(&real_compiler).args(COMPILE_FLAGS).args(&extra_flags)
             .arg("-c").arg(&source).arg("-o").arg(&reference_object);
         let _ = oracle.output();
         if !reference_object.exists() {
@@ -72,9 +79,11 @@ fn main() -> std::process::ExitCode {
             continue;
         }
 
-        // Ours — pin codegen to the same build the oracle is running.
+        // Ours — pin codegen to the same build the oracle is running, plus the
+        // canary's own flags.
         let ours = Command::new(&our_compiler)
             .arg("--build").arg(format!("GC/{version}"))
+            .args(&extra_flags)
             .arg("-c").arg(&source).arg("-o").arg(&our_object).output();
         match ours {
             Ok(result) if our_object.exists() => {
@@ -121,6 +130,20 @@ fn main() -> std::process::ExitCode {
 
     println!("== {passed} passed, {failed} failed ({object_exact} byte-exact, {reloc_exact} reloc-exact objects) ==");
     if failed == 0 { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::FAILURE }
+}
+
+/// Extra build-line flags a canary pins for itself, from a `// flags: ...` line
+/// (anywhere in the file). The remainder of the line is split on whitespace and
+/// passed verbatim to both compilers. Absent directive -> no extra flags.
+fn flag_directive(source: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(source) else { return Vec::new() };
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("// flags:").or_else(|| trimmed.strip_prefix("//flags:")) {
+            return rest.split_whitespace().map(str::to_string).collect();
+        }
+    }
+    Vec::new()
 }
 
 /// Parse `objdump -r` into normalized `[section] offset type symbol` lines,
