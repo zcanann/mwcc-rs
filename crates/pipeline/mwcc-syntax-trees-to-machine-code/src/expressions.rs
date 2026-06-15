@@ -628,7 +628,16 @@ impl Generator {
             self.output.instructions.push(load);
             return Ok(());
         }
-        Err(Diagnostic::error("absolute addressing for a global operand needs the register allocator (roadmap: Phase D)"))
+        // destination == r0 (a scratch operand): a separate base GPR holds the
+        // address and `@l` folds into the load. The base is the lowest free GPR,
+        // which avoids any sibling operand the caller has reserved — r0 itself can
+        // never be the base (the literal-zero trap).
+        let base = self.lowest_free_general()?;
+        self.emit_address_high(base, name);
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        let load = self.global_load_instruction(global_type, destination, base)?;
+        self.output.instructions.push(load);
+        Ok(())
     }
 
     /// Store `source` to a file-scope global. Small-data uses the `0(r0)` SDA21

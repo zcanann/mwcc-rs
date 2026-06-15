@@ -241,12 +241,19 @@ impl Generator {
             }
             (true, false) => {
                 let right_register = self.wide_leaf_register(right)?;
-                self.emit_global_load(leaf_name(left).unwrap(), GENERAL_SCRATCH)?;
+                // Keep the sibling live so an absolute-addressing base avoids it.
+                let restore = self.reserved.insert(right_register);
+                let loaded = self.emit_global_load(leaf_name(left).unwrap(), GENERAL_SCRATCH);
+                if restore { self.reserved.remove(&right_register); }
+                loaded?;
                 Operands::ordered(GENERAL_SCRATCH, right_register)
             }
             (false, true) => {
                 let left_register = self.wide_leaf_register(left)?;
-                self.emit_global_load(leaf_name(right).unwrap(), GENERAL_SCRATCH)?;
+                let restore = self.reserved.insert(left_register);
+                let loaded = self.emit_global_load(leaf_name(right).unwrap(), GENERAL_SCRATCH);
+                if restore { self.reserved.remove(&left_register); }
+                loaded?;
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (false, false) => unreachable!("caller checked one side is a global"),
