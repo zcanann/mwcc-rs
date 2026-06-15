@@ -355,8 +355,11 @@ impl Parser {
             }
         }
 
-        // Zero or more guarded early returns: `if (condition) return value;`.
+        // Zero or more guarded early returns: `if (condition) return value;`. An
+        // `if (c) return x; else return y;` terminates the function as a single
+        // conditional return (the ternary `c ? x : y`).
         let mut guards = Vec::new();
+        let mut conditional_return = None;
         while *self.peek() == Token::KeywordIf {
             self.advance();
             self.expect(Token::ParenOpen)?;
@@ -365,12 +368,25 @@ impl Parser {
             self.expect(Token::KeywordReturn)?;
             let value = self.expression()?;
             self.expect(Token::Semicolon)?;
+            if self.eat_word("else") {
+                self.expect(Token::KeywordReturn)?;
+                let otherwise = self.expression()?;
+                self.expect(Token::Semicolon)?;
+                conditional_return = Some(Expression::Conditional {
+                    condition: Box::new(condition),
+                    when_true: Box::new(value),
+                    when_false: Box::new(otherwise),
+                });
+                break;
+            }
             guards.push(GuardedReturn { condition, value });
         }
 
         // The final `return <expr>;` is optional — a `void` function may end after
-        // its statements.
-        let return_expression = if *self.peek() == Token::KeywordReturn {
+        // its statements (or an `if/else` already supplied the return).
+        let return_expression = if conditional_return.is_some() {
+            conditional_return
+        } else if *self.peek() == Token::KeywordReturn {
             self.advance();
             let value = self.expression()?;
             self.expect(Token::Semicolon)?;
