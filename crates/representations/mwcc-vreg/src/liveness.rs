@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use mwcc_machine_code::Instruction;
 
 use crate::allocator::{Allocation, LiveInterval, PinnedOccupancy};
-use crate::description::{for_each_register, register_operands};
+use crate::description::{for_each_register, register_operands, RegisterRole};
 use crate::register::{Class, Reg, VirtualRegister, VIRTUAL_BASE};
 
 /// The live ranges in a stream: one interval per virtual register, one occupancy
@@ -36,26 +36,42 @@ pub struct Liveness {
 }
 
 /// Compute liveness from a selected instruction stream.
+///
+/// Each register gets a separate live range per *definition* — the classic `r3`
+/// that is a parameter, then a temporary, then the result has three. Within an
+/// instruction reads precede the write, so a register both used and defined there
+/// closes its old range at the use and opens a new one at the definition. A
+/// register first seen as a use is a parameter, live from entry (index 0).
 pub fn analyze(instructions: &[Instruction]) -> Liveness {
-    let mut first: HashMap<(Class, u8), usize> = HashMap::new();
-    let mut last: HashMap<(Class, u8), usize> = HashMap::new();
-    let mut order: Vec<(Class, u8)> = Vec::new(); // first-seen order, for determinism
+    // The currently-open range per register key, as (start, last-touched).
+    let mut open: HashMap<(Class, u8), (usize, usize)> = HashMap::new();
+    let mut ranges: Vec<((Class, u8), usize, usize)> = Vec::new();
 
     for (index, instruction) in instructions.iter().enumerate() {
-        for operand in register_operands(instruction) {
+        let operands = register_operands(instruction);
+        // Uses first: extend the open range (opening one from entry if this is a
+        // parameter's first appearance).
+        for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Use) {
+            let entry = open.entry((operand.class, operand.register)).or_insert((0, index));
+            entry.1 = index;
+        }
+        // Then definitions: the old value's range ends, a new one begins here.
+        for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Define) {
             let key = (operand.class, operand.register);
-            first.entry(key).or_insert_with(|| {
-                order.push(key);
-                index
-            });
-            last.insert(key, index);
+            if let Some((start, end)) = open.remove(&key) {
+                ranges.push((key, start, end));
+            }
+            open.insert(key, (index, index));
         }
     }
+    for (key, (start, end)) in open {
+        ranges.push((key, start, end));
+    }
+    // Deterministic order: by start, then register, then class.
+    ranges.sort_by_key(|((class, register), start, _)| (*start, *register, *class as u8));
 
     let mut liveness = Liveness::default();
-    for key in order {
-        let (class, value) = key;
-        let (start, end) = (first[&key], last[&key]);
+    for ((class, value), start, end) in ranges {
         if Reg::is_virtual_field(value) {
             let vreg = VirtualRegister::new((value - VIRTUAL_BASE) as u32, class);
             liveness.intervals.push(LiveInterval::new(vreg, start, end));
@@ -95,60 +111,36 @@ mod tests {
     }
 
     #[test]
-    fn analyze_separates_virtual_intervals_from_physical_occupancies() {
+    fn a_reused_physical_register_gets_one_occupancy_per_definition() {
         let stream = [
-            Instruction::Add { d: v(0), a: 3, b: 4 }, // v0 = r3 + r4
-            Instruction::Add { d: v(1), a: 3, b: 4 }, // v1 = r3 + r4 (v0 still live)
-            Instruction::Add { d: 3, a: v(0), b: v(1) }, // r3 = v0 + v1
+            Instruction::AddImmediate { d: 3, a: 4, immediate: 1 }, // r3 = r4 + 1 (def r3)
+            Instruction::Or { a: 5, s: 3, b: 3 },                   // r5 = r3 (r3's last use)
+            Instruction::AddImmediate { d: 3, a: 5, immediate: 2 }, // r3 = r5 + 2 (redef r3)
         ];
         let liveness = analyze(&stream);
-        assert_eq!(liveness.intervals.len(), 2);
-        // v0 lives [0,2], v1 lives [1,2].
-        assert_eq!((liveness.intervals[0].start, liveness.intervals[0].end), (0, 2));
-        assert_eq!((liveness.intervals[1].start, liveness.intervals[1].end), (1, 2));
-        // r3 is used early and defined late: one conservative occupancy [0,2].
-        let r3 = liveness.pinned.iter().find(|p| p.register == 3).unwrap();
-        assert_eq!((r3.start, r3.end), (0, 2));
+        let r3: Vec<_> = liveness
+            .pinned
+            .iter()
+            .filter(|occupancy| occupancy.register == 3)
+            .map(|occupancy| (occupancy.start, occupancy.end))
+            .collect();
+        // Two distinct lives of r3: the first value [0,1], the redefinition [2,2].
+        assert_eq!(r3, [(0, 1), (2, 2)]);
     }
 
     #[test]
-    fn allocate_then_apply_resolves_virtuals_avoiding_pinned() {
+    fn a_virtual_reuses_a_source_register_that_dies_at_its_definition() {
         let mut stream = [
-            Instruction::Add { d: v(0), a: 3, b: 4 },
-            Instruction::Add { d: v(1), a: 3, b: 4 },
-            Instruction::Add { d: 3, a: v(0), b: v(1) },
+            Instruction::Add { d: v(0), a: 3, b: 4 }, // v0 = r3 + r4 (r3,r4 die here)
+            Instruction::Or { a: 3, s: v(0), b: v(0) }, // r3 = v0
         ];
         let constraints = RegisterConstraints::gekko();
         let liveness = analyze(&stream);
         let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &constraints).unwrap();
         apply(&mut stream, &allocation);
-        // v0 and v1 avoid r3/r4 (busy), taking the next free r5/r6.
-        assert_eq!(
-            stream,
-            [
-                Instruction::Add { d: 5, a: 3, b: 4 },
-                Instruction::Add { d: 6, a: 3, b: 4 },
-                Instruction::Add { d: 3, a: 5, b: 6 },
-            ]
-        );
-    }
-
-    #[test]
-    fn a_freed_physical_register_is_reused_by_a_later_virtual() {
-        let mut stream = [
-            Instruction::AddImmediate { d: v(0), a: 3, immediate: 1 }, // v0 = r3 + 1
-            Instruction::Or { a: 3, s: v(0), b: v(0) },                // r3 = v0  (mr)
-            Instruction::AddImmediate { d: v(1), a: 4, immediate: 2 }, // v1 = r4 + 2
-            Instruction::Or { a: 4, s: v(1), b: v(1) },                // r4 = v1  (mr)
-        ];
-        let constraints = RegisterConstraints::gekko();
-        let liveness = analyze(&stream);
-        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &constraints).unwrap();
-        apply(&mut stream, &allocation);
-        // v0 lives [0,1] alongside r3, so it avoids r3 -> r4. By v1's range [2,3]
-        // r3 is free again, so v1 reuses it (r4 is now the busy one).
-        assert_eq!(allocation.physical(Reg::general(0).virtual_register().unwrap()), Some(4));
-        assert_eq!(allocation.physical(Reg::general(1).virtual_register().unwrap()), Some(3));
-        assert!(stream.iter().all(|instruction| !matches!(instruction, Instruction::AddImmediate { d, .. } if Reg::is_virtual_field(*d))));
+        // r3/r4 are read at instruction 0 and dead after, so v0 may take r3 — the
+        // half-open rule in action (a result reusing a just-consumed source).
+        assert_eq!(allocation.physical(Reg::general(0).virtual_register().unwrap()), Some(3));
+        assert_eq!(stream[0], Instruction::Add { d: 3, a: 3, b: 4 });
     }
 }

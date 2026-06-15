@@ -46,9 +46,15 @@ pub struct PinnedOccupancy {
     pub end: usize,
 }
 
-/// Two index ranges overlap when neither finishes before the other starts.
-fn overlaps(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
-    a_start <= b_end && b_start <= a_end
+/// Whether two live ranges interfere — i.e. cannot share a register. The test is
+/// *half-open*: a value defined at index `i` does not interfere with one whose
+/// last use is `i`. That models the hardware reality that an instruction reads
+/// its sources before writing its destination, so a result may reuse a source
+/// register whose value dies at that instruction (`add r3, r3, r4`). Without
+/// this, the allocator would never reuse a just-consumed register, and would
+/// diverge from mwcc, which does so aggressively.
+fn interferes(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
+    a_start < b_end && b_start < a_end
 }
 
 /// The result of allocation: each virtual register's physical home.
@@ -117,8 +123,9 @@ impl Allocator for LinearScan {
 
         for interval in order {
             let class = interval.vreg.class;
-            // Expire intervals whose last use is before this definition.
-            active.retain(|(end, _, _)| *end >= interval.start);
+            // Expire intervals whose last use is at or before this definition (a
+            // register freed exactly here may be reused — half-open, see `interferes`).
+            active.retain(|(end, _, _)| *end > interval.start);
 
             let mut busy: Vec<u8> = active
                 .iter()
@@ -127,7 +134,7 @@ impl Allocator for LinearScan {
                 .collect();
             for occupancy in pinned {
                 if occupancy.class == class
-                    && overlaps(occupancy.start, occupancy.end, interval.start, interval.end)
+                    && interferes(occupancy.start, occupancy.end, interval.start, interval.end)
                 {
                     busy.push(occupancy.register);
                 }
