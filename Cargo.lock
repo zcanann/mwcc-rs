@@ -72,6 +72,7 @@ dependencies = [
  "mwcc-syntax-trees",
  "mwcc-target",
  "mwcc-versions",
+ "mwcc-vreg",
 ]
 
 [[package]]

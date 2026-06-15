@@ -8,6 +8,7 @@ license.workspace = true
 mwcc-core.workspace = true
 mwcc-syntax-trees.workspace = true
 mwcc-machine-code.workspace = true
+mwcc-vreg.workspace = true
 mwcc-target.workspace = true
 mwcc-versions.workspace = true
 

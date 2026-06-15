@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{BinaryOperator, Expression};
+use mwcc_vreg::Class;
 use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
@@ -413,25 +414,36 @@ impl Generator {
         }
     }
 
-    /// The lowest general register (r3..=r12) that is neither reserved nor the scratch.
+    /// The lowest free general register: the first in the target's general pool
+    /// (which already excludes the scratch) that is not reserved.
     pub(crate) fn lowest_free_general(&self) -> Compilation<u8> {
-        (3..=12)
-            .find(|register| *register != GENERAL_SCRATCH && !self.reserved.contains(register))
+        self.constraints
+            .pool(Class::General)
+            .iter()
+            .copied()
+            .find(|register| !self.reserved.contains(register))
             .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
     }
 
     /// The lowest free general register that also avoids `exclude` (e.g. an operand
     /// register that must survive).
     pub(crate) fn free_general_excluding(&self, exclude: u8) -> Compilation<u8> {
-        (3..=12)
-            .find(|register| *register != GENERAL_SCRATCH && *register != exclude && !self.reserved.contains(register))
+        self.constraints
+            .pool(Class::General)
+            .iter()
+            .copied()
+            .find(|register| *register != exclude && !self.reserved.contains(register))
             .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
     }
 
-    /// The lowest float register (f1..=f13) that is neither reserved nor the scratch.
+    /// The lowest free float register: the first in the target's float pool (which
+    /// already excludes the scratch) that is not reserved.
     pub(crate) fn lowest_free_float(&self) -> Compilation<u8> {
-        (1..=13)
-            .find(|register| *register != FLOAT_SCRATCH && !self.reserved.contains(register))
+        self.constraints
+            .pool(Class::Float)
+            .iter()
+            .copied()
+            .find(|register| !self.reserved.contains(register))
             .ok_or_else(|| Diagnostic::error("out of free float registers (roadmap M1: spilling)"))
     }
 }

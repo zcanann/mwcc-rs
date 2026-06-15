@@ -36,6 +36,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
         reserved: HashSet::new(),
         frame_size: 0,
         behavior: Behavior::resolve(&config),
+        constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
     };
     generator.assign_parameters(function)?;

@@ -112,12 +112,22 @@ control of all stages."
 The risk is a big-bang rewrite. Avoid it:
 
 1. **Land the IR types** (`mwcc-vreg` crate) with the allocator interface and unit
-   tests, unwired. No behavior change.
+   tests, unwired. No behavior change. — **DONE.** `Class`/`VirtualRegister`/`Reg`,
+   `RegisterConstraints` (the pools + the `r0`-never-a-base rule as data), and
+   `Allocator`/`LinearScan` over live intervals with pinned occupancies, 11 tests.
+   First integration: the generator's free-register helpers now draw their pools
+   from `RegisterConstraints` (one authoritative home, shared with the allocator),
+   still byte-exact across all 8 builds.
 2. **Lower then re-raise, identity-allocate.** Have selection emit vregs for one
-   self-contained slice (start with leaf arithmetic), allocate with a trivial
-   pass that reproduces *exactly* today's physical assignment for that slice, and
-   diff against the oracle — must stay byte-exact. Expand the slice until all of
+   self-contained slice (start with leaf arithmetic), allocate with a pass that
+   reproduces *exactly* today's physical assignment for that slice, and diff
+   against the oracle — must stay byte-exact. Expand the slice until all of
    selection routes through vregs, the allocator still reproducing current output.
+   The open design choice here is how a selected instruction carries virtual
+   operands: the leading option is to parameterize `Instruction` over its register
+   type (`Instruction<Reg>` pre-allocation, `Instruction<u8>` after) with a small
+   per-variant def/use+class description driving liveness — no enum duplication,
+   no magic register ranges. Grow that description one slice at a time.
 3. **Generalize the allocator** to real liveness + coalescing, verifying the whole
    canary suite stays green as each former special case (anchor, ABS coalescing,
    narrow batching) is *derived* rather than hard-coded.

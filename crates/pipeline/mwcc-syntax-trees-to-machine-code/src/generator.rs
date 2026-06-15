@@ -6,6 +6,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::Behavior;
+use mwcc_vreg::RegisterConstraints;
 use crate::analysis::*;
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
@@ -46,6 +47,10 @@ pub(crate) struct Generator {
     /// computed once from the build's profile and flags — never re-derived in
     /// instruction selection.
     pub(crate) behavior: Behavior,
+    /// The target's register-allocation rules — the allocatable pools and scratch.
+    /// The free-register helpers draw from here, so the pools have one authoritative
+    /// home (shared with the future allocator) rather than literals in placement.
+    pub(crate) constraints: RegisterConstraints,
     /// Whether the function makes a call: it then saves/restores the link register
     /// around a stack frame (the non-leaf prologue/epilogue).
     pub(crate) non_leaf: bool,
