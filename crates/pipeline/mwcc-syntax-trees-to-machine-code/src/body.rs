@@ -132,6 +132,9 @@ impl Generator {
             // Reassignment is handled by value tracking; reaching here means it was
             // mixed with stores/calls, which that path defers.
             Statement::Assign { .. } => Err(Diagnostic::error("local reassignment mixed with stores/calls is not supported yet (roadmap)")),
+            // The binary-search dispatch codegen is the next piece; switches parse
+            // but defer for now (never miscompile).
+            Statement::Switch { .. } => Err(Diagnostic::error("switch dispatch codegen is not implemented yet (roadmap)")),
         }
     }
 

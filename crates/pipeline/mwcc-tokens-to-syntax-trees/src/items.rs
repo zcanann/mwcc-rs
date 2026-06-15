@@ -1,7 +1,7 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, TranslationUnit, Type};
+use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -58,6 +58,38 @@ impl Parser {
             Token::IntegerLiteral(value) => Ok(if negative { -(value as i64) } else { value as i64 }),
             other => Err(Diagnostic::error(format!("only integer-constant global initializers are supported, found {other}"))),
         }
+    }
+
+    /// Parse `switch (scrutinee) { case <int>: return E; ... default: return E; }`.
+    /// The subset requires every arm to be a single `return`; fall-through, blocks,
+    /// and non-constant case labels are not supported yet.
+    fn parse_switch(&mut self) -> Compilation<Statement> {
+        self.eat_word("switch");
+        self.expect(Token::ParenOpen)?;
+        let scrutinee = self.expression()?;
+        self.expect(Token::ParenClose)?;
+        self.expect(Token::BraceOpen)?;
+        let mut arms = Vec::new();
+        let mut default = None;
+        while *self.peek() != Token::BraceClose {
+            if self.eat_word("case") {
+                let value = self.parse_integer_constant()?;
+                self.expect(Token::Colon)?;
+                self.expect(Token::KeywordReturn)?;
+                let result = self.expression()?;
+                self.expect(Token::Semicolon)?;
+                arms.push(SwitchArm { value, result });
+            } else if self.eat_word("default") {
+                self.expect(Token::Colon)?;
+                self.expect(Token::KeywordReturn)?;
+                default = Some(self.expression()?);
+                self.expect(Token::Semicolon)?;
+            } else {
+                return Err(Diagnostic::error("a switch arm must be `case <int>: return …;` or `default: return …;` (roadmap)"));
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(Statement::Switch { scrutinee, arms, default })
     }
 
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
@@ -398,6 +430,11 @@ impl Parser {
         let local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
         let mut statements = Vec::new();
         while !matches!(self.peek(), Token::KeywordReturn | Token::KeywordIf | Token::BraceClose) {
+            if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
+                let switch = self.parse_switch()?;
+                statements.push(switch);
+                continue;
+            }
             let first = self.factor()?;
             if *self.peek() == Token::Equals {
                 self.advance();

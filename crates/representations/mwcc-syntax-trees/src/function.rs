@@ -25,6 +25,14 @@ pub struct GuardedReturn {
     pub value: Expression,
 }
 
+/// One arm of a `switch`: a case value and the value it returns. The subset
+/// handles switches whose every case is `case V: return E;`.
+#[derive(Debug, Clone)]
+pub struct SwitchArm {
+    pub value: i64,
+    pub result: Expression,
+}
+
 /// A body statement (beyond declarations, guards, and the return).
 #[derive(Debug, Clone)]
 pub enum Statement {
@@ -36,6 +44,9 @@ pub enum Statement {
     Assign { name: String, value: Expression },
     /// A bare expression evaluated for its side effects, e.g. `g();`.
     Expression(Expression),
+    /// `switch (scrutinee) { case V: return E; ... default: return D; }` — a
+    /// terminal multi-way return (each arm and the default return a value).
+    Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<Expression> },
 }
 
 /// A file-scope global variable, e.g. `int g;`, `extern int g;`, or `static int
