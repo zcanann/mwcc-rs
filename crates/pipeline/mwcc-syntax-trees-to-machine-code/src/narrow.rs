@@ -14,6 +14,14 @@ impl Generator {
         if let Some((_, _, Type::Pointer(pointee))) = as_member(pointer) {
             return Some(pointee.element().width());
         }
+        // A file-scope global pointer.
+        if let Expression::Variable(name) = pointer {
+            if !self.locations.contains_key(name) {
+                if let Some(Type::Pointer(pointee)) = self.globals.get(name) {
+                    return Some(pointee.element().width());
+                }
+            }
+        }
         self.pointee_of(pointer).ok().map(|pointee| pointee.element().width())
     }
 

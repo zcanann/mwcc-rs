@@ -140,6 +140,22 @@ impl Generator {
     /// must be a leaf variable holding the address; richer addressing is on the
     /// roadmap.
     pub(crate) fn emit_load_from_pointer(&mut self, pointer: &Expression, destination: u8) -> Compilation<()> {
+        // A global pointer: load the pointer value into the destination (an SDA21
+        // word load), then dereference it from there, as mwcc does.
+        if let Expression::Variable(name) = pointer {
+            if !self.locations.contains_key(name) {
+                if let Some(Type::Pointer(pointee)) = self.globals.get(name).copied() {
+                    // The pointer and the integer result share the destination, so a
+                    // float pointee (which needs a separate general register for the
+                    // address) is deferred rather than miscompiled.
+                    if pointee != Pointee::Float {
+                        self.emit_global_load(name, destination)?;
+                        self.output.instructions.push(displacement_load(pointee, destination, destination, 0));
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let (pointee, address) = self.resolve_pointer(pointer)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, 0));
         Ok(())
@@ -344,6 +360,8 @@ impl Generator {
             Type::Short => Instruction::LoadHalfwordAlgebraic { d: destination, a: 0, offset: 0 },
             Type::UnsignedShort => Instruction::LoadHalfwordZero { d: destination, a: 0, offset: 0 },
             Type::Float => Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 },
+            // A pointer global is a 32-bit address word.
+            Type::Pointer(_) | Type::StructPointer => Instruction::LoadWord { d: destination, a: 0, offset: 0 },
             other => return Err(Diagnostic::error(format!("global of type {other:?} is not supported yet"))),
         };
         self.output.instructions.push(instruction);
