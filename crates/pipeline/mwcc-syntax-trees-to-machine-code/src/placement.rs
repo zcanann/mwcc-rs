@@ -197,7 +197,7 @@ impl Generator {
     }
 
     /// Whether `operand` is a reference to a file-scope global.
-    fn is_global(&self, operand: &Expression) -> bool {
+    pub(crate) fn is_global(&self, operand: &Expression) -> bool {
         matches!(operand, Expression::Variable(name)
             if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str()))
     }

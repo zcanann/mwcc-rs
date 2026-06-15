@@ -148,13 +148,27 @@ impl Generator {
         // leaf operand (which stays in its own register) is handled here; a loaded
         // operand (member/global) needs the register allocator.
         if operator == BinaryOperator::Multiply && !fits_signed_16(constant) {
+            let low = (constant as u32 & 0xffff) as i16;
+            let high = ((constant as i32 - low as i32) >> 16) as i16;
             if let Ok(operand_register) = self.general_register_of_leaf(variable) {
-                let low = (constant as u32 & 0xffff) as i16;
-                let high = ((constant as i32 - low as i32) >> 16) as i16;
+                // Leaf operand: it stays in its register; the constant is built in
+                // the scratch via a free register.
                 let free = self.free_general_excluding(operand_register)?;
                 self.output.instructions.push(Instruction::load_immediate_shifted(free, high));
                 self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: free, immediate: low });
                 self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: operand_register, b: GENERAL_SCRATCH });
+                return Ok(true);
+            }
+            if self.is_global(variable) {
+                // Global operand: mwcc loads the constant high into the destination,
+                // the global into a free register, the constant low into the scratch,
+                // then multiplies.
+                let name = leaf_name(variable).unwrap();
+                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high));
+                let free = self.free_general_excluding(destination)?;
+                self.emit_global_load(name, free)?;
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: destination, immediate: low });
+                self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: free, b: GENERAL_SCRATCH });
                 return Ok(true);
             }
         }
