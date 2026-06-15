@@ -301,11 +301,18 @@ impl Generator {
     fn emit_arguments(&mut self, arguments: &[Expression]) -> Compilation<()> {
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
-        for argument in arguments {
+        for (index, argument) in arguments.iter().enumerate() {
             if self.is_float_value(argument) {
                 self.evaluate_float(argument, next_float)?;
                 next_float += 1;
             } else {
+                // Honest guard: evaluating into this argument register must not
+                // clobber a register a later argument still needs. mwcc handles
+                // that (e.g. two members of one struct) by pre-copying the shared
+                // base; that choreography is not modeled yet.
+                if arguments[index + 1..].iter().any(|later| self.registers_used_by(later).contains(&next_general)) {
+                    return Err(Diagnostic::error("argument would clobber a register a later argument needs (roadmap)"));
+                }
                 self.evaluate_general(argument, next_general)?;
                 next_general += 1;
             }
