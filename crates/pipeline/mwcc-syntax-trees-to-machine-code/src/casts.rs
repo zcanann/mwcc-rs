@@ -1,6 +1,6 @@
 //! Integer<->float conversions.
 
-use mwcc_core::{Compilation, Diagnostic};
+use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{Expression, Type};
 use crate::generator::*;
@@ -65,9 +65,7 @@ impl Generator {
         // int -> int narrowing: place the operand (sub-expression -> scratch),
         // then extend/truncate to the target width into the destination.
         if target_type.width() < 32 {
-            let Some(source) = self.place_operand(operand, destination, false)? else {
-                return Err(Diagnostic::error("cast operand needs the full register allocator (roadmap M1)"));
-            };
+            let source = self.place_operand_or_scratch(operand, destination)?;
             self.emit_widen(destination, source, target_type.width(), self.signed_of(target_type));
         } else {
             self.evaluate_general(operand, destination)?;
