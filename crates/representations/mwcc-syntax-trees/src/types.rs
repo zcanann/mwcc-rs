@@ -43,6 +43,8 @@ pub enum Type {
     Short,
     UnsignedShort,
     Float,
+    /// Double-precision float (8 bytes). Shares the FPR class with `Float`.
+    Double,
     Void,
     /// A pointer to a scalar, e.g. `int*`.
     Pointer(Pointee),
@@ -59,11 +61,13 @@ impl Type {
         matches!(self, Type::Int | Type::Char | Type::Short)
     }
 
-    /// Integer width in bits (8/16/32); 32 for non-narrow types and pointers.
+    /// Width in bits: 8/16/32 for integers and pointers, 64 for a `double` (used
+    /// for its 8-byte size). Floats are never "narrow".
     pub fn width(self) -> u8 {
         match self {
             Type::Char | Type::UnsignedChar => 8,
             Type::Short | Type::UnsignedShort => 16,
+            Type::Double => 64,
             _ => 32,
         }
     }

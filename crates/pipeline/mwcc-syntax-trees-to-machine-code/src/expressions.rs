@@ -43,7 +43,8 @@ fn pointee_of_type(value_type: Type) -> Option<Pointee> {
         Type::Float => Pointee::Float,
         // A pointer value is a 4-byte address (stored/loaded with `stw`/`lwz`).
         Type::Pointer(_) | Type::StructPointer => Pointee::UnsignedInt,
-        Type::Void => return None,
+        // `double` storage (8-byte lfd/stfd) is a later stage.
+        Type::Double | Type::Void => return None,
     })
 }
 

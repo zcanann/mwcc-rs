@@ -137,11 +137,18 @@ impl Parser {
             },
             Token::KeywordFloat => Type::Float,
             Token::KeywordVoid => Type::Void,
-            // `long`, `long long`, `long int` — 32-bit signed on this target.
+            // `double` (and `long double`, which is also 64-bit here).
+            Token::Identifier(word) if word == "double" => Type::Double,
+            // `long`, `long long`, `long int` — 32-bit signed; `long double` is a
+            // double.
             Token::Identifier(word) if word == "long" => {
                 while self.eat_word("long") {}
-                let _ = self.eat_keyword(Token::KeywordInt);
-                Type::Int
+                if self.eat_word("double") {
+                    Type::Double
+                } else {
+                    let _ = self.eat_keyword(Token::KeywordInt);
+                    Type::Int
+                }
             }
             // `signed [char|short|int|long]`.
             Token::Identifier(word) if word == "signed" => match self.peek() {
@@ -461,8 +468,8 @@ impl Parser {
             | Token::KeywordFloat
             | Token::KeywordVoid
             | Token::KeywordStruct => true,
-            // The `long`/`signed` specifier words and any registered typedef name.
-            Token::Identifier(word) => word == "long" || word == "signed" || self.typedefs.contains_key(word),
+            // The `long`/`signed`/`double` specifier words and any typedef name.
+            Token::Identifier(word) => word == "long" || word == "signed" || word == "double" || self.typedefs.contains_key(word),
             _ => false,
         }
     }

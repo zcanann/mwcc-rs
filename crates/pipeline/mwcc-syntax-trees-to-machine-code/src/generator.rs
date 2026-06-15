@@ -73,7 +73,7 @@ pub(crate) struct Generator {
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
     match declared {
-        Type::Float => Ok(ValueClass::Float),
+        Type::Float | Type::Double => Ok(ValueClass::Float),
         Type::Void => Err(Diagnostic::error("a value cannot have type void")),
         _ => Ok(ValueClass::General),
     }
