@@ -15,8 +15,10 @@
 
 mod allocator;
 mod constraints;
+mod description;
 mod register;
 
 pub use allocator::*;
 pub use constraints::*;
+pub use description::*;
 pub use register::*;

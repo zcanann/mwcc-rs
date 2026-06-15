@@ -104,4 +104,5 @@ name = "mwcc-vreg"
 version = "0.0.1"
 dependencies = [
  "mwcc-core",
+ "mwcc-machine-code",
 ]
