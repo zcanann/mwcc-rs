@@ -41,7 +41,9 @@ fn pointee_of_type(value_type: Type) -> Option<Pointee> {
         Type::Short => Pointee::Short,
         Type::UnsignedShort => Pointee::UnsignedShort,
         Type::Float => Pointee::Float,
-        _ => return None,
+        // A pointer value is a 4-byte address (stored/loaded with `stw`/`lwz`).
+        Type::Pointer(_) | Type::StructPointer => Pointee::UnsignedInt,
+        Type::Void => return None,
     })
 }
 
@@ -478,7 +480,18 @@ impl Generator {
             self.evaluate_float(value, FLOAT_SCRATCH)?;
             return Ok(FLOAT_SCRATCH);
         }
-        if matches!(value, Expression::Variable(_)) {
+        if let Expression::Variable(name) = value {
+            // A bare identifier that is neither a local nor a known data global is
+            // an external symbol (a function, typically) — store its *address*. mwcc
+            // materializes it absolutely (`lis t,sym@ha; addi r0,t,sym@lo`) even with
+            // small-data on, since functions are not in the small-data area.
+            if !self.locations.contains_key(name) && !self.globals.contains_key(name.as_str()) {
+                let high = self.fresh_virtual_general();
+                self.emit_address_high(high, name);
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: high, immediate: 0 });
+                return Ok(GENERAL_SCRATCH);
+            }
             return self.general_register_of_leaf(value);
         }
         self.evaluate_general(value, GENERAL_SCRATCH)?;

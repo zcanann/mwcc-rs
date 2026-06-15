@@ -250,6 +250,28 @@ impl Parser {
                 continue;
             }
             let return_type = self.parse_type()?;
+            // Function-pointer declarator: `RET (*name)(params)` — a pointer-typed
+            // global (a 4-byte address). The return/parameter types don't affect
+            // codegen, so the signature is skipped.
+            if *self.peek() == Token::ParenOpen {
+                self.advance();
+                self.expect(Token::Star)?;
+                let pointer_name = self.parse_identifier()?;
+                self.expect(Token::ParenClose)?;
+                self.expect(Token::ParenOpen)?;
+                let mut depth = 1;
+                while depth > 0 {
+                    match self.advance() {
+                        Token::ParenOpen => depth += 1,
+                        Token::ParenClose => depth -= 1,
+                        Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer declarator")),
+                        _ => {}
+                    }
+                }
+                self.expect(Token::Semicolon)?;
+                globals.push(GlobalDeclaration { declared_type: Type::StructPointer, name: pointer_name, is_extern, is_static, array_length: None, initializer: None });
+                continue;
+            }
             let name = self.parse_identifier()?;
             // `type name;`, `type name[N];`, or comma-separated declarators is a
             // global variable declaration. A `(` instead begins a function. (An
