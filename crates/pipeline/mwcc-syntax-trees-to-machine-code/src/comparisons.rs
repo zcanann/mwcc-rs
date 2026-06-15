@@ -18,9 +18,7 @@ impl Generator {
             BinaryOperator::Equal => {
                 if is_zero_literal(right) || is_zero_literal(left) {
                     let value = if is_zero_literal(right) { left } else { right };
-                    let Some(source) = self.place_operand(value, d, false)? else {
-                        return Err(Diagnostic::error("comparison value needs the full register allocator (roadmap M1)"));
-                    };
+                    let source = self.place_operand_or_scratch(value, d)?;
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 } else if let Some(constant) = as_small_integer(right) {
                     // a == c : (c - a) leading zeros. A narrow operand is extended
@@ -55,9 +53,7 @@ impl Generator {
             }
             // signed x < 0 : the sign bit.
             BinaryOperator::Less if is_zero_literal(right) && signed_left => {
-                let Some(source) = self.place_operand(left, d, false)? else {
-                    return Err(Diagnostic::error("comparison value needs the full register allocator (roadmap M1)"));
-                };
+                let source = self.place_operand_or_scratch(left, d)?;
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift: 31 });
                 Ok(())
             }
@@ -71,9 +67,7 @@ impl Generator {
             }
             // signed x >= 0 : !(x < 0)
             BinaryOperator::GreaterEqual if is_zero_literal(right) && signed_left => {
-                let Some(source) = self.place_operand(left, d, false)? else {
-                    return Err(Diagnostic::error("comparison value needs the full register allocator (roadmap M1)"));
-                };
+                let source = self.place_operand_or_scratch(left, d)?;
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: source, shift: 31 });
                 self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
                 Ok(())
