@@ -220,13 +220,22 @@ impl Generator {
                 }
                 let left_name = leaf_name(left).unwrap();
                 let right_name = leaf_name(right).unwrap();
+                // mwcc loads both globals first, then applies any signed-char
+                // sign-extensions — the loads are batched ahead of the extends.
+                // The anchor (left for commutative, right for subtraction) takes
+                // the destination; the other takes the scratch.
+                let (first, first_register, second, second_register) = if subtract {
+                    (right_name, destination, left_name, GENERAL_SCRATCH)
+                } else {
+                    (left_name, destination, right_name, GENERAL_SCRATCH)
+                };
+                self.emit_global_load_value(first, first_register)?;
+                self.emit_global_load_value(second, second_register)?;
+                if self.global_char_extend(first)? { self.emit_widen(first_register, first_register, 8, true); }
+                if self.global_char_extend(second)? { self.emit_widen(second_register, second_register, 8, true); }
                 if subtract {
-                    self.emit_global_load(right_name, destination)?;
-                    self.emit_global_load(left_name, GENERAL_SCRATCH)?;
                     Operands::ordered(GENERAL_SCRATCH, destination)
                 } else {
-                    self.emit_global_load(left_name, destination)?;
-                    self.emit_global_load(right_name, GENERAL_SCRATCH)?;
                     Operands::ordered(destination, GENERAL_SCRATCH)
                 }
             }

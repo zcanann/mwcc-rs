@@ -545,6 +545,21 @@ impl Generator {
     /// (`-sdata 0`) the address is materialized with a `lis`/`addi` pair (see
     /// [`Self::emit_global_load_absolute`]). The load is chosen by the global's type.
     pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
+        self.emit_global_load_value(name, destination)?;
+        // A signed `char` global promotes to int with a trailing sign-extension:
+        // `lbz` zero-extends the byte, so the value must be re-signed (`extsb`).
+        if self.global_char_extend(name)? {
+            self.emit_widen(destination, destination, 8, true);
+        }
+        Ok(())
+    }
+
+    /// Load a global's value *without* the signed-char promotion — just the
+    /// addressing sequence and the load. The two-narrow-global path loads both
+    /// operands before extending either, matching mwcc's batched schedule, so it
+    /// drives the load and the extension separately through this and
+    /// [`Self::global_char_extend`].
+    pub(crate) fn emit_global_load_value(&mut self, name: &str, destination: u8) -> Compilation<()> {
         let global_type = *self.globals.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
@@ -554,14 +569,14 @@ impl Generator {
             }
             GlobalAddressing::Absolute => self.emit_global_load_absolute(name, global_type, destination)?,
         }
-        // A signed `char` global promotes to int with a trailing sign-extension:
-        // `lbz` zero-extends the byte, so the value must be re-signed (`extsb`).
-        // Unsigned char (and build 53's unsigned plain char) needs nothing, and
-        // the half/word loads already extend to 32 bits.
-        if global_type == Type::Char && self.behavior.char_is_signed {
-            self.emit_widen(destination, destination, 8, true);
-        }
         Ok(())
+    }
+
+    /// Whether reading global `name` needs a trailing `extsb` — a signed plain
+    /// `char` (unsigned char and the self-extending half/word loads need none).
+    pub(crate) fn global_char_extend(&self, name: &str) -> Compilation<bool> {
+        let global_type = *self.globals.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        Ok(global_type == Type::Char && self.behavior.char_is_signed)
     }
 
     /// The type-appropriate load of a global from base register `a` (displacement
