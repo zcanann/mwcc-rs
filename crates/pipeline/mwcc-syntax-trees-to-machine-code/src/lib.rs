@@ -41,6 +41,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
+    allocate_registers(&mut generator)?;
 
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag
@@ -54,4 +55,28 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
         });
     }
     Ok(generator.output)
+}
+
+/// The register-allocation pass: resolve any virtual registers the selection
+/// emitted to physical homes, honoring liveness and the target constraints.
+///
+/// Selection currently emits mostly physical registers inline; for those this is
+/// a no-op (no virtual fields, nothing to assign). As selection is migrated to
+/// emit virtuals, this pass becomes where their physical registers are decided —
+/// each migration step verified byte-exact against the oracle. Running it
+/// unconditionally keeps one pipeline (no fork between a legacy and a vreg path).
+fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
+    let liveness = mwcc_vreg::analyze(&generator.output.instructions);
+    if liveness.intervals.is_empty() {
+        return Ok(()); // no virtuals — selection chose physical registers directly
+    }
+    let allocation = mwcc_vreg::Allocator::allocate(
+        &mwcc_vreg::LinearScan,
+        &liveness.intervals,
+        &liveness.pinned,
+        &generator.constraints,
+    )
+        .map_err(|error| mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}")))?;
+    mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
+    Ok(())
 }
