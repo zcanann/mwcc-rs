@@ -56,4 +56,10 @@ pub enum Expression {
         name: String,
         arguments: Vec<Expression>,
     },
+    /// `target = value` used as an expression — stores `value` into `target` and
+    /// yields the stored value (e.g. `(g = g + 1)`).
+    Assign {
+        target: Box<Expression>,
+        value: Box<Expression>,
+    },
 }

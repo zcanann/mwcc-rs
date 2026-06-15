@@ -107,6 +107,7 @@ impl Generator {
             }
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), false),
+            Expression::Assign { target, value } => self.emit_assign(target, value, destination),
             Expression::Binary { operator, left, right } => {
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
@@ -261,6 +262,23 @@ impl Generator {
             _ => unreachable!("caller restricts to add/subtract"),
         }
         Ok(true)
+    }
+
+    /// Emit `target = value` as an expression: compute `value` into the
+    /// destination, store it to `target`, and leave the value in the destination
+    /// (so the surrounding expression can use it). Global targets only for now.
+    pub(crate) fn emit_assign(&mut self, target: &Expression, value: &Expression, destination: u8) -> Compilation<()> {
+        if let Expression::Variable(name) = target {
+            if let Some(&global_type) = self.globals.get(name.as_str()) {
+                let pointee = pointee_of_type(global_type)
+                    .ok_or_else(|| Diagnostic::error("global assignment of this type is not supported yet"))?;
+                self.evaluate_general(value, destination)?;
+                self.record_relocation(RelocationKind::EmbSda21, name);
+                self.output.instructions.push(displacement_store(pointee, destination, 0, 0));
+                return Ok(());
+            }
+        }
+        Err(Diagnostic::error("assignment as an expression supports a global target (roadmap)"))
     }
 
     /// The register holding a struct pointer for member access. A plain variable

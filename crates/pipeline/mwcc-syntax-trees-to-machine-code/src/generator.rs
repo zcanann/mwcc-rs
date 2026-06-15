@@ -156,6 +156,8 @@ impl Generator {
             Expression::Member { member_type, .. } => Ok(self.signed_of(*member_type)),
             // An array member's address is an unsigned pointer.
             Expression::MemberAddress { .. } => Ok(false),
+            // An assignment yields the stored value.
+            Expression::Assign { value, .. } => self.signedness_of(value),
             // A call returns an int by default (we have no prototype types yet).
             Expression::Call { .. } => Ok(true),
         }

@@ -10,7 +10,7 @@ use crate::parser::Parser;
 impl Parser {
     pub(crate) fn expression(&mut self) -> Compilation<Expression> {
         let condition = self.binary_expression(1)?;
-        // ternary conditional has the lowest precedence
+        // ternary conditional has the lowest precedence above assignment
         if *self.peek() == Token::Question {
             self.advance();
             let when_true = self.expression()?;
@@ -21,6 +21,12 @@ impl Parser {
                 when_true: Box::new(when_true),
                 when_false: Box::new(when_false),
             });
+        }
+        // assignment is the lowest precedence and right-associative: `a = b = c`.
+        if *self.peek() == Token::Equals {
+            self.advance();
+            let value = self.expression()?;
+            return Ok(Expression::Assign { target: Box::new(condition), value: Box::new(value) });
         }
         Ok(condition)
     }

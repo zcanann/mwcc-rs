@@ -114,6 +114,7 @@ fn count_references(name: &str, expression: &Expression) -> usize {
         Expression::Index { base, index } => count_references(name, base) + count_references(name, index),
         Expression::Member { base, .. } => count_references(name, base),
         Expression::MemberAddress { base, .. } => count_references(name, base),
+        Expression::Assign { target, value } => count_references(name, target) + count_references(name, value),
         Expression::Call { arguments, .. } => arguments.iter().map(|argument| count_references(name, argument)).sum(),
     }
 }
@@ -157,6 +158,10 @@ fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> 
         Expression::Call { name, arguments } => Expression::Call {
             name: name.clone(),
             arguments: arguments.iter().map(|argument| substitute(argument, values)).collect(),
+        },
+        Expression::Assign { target, value } => Expression::Assign {
+            target: Box::new(substitute(target, values)),
+            value: Box::new(substitute(value, values)),
         },
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => expression.clone(),
     }
