@@ -215,14 +215,18 @@ impl Generator {
     pub(crate) fn emit_condition_test(&mut self, condition: &Expression) -> Compilation<(u8, u8)> {
         // `!x` as a condition is `x == 0`: skip the guarded code when x != 0.
         if let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition {
-            let register = self.general_register_of_leaf(operand)?;
+            let register = self.condition_operand_register(operand)?;
             self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
             return Ok((4, 2)); // bne — skip when x != 0
         }
         if let Expression::Binary { operator, left, right } = condition {
             if is_comparison(*operator) {
+                // A member on both sides would both want the scratch; defer.
+                if as_member(left).is_some() && as_member(right).is_some() {
+                    return Err(Diagnostic::error("comparison of two members as a condition (roadmap)"));
+                }
                 let signed = self.signedness_of(left)? && self.signedness_of(right)?;
-                let left_register = self.general_register_of_leaf(left)?;
+                let left_register = self.condition_operand_register(left)?;
                 match (as_small_integer(right), is_zero_literal(right)) {
                     (Some(constant), _) if signed => {
                         self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: constant });
@@ -237,7 +241,7 @@ impl Generator {
                         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: left_register, immediate: 0 });
                     }
                     (None, false) => {
-                        let right_register = self.general_register_of_leaf(right)?;
+                        let right_register = self.condition_operand_register(right)?;
                         if signed {
                             self.output.instructions.push(Instruction::CompareWord { a: left_register, b: right_register });
                         } else {
@@ -258,8 +262,18 @@ impl Generator {
             }
         }
         // Plain truth test: compare against zero, skip when equal.
-        let register = self.general_register_of_leaf(condition)?;
+        let register = self.condition_operand_register(condition)?;
         self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
         Ok((12, 2)) // beq — skip when condition == 0
+    }
+
+    /// The register holding a condition operand: a leaf variable stays in its home
+    /// register; a struct member loads into the scratch (mwcc compares `r0`).
+    pub(crate) fn condition_operand_register(&mut self, operand: &Expression) -> Compilation<u8> {
+        if let Some((base, offset, member_type)) = as_member(operand) {
+            self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+            return Ok(GENERAL_SCRATCH);
+        }
+        self.general_register_of_leaf(operand)
     }
 }
