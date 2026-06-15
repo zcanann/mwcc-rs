@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
@@ -118,28 +118,41 @@ impl Generator {
         }
     }
 
-    /// Place float operands when at least one is a struct member. A member loads
-    /// into a register: a single member loads into the scratch (its leaf partner
-    /// stays home), two members load left into the destination and right into the
-    /// scratch, and a member-with-constant loads the constant first (matching mwcc).
-    fn place_float_member_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
-        if let (Some((left_base, left_offset, left_type)), Some((right_base, right_offset, right_type))) = (as_member(left), as_member(right)) {
+    /// Whether `operand` is a float value loaded from memory: a float struct
+    /// member or a dereference of a float pointer. Such an operand loads into a
+    /// float register (its general base register is untouched).
+    fn is_float_located(&self, operand: &Expression) -> bool {
+        if let Some((_, _, member_type)) = as_member(operand) {
+            return member_type == Type::Float;
+        }
+        if let Some(pointer) = as_dereference(operand) {
+            return matches!(self.pointee_of(pointer), Ok(Pointee::Float));
+        }
+        false
+    }
+
+    /// Place float operands when at least one is loaded from memory (a float member
+    /// or `*float_pointer`). A single located operand loads into the scratch (its
+    /// leaf partner stays home), two load left into the destination and right into
+    /// the scratch, and a located-with-constant loads the constant first.
+    fn place_float_located_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        if self.is_float_located(left) && self.is_float_located(right) {
             if destination == FLOAT_SCRATCH {
-                return Err(Diagnostic::error("two float members need a non-scratch destination (roadmap)"));
+                return Err(Diagnostic::error("two float loads need a non-scratch destination (roadmap)"));
             }
-            self.emit_member_load(left_base, left_offset, left_type, destination)?;
-            self.emit_member_load(right_base, right_offset, right_type, FLOAT_SCRATCH)?;
+            self.emit_located_operand(left, destination)?;
+            self.emit_located_operand(right, FLOAT_SCRATCH)?;
             return Operands::ordered(destination, FLOAT_SCRATCH);
         }
-        if let Some((base, offset, member_type)) = as_member(left) {
+        if self.is_float_located(left) {
             if let Expression::FloatLiteral(value) = right {
                 if destination == FLOAT_SCRATCH {
-                    return Err(Diagnostic::error("float member with constant needs a non-scratch destination (roadmap)"));
+                    return Err(Diagnostic::error("float load with constant needs a non-scratch destination (roadmap)"));
                 }
-                // mwcc loads the constant first, then the member.
+                // mwcc loads the constant first, then the memory operand.
                 self.load_float_constant(destination, *value as f32);
-                self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
-                // Commutative ops lead with the constant; subtraction is member - constant.
+                self.emit_located_operand(left, FLOAT_SCRATCH)?;
+                // Commutative ops lead with the constant; subtraction is load - constant.
                 return if operator == BinaryOperator::Subtract {
                     Operands::ordered(FLOAT_SCRATCH, destination)
                 } else {
@@ -147,31 +160,31 @@ impl Generator {
                 };
             }
             let right_register = self.float_register_of_leaf(right)?;
-            self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
+            self.emit_located_operand(left, FLOAT_SCRATCH)?;
             return Operands::ordered(FLOAT_SCRATCH, right_register);
         }
-        if let Some((base, offset, member_type)) = as_member(right) {
+        if self.is_float_located(right) {
             if let Expression::FloatLiteral(value) = left {
                 if destination == FLOAT_SCRATCH {
-                    return Err(Diagnostic::error("float member with constant needs a non-scratch destination (roadmap)"));
+                    return Err(Diagnostic::error("float load with constant needs a non-scratch destination (roadmap)"));
                 }
                 self.load_float_constant(destination, *value as f32);
-                self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
+                self.emit_located_operand(right, FLOAT_SCRATCH)?;
                 return Operands::ordered(destination, FLOAT_SCRATCH);
             }
             let left_register = self.float_register_of_leaf(left)?;
-            self.emit_member_load(base, offset, member_type, FLOAT_SCRATCH)?;
+            self.emit_located_operand(right, FLOAT_SCRATCH)?;
             return Operands::ordered(left_register, FLOAT_SCRATCH);
         }
-        unreachable!("caller checked one side is a member")
+        unreachable!("caller checked one side is a float load")
     }
 
     pub(crate) fn place_float_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
-        // A float member operand loads from `.sdata2`/memory into a register, like
-        // a dereference. The struct base is a general register, so a member can
-        // load straight into the float destination without clobbering it.
-        if as_member(left).is_some() || as_member(right).is_some() {
-            return self.place_float_member_operands(operator, left, right, destination);
+        // A float operand loaded from memory (a member or `*float_pointer`) loads
+        // into a float register; the general base register is untouched, so it can
+        // even land straight in the float destination.
+        if self.is_float_located(left) || self.is_float_located(right) {
+            return self.place_float_located_operands(operator, left, right, destination);
         }
         // A float constant operand is loaded from `.sdata2` into the scratch
         // register; the other (leaf-variable) operand stays in place. mwcc emits

@@ -258,7 +258,7 @@ impl Generator {
 
     /// Emit the load for a located operand (`*pointer` or `base->field`) into the
     /// given register.
-    fn emit_located_operand(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_located_operand(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
         if let Some((base, offset, member_type)) = as_member(operand) {
             self.emit_member_load(base, offset, member_type, destination)
         } else if let Some(pointer) = as_dereference(operand) {
