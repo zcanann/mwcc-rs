@@ -298,12 +298,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             extab_entry_symbols.push(0);
         }
     }
-    // The GLOBAL run: walk functions in order, emitting each newly-referenced
-    // global just before the function symbol that first uses it. A name defined in
-    // this unit (in `.sbss`) becomes a defined OBJECT symbol; any other name is an
-    // undefined external. A defined global never referenced is emitted at the end.
+    // The GLOBAL run. mwcc emits symbols in source-encounter order, which for the
+    // common shape (data declared before functions) means:
+    //   1. the INITIALIZED (.sdata) defined globals, in declaration order, up front;
+    //   2. then per function its newly-referenced symbols (an undefined external,
+    //      or a referenced .sbss defined global) followed by the function symbol;
+    //   3. then any still-unreferenced (.sbss) defined global, in declaration order.
+    // (.sdata globals appear regardless of reference; .sbss ones follow the
+    // reference order, trailing when unused.)
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
     let mut global_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for object in &input.data_objects {
+        if data_section[object.name] == ".sdata" {
+            global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+            let section = index_of(".sdata") as u16;
+            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
+            comment_values.push(data_aligns[object.name]);
+        }
+    }
     let mut function_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         for relocation in &function.relocations {
@@ -312,32 +324,28 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 continue;
             }
             global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-            match data_offsets.get(name.as_str()) {
-                Some(&offset) => {
-                    let section = index_of(data_section[name.as_str()]) as u16;
-                    write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, section);
-                    comment_values.push(data_aligns[name.as_str()]);
-                }
-                None => {
-                    write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
-                    comment_values.push(0); // an undefined external has no alignment
-                }
+            if let Some(&offset) = data_offsets.get(name.as_str()) {
+                let section = index_of(data_section[name.as_str()]) as u16;
+                write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, section);
+                comment_values.push(data_aligns[name.as_str()]);
+            } else {
+                write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+                comment_values.push(0); // an undefined external has no alignment
             }
         }
         function_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
         comment_values.push(4); // a function is 4-aligned
     }
-    // Defined globals that no function referenced trail the function symbols, in
+    // Still-unreferenced (.sbss) defined globals trail the functions, in
     // declaration order.
     for object in &input.data_objects {
-        if global_symbols.contains_key(object.name) {
-            continue;
+        if !global_symbols.contains_key(object.name) {
+            global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+            let section = index_of(data_section[object.name]) as u16;
+            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
+            comment_values.push(data_aligns[object.name]);
         }
-        global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-        let section = index_of(data_section[object.name]) as u16;
-        write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
-        comment_values.push(data_aligns[object.name]);
     }
     // The `.comment` trailer is now fully determined by the symbol alignments.
     let comment = comment_record(input.version, input.build, &comment_values);
