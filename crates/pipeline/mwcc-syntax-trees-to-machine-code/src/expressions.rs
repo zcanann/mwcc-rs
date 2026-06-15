@@ -743,6 +743,13 @@ impl Generator {
             self.emit_widen(target, register, width, signed);
             return Ok(Some(target));
         }
+        // A call result already lands in the result register, which is the
+        // destination for a tail consumer; compute it there and let the consumer
+        // operate in place (mwcc does not bounce it through the scratch).
+        if matches!(operand, Expression::Call { .. }) {
+            self.evaluate_general(operand, destination)?;
+            return Ok(Some(destination));
+        }
         if prefer_destination {
             self.evaluate_general(operand, destination)?;
             Ok(Some(destination))
