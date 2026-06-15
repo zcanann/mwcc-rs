@@ -176,6 +176,30 @@ impl Generator {
             }
         }
 
+        // `(x >>(logical) n) & low-mask` fuses into one rlwinm: rotate-left by
+        // (32 - n), then keep the masked low bits. mwcc emits this for the classic
+        // `(value >> 16) & 0x7FFF` shape (e.g. the LCG in rand.c).
+        if operator == BinaryOperator::BitAnd {
+            if let Expression::Binary { operator: BinaryOperator::ShiftRight, left: inner, right: shift_amount } = variable {
+                if let Expression::IntegerLiteral(amount) = shift_amount.as_ref() {
+                    if (1..=31).contains(amount) && !self.signedness_of(inner)? {
+                        if let Some((begin, 31)) = contiguous_mask(constant) {
+                            let shift = (32 - *amount) as u8;
+                            let source = self.place_operand_or_scratch(inner, destination)?;
+                            self.output.instructions.push(Instruction::RotateAndMask {
+                                a: destination,
+                                s: source,
+                                shift,
+                                begin: begin.max(*amount as u8),
+                                end: 31,
+                            });
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+
         enum Immediate {
             Add,
             ShiftLeft(u8),
