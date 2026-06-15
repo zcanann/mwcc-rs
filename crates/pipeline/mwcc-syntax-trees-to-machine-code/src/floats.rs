@@ -119,14 +119,20 @@ impl Generator {
     }
 
     /// Whether `operand` is a float value loaded from memory: a float struct
-    /// member or a dereference of a float pointer. Such an operand loads into a
-    /// float register (its general base register is untouched).
+    /// member, a dereference of a float pointer, or a file-scope float global. Such
+    /// an operand loads into a float register (its general base register, if any,
+    /// is untouched).
     fn is_float_located(&self, operand: &Expression) -> bool {
         if let Some((_, _, member_type)) = as_member(operand) {
             return member_type == Type::Float;
         }
         if let Some(pointer) = as_dereference(operand) {
             return matches!(self.pointee_of(pointer), Ok(Pointee::Float));
+        }
+        if let Expression::Variable(name) = operand {
+            if !self.locations.contains_key(name) {
+                return self.globals.get(name) == Some(&Type::Float);
+            }
         }
         false
     }
