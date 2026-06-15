@@ -51,7 +51,7 @@ impl Generator {
         // A dereference operand loads into a register but orders like a leaf, not
         // like a reversed sub-expression — handle it before the complexity match.
         if as_dereference(left).is_some() || as_dereference(right).is_some() {
-            return self.place_dereference_operands(operator, left, right, destination);
+            return self.place_dereference_operands(operator, left, right);
         }
         // A global operand also loads into a register (from the small-data area).
         if self.is_global(left) || self.is_global(right) {
@@ -98,7 +98,7 @@ impl Generator {
     /// single deref loads into the scratch and the other operand stays in its home
     /// register (the deref keeps source order); two derefs load left into the
     /// destination and right into the scratch.
-    fn place_dereference_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    fn place_dereference_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
         // A dereference paired with a global follows the same anchor model as a
         // member with a global: the anchor stays in a stable register, the other
         // loads into the scratch.
@@ -120,12 +120,14 @@ impl Generator {
                     self.emit_load_from_pointer(left_pointer, GENERAL_SCRATCH)?;
                     return Operands::ordered(GENERAL_SCRATCH, right_register);
                 }
-                if destination == GENERAL_SCRATCH {
-                    return Err(Diagnostic::error("two dereferences need a non-scratch destination (roadmap)"));
-                }
-                self.emit_load_from_pointer(left_pointer, destination)?;
+                // The left dereference loads into a fresh virtual (the allocator
+                // coalesces it onto the pointer's own register, which dies at the
+                // load); the right into the scratch. No longer needs a non-scratch
+                // result register, so `(*p + *q) * x` lowers instead of deferring.
+                let anchor = self.fresh_virtual_general();
+                self.emit_load_from_pointer(left_pointer, anchor)?;
                 self.emit_load_from_pointer(right_pointer, GENERAL_SCRATCH)?;
-                Operands::ordered(destination, GENERAL_SCRATCH)
+                Operands::ordered(anchor, GENERAL_SCRATCH)
             }
             (Some(left_pointer), None) => {
                 let right_register = self.wide_leaf_register(right)?;
