@@ -88,9 +88,11 @@ impl Generator {
                             && leaf_name(left).is_none() && leaf_name(right).is_some())
                         || (matches!(operator, BinaryOperator::Less)
                             && leaf_name(right).is_none() && leaf_name(left).is_some())
+                        || (matches!(operator, BinaryOperator::NotEqual)
+                            && leaf_name(left).is_none() != leaf_name(right).is_none())
                     ) =>
             {
-                let (left_register, right_register) = self.place_compare_operands(left, right, d)?;
+                let (left_register, right_register) = self.place_compare_operands(operator, left, right, d)?;
                 let scratch = GENERAL_SCRATCH;
                 match operator {
                     // a < b : sign bit of (((a^b)>>1) - ((a^b)&b))
@@ -215,13 +217,39 @@ impl Generator {
     }
 
     /// Place the two operands of a general signed comparison into registers. A
-    /// leaf stays in its home register; a single non-leaf operand computes into a
-    /// fresh virtual that avoids the destination, leaving the destination free for
-    /// the idiom's result-path temporary (mwcc's coalescing). The other operand,
-    /// a leaf, keeps its register. Two non-leaf operands are not handled here.
-    fn place_compare_operands(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<(u8, u8)> {
-        match (leaf_name(left).is_some(), leaf_name(right).is_some()) {
-            (true, true) => Ok((self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?)),
+    /// leaf stays in its home register; a single non-leaf operand is computed
+    /// somewhere the idiom can keep it live across its two uses — and *where*
+    /// depends on the idiom:
+    ///
+    ///  - `<`/`>` interleave the scratch (holding `a^b`) with the result-path
+    ///    temp, so the non-leaf operand must survive in a *preserved* register
+    ///    that AVOIDS the destination, leaving the destination free for that temp
+    ///    (mwcc's coalescing — p->a > x, x < p->a).
+    ///  - `!=` uses the operand in two ADJACENT subtractions with nothing
+    ///    competing for the scratch between them, so mwcc evaluates it straight
+    ///    into the *scratch* (r0) and lets the second subtraction overwrite it
+    ///    (x != p->a, x != a*b+c). Deeper operands borrow the destination as an
+    ///    internal temp but still settle into the scratch.
+    ///
+    /// Two non-leaf operands are not handled here.
+    fn place_compare_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<(u8, u8)> {
+        let left_leaf = leaf_name(left).is_some();
+        let right_leaf = leaf_name(right).is_some();
+        if left_leaf && right_leaf {
+            return Ok((self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?));
+        }
+        if matches!(operator, BinaryOperator::NotEqual) {
+            // The non-leaf operand goes into the scratch; the leaf keeps its home.
+            return if left_leaf {
+                let left_register = self.general_register_of_leaf(left)?;
+                self.evaluate_general(right, GENERAL_SCRATCH)?;
+                Ok((left_register, GENERAL_SCRATCH))
+            } else {
+                self.evaluate_general(left, GENERAL_SCRATCH)?;
+                Ok((GENERAL_SCRATCH, self.general_register_of_leaf(right)?))
+            };
+        }
+        match (left_leaf, right_leaf) {
             // Non-leaf LEFT (the `>` idiom keeps its left): evaluate it off the dest.
             (false, true) => {
                 let right_register = self.general_register_of_leaf(right)?;
