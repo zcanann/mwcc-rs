@@ -1,7 +1,7 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, TranslationUnit, Type};
+use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -187,6 +187,7 @@ impl Parser {
 
         // Zero or more statements: a store `*p = v;` / `p[i] = v;`, or a bare
         // expression evaluated for effect like a call `g();`.
+        let local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
         let mut statements = Vec::new();
         while !matches!(self.peek(), Token::KeywordReturn | Token::KeywordIf | Token::BraceClose) {
             let first = self.factor()?;
@@ -194,7 +195,14 @@ impl Parser {
                 self.advance();
                 let value = self.expression()?;
                 self.expect(Token::Semicolon)?;
-                statements.push(Statement::Store { target: first, value });
+                // `local = value;` is a value-tracked reassignment; any other
+                // target (`*p`, `p[i]`, a member, a global) is a memory store.
+                match &first {
+                    Expression::Variable(name) if local_names.contains(name.as_str()) => {
+                        statements.push(Statement::Assign { name: name.clone(), value });
+                    }
+                    _ => statements.push(Statement::Store { target: first, value }),
+                }
             } else {
                 self.expect(Token::Semicolon)?;
                 statements.push(Statement::Expression(first));

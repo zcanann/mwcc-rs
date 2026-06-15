@@ -41,6 +41,12 @@ impl Generator {
 
     /// Emit the whole function body, including its `blr`(s).
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        // Value-tracked locals (reassignment, multiple locals) are inlined into the
+        // return expression and compiled there; this takes over the whole body when
+        // it applies, leaving the straight-line paths below byte-identical.
+        if self.try_value_tracking(function)? {
+            return Ok(());
+        }
         // A function that calls is non-leaf: save the link register around a 16-byte
         // frame before doing anything else.
         if function_makes_call(function) {
@@ -104,7 +110,7 @@ impl Generator {
 
     /// Tear down the stack frame (if one was allocated) and return. A non-leaf
     /// function restores the link register from `frame_size + 4` first.
-    fn emit_epilogue_and_return(&mut self) {
+    pub(crate) fn emit_epilogue_and_return(&mut self) {
         if self.non_leaf {
             self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
             self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
@@ -123,6 +129,9 @@ impl Generator {
                 self.emit_call(name, arguments, None, false)
             }
             Statement::Expression(_) => Err(Diagnostic::error("only a call may be a bare statement (roadmap)")),
+            // Reassignment is handled by value tracking; reaching here means it was
+            // mixed with stores/calls, which that path defers.
+            Statement::Assign { .. } => Err(Diagnostic::error("local reassignment mixed with stores/calls is not supported yet (roadmap)")),
         }
     }
 

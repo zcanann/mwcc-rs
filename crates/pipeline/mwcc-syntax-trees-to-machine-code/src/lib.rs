@@ -23,6 +23,7 @@ mod narrow;
 mod casts;
 mod placement;
 mod floats;
+mod value_tracking;
 
 use generator::Generator;
 

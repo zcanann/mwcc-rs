@@ -22,6 +22,7 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
 pub(crate) fn function_makes_call(function: &Function) -> bool {
     function.statements.iter().any(|statement| match statement {
         Statement::Store { target, value } => expression_has_call(target) || expression_has_call(value),
+        Statement::Assign { value, .. } => expression_has_call(value),
         Statement::Expression(expression) => expression_has_call(expression),
     }) || function.return_expression.as_ref().is_some_and(expression_has_call)
         || function.locals.iter().any(|local| expression_has_call(&local.initializer))

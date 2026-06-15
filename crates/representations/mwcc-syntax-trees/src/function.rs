@@ -31,6 +31,9 @@ pub enum Statement {
     /// `*pointer = value;` or `base[index] = value;` — a store to memory. The
     /// target is a `Dereference` or `Index` expression.
     Store { target: Expression, value: Expression },
+    /// `local = value;` — reassignment of a local variable (value-tracked, not a
+    /// memory store).
+    Assign { name: String, value: Expression },
     /// A bare expression evaluated for its side effects, e.g. `g();`.
     Expression(Expression),
 }
