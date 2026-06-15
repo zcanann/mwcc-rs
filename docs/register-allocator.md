@@ -144,11 +144,25 @@ The risk is a big-bang rewrite. Avoid it:
    optimizer (reassociation `(g+h)+x`) or scheduler (operand order `(*p+2.0f)*z`)
    difference, the site is **kept deferring** rather than emit correct-but-non-
    matching bytes — that is a Phase E concern, separated cleanly.
-4. **Still ahead:** generalize coalescing so the remaining special cases (the
-   anchor model, ABS base coalescing, narrow batching) are *derived* not hard-
-   coded; the call-argument base-preservation and comparison-to-bool idiom
-   deferrals; the scheduler (Phase E) for the instruction-order differences the
-   unlocks expose.
+4. **Phase E — the scheduler — is started and functional** (`schedule.rs`). mwcc
+   reorders within a block for the Gekko's in-order dual-issue pipeline, hoisting
+   long-latency multiplies/divides ahead of cheap ops. The pass is a data-
+   dependence DAG + list scheduling with a latency-rank policy, run **before
+   allocation on the virtual-register stream** so physical-register reuse can't
+   fabricate false dependencies that block a legal hoist; allocation then colors
+   the scheduled order. It fixes `((a*b)+1)*(c*d)`, `(a+b)*((c*d)+1)`, and
+   divide+multiply ordering byte-exact. v1 skips functions with a forward branch
+   (the branch's index target would need remapping). The remaining misses are now
+   *allocation*, not order: two intermediates forced into the scratch `r0`
+   fabricate a false dep that blocks a hoist — the fix is the deeper allocator-
+   scheduler co-design (migrate the last `r0` intermediates to virtuals and let
+   the allocator assign `r0` as a transient, matching mwcc's own r0-vs-real
+   choice per context).
+
+5. **Still ahead:** that scratch/`r0` co-design; generalizing coalescing so the
+   anchor model / ABS base coalescing / narrow batching are *derived* not hard-
+   coded; the call-argument base-preservation and comparison-to-bool deferrals;
+   forward-branch target remapping to lift the scheduler's straight-line limit.
 
 The contract never changes: byte-exact or an honest deferral — never wrong bytes.
 
