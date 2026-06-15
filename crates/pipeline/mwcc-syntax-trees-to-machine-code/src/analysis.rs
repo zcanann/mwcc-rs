@@ -36,6 +36,41 @@ pub(crate) fn is_complex(expression: &Expression) -> bool {
     )
 }
 
+/// The Sethi-Ullman register need of an expression: the number of registers
+/// needed to evaluate it without spilling. mwcc evaluates the operand with the
+/// *higher* need first — the heavier subtree, independent of source order — which
+/// is the key to matching its instruction order on asymmetric arithmetic trees
+/// (`((b+c)*(d+e)) + a` and `a + ((b+c)*(d+e))` compile identically because the
+/// heavy product is always done first). A leaf needs one register; a binary node
+/// needs `n+1` when its two operands tie at `n` (the second result must survive
+/// while the first is computed), otherwise the larger of the two — the heavier
+/// side absorbs the lighter for free. Loads/calls are approximated as leaves;
+/// refine when the placement restructure consumes this.
+///
+/// Built and tested ahead of its use: the operand-placement restructure that
+/// evaluates the heavier operand first (and the matching Sethi-Ullman register
+/// scheme) is the next subsystem for nested arithmetic — see the design notes.
+#[allow(dead_code)]
+pub(crate) fn register_need(expression: &Expression) -> u32 {
+    match expression {
+        Expression::Binary { left, right, .. } => {
+            let left_need = register_need(left);
+            let right_need = register_need(right);
+            if left_need == right_need {
+                left_need + 1
+            } else {
+                left_need.max(right_need)
+            }
+        }
+        Expression::Unary { operand, .. } => register_need(operand),
+        Expression::Cast { operand, .. } => register_need(operand),
+        Expression::Conditional { when_true, when_false, .. } => {
+            register_need(when_true).max(register_need(when_false)).max(1)
+        }
+        _ => 1,
+    }
+}
+
 /// If `expression` is `*pointer`, the pointer sub-expression.
 pub(crate) fn as_dereference(expression: &Expression) -> Option<&Expression> {
     match expression {
@@ -215,5 +250,61 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
         // not nested inside the single-scratch tree model
         Expression::Conditional { .. } | Expression::Cast { .. } => false,
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn var(name: &str) -> Expression {
+        Expression::Variable(name.to_string())
+    }
+    fn binary(operator: BinaryOperator, left: Expression, right: Expression) -> Expression {
+        Expression::Binary { operator, left: Box::new(left), right: Box::new(right) }
+    }
+    fn add(left: Expression, right: Expression) -> Expression {
+        binary(BinaryOperator::Add, left, right)
+    }
+    fn mul(left: Expression, right: Expression) -> Expression {
+        binary(BinaryOperator::Multiply, left, right)
+    }
+
+    #[test]
+    fn a_leaf_needs_one_register() {
+        assert_eq!(register_need(&var("a")), 1);
+        assert_eq!(register_need(&Expression::IntegerLiteral(5)), 1);
+    }
+
+    #[test]
+    fn two_leaves_under_a_binary_need_two() {
+        // a + b: equal leaves (1,1) -> 2.
+        assert_eq!(register_need(&add(var("a"), var("b"))), 2);
+    }
+
+    #[test]
+    fn balanced_trees_grow_by_one_per_level() {
+        // (a+b)*(c+d): both sides 2, equal -> 3.
+        let left = add(var("a"), var("b"));
+        let right = add(var("c"), var("d"));
+        assert_eq!(register_need(&mul(left, right)), 3);
+    }
+
+    #[test]
+    fn a_heavier_subtree_absorbs_a_lighter_one_for_free() {
+        // a + ((b+c)*(d+e)): leaf (1) vs heavy product (3) -> max = 3, not 4.
+        let heavy = mul(add(var("b"), var("c")), add(var("d"), var("e")));
+        assert_eq!(register_need(&heavy), 3);
+        assert_eq!(register_need(&add(var("a"), heavy.clone())), 3);
+        // And the need is the same whichever side the heavy subtree is on — the
+        // property that makes mwcc's order independent of source order.
+        assert_eq!(register_need(&add(heavy, var("a"))), 3);
+    }
+
+    #[test]
+    fn the_heavier_operand_is_identifiable_by_comparing_needs() {
+        // c + a*b: c (1) lighter than a*b (2); the multiply is evaluated first.
+        let product = mul(var("a"), var("b"));
+        assert!(register_need(&product) > register_need(&var("c")));
     }
 }
