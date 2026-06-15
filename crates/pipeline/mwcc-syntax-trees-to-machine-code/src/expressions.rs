@@ -718,6 +718,21 @@ impl Generator {
         }
     }
 
+    /// Place a unary operator's operand: in its own register if a leaf, otherwise
+    /// computed into the scratch. A complex operand that needs temporaries beyond
+    /// the scratch is no longer a deferral — the allocator supplies them (its
+    /// inner sub-expressions emit virtuals), so the operand simply evaluates into
+    /// the scratch like mwcc does (`mullw r0,...; neg r3,r0`).
+    fn place_unary_operand(&mut self, operand: &Expression, destination: u8) -> Compilation<u8> {
+        match self.place_operand(operand, destination, false)? {
+            Some(source) => Ok(source),
+            None => {
+                self.evaluate_general(operand, GENERAL_SCRATCH)?;
+                Ok(GENERAL_SCRATCH)
+            }
+        }
+    }
+
     /// Emit a prefix unary operator into `destination`.
     pub(crate) fn emit_unary(&mut self, operator: UnaryOperator, operand: &Expression, destination: u8) -> Compilation<()> {
         let d = destination;
@@ -732,9 +747,7 @@ impl Generator {
                 if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = operand {
                     return self.evaluate_general(inner, d);
                 }
-                let Some(source) = self.place_operand(operand, d, false)? else {
-                    return Err(Diagnostic::error("negation operand needs the full register allocator (roadmap M1)"));
-                };
+                let source = self.place_unary_operand(operand, d)?;
                 self.output.instructions.push(Instruction::Negate { d, a: source });
             }
             UnaryOperator::BitNot => {
@@ -742,9 +755,7 @@ impl Generator {
                 if let Expression::Unary { operator: UnaryOperator::BitNot, operand: inner } = operand {
                     return self.evaluate_general(inner, d);
                 }
-                let Some(source) = self.place_operand(operand, d, false)? else {
-                    return Err(Diagnostic::error("complement operand needs the full register allocator (roadmap M1)"));
-                };
+                let source = self.place_unary_operand(operand, d)?;
                 self.output.instructions.push(Instruction::Nor { a: d, s: source, b: source });
             }
             UnaryOperator::LogicalNot => {
@@ -755,9 +766,7 @@ impl Generator {
                     }
                 }
                 // !x == (x == 0): cntlzw then srwi by 5.
-                let Some(source) = self.place_operand(operand, d, false)? else {
-                    return Err(Diagnostic::error("logical-not operand needs the full register allocator (roadmap M1)"));
-                };
+                let source = self.place_unary_operand(operand, d)?;
                 self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
             }

@@ -201,9 +201,11 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
             (false, false) => true,
             (true, false) => fits_single_scratch(left, true),
             (false, true) => fits_single_scratch(right, true),
-            (true, true) => {
-                !destination_is_scratch && fits_single_scratch(left, false) && fits_single_scratch(right, true)
-            }
+            // Both operands complex: the left side computes into a fresh virtual
+            // the allocator places and the right into the scratch, so this fits
+            // even when the result itself lands in the scratch (the temporary is
+            // no longer a physical register we must find).
+            (true, true) => fits_single_scratch(left, false) && fits_single_scratch(right, true),
         },
         Expression::Unary { operator, operand } => match operator {
             UnaryOperator::LogicalNot => !destination_is_scratch && fits_single_scratch(operand, destination_is_scratch),
