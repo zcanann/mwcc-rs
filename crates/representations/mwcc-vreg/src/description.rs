@@ -121,24 +121,26 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, b);
         }
         // Float arithmetic — all operands float.
-        FloatAddSingle { d, a, b } | FloatSubtractSingle { d, a, b } | FloatDivideSingle { d, a, b } => {
+        FloatAddSingle { d, a, b } | FloatSubtractSingle { d, a, b } | FloatDivideSingle { d, a, b }
+        | FloatAddDouble { d, a, b } | FloatSubtractDouble { d, a, b } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, b);
         }
-        FloatMultiplySingle { d, a, c } => {
+        FloatMultiplySingle { d, a, c } | FloatMultiplyDouble { d, a, c } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, c);
         }
         FloatMultiplyAddSingle { d, a, c, b } | FloatMultiplySubtractSingle { d, a, c, b }
-        | FloatNegativeMultiplySubtractSingle { d, a, c, b } => {
+        | FloatNegativeMultiplySubtractSingle { d, a, c, b }
+        | FloatMultiplyAddDouble { d, a, c, b } | FloatMultiplySubtractDouble { d, a, c, b } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, c);
             visit(U, F, b);
         }
-        FloatMove { d, b } | FloatNegate { d, b } | ConvertToIntegerWordZero { d, b } => {
+        FloatMove { d, b } | FloatNegate { d, b } | ConvertToIntegerWordZero { d, b } | RoundToSingle { d, b } => {
             visit(D, F, d);
             visit(U, F, b);
         }

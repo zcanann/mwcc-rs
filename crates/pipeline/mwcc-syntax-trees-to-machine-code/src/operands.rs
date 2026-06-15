@@ -49,9 +49,12 @@ pub(crate) fn general_combine(operator: BinaryOperator, destination: u8, operand
     })
 }
 
-pub(crate) fn float_combine(operator: BinaryOperator, destination: u8, operands: Operands) -> Compilation<Instruction> {
+pub(crate) fn float_combine(operator: BinaryOperator, destination: u8, operands: Operands, double: bool) -> Compilation<Instruction> {
     let (first, second) = operands.commutative();
     Ok(match operator {
+        BinaryOperator::Add if double => Instruction::FloatAddDouble { d: destination, a: first, b: second },
+        BinaryOperator::Subtract if double => Instruction::FloatSubtractDouble { d: destination, a: operands.left, b: operands.right },
+        BinaryOperator::Multiply if double => Instruction::FloatMultiplyDouble { d: destination, a: first, c: second },
         BinaryOperator::Add => Instruction::FloatAddSingle { d: destination, a: first, b: second },
         BinaryOperator::Subtract => Instruction::FloatSubtractSingle { d: destination, a: operands.left, b: operands.right },
         BinaryOperator::Multiply => Instruction::FloatMultiplySingle { d: destination, a: first, c: second },

@@ -30,8 +30,9 @@ impl Generator {
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), true),
             Expression::Binary { operator, left, right } => {
+                let double = self.is_double_value(left) || self.is_double_value(right);
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
-                    && self.try_emit_float_fused(*operator, left, right, destination)?
+                    && self.try_emit_float_fused(*operator, left, right, destination, double)?
                 {
                     return Ok(());
                 }
@@ -39,7 +40,7 @@ impl Generator {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
                 let operands = self.place_float_operands(*operator, left, right, destination)?;
-                self.output.instructions.push(float_combine(*operator, destination, operands)?);
+                self.output.instructions.push(float_combine(*operator, destination, operands, double)?);
                 Ok(())
             }
             Expression::Unary { operator: UnaryOperator::Negate, operand } => {
@@ -86,30 +87,57 @@ impl Generator {
         left: &Expression,
         right: &Expression,
         destination: u8,
+        double: bool,
     ) -> Compilation<bool> {
         if let Some((x, y)) = as_multiplication(left) {
             let multiplicand = self.float_register_of_leaf(x)?;
             let multiplier = self.float_register_of_leaf(y)?;
             let addend = self.place_float_addend(right)?;
-            self.output.instructions.push(match operator {
-                BinaryOperator::Add => Instruction::FloatMultiplyAddSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
-                BinaryOperator::Subtract => Instruction::FloatMultiplySubtractSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
+            self.output.instructions.push(match (operator, double) {
+                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Subtract, false) => Instruction::FloatMultiplySubtractSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Subtract, true) => Instruction::FloatMultiplySubtractDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
                 _ => unreachable!("caller restricts to add/subtract"),
             });
             return Ok(true);
         }
         if let Some((x, y)) = as_multiplication(right) {
+            // The `left - x*y` -> fnmsub fusion has no double variant here yet, so
+            // a double subtraction of that shape falls through to the plain path.
+            if double && operator == BinaryOperator::Subtract {
+                return Ok(false);
+            }
             let multiplicand = self.float_register_of_leaf(x)?;
             let multiplier = self.float_register_of_leaf(y)?;
             let addend = self.place_float_addend(left)?;
-            self.output.instructions.push(match operator {
-                BinaryOperator::Add => Instruction::FloatMultiplyAddSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
-                BinaryOperator::Subtract => Instruction::FloatNegativeMultiplySubtractSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
+            self.output.instructions.push(match (operator, double) {
+                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Subtract, false) => Instruction::FloatNegativeMultiplySubtractSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
                 _ => unreachable!("caller restricts to add/subtract"),
             });
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Whether a float-class expression is double-precision (so it uses the
+    /// `fadd`/`fmul` family rather than the single `fadds`/`fmuls`). A double
+    /// variable carries width 64; a binary op is double if either operand is.
+    pub(crate) fn is_double_value(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Variable(name) => match self.locations.get(name) {
+                Some(location) => location.class == ValueClass::Float && location.width == 64,
+                None => self.globals.get(name.as_str()) == Some(&Type::Double),
+            },
+            Expression::Binary { left, right, .. } => self.is_double_value(left) || self.is_double_value(right),
+            Expression::Unary { operand, .. } => self.is_double_value(operand),
+            Expression::Conditional { when_true, when_false, .. } => self.is_double_value(when_true) || self.is_double_value(when_false),
+            Expression::Cast { target_type, .. } => *target_type == Type::Double,
+            Expression::Member { member_type, .. } => *member_type == Type::Double,
+            _ => false,
+        }
     }
 
     pub(crate) fn place_float_addend(&mut self, expression: &Expression) -> Compilation<u8> {

@@ -14,6 +14,20 @@ impl Generator {
     /// is byte-correct here, but its `R_PPC_EMB_SDA21` relocation and the constant
     /// pool are the next M3 step. Leaf integer operands only.
     pub(crate) fn emit_cast_to_float(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
+        // `(float)` of a double rounds it to single precision with `frsp`. A leaf
+        // rounds in place from its own register; a sub-expression is computed into
+        // the destination first (mwcc keeps that intermediate in the destination,
+        // not the scratch), then rounded `frsp d, d`.
+        if self.is_double_value(operand) {
+            let source = if self.is_float_leaf(operand) {
+                self.float_register_of_leaf(operand)?
+            } else {
+                self.evaluate_float(operand, destination)?;
+                destination
+            };
+            self.output.instructions.push(Instruction::RoundToSingle { d: destination, b: source });
+            return Ok(());
+        }
         // The conversion assembles `0x43300000_<int>` on the stack and subtracts a
         // magic bias double (pooled in `.sdata2`). A signed value flips its sign bit
         // first and subtracts `0x43300000_80000000`; an unsigned value skips the

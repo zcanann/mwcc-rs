@@ -242,14 +242,9 @@ impl Generator {
     pub(crate) fn evaluate(&mut self, expression: &Expression, value_type: Type, destination: u8) -> Compilation<()> {
         match value_type {
             Type::Float => self.evaluate_float(expression, destination),
-            // A `double` value shares the FPR file with `float`. A bare variable
-            // (a passthrough, or a float widened to double) is a register move the
-            // float path already handles; double-precision *arithmetic* (fadd vs
-            // fadds) and conversions are a later stage, so they defer.
-            Type::Double => match expression {
-                Expression::Variable(_) => self.evaluate_float(expression, destination),
-                _ => Err(Diagnostic::error("double-precision arithmetic/conversion needs double codegen (roadmap)")),
-            },
+            // A `double` value shares the FPR file with `float`; the float path
+            // picks the double-precision instructions via is_double_value.
+            Type::Double => self.evaluate_float(expression, destination),
             Type::Void => Err(Diagnostic::error("cannot evaluate a void expression")),
             _ => self.evaluate_general(expression, destination),
         }

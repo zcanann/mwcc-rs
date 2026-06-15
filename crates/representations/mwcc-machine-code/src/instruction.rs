@@ -105,6 +105,19 @@ pub enum Instruction {
     FloatMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
     /// `fnmsubs frD, frA, frC, frB` => frD = frB - frA*frC.
     FloatNegativeMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
+    /// Double-precision arithmetic (opcode 63 vs the single forms' 59).
+    /// `fadd frD, frA, frB`
+    FloatAddDouble { d: u8, a: u8, b: u8 },
+    /// `fsub frD, frA, frB`
+    FloatSubtractDouble { d: u8, a: u8, b: u8 },
+    /// `fmul frD, frA, frC`
+    FloatMultiplyDouble { d: u8, a: u8, c: u8 },
+    /// `fmadd frD, frA, frC, frB` => frD = frA*frC + frB.
+    FloatMultiplyAddDouble { d: u8, a: u8, c: u8, b: u8 },
+    /// `fmsub frD, frA, frC, frB` => frD = frA*frC - frB.
+    FloatMultiplySubtractDouble { d: u8, a: u8, c: u8, b: u8 },
+    /// `frsp frD, frB` — round a double to single precision.
+    RoundToSingle { d: u8, b: u8 },
     /// `fmr frD, frB`
     FloatMove { d: u8, b: u8 },
     /// `fneg frD, frB`
