@@ -118,22 +118,31 @@ The risk is a big-bang rewrite. Avoid it:
    First integration: the generator's free-register helpers now draw their pools
    from `RegisterConstraints` (one authoritative home, shared with the allocator),
    still byte-exact across all 8 builds.
-2. **Lower then re-raise, identity-allocate.** Have selection emit vregs for one
-   self-contained slice (start with leaf arithmetic), allocate with a pass that
-   reproduces *exactly* today's physical assignment for that slice, and diff
-   against the oracle — must stay byte-exact. Expand the slice until all of
-   selection routes through vregs, the allocator still reproducing current output.
-   The open design choice here is how a selected instruction carries virtual
-   operands: the leading option is to parameterize `Instruction` over its register
-   type (`Instruction<Reg>` pre-allocation, `Instruction<u8>` after) with a small
-   per-variant def/use+class description driving liveness — no enum duplication,
-   no magic register ranges. Grow that description one slice at a time.
-3. **Generalize the allocator** to real liveness + coalescing, verifying the whole
-   canary suite stays green as each former special case (anchor, ABS coalescing,
-   narrow batching) is *derived* rather than hard-coded.
-4. **Tackle the deferred cases** one at a time (two located operands, call-arg
-   preservation, comparison idioms, incremental mutation), each with new canaries,
-   each verified across all 8 builds.
+2. **Wire the pass, no fork.** — **DONE.** `lower_function` runs `analyze ->
+   LinearScan -> apply` on every function. Selection still emits physical
+   registers by default, so with no virtuals the pass is a no-op — one pipeline,
+   not a legacy/vreg fork. A migrated site just emits a fresh virtual and the pass
+   resolves it. The machine description (`for_each_register`, all 75 variants) and
+   precise per-definition liveness with half-open interference (a result reuses a
+   source that dies at its definition) reproduce the inline allocator's choices.
+   Virtuals ride in the existing `Instruction`'s u8 fields via the `VIRTUAL_BASE`
+   convention (transitional; parameterize `Instruction<Reg>` if a function needs
+   >224 virtuals/class).
+3. **Migrate sites one at a time, byte-exact.** — **IN PROGRESS.** First site:
+   `place_general_operands`' both-complex temporary (`(a+b)*(c+d)`) — the allocator
+   reproduces it exactly (temp -> r3 / r5 as the inline code chose). Then the
+   deferrals the allocator *removes*, each byte-exact for its core shape and with
+   new canaries: two-global sub-expressions (`(g+h)*x`), two-dereference
+   sub-expressions (`(*p+*q)*x`), and the add-into-scratch trap (`((a*b)+1)*c` —
+   the marioparty4 `rand.c` blocker). Where a removed deferral exposes an
+   optimizer (reassociation) or scheduler (instruction order) difference for a
+   more complex outer expression, that is a Phase E concern, not allocation —
+   correct either way.
+4. **Still ahead:** generalize coalescing so the remaining special cases (the
+   anchor model, ABS base coalescing, narrow batching) are *derived* not hard-
+   coded; the call-argument base-preservation and comparison-to-bool idiom
+   deferrals; the scheduler (Phase E) for the instruction-order differences the
+   unlocks expose.
 
 The contract never changes: byte-exact or an honest deferral — never wrong bytes.
 
