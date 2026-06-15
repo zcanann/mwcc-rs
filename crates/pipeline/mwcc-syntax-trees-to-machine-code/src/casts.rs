@@ -14,22 +14,27 @@ impl Generator {
     /// is byte-correct here, but its `R_PPC_EMB_SDA21` relocation and the constant
     /// pool are the next M3 step. Leaf integer operands only.
     pub(crate) fn emit_cast_to_float(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
-        // The conversion subtracts this magic double `0x43300000_80000000`, pooled
-        // in `.sdata2`; it also bumps the anonymous-symbol counter.
-        const INT_TO_FLOAT_BIAS: u64 = 0x4330_0000_8000_0000;
+        // The conversion assembles `0x43300000_<int>` on the stack and subtracts a
+        // magic bias double (pooled in `.sdata2`). A signed value flips its sign bit
+        // first and subtracts `0x43300000_80000000`; an unsigned value skips the
+        // flip and subtracts `0x43300000_00000000`. Either bumps the @N counter.
+        let signed = self.signedness_of(operand)?;
+        let bias: u64 = if signed { 0x4330_0000_8000_0000 } else { 0x4330_0000_0000_0000 };
         let source = self.general_register_of_leaf(operand)?;
         self.output.has_conversion = true;
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::XorImmediateShifted { a: source, s: source, immediate: 0x8000 });
+        if signed {
+            self.output.instructions.push(Instruction::XorImmediateShifted { a: source, s: source, immediate: 0x8000 });
+        }
         self.output.instructions.push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
         // The bias load and the value store are independent; builds schedule them
         // in opposite orders (GC/2.0p1 stores first, every other build loads first).
         if self.build.profile.float_cast_value_store_first() {
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
-            self.load_double_constant(destination, INT_TO_FLOAT_BIAS);
+            self.load_double_constant(destination, bias);
         } else {
-            self.load_double_constant(destination, INT_TO_FLOAT_BIAS);
+            self.load_double_constant(destination, bias);
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
         }
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
