@@ -132,7 +132,7 @@ impl Generator {
     /// member, a dereference of a float pointer, or a file-scope float global. Such
     /// an operand loads into a float register (its general base register, if any,
     /// is untouched).
-    fn is_float_located(&self, operand: &Expression) -> bool {
+    pub(crate) fn is_float_located(&self, operand: &Expression) -> bool {
         if let Some((_, _, member_type)) = as_member(operand) {
             return member_type == Type::Float;
         }
