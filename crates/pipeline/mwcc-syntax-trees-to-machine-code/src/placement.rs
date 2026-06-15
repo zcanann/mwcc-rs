@@ -198,6 +198,10 @@ impl Generator {
     /// scratch (a global has no address register to keep it in place).
     fn place_global_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
         let subtract = operator == BinaryOperator::Subtract;
+        // One global with one struct member: handled by the anchor placement below.
+        if (self.is_global(left) && as_member(right).is_some()) || (self.is_global(right) && as_member(left).is_some()) {
+            return self.place_global_member_operands(operator, left, right);
+        }
         match (self.is_global(left), self.is_global(right)) {
             (true, true) => {
                 if destination == GENERAL_SCRATCH {
@@ -226,6 +230,36 @@ impl Generator {
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (false, false) => unreachable!("caller checked one side is a global"),
+        }
+    }
+
+    /// Place a binary node with one global operand and one struct-member operand.
+    /// The anchor (left for a commutative operator, right for subtraction) is kept
+    /// in a stable register — a member in its base register, a global in a free
+    /// register that avoids the member's base — and the other operand loads into
+    /// the scratch. The anchor loads first, matching mwcc's evaluation order.
+    fn place_global_member_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
+        let subtract = operator == BinaryOperator::Subtract;
+        let (anchor, other) = if subtract { (right, left) } else { (left, right) };
+        let (anchor_register, other_register) = if let Some((base, offset, member_type)) = as_member(anchor) {
+            // The member anchor loads into its base register; the global -> scratch.
+            let base_register = self.member_base_register(base)?;
+            self.emit_member_load(base, offset, member_type, base_register)?;
+            self.emit_global_load(leaf_name(other).unwrap(), GENERAL_SCRATCH)?;
+            (base_register, GENERAL_SCRATCH)
+        } else {
+            // The global anchor loads into a free register; the member -> scratch.
+            let (base, offset, member_type) = as_member(other).unwrap();
+            let global_register = self.free_register_avoiding(&[base])?;
+            self.emit_global_load(leaf_name(anchor).unwrap(), global_register)?;
+            self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+            (global_register, GENERAL_SCRATCH)
+        };
+        // For subtraction the anchor is the right operand (`left - right`).
+        if subtract {
+            Operands::ordered(other_register, anchor_register)
+        } else {
+            Operands::ordered(anchor_register, other_register)
         }
     }
 
