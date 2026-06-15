@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
-use mwcc_versions::CompilerBuild;
+use mwcc_versions::CompilerConfig;
 use crate::analysis::*;
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
@@ -41,9 +41,9 @@ pub(crate) struct Generator {
     /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
     /// operation needs scratch stack space (e.g. an int/float conversion).
     pub(crate) frame_size: i16,
-    /// The build we are reproducing. Its only codegen-affecting knob today is
-    /// the default signedness of plain `char` (see [`Generator::signed_of`]).
-    pub(crate) build: CompilerBuild,
+    /// The configuration we are reproducing — the build (version) and its flags.
+    /// Codegen decisions that vary by version or flag are read from here.
+    pub(crate) config: CompilerConfig,
     /// Whether the function makes a call: it then saves/restores the link register
     /// around a stack frame (the non-leaf prologue/epilogue).
     pub(crate) non_leaf: bool,
@@ -66,7 +66,7 @@ impl Generator {
     /// int->float bias — follow the build with no scattered version checks.
     pub(crate) fn signed_of(&self, declared: Type) -> bool {
         match declared {
-            Type::Char => self.build.profile.char_is_signed(),
+            Type::Char => self.config.char_is_signed(),
             other => other.is_signed(),
         }
     }

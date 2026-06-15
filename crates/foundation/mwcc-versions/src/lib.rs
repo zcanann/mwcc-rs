@@ -9,7 +9,11 @@
 //! override a single method.
 
 mod build;
+mod config;
+mod flags;
 mod profile;
 
 pub use build::*;
+pub use config::*;
+pub use flags::*;
 pub use profile::*;

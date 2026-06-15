@@ -14,10 +14,20 @@ struct Invocation {
     output: Option<String>,
     build_label: Option<String>,
     artifacts_directory: Option<String>,
+    /// Codegen-affecting flags parsed from the real build line; the rest are
+    /// ignored (they are the preprocessor's or diagnostics' concern).
+    flags: mwcc_versions::Flags,
 }
 
 fn parse_invocation(arguments: &[String]) -> Invocation {
-    let mut invocation = Invocation { input: None, output: None, build_label: None, artifacts_directory: None };
+    use mwcc_versions::{CharDefault, GlobalAddressing, Optimization};
+    let mut invocation = Invocation {
+        input: None,
+        output: None,
+        build_label: None,
+        artifacts_directory: None,
+        flags: mwcc_versions::Flags::default(),
+    };
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -36,6 +46,32 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             "--emit-artifacts" => {
                 index += 1;
                 invocation.artifacts_directory = arguments.get(index).cloned();
+            }
+            // `-char signed`/`-char unsigned` overrides the build's `char` default.
+            "-char" => {
+                index += 1;
+                invocation.flags.char_default = match arguments.get(index).map(String::as_str) {
+                    Some("signed") => CharDefault::Signed,
+                    Some("unsigned") => CharDefault::Unsigned,
+                    _ => CharDefault::BuildDefault,
+                };
+            }
+            // `-sdata N`: a threshold of zero addresses globals absolutely.
+            "-sdata" => {
+                index += 1;
+                if arguments.get(index).map(String::as_str) == Some("0") {
+                    invocation.flags.global_addressing = GlobalAddressing::Absolute;
+                }
+            }
+            // `-O0,p` .. `-O4,s` — only the level affects what we model so far.
+            argument if argument.starts_with("-O") && argument.len() >= 3 => {
+                invocation.flags.optimization = match argument.as_bytes()[2] {
+                    b'0' => Optimization::O0,
+                    b'1' => Optimization::O1,
+                    b'2' => Optimization::O2,
+                    b'3' => Optimization::O3,
+                    _ => Optimization::O4,
+                };
             }
             argument if argument.ends_with(".c") && invocation.input.is_none() => {
                 invocation.input = Some(argument.to_string());
@@ -84,7 +120,8 @@ fn main() -> ExitCode {
         .and_then(|name| name.to_str())
         .unwrap_or(&input);
 
-    match compile(&source, source_name, build, invocation.artifacts_directory.as_deref()) {
+    let config = mwcc_versions::CompilerConfig { build, flags: invocation.flags };
+    match compile(&source, source_name, config, invocation.artifacts_directory.as_deref()) {
         Ok(object) => {
             if let Err(error) = std::fs::write(&output, object) {
                 eprintln!("mwcc: cannot write {output}: {error}");
@@ -100,15 +137,15 @@ fn main() -> ExitCode {
 }
 
 /// Run the full pipeline, optionally dumping a per-phase artifact report.
-fn compile(source: &str, source_name: &str, build: mwcc_versions::CompilerBuild, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
+fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfig, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
     let tokens = mwcc_source_to_tokens::tokenize(source)?;
     let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(tokens.clone())?;
     let function = &unit.function;
-    let machine_code = mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, build)?;
-    let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name, build.version, build.build);
+    let machine_code = mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, config)?;
+    let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name, config.build.version, config.build.build);
 
     if let Some(directory) = artifacts {
-        write_artifacts(directory, build, &tokens, &function, &machine_code, &object);
+        write_artifacts(directory, config.build, &tokens, &function, &machine_code, &object);
     }
     Ok(object)
 }
