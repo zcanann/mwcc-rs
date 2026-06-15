@@ -89,17 +89,22 @@ impl Generator {
                         self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
                         self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
                     }
-                    // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)), reusing rB as a temp
+                    // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)). The intermediate
+                    // `(a^b)>>1` goes to a fresh virtual the allocator places at the
+                    // lowest free register — for leaves that coalesces onto rB (free
+                    // after the xor), reproducing mwcc, and it stays correct when an
+                    // operand is a load and rB is not free.
                     BinaryOperator::Greater => {
+                        let temp = self.fresh_virtual_general();
                         self.output.instructions.push(Instruction::Xor { a: scratch, s: left_register, b: right_register });
-                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: right_register, s: scratch, shift: 1 });
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
                         self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: left_register });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: right_register });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
                         self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
                     }
-                    // a != b : sign bit of ((b - a) | (a - b)), with a second temp
+                    // a != b : sign bit of ((b - a) | (a - b)), with a second temp.
                     _ => {
-                        let temp = (3u8..=12).find(|r| ![left_register, right_register, scratch].contains(r)).ok_or_else(|| Diagnostic::error("out of registers"))?;
+                        let temp = self.fresh_virtual_general();
                         self.output.instructions.push(Instruction::SubtractFrom { d: temp, a: left_register, b: right_register });
                         self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: right_register, b: left_register });
                         self.output.instructions.push(Instruction::Or { a: scratch, s: temp, b: scratch });
