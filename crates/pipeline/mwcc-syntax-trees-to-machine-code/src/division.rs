@@ -46,10 +46,9 @@ impl Generator {
             return Err(Diagnostic::error("division by this constant needs magic-number lowering (roadmap)"));
         }
 
-        // register divide: dividend (leaf stays, sub-expr -> scratch), then divisor.
-        let Some(dividend) = self.place_operand(left, d, false)? else {
-            return Err(Diagnostic::error("dividend needs the full register allocator (roadmap M1)"));
-        };
+        // register divide: dividend (leaf stays, sub-expr -> scratch via the
+        // allocator's virtual temporaries), then divisor.
+        let dividend = self.place_operand_or_scratch(left, d)?;
         let divisor = if let Some(register) = leaf_name(right).and_then(|name| self.lookup_general(name)) {
             register
         } else {
@@ -79,9 +78,7 @@ impl Generator {
         if !signed {
             if let Expression::IntegerLiteral(divisor) = right {
                 if *divisor >= 2 && (*divisor as u64).is_power_of_two() {
-                    let Some(source) = self.place_operand(left, destination, false)? else {
-                        return Err(Diagnostic::error("modulo value needs the full register allocator (roadmap M1)"));
-                    };
+                    let source = self.place_operand_or_scratch(left, destination)?;
                     let clear = 32 - divisor.trailing_zeros() as u8;
                     self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear });
                     return Ok(());
