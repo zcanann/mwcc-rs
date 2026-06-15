@@ -47,7 +47,7 @@ impl Generator {
         Operands::ordered(left_target, right_target)
     }
 
-    pub(crate) fn place_general_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    pub(crate) fn place_general_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
         // A dereference operand loads into a register but orders like a leaf, not
         // like a reversed sub-expression — handle it before the complexity match.
         if as_dereference(left).is_some() || as_dereference(right).is_some() {
@@ -59,7 +59,7 @@ impl Generator {
         }
         // A struct-member operand loads into a register, like a dereference.
         if as_member(left).is_some() || as_member(right).is_some() {
-            return self.place_member_operands(operator, left, right, destination);
+            return self.place_member_operands(operator, left, right);
         }
         match (is_complex(left), is_complex(right)) {
             (false, false) => {
@@ -149,15 +149,16 @@ impl Generator {
     /// a free temporary (the shared base register must survive the first load) and
     /// the second into the scratch. Subtraction loads the right operand first so
     /// `subf` computes `left - right`.
-    fn place_member_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    fn place_member_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
         let subtract = operator == BinaryOperator::Subtract;
         match (as_member(left), as_member(right)) {
             (Some((left_base, left_offset, left_type)), Some((right_base, right_offset, right_type))) => {
-                if destination == GENERAL_SCRATCH {
-                    return Err(Diagnostic::error("two members need a non-scratch destination (roadmap)"));
-                }
-                // The temporary must avoid both bases (often the same register).
-                let temp = self.free_register_avoiding(&[left_base, right_base])?;
+                // The anchor member loads into a fresh virtual the allocator places;
+                // it coalesces onto a free register that avoids both bases (which
+                // stay live for the second load) and the result register. So this
+                // no longer needs a non-scratch result, and `(p->a + p->b) * x`
+                // lowers instead of deferring.
+                let temp = self.fresh_virtual_general();
                 if subtract {
                     self.emit_member_load(right_base, right_offset, right_type, temp)?;
                     self.emit_member_load(left_base, left_offset, left_type, GENERAL_SCRATCH)?;

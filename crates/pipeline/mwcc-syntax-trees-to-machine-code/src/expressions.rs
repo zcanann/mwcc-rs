@@ -145,7 +145,7 @@ impl Generator {
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
-                let operands = self.place_general_operands(*operator, left, right, destination)?;
+                let operands = self.place_general_operands(*operator, left, right)?;
                 self.output.instructions.push(general_combine(*operator, destination, operands)?);
                 Ok(())
             }
