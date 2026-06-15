@@ -50,6 +50,9 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
     // order — reproducing mwcc's interleaving of the two phases.
     schedule_instructions(&mut generator);
     allocate_registers(&mut generator)?;
+    // Issue the epilogue's saved-LR reload right after the last call (ahead of the
+    // post-call computation), as mwcc does — a final pass on the physical stream.
+    hoist_link_register_reload(&mut generator);
 
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag
@@ -102,6 +105,15 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
 /// is tuned against the oracle.
 fn schedule_instructions(generator: &mut Generator) {
     let permutation = mwcc_vreg::schedule(&mut generator.output.instructions);
+    for relocation in &mut generator.output.relocations {
+        relocation.instruction_index = permutation[relocation.instruction_index];
+    }
+}
+
+/// Move the epilogue's saved-LR reload up to right after the last call, remapping
+/// relocation indices through the resulting permutation.
+fn hoist_link_register_reload(generator: &mut Generator) {
+    let permutation = mwcc_vreg::hoist_link_register_reload(&mut generator.output.instructions);
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }

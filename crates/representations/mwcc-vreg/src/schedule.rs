@@ -45,6 +45,56 @@ fn is_barrier(instruction: &Instruction) -> bool {
     )
 }
 
+/// Hoist the epilogue's saved-LR reload (`lwz r0, frame+4(r1)`) up to immediately
+/// after the last call, ahead of any post-call computation — reproducing mwcc,
+/// which issues that load early so its latency overlaps the post-call work. The
+/// reload is the `LoadWord { d: 0, a: 1, .. }` directly before the `mtlr`. It may
+/// move past instructions that neither read nor write r0, but must stay after the
+/// last `bl`. Returns the `old index -> new index` permutation (identity when
+/// nothing moves) so the caller can remap relocation indices.
+pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+    let identity: Vec<usize> = (0..instructions.len()).collect();
+    let Some(mtlr) = instructions.iter().position(|instruction| matches!(instruction, Instruction::MoveToLinkRegister { .. })) else {
+        return identity;
+    };
+    if mtlr == 0 {
+        return identity;
+    }
+    let reload = mtlr - 1;
+    if !matches!(instructions[reload], Instruction::LoadWord { d: 0, a: 1, .. }) {
+        return identity;
+    }
+    let Some(call) = instructions[..reload].iter().rposition(|instruction| matches!(instruction, Instruction::BranchAndLink { .. })) else {
+        return identity;
+    };
+    let target = call + 1;
+    if target >= reload {
+        return identity; // the reload already sits right after the call
+    }
+    // The reload writes r0; it can only pass post-call work that leaves r0 alone.
+    if instructions[target..reload].iter().any(touches_register_zero) {
+        return identity;
+    }
+    let moved = instructions.remove(reload);
+    instructions.insert(target, moved);
+    (0..instructions.len())
+        .map(|old| {
+            if old == reload {
+                target
+            } else if (target..reload).contains(&old) {
+                old + 1
+            } else {
+                old
+            }
+        })
+        .collect()
+}
+
+/// Whether an instruction reads or writes general register r0 (the scratch).
+fn touches_register_zero(instruction: &Instruction) -> bool {
+    register_operands(instruction).iter().any(|operand| operand.class == Class::General && operand.register == 0)
+}
+
 /// Whether the function has a forward branch — v1 leaves such functions untouched
 /// because reordering would invalidate the branch's instruction-index target.
 fn has_forward_branch(instructions: &[Instruction]) -> bool {
