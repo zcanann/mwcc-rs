@@ -246,7 +246,7 @@ impl Generator {
 
     /// The base register of a located operand (`*pointer` or `base->field`): the
     /// register holding the address it loads from.
-    fn located_base_register(&self, operand: &Expression) -> Compilation<u8> {
+    fn located_base_register(&mut self, operand: &Expression) -> Compilation<u8> {
         if let Some((base, _, _)) = as_member(operand) {
             self.member_base_register(base)
         } else if let Some(pointer) = as_dereference(operand) {

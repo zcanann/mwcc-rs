@@ -121,7 +121,12 @@ impl Parser {
             other => return Err(Diagnostic::error(format!("expected an expression, found {other}"))),
         };
         // postfix subscript `base[index]` and member access `base->field` /
-        // `base.field`, left-associative.
+        // `base.field`, left-associative. The struct tag is threaded through the
+        // chain so `a->b->c` resolves each `->` in the right struct layout.
+        let mut struct_tag = match &expression {
+            Expression::Variable(name) => self.variable_structs.get(name).cloned(),
+            _ => None,
+        };
         loop {
             match self.peek() {
                 Token::BracketOpen => {
@@ -129,32 +134,26 @@ impl Parser {
                     let index = self.expression()?;
                     self.expect(Token::BracketClose)?;
                     expression = Expression::Index { base: Box::new(expression), index: Box::new(index) };
+                    struct_tag = None;
                 }
                 Token::Arrow | Token::Dot => {
                     self.advance();
                     let field = self.parse_identifier()?;
-                    expression = self.resolve_member(expression, &field)?;
+                    let tag = struct_tag
+                        .take()
+                        .ok_or_else(|| Diagnostic::error(format!("member '{field}' on a non-struct-pointer base")))?;
+                    let layout = self.structs.get(&tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
+                    let member = layout
+                        .fields
+                        .get(&field)
+                        .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
+                    let (offset, member_type, next_tag) = (member.offset, member.member_type, member.struct_tag.clone());
+                    expression = Expression::Member { base: Box::new(expression), offset, member_type };
+                    struct_tag = next_tag;
                 }
                 _ => break,
             }
         }
         Ok(expression)
-    }
-
-    /// Resolve `base.field` / `base->field` to a [`Expression::Member`] with the
-    /// member's baked offset and type. The base must be a variable known to be a
-    /// pointer to a declared struct (single-level access; chains arrive later).
-    fn resolve_member(&self, base: Expression, field: &str) -> Compilation<Expression> {
-        let tag = match &base {
-            Expression::Variable(name) => self.variable_structs.get(name).cloned(),
-            _ => None,
-        };
-        let tag = tag.ok_or_else(|| Diagnostic::error(format!("member '{field}' on a non-struct-pointer base")))?;
-        let layout = self.structs.get(&tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
-        let member = layout
-            .fields
-            .get(field)
-            .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
-        Ok(Expression::Member { base: Box::new(base), offset: member.offset, member_type: member.member_type })
     }
 }

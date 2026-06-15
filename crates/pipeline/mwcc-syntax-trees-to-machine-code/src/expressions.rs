@@ -172,10 +172,17 @@ impl Generator {
         Ok(())
     }
 
-    /// The register holding a struct pointer for member access.
-    pub(crate) fn member_base_register(&self, base: &Expression) -> Compilation<u8> {
+    /// The register holding a struct pointer for member access. A plain variable
+    /// is in its own register; a chained base `a->b` is itself a pointer member, so
+    /// its value is loaded into the inner base register (reused) before use.
+    pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u8> {
         match base {
             Expression::Variable(name) => self.general_register_of(name),
+            Expression::Member { base: inner, offset, .. } => {
+                let register = self.member_base_register(inner)?;
+                self.output.instructions.push(Instruction::LoadWord { d: register, a: register, offset: *offset as i16 });
+                Ok(register)
+            }
             _ => Err(Diagnostic::error("struct member base must be a pointer variable (roadmap)")),
         }
     }

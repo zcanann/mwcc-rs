@@ -86,13 +86,14 @@ impl Parser {
         let mut offset: u16 = 0;
         while *self.peek() != Token::BraceClose {
             let field_type = self.parse_type()?;
+            let struct_tag = self.last_struct_tag.take();
             let field_name = self.parse_identifier()?;
             self.expect(Token::Semicolon)?;
             let size = type_size(field_type);
             // Natural alignment: a member starts at the next multiple of its size.
             let alignment = size.max(1);
             offset = offset.div_ceil(alignment) * alignment;
-            layout.fields.insert(field_name, StructField { member_type: field_type, offset });
+            layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag });
             offset += size;
         }
         self.expect(Token::BraceClose)?;
