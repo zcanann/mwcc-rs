@@ -145,14 +145,14 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let object = mwcc_machine_code_to_object::assemble_object(&machine_code, source_name, config.build.version, config.build.build);
 
     if let Some(directory) = artifacts {
-        write_artifacts(directory, config.build, &tokens, &function, &machine_code, &object);
+        write_artifacts(directory, config, &tokens, &function, &machine_code, &object);
     }
     Ok(object)
 }
 
 fn write_artifacts(
     directory: &str,
-    build: mwcc_versions::CompilerBuild,
+    config: mwcc_versions::CompilerConfig,
     tokens: &[mwcc_tokens::Token],
     function: &mwcc_syntax_trees::Function,
     machine_code: &mwcc_machine_code::MachineFunction,
@@ -164,7 +164,23 @@ fn write_artifacts(
         let _ = std::fs::write(directory.join(name), body);
     };
 
-    dump("00_build.txt", format!("{} — {} (version {:?} build {})\n", build.label, build.product, build.version, build.build));
+    // The build identity, then the resolved behavior's *active quirks* — exactly
+    // what diverges from the 2.4.x mainline for this configuration, and why. A
+    // plain mainline build lists none; a quirk-bearing one names each, tagged as
+    // a deliberate version difference or a reproduced bug.
+    let build = config.build;
+    let behavior = mwcc_versions::Behavior::resolve(&config);
+    let mut report = format!("{} — {} (version {:?} build {})\n", build.label, build.product, build.version, build.build);
+    let quirks = behavior.active_quirks();
+    if quirks.is_empty() {
+        report.push_str("active quirks: none (2.4.x mainline behavior)\n");
+    } else {
+        report.push_str("active quirks:\n");
+        for active in quirks {
+            report.push_str(&format!("  - {:?} [{:?}]: {}\n", active.quirk, active.kind, active.summary));
+        }
+    }
+    dump("00_build.txt", report);
     dump("01_tokens.txt", tokens.iter().map(|token| format!("{token}\n")).collect());
     dump("02_syntax_tree.txt", format!("{function:#?}\n"));
     dump(

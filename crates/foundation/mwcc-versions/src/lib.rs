@@ -8,11 +8,13 @@
 //! choice — so most builds use the mainline profile and the two outliers each
 //! override a single method.
 
+mod behavior;
 mod build;
 mod config;
 mod flags;
 mod profile;
 
+pub use behavior::*;
 pub use build::*;
 pub use config::*;
 pub use flags::*;

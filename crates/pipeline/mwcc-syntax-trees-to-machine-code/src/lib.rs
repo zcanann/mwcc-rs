@@ -7,7 +7,7 @@
 use mwcc_core::Compilation;
 use mwcc_machine_code::{FrameInfo, MachineFunction};
 use mwcc_syntax_trees::{Function, GlobalDeclaration};
-use mwcc_versions::CompilerConfig;
+use mwcc_versions::{Behavior, CompilerConfig};
 use std::collections::{HashMap, HashSet};
 
 mod analysis;
@@ -35,7 +35,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
         globals: globals.iter().map(|global| (global.name.clone(), global.declared_type)).collect(),
         reserved: HashSet::new(),
         frame_size: 0,
-        config,
+        behavior: Behavior::resolve(&config),
         non_leaf: false,
     };
     generator.assign_parameters(function)?;
