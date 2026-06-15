@@ -111,6 +111,12 @@ impl Generator {
     }
 
     pub(crate) fn place_float_addend(&mut self, expression: &Expression) -> Compilation<u8> {
+        // A memory-loaded addend (member, *float_ptr, or float global) goes through
+        // the scratch, like a sub-expression.
+        if self.is_float_located(expression) {
+            self.emit_located_operand(expression, FLOAT_SCRATCH)?;
+            return Ok(FLOAT_SCRATCH);
+        }
         if is_complex(expression) {
             if !fits_single_scratch(expression, true) {
                 return Err(Diagnostic::error("fused multiply-add addend needs the full register allocator (roadmap M1)"));
