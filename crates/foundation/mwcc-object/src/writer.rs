@@ -206,8 +206,13 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
 
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The
     //    unwind tables sit right after `.text`, then the `.sdata2` constant pool;
-    //    their `.rela` and everything downstream key off this order, by name.
-    let mut order: Vec<&str> = vec![".text"];
+    //    their `.rela` and everything downstream key off this order, by name. A
+    //    data-only unit (no functions) omits `.text` and the `.mwcats` machinery.
+    let has_functions = !functions.is_empty();
+    let mut order: Vec<&str> = Vec::new();
+    if has_functions {
+        order.push(".text");
+    }
     if has_frame {
         order.push("extab");
         order.push("extabindex");
@@ -221,14 +226,18 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     if has_sbss {
         order.push(".sbss");
     }
-    order.push(".mwcats.text");
+    if has_functions {
+        order.push(".mwcats.text");
+    }
     if has_text_relocations {
         order.push(".rela.text");
     }
     if has_frame {
         order.push(".relaextabindex");
     }
-    order.push(".rela.mwcats.text");
+    if has_functions {
+        order.push(".rela.mwcats.text");
+    }
     order.push(".symtab");
     order.push(".strtab");
     order.push(".shstrtab");
@@ -394,7 +403,9 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         let size = if payload.is_empty() { mem_size } else { payload.len() as u32 };
         sections.push(Section { name_offset: offset_of(name), sh_type, flags, link, info, align, entry_size, payload, size });
     };
-    push(".text", SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
+    if has_functions {
+        push(".text", SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
+    }
     if has_frame {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
         push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex, 0);
@@ -410,14 +421,18 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         // `.sbss` is NOBITS: no file bytes, but `sh_size` is the in-memory size.
         push(".sbss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, Vec::new(), sbss_size);
     }
-    push(".mwcats.text", SHT_MWCATS, 0, index_of(".text"), 0, 4, 1, mwcats, 0);
+    if has_functions {
+        push(".mwcats.text", SHT_MWCATS, 0, index_of(".text"), 0, 4, 1, mwcats, 0);
+    }
     if has_text_relocations {
         push(".rela.text", SHT_RELA, 0, symtab_section, index_of(".text"), 4, 12, rela_text, 0);
     }
     if has_frame {
         push(".relaextabindex", SHT_RELA, 0, symtab_section, index_of("extabindex"), 4, 12, rela_extabindex, 0);
     }
-    push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);
+    if has_functions {
+        push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);
+    }
     push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab, 0);
     // Metrowerks stamps string tables with sh_entsize = 1.
     push(".strtab", SHT_STRTAB, 0, 0, 0, 1, 1, strtab.bytes, 0);
