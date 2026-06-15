@@ -106,6 +106,11 @@ impl Generator {
         if self.is_global(left) || self.is_global(right) {
             return self.place_deref_global_operands(operator, left, right);
         }
+        // A dereference paired with a struct member: two located operands with
+        // different base registers, placed by the anchor model.
+        if as_member(left).is_some() || as_member(right).is_some() {
+            return self.place_located_pair_operands(operator, left, right);
+        }
         match (as_dereference(left), as_dereference(right)) {
             (Some(left_pointer), Some(right_pointer)) => {
                 // Subtraction anchors the right operand: it loads in place (into its
@@ -236,6 +241,46 @@ impl Generator {
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (false, false) => unreachable!("caller checked one side is a global"),
+        }
+    }
+
+    /// The base register of a located operand (`*pointer` or `base->field`): the
+    /// register holding the address it loads from.
+    fn located_base_register(&self, operand: &Expression) -> Compilation<u8> {
+        if let Some((base, _, _)) = as_member(operand) {
+            self.member_base_register(base)
+        } else if let Some(pointer) = as_dereference(operand) {
+            self.general_register_of_leaf(pointer)
+        } else {
+            Err(Diagnostic::error("expected a dereference or member operand"))
+        }
+    }
+
+    /// Emit the load for a located operand (`*pointer` or `base->field`) into the
+    /// given register.
+    fn emit_located_operand(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
+        if let Some((base, offset, member_type)) = as_member(operand) {
+            self.emit_member_load(base, offset, member_type, destination)
+        } else if let Some(pointer) = as_dereference(operand) {
+            self.emit_load_from_pointer(pointer, destination)
+        } else {
+            Err(Diagnostic::error("expected a dereference or member operand"))
+        }
+    }
+
+    /// Place a binary node of two located operands (a `*pointer` and a member with
+    /// different bases) by the anchor model: the anchor loads into its own base
+    /// register, the other into the scratch.
+    fn place_located_pair_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
+        let subtract = operator == BinaryOperator::Subtract;
+        let (anchor, other) = if subtract { (right, left) } else { (left, right) };
+        let anchor_register = self.located_base_register(anchor)?;
+        self.emit_located_operand(anchor, anchor_register)?;
+        self.emit_located_operand(other, GENERAL_SCRATCH)?;
+        if subtract {
+            Operands::ordered(GENERAL_SCRATCH, anchor_register)
+        } else {
+            Operands::ordered(anchor_register, GENERAL_SCRATCH)
         }
     }
 
