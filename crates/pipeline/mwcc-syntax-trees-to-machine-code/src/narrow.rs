@@ -41,6 +41,12 @@ impl Generator {
                 self.contains_narrow_leaf(condition) || self.contains_narrow_leaf(when_true) || self.contains_narrow_leaf(when_false)
             }
             Expression::Cast { operand, .. } => self.contains_narrow_leaf(operand),
+            // A narrow memory load (member or dereference of a sub-word type) is
+            // also a narrow operand for this purpose — computing with it into the
+            // scratch then truncating is the same unmodeled optimization.
+            Expression::Member { member_type, .. } => member_type.width() < 32,
+            Expression::Dereference { pointer } => self.dereferenced_width(pointer).is_some_and(|width| width < 32),
+            Expression::Index { base, .. } => self.dereferenced_width(base).is_some_and(|width| width < 32),
             _ => false,
         }
     }
