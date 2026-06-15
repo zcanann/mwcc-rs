@@ -39,6 +39,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
         next_virtual: 0,
+        register_avoid: HashMap::new(),
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
@@ -72,9 +73,15 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
 /// each migration step verified byte-exact against the oracle. Running it
 /// unconditionally keeps one pipeline (no fork between a legacy and a vreg path).
 fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
-    let liveness = mwcc_vreg::analyze(&generator.output.instructions);
+    let mut liveness = mwcc_vreg::analyze(&generator.output.instructions);
     if liveness.intervals.is_empty() {
         return Ok(()); // no virtuals — selection chose physical registers directly
+    }
+    // Apply selection's placement hints: registers a given virtual must avoid.
+    for interval in &mut liveness.intervals {
+        if let Some(avoid) = generator.register_avoid.get(&interval.vreg.id) {
+            interval.avoid = avoid.clone();
+        }
     }
     let allocation = mwcc_vreg::Allocator::allocate(
         &mwcc_vreg::LinearScan,

@@ -72,13 +72,22 @@ impl Generator {
                 self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
                 Ok(())
             }
-            // general signed branchless comparisons (leaf operands)
+            // general signed branchless comparisons. Both leaves (any operator), or
+            // the `>` idiom with a non-leaf LEFT and leaf right: that idiom uses its
+            // left twice, so the operand is kept in a register, and computing it
+            // into a virtual that *avoids the destination* leaves the destination
+            // free for the result-path temporary — reproducing mwcc (p->a > x,
+            // (a+b) > c). The other idioms use an operand once (mwcc keeps it in the
+            // scratch); those non-leaf shapes still defer rather than mismatch.
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
-                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
-                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
+                if signed_left && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
+                    && (
+                        (leaf_name(left).is_some() && leaf_name(right).is_some())
+                        || (matches!(operator, BinaryOperator::Greater)
+                            && leaf_name(left).is_none() && leaf_name(right).is_some())
+                    ) =>
             {
-                let left_register = self.general_register_of_leaf(left)?;
-                let right_register = self.general_register_of_leaf(right)?;
+                let (left_register, right_register) = self.place_compare_operands(left, right, d)?;
                 let scratch = GENERAL_SCRATCH;
                 match operator {
                     // a < b : sign bit of (((a^b)>>1) - ((a^b)&b))
@@ -200,5 +209,25 @@ impl Generator {
             (left_register, right_register)
         };
         Ok((left_placed, right_placed))
+    }
+
+    /// Place the two operands of a general signed comparison into registers. A
+    /// leaf stays in its home register; a single non-leaf operand computes into a
+    /// fresh virtual that avoids the destination, leaving the destination free for
+    /// the idiom's result-path temporary (mwcc's coalescing). The other operand,
+    /// a leaf, keeps its register. Two non-leaf operands are not handled here.
+    fn place_compare_operands(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<(u8, u8)> {
+        match (leaf_name(left).is_some(), leaf_name(right).is_some()) {
+            (true, true) => Ok((self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?)),
+            (false, true) => {
+                let right_register = self.general_register_of_leaf(right)?;
+                let left_register = self.fresh_virtual_general_avoiding(vec![destination]);
+                self.evaluate_general(left, left_register)?;
+                Ok((left_register, right_register))
+            }
+            // Only the > idiom with a non-leaf left reaches here (gated by the
+            // caller); the other non-leaf shapes are not handled yet.
+            _ => Err(Diagnostic::error("this comparison operand shape needs the full register allocator (roadmap)")),
+        }
     }
 }

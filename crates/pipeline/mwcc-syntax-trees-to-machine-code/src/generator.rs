@@ -58,6 +58,11 @@ pub(crate) struct Generator {
     /// for a fresh virtual instead of picking a physical register itself; the
     /// allocation pass assigns the physical home from liveness.
     pub(crate) next_virtual: u32,
+    /// Per-virtual placement hints: registers the allocator must avoid for a
+    /// given virtual id. Selection records these (e.g. "a comparison operand must
+    /// avoid the destination") so the allocation pass reproduces mwcc's coalescing
+    /// of result-path temporaries onto the destination register.
+    pub(crate) register_avoid: HashMap<u32, Vec<u8>>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
@@ -95,6 +100,16 @@ impl Generator {
     /// machine description reports for each operand.
     pub(crate) fn fresh_virtual_float(&mut self) -> u8 {
         let register = Reg::float(self.next_virtual);
+        self.next_virtual += 1;
+        register.to_field()
+    }
+
+    /// A fresh general virtual register that the allocator must not place in any
+    /// of `avoid` — a placement hint recorded for the allocation pass.
+    pub(crate) fn fresh_virtual_general_avoiding(&mut self, avoid: Vec<u8>) -> u8 {
+        let id = self.next_virtual;
+        self.register_avoid.insert(id, avoid);
+        let register = Reg::general(id);
         self.next_virtual += 1;
         register.to_field()
     }

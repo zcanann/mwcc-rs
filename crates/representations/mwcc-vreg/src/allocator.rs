@@ -20,18 +20,27 @@ use crate::register::{Class, VirtualRegister};
 
 /// A virtual register's lifetime, as inclusive instruction indices: defined at
 /// `start`, last read at `end`. A value used only at its definition has
-/// `start == end`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `start == end`. `avoid` lists physical registers the allocator must not use
+/// for this value — a placement hint from selection (e.g. "not the destination",
+/// so mwcc's coalescing of a result-path temp onto the destination is matched).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveInterval {
     pub vreg: VirtualRegister,
     pub start: usize,
     pub end: usize,
+    pub avoid: Vec<u8>,
 }
 
 impl LiveInterval {
     pub fn new(vreg: VirtualRegister, start: usize, end: usize) -> Self {
         debug_assert!(start <= end, "an interval ends no earlier than it starts");
-        LiveInterval { vreg, start, end }
+        LiveInterval { vreg, start, end, avoid: Vec::new() }
+    }
+
+    /// The same interval with a set of registers it must avoid.
+    pub fn avoiding(mut self, avoid: Vec<u8>) -> Self {
+        self.avoid = avoid;
+        self
     }
 }
 
@@ -144,7 +153,7 @@ impl Allocator for LinearScan {
                 .pool(class)
                 .iter()
                 .copied()
-                .find(|register| !busy.contains(register))
+                .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
                 .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?;
 
             allocation.assignments.insert(interval.vreg.id, choice);
@@ -177,6 +186,15 @@ mod tests {
         let allocation = LinearScan.allocate(&intervals, &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(3));
         assert_eq!(allocation.physical(phys(1)), Some(3)); // r3 freed and reused
+    }
+
+    #[test]
+    fn an_avoid_hint_pushes_a_value_off_a_register_it_would_otherwise_take() {
+        let constraints = RegisterConstraints::gekko();
+        // Without a hint this lone value takes r3; the hint forces it to r4.
+        let intervals = [gpr(0, 0, 2).avoiding(vec![3])];
+        let allocation = LinearScan.allocate(&intervals, &[], &constraints).unwrap();
+        assert_eq!(allocation.physical(phys(0)), Some(4));
     }
 
     #[test]
