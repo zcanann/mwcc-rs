@@ -327,6 +327,7 @@ impl Generator {
             Expression::Variable(_) => self.is_float_leaf(expression),
             Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Float)),
             Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Float)),
+            Expression::Member { member_type, .. } => *member_type == Type::Float,
             _ => false,
         }
     }
