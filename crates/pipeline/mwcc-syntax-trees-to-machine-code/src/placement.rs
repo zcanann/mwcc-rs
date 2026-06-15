@@ -100,6 +100,12 @@ impl Generator {
     /// register (the deref keeps source order); two derefs load left into the
     /// destination and right into the scratch.
     fn place_dereference_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+        // A dereference paired with a global follows the same anchor model as a
+        // member with a global: the anchor stays in a stable register, the other
+        // loads into the scratch.
+        if self.is_global(left) || self.is_global(right) {
+            return self.place_deref_global_operands(operator, left, right);
+        }
         match (as_dereference(left), as_dereference(right)) {
             (Some(left_pointer), Some(right_pointer)) => {
                 // Subtraction anchors the right operand: it loads in place (into its
@@ -230,6 +236,32 @@ impl Generator {
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (false, false) => unreachable!("caller checked one side is a global"),
+        }
+    }
+
+    /// Place a binary node with one `*pointer` operand and one global operand,
+    /// using the anchor model (anchor = left for commutative, right for subtract):
+    /// the dereference anchor loads into its pointer register, a global anchor into
+    /// a free register avoiding that pointer; the other operand loads into scratch.
+    fn place_deref_global_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
+        let subtract = operator == BinaryOperator::Subtract;
+        let (anchor, other) = if subtract { (right, left) } else { (left, right) };
+        let (anchor_register, other_register) = if let Some(pointer) = as_dereference(anchor) {
+            let pointer_register = self.general_register_of_leaf(pointer)?;
+            self.emit_load_from_pointer(pointer, pointer_register)?;
+            self.emit_global_load(leaf_name(other).unwrap(), GENERAL_SCRATCH)?;
+            (pointer_register, GENERAL_SCRATCH)
+        } else {
+            let pointer = as_dereference(other).unwrap();
+            let global_register = self.free_register_avoiding(&[pointer])?;
+            self.emit_global_load(leaf_name(anchor).unwrap(), global_register)?;
+            self.emit_load_from_pointer(pointer, GENERAL_SCRATCH)?;
+            (global_register, GENERAL_SCRATCH)
+        };
+        if subtract {
+            Operands::ordered(other_register, anchor_register)
+        } else {
+            Operands::ordered(anchor_register, other_register)
         }
     }
 
