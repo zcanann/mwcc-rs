@@ -404,6 +404,14 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
     }
 
+    /// The lowest free general register that also avoids `exclude` (e.g. an operand
+    /// register that must survive).
+    pub(crate) fn free_general_excluding(&self, exclude: u8) -> Compilation<u8> {
+        (3..=12)
+            .find(|register| *register != GENERAL_SCRATCH && *register != exclude && !self.reserved.contains(register))
+            .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
+    }
+
     /// The lowest float register (f1..=f13) that is neither reserved nor the scratch.
     pub(crate) fn lowest_free_float(&self) -> Compilation<u8> {
         (1..=13)

@@ -142,6 +142,23 @@ impl Generator {
             _ => {}
         }
 
+        // A multiply by a constant too large for `mulli` loads the constant into a
+        // register and uses `mullw`. mwcc materializes the constant in the scratch
+        // via a free register: `lis free,ha; addi r0,free,lo; mullw d,x,r0`. Only a
+        // leaf operand (which stays in its own register) is handled here; a loaded
+        // operand (member/global) needs the register allocator.
+        if operator == BinaryOperator::Multiply && !fits_signed_16(constant) {
+            if let Ok(operand_register) = self.general_register_of_leaf(variable) {
+                let low = (constant as u32 & 0xffff) as i16;
+                let high = ((constant as i32 - low as i32) >> 16) as i16;
+                let free = self.free_general_excluding(operand_register)?;
+                self.output.instructions.push(Instruction::load_immediate_shifted(free, high));
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: free, immediate: low });
+                self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: operand_register, b: GENERAL_SCRATCH });
+                return Ok(true);
+            }
+        }
+
         enum Immediate {
             Add,
             ShiftLeft(u8),
