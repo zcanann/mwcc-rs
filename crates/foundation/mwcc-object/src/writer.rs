@@ -38,37 +38,30 @@ const STV_HIDDEN: u8 = 2; // st_other visibility for the @N unwind entries
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
 /// compiler version (`02 04 0X` = 2.4.X) and byte 11 is a format marker that
 /// tracks the version line; [`comment_record`] patches them per build. After the
-/// fixed 56-byte prefix (ending `…00 00 00 01`) come `function_count + 2`
-/// eight-byte records of `00 00 00 00 00 00 00 04`, then a trailing zero word, so
-/// the record grows by eight bytes per additional function. This array is the
-/// single-function form (three records); [`comment_record`] reuses its prefix.
-const COMMENT_BASE: [u8; 84] = [
+/// fixed 56-byte prefix (ending `…00 00 00 01`) comes one eight-byte record
+/// `00 00 00 00 <alignment>` per symbol — every symbol table entry past the null
+/// and FILE entries, in order — carrying that symbol's alignment (0 for an
+/// undefined external), then a trailing zero word.
+const COMMENT_PREFIX: [u8; 56] = [
     b'C', b'o', b'd', b'e', b'W', b'a', b'r', b'r', b'i', b'o', b'r', b'\n', //
     0x02, 0x04, 0x02, 0x01, 0x01, 0x02, 0x00, 0x16, 0x2c, 0x00, 0x00, 0x00, //
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, //
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, //
-    0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01,
 ];
 
-/// The fixed prefix length: the banner, version line, and framing word ending
-/// `00 00 00 01` (the first 56 bytes of [`COMMENT_BASE`]).
-const COMMENT_PREFIX_LEN: usize = 56;
-
-/// The `.comment` record for a specific compiler version, build, and function
-/// count.
-fn comment_record(version: (u8, u8, u8), build: u16, function_count: usize) -> Vec<u8> {
-    let mut record = COMMENT_BASE[..COMMENT_PREFIX_LEN].to_vec();
+/// The `.comment` record for a specific compiler version and build, plus the
+/// per-symbol alignment values (one per symbol past null and FILE, in order).
+fn comment_record(version: (u8, u8, u8), build: u16, symbol_alignments: &[u32]) -> Vec<u8> {
+    let mut record = COMMENT_PREFIX.to_vec();
     // Byte 11 is a format marker: 0x0a for every supported build except GC/2.7
     // (build 108), which bumped it to 0x0b. Bytes 12..15 are the version itself.
     record[11] = if build == 108 { 0x0b } else { 0x0a };
     record[12] = version.0;
     record[13] = version.1;
     record[14] = version.2;
-    // One eight-byte `…04` record per function plus two fixed framing records,
-    // then a trailing zero word.
-    for _ in 0..function_count + 2 {
-        record.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 4]);
+    for &alignment in symbol_alignments {
+        record.extend_from_slice(&[0, 0, 0, 0]);
+        record.extend_from_slice(&alignment.to_be_bytes());
     }
     record.extend_from_slice(&[0, 0, 0, 0]);
     record
@@ -97,7 +90,6 @@ struct Section {
 
 pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let functions = &input.functions;
-    let comment = comment_record(input.version, input.build, functions.len());
 
     // `.text` is the functions concatenated in source order (each function's text
     // size is a multiple of 4, so they pack contiguously). Track each function's
@@ -121,12 +113,14 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     // only its size and the per-object offsets matter (no file bytes).
     let mut sbss_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut sbss_sizes: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut sbss_aligns: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut sbss_size = 0u32;
     for object in input.data_objects.iter().rev() {
         let alignment = object.alignment.max(1);
         sbss_size = sbss_size.div_ceil(alignment) * alignment;
         sbss_offsets.insert(object.name, sbss_size);
         sbss_sizes.insert(object.name, object.size);
+        sbss_aligns.insert(object.name, alignment);
         sbss_size += object.size;
     }
 
@@ -229,12 +223,23 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
+    // The `.comment` trailer carries one record per symbol *after* the null and
+    // FILE entries, holding that symbol's alignment (0 for an undefined external).
+    // Values are collected here in symbol-emission order.
+    let mut comment_values: Vec<u32> = Vec::new();
+    let section_align = |name: &str| -> u32 {
+        match name {
+            ".sdata2" | ".sbss" => 8,
+            _ => 4,
+        }
+    };
     let mut strtab = StringTable::new();
     let mut symtab = Vec::new();
     write_symbol(&mut symtab, 0, 0, 0, 0, 0, 0); // null
     write_symbol(&mut symtab, strtab.add(input.source_name), 0, 0, STT_FILE, 0, SHN_ABS);
     for name in &content_sections {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
+        comment_values.push(section_align(name));
     }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
     // then its hidden unwind entries.
@@ -246,6 +251,7 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
             symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
             let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
             write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
+            comment_values.push(constant.byte_width as u32);
         }
         constant_symbols.push(symbols);
         if let Some(frame) = &frame_numbers[index] {
@@ -254,6 +260,9 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
             write_symbol(&mut symtab, extab_name, frame.extab_entry_offset, 8, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extab") as u16);
             let extabindex_name = strtab.add(&format!("@{}", frame.extabindex));
             write_symbol(&mut symtab, extabindex_name, frame.extabindex_entry_offset, 12, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extabindex") as u16);
+            // The unwind entries are 4-aligned objects.
+            comment_values.push(4);
+            comment_values.push(4);
         } else {
             extab_entry_symbols.push(0);
         }
@@ -274,12 +283,19 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
             }
             global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
             match sbss_offsets.get(name.as_str()) {
-                Some(&offset) => write_symbol(&mut symtab, strtab.add(name), offset, sbss_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, sbss_index),
-                None => write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF),
+                Some(&offset) => {
+                    write_symbol(&mut symtab, strtab.add(name), offset, sbss_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, sbss_index);
+                    comment_values.push(sbss_aligns[name.as_str()]);
+                }
+                None => {
+                    write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+                    comment_values.push(0); // an undefined external has no alignment
+                }
             }
         }
         function_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
+        comment_values.push(4); // a function is 4-aligned
     }
     // Defined globals that no function referenced trail the function symbols, in
     // declaration order.
@@ -289,7 +305,10 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
         }
         global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(&mut symtab, strtab.add(object.name), sbss_offsets[object.name], sbss_sizes[object.name], STB_GLOBAL_OBJECT, 0, sbss_index);
+        comment_values.push(sbss_aligns[object.name]);
     }
+    // The `.comment` trailer is now fully determined by the symbol alignments.
+    let comment = comment_record(input.version, input.build, &comment_values);
 
     // 3. Relocation payloads (now that symbol indices are fixed). Each function's
     //    `.text` relocations are rebased by its `.text` offset; a relocation
