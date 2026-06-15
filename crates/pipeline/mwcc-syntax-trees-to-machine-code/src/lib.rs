@@ -42,8 +42,12 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
-    allocate_registers(&mut generator)?;
+    // Schedule on the virtual-register stream, then allocate. Ordering matters:
+    // scheduling first means physical-register reuse cannot create false
+    // dependencies that block a hoist, and allocation then colors the scheduled
+    // order — reproducing mwcc's interleaving of the two phases.
     schedule_instructions(&mut generator);
+    allocate_registers(&mut generator)?;
 
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag

@@ -77,13 +77,31 @@ fn depends_on(earlier: &Instruction, later: &Instruction) -> bool {
         || intersects(&earlier_uses, &later_defs) // WAR
 }
 
-/// Among the ready instructions (given as original indices into `run`), choose
-/// the one to issue next. **Identity policy**: the lowest original index — which
-/// reproduces the input order exactly, so the pass is a no-op until the policy is
-/// tuned against the oracle. mwcc's actual policy (issue an independent
-/// long-latency op early) replaces this.
-fn pick_ready(ready: &[usize], _instructions: &[Instruction]) -> usize {
-    ready.iter().copied().min().unwrap()
+/// The latency rank of an instruction — higher issues earlier so its result is
+/// ready by the time a later instruction needs it. mwcc hoists the long-latency
+/// integer multiply and divide ahead of the cheap operations around them; this
+/// reproduces that ordering. Everything else is rank 1 (issued in program order).
+fn latency_rank(instruction: &Instruction) -> u8 {
+    use Instruction::*;
+    match instruction {
+        DivideWord { .. } | DivideWordUnsigned { .. } | FloatDivideSingle { .. } => 3,
+        MultiplyLow { .. } | MultiplyImmediate { .. } | FloatMultiplySingle { .. }
+        | FloatMultiplyAddSingle { .. } | FloatMultiplySubtractSingle { .. }
+        | FloatNegativeMultiplySubtractSingle { .. } => 2,
+        _ => 1,
+    }
+}
+
+/// Among the ready instructions (original indices into the run), choose the one
+/// to issue next: the highest latency rank, breaking ties by the lowest original
+/// index (so equal-rank instructions keep program order, and the policy is a
+/// no-op for runs with no long-latency op to hoist).
+fn pick_ready(ready: &[usize], instructions: &[Instruction]) -> usize {
+    ready
+        .iter()
+        .copied()
+        .max_by_key(|&index| (latency_rank(&instructions[index]), std::cmp::Reverse(index)))
+        .unwrap()
 }
 
 /// List-schedule one run of schedulable instructions, given by their original
@@ -168,18 +186,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_identity_policy_leaves_a_stream_unchanged() {
+    fn an_independent_multiply_is_hoisted_ahead_of_a_cheap_op() {
+        // ((a*b)+1)*(c*d): the second product (index 2) is independent and issues
+        // before the dependent addi (index 1), hiding the multiply latency.
         let mut stream = vec![
-            Instruction::MultiplyLow { d: 3, a: 3, b: 4 },
-            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
-            Instruction::MultiplyLow { d: 0, a: 5, b: 6 },
-            Instruction::MultiplyLow { d: 3, a: 3, b: 0 },
+            Instruction::MultiplyLow { d: 3, a: 3, b: 4 },     // 0: a*b
+            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 }, // 1: +1 (needs 0)
+            Instruction::MultiplyLow { d: 0, a: 5, b: 6 },     // 2: c*d (independent)
+            Instruction::MultiplyLow { d: 3, a: 3, b: 0 },     // 3: needs 1 and 2
             Instruction::BranchToLinkRegister,
         ];
-        let original = stream.clone();
         let permutation = schedule(&mut stream);
-        assert_eq!(stream, original);
-        assert_eq!(permutation, vec![0, 1, 2, 3, 4]);
+        assert_eq!(
+            stream,
+            vec![
+                Instruction::MultiplyLow { d: 3, a: 3, b: 4 },
+                Instruction::MultiplyLow { d: 0, a: 5, b: 6 },
+                Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
+                Instruction::MultiplyLow { d: 3, a: 3, b: 0 },
+                Instruction::BranchToLinkRegister,
+            ]
+        );
+        // old index 1 (addi) moved to new position 2; old 2 (c*d) to position 1.
+        assert_eq!(permutation, vec![0, 2, 1, 3, 4]);
     }
 
     #[test]
