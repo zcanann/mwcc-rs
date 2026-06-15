@@ -6,7 +6,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::Behavior;
-use mwcc_vreg::RegisterConstraints;
+use mwcc_vreg::{Reg, RegisterConstraints};
 use crate::analysis::*;
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
@@ -54,6 +54,10 @@ pub(crate) struct Generator {
     /// Whether the function makes a call: it then saves/restores the link register
     /// around a stack frame (the non-leaf prologue/epilogue).
     pub(crate) non_leaf: bool,
+    /// The next virtual-register id to hand out. A migrated selection site asks
+    /// for a fresh virtual instead of picking a physical register itself; the
+    /// allocation pass assigns the physical home from liveness.
+    pub(crate) next_virtual: u32,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
@@ -76,6 +80,14 @@ impl Generator {
             Type::Char => self.behavior.char_is_signed,
             other => other.is_signed(),
         }
+    }
+
+    /// A fresh general-purpose virtual register, as the u8 field value selection
+    /// emits. The allocation pass resolves it to a physical register from liveness.
+    pub(crate) fn fresh_virtual_general(&mut self) -> u8 {
+        let register = Reg::general(self.next_virtual);
+        self.next_virtual += 1;
+        register.to_field()
     }
 
     /// Whether `expression` is a float-valued leaf.

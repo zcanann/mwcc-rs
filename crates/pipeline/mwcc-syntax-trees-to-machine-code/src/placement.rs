@@ -78,19 +78,17 @@ impl Generator {
                 Operands::ordered(self.general_register_of_leaf(left)?, GENERAL_SCRATCH)
             }
             (true, true) => {
-                // Compute the left side into a free temporary, keeping the right
-                // side's inputs live; then the right side into the scratch.
+                // Compute the left side into a fresh virtual register, keeping the
+                // right side's inputs live so any physical temporary it needs avoids
+                // them; then the right side into the scratch. The allocation pass
+                // gives the virtual its physical home — the first selection site
+                // migrated off inline register choice onto the allocator.
                 let temp = self.with_reserved_inputs(right, |generator| {
-                    let temp = generator.lowest_free_general()?;
+                    let temp = generator.fresh_virtual_general();
                     generator.evaluate_general(left, temp)?;
                     Ok(temp)
                 })?;
-                // The temporary holds the left result; keep it live while the right runs.
-                let temp_added = self.reserved.insert(temp);
                 self.evaluate_general(right, GENERAL_SCRATCH)?;
-                if temp_added {
-                    self.reserved.remove(&temp);
-                }
                 Operands::ordered(temp, GENERAL_SCRATCH)
             }
         }

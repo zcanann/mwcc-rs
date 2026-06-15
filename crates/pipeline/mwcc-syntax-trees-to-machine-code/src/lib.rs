@@ -38,6 +38,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], config
         behavior: Behavior::resolve(&config),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
+        next_virtual: 0,
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
