@@ -88,7 +88,7 @@ struct Section {
     size: u32,
 }
 
-pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
+pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let functions = &input.functions;
 
     // `.text` is the functions concatenated in source order (each function's text
@@ -106,40 +106,40 @@ pub fn write_object(input: &ObjectInput<'_>) -> Vec<u8> {
     let has_text_relocations = functions.iter().any(|function| !function.relocations.is_empty());
     let has_frame = functions.iter().any(|function| function.frame.is_some());
     let has_constants = functions.iter().any(|function| !function.constants.is_empty());
-    // A non-zero scalar initializer lands in `.sdata` (with bytes); everything
-    // else (uninitialized or zero) lands in `.sbss` (NOBITS).
-    let is_sdata = |object: &DataObject| matches!(object.initializer, Some(value) if value != 0);
+    // Initialized objects land in `.sdata` (with bytes); uninitialized ones in
+    // `.sbss` (NOBITS). The layout order differs between the two: mwcc places
+    // `.sdata` in FORWARD declaration order and `.sbss` in REVERSE.
+    let is_sdata = |object: &DataObject| object.initial_bytes.is_some();
     let has_sdata = input.data_objects.iter().any(is_sdata);
     let has_sbss = input.data_objects.iter().any(|object| !is_sdata(object));
 
-    // Data layout: mwcc places defined variables in *reverse* declaration order
-    // within each data section, at natural alignment. Records each object's home
-    // section, offset, size, and alignment.
     let mut data_section: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     let mut data_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut data_sizes: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut data_aligns: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    let mut sdata_size = 0u32;
-    let mut sbss_size = 0u32;
-    for object in input.data_objects.iter().rev() {
+    let mut place = |object: &DataObject<'a>, section: &'static str, cursor: &mut u32| {
         let alignment = object.alignment.max(1);
-        let (section, cursor) = if is_sdata(object) { (".sdata", &mut sdata_size) } else { (".sbss", &mut sbss_size) };
         *cursor = cursor.div_ceil(alignment) * alignment;
         data_section.insert(object.name, section);
         data_offsets.insert(object.name, *cursor);
         data_sizes.insert(object.name, object.size);
         data_aligns.insert(object.name, alignment);
         *cursor += object.size;
+    };
+    let mut sdata_size = 0u32;
+    for object in input.data_objects.iter().filter(|object| is_sdata(object)) {
+        place(object, ".sdata", &mut sdata_size);
     }
-    // `.sdata` file bytes: each initialized object's value at its offset.
+    let mut sbss_size = 0u32;
+    for object in input.data_objects.iter().rev().filter(|object| !is_sdata(object)) {
+        place(object, ".sbss", &mut sbss_size);
+    }
+    // `.sdata` file bytes: each initialized object's bytes at its offset.
     let mut sdata = vec![0u8; sdata_size as usize];
     for object in &input.data_objects {
-        if is_sdata(object) {
+        if let Some(bytes) = &object.initial_bytes {
             let offset = data_offsets[object.name] as usize;
-            let value = object.initializer.unwrap() as u64;
-            let bytes = value.to_be_bytes();
-            let width = object.size as usize;
-            sdata[offset..offset + width].copy_from_slice(&bytes[8 - width..]);
+            sdata[offset..offset + bytes.len()].copy_from_slice(bytes);
         }
     }
 

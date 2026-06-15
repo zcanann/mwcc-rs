@@ -48,11 +48,14 @@ pub struct GlobalDeclaration {
     pub name: String,
     pub is_extern: bool,
     pub is_static: bool,
+    /// Declared array length `[N]`; `Some` for an array (an empty `[]` infers it
+    /// from the initializer), `None` for a scalar.
     pub array_length: Option<u16>,
-    /// A scalar `= <constant>` initializer's value. `Some(non-zero)` places the
-    /// global in `.sdata` (initialized data); `None` or `Some(0)` leaves it in
-    /// `.sbss` (zero-initialized).
-    pub initializer: Option<i64>,
+    /// The constant initializer's element values, in order (a scalar is one
+    /// element, an aggregate `{a, b, ...}` is several). `Some` with any non-zero
+    /// value places the global in `.sdata` (initialized data); `None` or all-zero
+    /// leaves it in `.sbss` (zero-initialized).
+    pub initializer: Option<Vec<i64>>,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved

@@ -152,10 +152,28 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = unit
         .globals
         .iter()
-        .filter(|global| !global.is_extern && !global.is_static && global.array_length.is_none() && !matches!(global.declared_type, mwcc_syntax_trees::Type::Void))
-        .map(|global| {
-            let size = (global.declared_type.width() / 8) as u32;
-            mwcc_machine_code_to_object::DefinedGlobal { name: global.name.clone(), size, alignment: size, initializer: global.initializer }
+        .filter(|global| !global.is_extern && !global.is_static && !matches!(global.declared_type, mwcc_syntax_trees::Type::Void))
+        .filter_map(|global| {
+            let element_size = (global.declared_type.width() / 8) as u32;
+            let count = global.array_length.unwrap_or(1) as u32;
+            let size = element_size * count;
+            // Small data only for now; a large object (>8 bytes) goes to .data/.bss
+            // with absolute addressing — a separate piece.
+            if size > 8 {
+                return None;
+            }
+            // Serialize a non-zero initializer to big-endian bytes (zero or absent
+            // initializers leave the object in .sbss).
+            let initial_bytes = global.initializer.as_ref().filter(|values| values.iter().any(|&value| value != 0)).map(|values| {
+                let mut bytes = vec![0u8; size as usize];
+                for (index, &value) in values.iter().enumerate() {
+                    let start = index * element_size as usize;
+                    let encoded = (value as u64).to_be_bytes();
+                    bytes[start..start + element_size as usize].copy_from_slice(&encoded[8 - element_size as usize..]);
+                }
+                bytes
+            });
+            Some(mwcc_machine_code_to_object::DefinedGlobal { name: global.name.clone(), size, alignment: element_size, initial_bytes })
         })
         .collect();
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, source_name, config.build.version, config.build.build);

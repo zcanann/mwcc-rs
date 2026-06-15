@@ -51,13 +51,30 @@ impl Parser {
         }
     }
 
-    /// Parse a scalar constant initializer: an integer literal, optionally negated.
-    /// Aggregate and computed initializers are not in the subset yet.
-    fn parse_integer_initializer(&mut self) -> Compilation<i64> {
+    /// Parse a single integer constant: an integer literal, optionally negated.
+    fn parse_integer_constant(&mut self) -> Compilation<i64> {
         let negative = self.eat_keyword(Token::Minus);
         match self.advance() {
             Token::IntegerLiteral(value) => Ok(if negative { -(value as i64) } else { value as i64 }),
             other => Err(Diagnostic::error(format!("only integer-constant global initializers are supported, found {other}"))),
+        }
+    }
+
+    /// Parse a global's constant initializer: a scalar `<const>` (one element) or
+    /// an aggregate `{ <const>, ... }` (several, with an optional trailing comma).
+    fn parse_constant_initializer(&mut self) -> Compilation<Vec<i64>> {
+        if self.eat_keyword(Token::BraceOpen) {
+            let mut values = Vec::new();
+            while *self.peek() != Token::BraceClose {
+                values.push(self.parse_integer_constant()?);
+                if !self.eat_keyword(Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(Token::BraceClose)?;
+            Ok(values)
+        } else {
+            Ok(vec![self.parse_integer_constant()?])
         }
     }
 
@@ -241,22 +258,36 @@ impl Parser {
             if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals) {
                 let mut declarator_name = name;
                 loop {
-                    let array_length = if *self.peek() == Token::BracketOpen {
+                    // `[N]` (explicit length), `[]` (length inferred from the
+                    // initializer), or no brackets (a scalar).
+                    let brackets = if *self.peek() == Token::BracketOpen {
                         self.advance();
-                        let count = match self.advance() {
-                            Token::IntegerLiteral(value) => value as u16,
-                            other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
+                        let count = if *self.peek() == Token::BracketClose {
+                            None
+                        } else {
+                            Some(match self.advance() {
+                                Token::IntegerLiteral(value) => value as u16,
+                                other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
+                            })
                         };
                         self.expect(Token::BracketClose)?;
                         Some(count)
                     } else {
                         None
                     };
-                    // `= <constant>` scalar initializer (optionally negative).
+                    // `= <constant>` or `= { <constant>, ... }`.
                     let initializer = if self.eat_keyword(Token::Equals) {
-                        Some(self.parse_integer_initializer()?)
+                        Some(self.parse_constant_initializer()?)
                     } else {
                         None
+                    };
+                    let array_length = match brackets {
+                        None => None,
+                        Some(Some(count)) => Some(count),
+                        Some(None) => match &initializer {
+                            Some(values) => Some(values.len() as u16),
+                            None => return Err(Diagnostic::error("an array with no length needs an initializer")),
+                        },
                     };
                     globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer });
                     if *self.peek() == Token::Comma {

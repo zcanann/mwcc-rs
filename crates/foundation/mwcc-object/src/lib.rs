@@ -30,13 +30,15 @@ pub struct ObjectInput<'a> {
 }
 
 /// A file-scope variable defined in this object: its name, byte size, natural
-/// alignment, and optional scalar initializer. A non-zero initializer places it
-/// in `.sdata` (with the value as bytes); otherwise it lives in `.sbss` (NOBITS).
+/// alignment, and optional initialized bytes. `Some(bytes)` (any non-zero
+/// initializer) places it in `.sdata` with those bytes; `None` leaves it in
+/// `.sbss` (NOBITS, zero-initialized). `.sdata` lays out in forward declaration
+/// order, `.sbss` in reverse — matching mwcc.
 pub struct DataObject<'a> {
     pub name: &'a str,
     pub size: u32,
     pub alignment: u32,
-    pub initializer: Option<i64>,
+    pub initial_bytes: Option<Vec<u8>>,
 }
 
 /// One function's contribution to the object: its name, encoded `.text`, and the
