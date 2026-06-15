@@ -131,13 +131,19 @@ The risk is a big-bang rewrite. Avoid it:
 3. **Migrate sites one at a time, byte-exact.** — **IN PROGRESS.** First site:
    `place_general_operands`' both-complex temporary (`(a+b)*(c+d)`) — the allocator
    reproduces it exactly (temp -> r3 / r5 as the inline code chose). Then the
-   deferrals the allocator *removes*, each byte-exact for its core shape and with
-   new canaries: two-global sub-expressions (`(g+h)*x`), two-dereference
-   sub-expressions (`(*p+*q)*x`), and the add-into-scratch trap (`((a*b)+1)*c` —
-   the marioparty4 `rand.c` blocker). Where a removed deferral exposes an
-   optimizer (reassociation) or scheduler (instruction order) difference for a
-   more complex outer expression, that is a Phase E concern, not allocation —
-   correct either way.
+   deferrals the allocator *removes*, each byte-exact for its core shape, with new
+   canaries: two-global (`(g+h)*x`), two-dereference (`(*p+*q)*x`), the
+   add-into-scratch trap (`((a*b)+1)*c` — the marioparty4 `rand.c` blocker),
+   two-float-load (`(*p+*q)*z`, the first FPR-class migration), and two-member
+   (`(p->a+p->b)*x`). The migration recipe at each site: replace a
+   `lowest_free_general()` / `free_register_avoiding()` / required-non-scratch-
+   destination with `fresh_virtual_general()` (or `fresh_virtual_float()`); the
+   pass coalesces it onto the register the inline code chose. A side effect worth
+   noting: the `destination` parameter is now gone from the whole placement chain
+   — register choice left placement entirely. Where a removed deferral exposes an
+   optimizer (reassociation `(g+h)+x`) or scheduler (operand order `(*p+2.0f)*z`)
+   difference, the site is **kept deferring** rather than emit correct-but-non-
+   matching bytes — that is a Phase E concern, separated cleanly.
 4. **Still ahead:** generalize coalescing so the remaining special cases (the
    anchor model, ABS base coalescing, narrow batching) are *derived* not hard-
    coded; the call-argument base-preservation and comparison-to-bool idiom
