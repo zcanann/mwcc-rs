@@ -140,7 +140,7 @@ impl Generator {
     /// must be a leaf variable holding the address; richer addressing is on the
     /// roadmap.
     pub(crate) fn emit_load_from_pointer(&mut self, pointer: &Expression, destination: u8) -> Compilation<()> {
-        let (pointee, address) = self.pointer_leaf(pointer)?;
+        let (pointee, address) = self.resolve_pointer(pointer)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, 0));
         Ok(())
     }
@@ -168,7 +168,7 @@ impl Generator {
     /// displacement (`lwz r3,8(r3)`); a variable index is scaled by the element
     /// size and uses an indexed load (`slwi r0,rI,2; lwzx r3,rBase,r0`).
     pub(crate) fn emit_subscript(&mut self, base: &Expression, index: &Expression, destination: u8) -> Compilation<()> {
-        let (pointee, address) = self.pointer_leaf(base)?;
+        let (pointee, address) = self.resolve_pointer(base)?;
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
             let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("subscript offset out of range (roadmap)"))?;
@@ -220,7 +220,7 @@ impl Generator {
             Expression::Index { base, index } => (base.as_ref(), Some(index.as_ref())),
             _ => return Err(Diagnostic::error("store target must be `*p`, `p[i]`, a member, or a global")),
         };
-        let (pointee, address) = self.pointer_leaf(base)?;
+        let (pointee, address) = self.resolve_pointer(base)?;
         match index {
             None => {
                 let source = self.place_store_value(value, pointee)?;
@@ -348,6 +348,23 @@ impl Generator {
         let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         let pointee = location.pointee.ok_or_else(|| Diagnostic::error(format!("'{name}' is not a pointer")))?;
         Ok((pointee, location.register))
+    }
+
+    /// Resolve a pointer expression to its (pointee, address register), emitting
+    /// any load needed to materialize the address. A leaf pointer variable needs
+    /// nothing; a pointer-typed struct member (`*p->q`) loads the pointer value
+    /// into the base's register first, reusing it as mwcc does.
+    fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u8)> {
+        if let Some((member_base, offset, member_type)) = as_member(base) {
+            let pointee = match member_type {
+                Type::Pointer(pointee) => pointee,
+                _ => return Err(Diagnostic::error("dereferenced member is not a pointer")),
+            };
+            let register = self.member_base_register(member_base)?;
+            self.output.instructions.push(Instruction::LoadWord { d: register, a: register, offset: offset as i16 });
+            return Ok((pointee, register));
+        }
+        self.pointer_leaf(base)
     }
 
     pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {

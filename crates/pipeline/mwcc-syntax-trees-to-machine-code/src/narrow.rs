@@ -8,6 +8,15 @@ use crate::generator::*;
 
 impl Generator {
 
+    /// The natural width of a value loaded by dereferencing `pointer` — through a
+    /// leaf pointer variable or a pointer-typed struct member (`*p->cq`).
+    fn dereferenced_width(&self, pointer: &Expression) -> Option<u8> {
+        if let Some((_, _, Type::Pointer(pointee))) = as_member(pointer) {
+            return Some(pointee.element().width());
+        }
+        self.pointee_of(pointer).ok().map(|pointee| pointee.element().width())
+    }
+
     /// Whether the expression reads any narrow variable. A narrow return whose
     /// expression reads narrow operands relies on mwcc's optimization that elides
     /// operand extension because the result is truncated anyway — not yet modeled.
@@ -49,8 +58,8 @@ impl Generator {
         // A load already yields the value's natural width; when it matches the
         // return type no truncation is needed — load straight into the result.
         let load_width = match expression {
-            Expression::Dereference { pointer } => self.pointee_of(pointer).ok().map(|pointee| pointee.element().width()),
-            Expression::Index { base, .. } => self.pointee_of(base).ok().map(|pointee| pointee.element().width()),
+            Expression::Dereference { pointer } => self.dereferenced_width(pointer),
+            Expression::Index { base, .. } => self.dereferenced_width(base),
             Expression::Member { member_type, .. } => Some(member_type.width()),
             _ => None,
         };
