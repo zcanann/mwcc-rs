@@ -31,6 +31,30 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             position += 2;
             continue;
         }
+        // character literal: `'c'` or an escape like `'\n'`, yielding the
+        // character's integer value (an `int`-typed constant in C).
+        if character == '\'' {
+            position += 1;
+            let value = if peek(bytes, position) == Some(b'\\') {
+                position += 1;
+                let escaped = *bytes.get(position).ok_or_else(|| Diagnostic::error("unterminated character literal"))?;
+                position += 1;
+                match escaped {
+                    b'n' => 10, b't' => 9, b'r' => 13, b'0' => 0, b'a' => 7,
+                    b'b' => 8, b'f' => 12, b'v' => 11, other => other as i64,
+                }
+            } else {
+                let byte = *bytes.get(position).ok_or_else(|| Diagnostic::error("unterminated character literal"))?;
+                position += 1;
+                byte as i64
+            };
+            if peek(bytes, position) != Some(b'\'') {
+                return Err(Diagnostic::error("unterminated or multi-character literal"));
+            }
+            position += 1;
+            tokens.push(Token::IntegerLiteral(value));
+            continue;
+        }
         // identifier or keyword
         if character.is_ascii_alphabetic() || character == '_' {
             let start = position;
