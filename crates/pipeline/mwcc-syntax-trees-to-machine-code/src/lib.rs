@@ -25,6 +25,7 @@ mod placement;
 mod floats;
 mod value_tracking;
 mod switch;
+mod symbol_order;
 
 use generator::Generator;
 
@@ -49,6 +50,9 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
+    // The names this function references, in mwcc's symbol-table order (an AST
+    // traversal); the writer assigns its external/global symbols in this order.
+    generator.output.symbol_order = symbol_order::referenced_names(function);
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled

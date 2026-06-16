@@ -362,16 +362,41 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     let mut function_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
+        // Assign this function's referenced externals in mwcc's symbol-table order
+        // (its AST `symbol_order`) for the names it lists, then any remaining in
+        // relocation order so nothing is missed. `.text` reference (offset) order
+        // does not match mwcc's symbol order, so we cannot key off the relocations.
+        let external_targets: std::collections::HashSet<&str> = function
+            .relocations
+            .iter()
+            .filter_map(|relocation| match &relocation.target {
+                RelocationTarget::External(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut ordered: Vec<&str> = Vec::new();
+        let mut listed = std::collections::HashSet::new();
+        for name in &function.symbol_order {
+            if external_targets.contains(name.as_str()) && listed.insert(name.as_str()) {
+                ordered.push(name.as_str());
+            }
+        }
         for relocation in &function.relocations {
-            let RelocationTarget::External(name) = &relocation.target else { continue };
-            if global_symbols.contains_key(name.as_str()) {
+            if let RelocationTarget::External(name) = &relocation.target {
+                if listed.insert(name.as_str()) {
+                    ordered.push(name.as_str());
+                }
+            }
+        }
+        for name in ordered {
+            if global_symbols.contains_key(name) {
                 continue;
             }
-            global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-            if let Some(&offset) = data_offsets.get(name.as_str()) {
-                let section = index_of(data_section[name.as_str()]) as u16;
-                write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name.as_str()], STB_GLOBAL_OBJECT, 0, section);
-                comment_values.push(data_aligns[name.as_str()]);
+            global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+            if let Some(&offset) = data_offsets.get(name) {
+                let section = index_of(data_section[name]) as u16;
+                write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name], STB_GLOBAL_OBJECT, 0, section);
+                comment_values.push(data_aligns[name]);
             } else {
                 write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
                 comment_values.push(0); // an undefined external has no alignment

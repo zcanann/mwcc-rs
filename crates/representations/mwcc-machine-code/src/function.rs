@@ -46,6 +46,11 @@ pub struct MachineFunction {
     /// A dense `switch`'s jump table; `None` unless the function dispatches through
     /// one. The writer materializes it as an anonymous `@N` object in `.data`.
     pub jump_table: Option<JumpTable>,
+    /// Referenced symbol names (globals and callees) in mwcc's symbol-table order —
+    /// an AST traversal, NOT `.text` reference order. The writer assigns this
+    /// function's external/global symbol indices in this order (see the codegen's
+    /// `symbol_order`), falling back to relocation order for anything not listed.
+    pub symbol_order: Vec<String>,
 }
 
 impl MachineFunction {
@@ -59,6 +64,7 @@ impl MachineFunction {
             has_float_branch: false,
             frame: None,
             jump_table: None,
+            symbol_order: Vec::new(),
         }
     }
 

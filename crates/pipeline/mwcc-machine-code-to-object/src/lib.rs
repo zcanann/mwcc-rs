@@ -64,6 +64,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 entries: table.entries.clone(),
                 anonymous_offset: table.anonymous_offset,
             }),
+            symbol_order: function.symbol_order.clone(),
         })
         .collect();
     let data_objects = defined_globals

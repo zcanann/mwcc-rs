@@ -64,6 +64,11 @@ pub struct FunctionObject<'a> {
     /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
     /// function, and resolves this function's `JumpTable` `.text` relocations.
     pub jump_table: Option<JumpTable>,
+    /// The names this function references (globals/callees) in mwcc's symbol-table
+    /// order — an AST traversal, not `.text` reference order. The writer assigns
+    /// this function's external/global symbols in this order, with a relocation-
+    /// order fallback for anything not listed.
+    pub symbol_order: Vec<String>,
 }
 
 /// A dense `switch`'s jump table — one `.text` body offset per index, plus how far
