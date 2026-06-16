@@ -49,16 +49,20 @@ pub struct Flags {
     pub optimization: Optimization,
     pub global_addressing: GlobalAddressing,
     pub char_default: CharDefault,
+    /// `-inline …,deferred`: deferred inlining emits the object's functions in
+    /// REVERSE definition order (and thus their symbols/records too).
+    pub inline_deferred: bool,
 }
 
 impl Default for Flags {
     /// The configuration the canary corpus is built with: `-O4,p`, small-data on,
-    /// plain `char` per the build default.
+    /// plain `char` per the build default, immediate (non-deferred) inlining.
     fn default() -> Self {
         Flags {
             optimization: Optimization::O4,
             global_addressing: GlobalAddressing::SmallData,
             char_default: CharDefault::BuildDefault,
+            inline_deferred: false,
         }
     }
 }

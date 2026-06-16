@@ -58,9 +58,10 @@ if [[ ! -s "$dir/ctx.i" ]]; then echo "preprocess produced no .i"; exit 1; fi
 [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected ctx.c"; exit 1; }
 
 # 3b. Our object. Feed the preprocessed text under the name ctx.c so our FILE
-#     symbol matches the reference's (which compiled ctx.c).
+#     symbol matches the reference's (which compiled ctx.c). Pass the same flags
+#     the real compiler got — our mwcc models the ones it knows and ignores the rest.
 mkdir -p "$dir/ours" && cp "$dir/ctx.i" "$dir/ours/ctx.c"
-if ! "$ours" --build "GC/$version" -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
+if ! "$ours" --build "GC/$version" "${base[@]}" "${extra[@]}" -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
   echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   exit 0
 fi

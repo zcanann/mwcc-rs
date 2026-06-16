@@ -56,6 +56,13 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => CharDefault::BuildDefault,
                 };
             }
+            // `-inline …`: a `deferred` setting emits functions in reverse order.
+            "-inline" => {
+                index += 1;
+                if arguments.get(index).is_some_and(|value| value.split(',').any(|part| part == "deferred")) {
+                    invocation.flags.inline_deferred = true;
+                }
+            }
             // `-sdata N`: a threshold of zero addresses globals absolutely.
             "-sdata" => {
                 index += 1;
@@ -149,11 +156,16 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         .chain(unit.functions.iter().map(|function| (function.name.clone(), function.return_type)))
         .collect();
     // Lower every function definition in source order; they share one object.
-    let machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
+    let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
         .functions
         .iter()
         .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, config))
         .collect::<Compilation<_>>()?;
+    // Deferred inlining (`-inline …,deferred`) emits the object's functions — and
+    // hence their `.text`, symbols, and metadata records — in reverse order.
+    if config.flags.inline_deferred {
+        machine_functions.reverse();
+    }
     // File-scope variables defined here (not `extern`/`static`, scalar, no array)
     // are placed in `.sbss` as defined symbols; their declaration order is kept so
     // the writer can lay them out (in reverse) the way mwcc does.
