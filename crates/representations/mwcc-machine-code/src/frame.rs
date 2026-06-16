@@ -15,10 +15,11 @@ pub struct FrameInfo {
     pub saved_gpr_count: u8,
     /// Number of callee-saved float registers stored (f31, f30, … downward).
     pub saved_fpr_count: u8,
-    /// Whether the function both makes a call and uses the FPU. This sets one bit
-    /// in the `extab` header independent of whether any FPR is actually saved
-    /// (a float-returning non-leaf sets it even with zero saved FPRs).
-    pub fpu_in_non_leaf: bool,
+    /// Whether the function uses the FPU. This sets one bit in the `extab` header
+    /// independent of whether any FPR is actually saved — a float-returning
+    /// non-leaf sets it with zero saved FPRs, and so does a leaf with a frame that
+    /// touches the FPU (e.g. an int<->float conversion's stack bounce).
+    pub uses_fpu: bool,
 }
 
 impl FrameInfo {
@@ -28,7 +29,7 @@ impl FrameInfo {
     pub fn extab_header(&self) -> u32 {
         ((self.saved_gpr_count as u32) << 27)
             | ((self.saved_fpr_count as u32) << 22)
-            | if self.fpu_in_non_leaf { 0x0002_0000 } else { 0 }
+            | if self.uses_fpu { 0x0002_0000 } else { 0 }
             | 0x0008_0000
     }
 }

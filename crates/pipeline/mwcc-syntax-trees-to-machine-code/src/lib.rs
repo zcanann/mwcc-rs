@@ -67,11 +67,16 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // yet save callee registers, so the saved counts are zero today; the FPU flag
     // is set for a non-leaf function that touches the FPU.
     if generator.frame_size != 0 {
-        let uses_fpu = generator.output.instructions.iter().any(|instruction| instruction.is_floating_point());
+        // The extab FPU flag is set for a non-leaf that touches the FPU, and also
+        // for a leaf-with-frame that uses single-precision float arithmetic (an
+        // `int`->`float` conversion's `fsubs`) — but not a double-only or
+        // convert-to-int frame (`fsub`/`fctiwz` leave it clear).
+        let touches_fpu = generator.output.instructions.iter().any(|instruction| instruction.is_floating_point());
+        let single_arithmetic = generator.output.instructions.iter().any(|instruction| instruction.is_single_precision_arithmetic());
         generator.output.frame = Some(FrameInfo {
             saved_gpr_count: 0,
             saved_fpr_count: 0,
-            fpu_in_non_leaf: generator.non_leaf && uses_fpu,
+            uses_fpu: (generator.non_leaf && touches_fpu) || single_arithmetic,
         });
     }
     Ok(generator.output)

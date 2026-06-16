@@ -198,6 +198,24 @@ impl Instruction {
         Instruction::Or { a, s, b: s }
     }
 
+    /// Whether this is a single-precision float arithmetic instruction (opcode 59).
+    /// mwcc sets the `extab` FPU flag for a leaf-with-frame that uses one of these
+    /// (e.g. an `int`->`float` conversion's `fsubs`), but NOT for a double-only or
+    /// convert-to-int frame (`fsub`/`fctiwz` leave the flag clear).
+    pub fn is_single_precision_arithmetic(&self) -> bool {
+        use Instruction::*;
+        matches!(
+            self,
+            FloatAddSingle { .. }
+                | FloatSubtractSingle { .. }
+                | FloatMultiplySingle { .. }
+                | FloatDivideSingle { .. }
+                | FloatMultiplyAddSingle { .. }
+                | FloatMultiplySubtractSingle { .. }
+                | FloatNegativeMultiplySubtractSingle { .. }
+        )
+    }
+
     /// Whether this is a floating-point operation (FPR loads/stores, arithmetic,
     /// moves, conversions, compares). Used to set the `extab` "uses FPU" flag.
     pub fn is_floating_point(&self) -> bool {
