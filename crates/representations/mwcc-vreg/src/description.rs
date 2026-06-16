@@ -161,7 +161,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         MoveToLinkRegister { s } => visit(U, G, s),
         // No register fields: branches and the call (its ABI registers are implicit).
         BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | BranchToLinkRegister
-        | BranchAndLink { .. } => {}
+        | Branch { .. } | BranchAndLink { .. } => {}
     }
 }
 

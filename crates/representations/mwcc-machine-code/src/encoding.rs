@@ -102,6 +102,7 @@ impl Instruction {
             Instruction::CompareLogicalWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
             // resolved positionally in encode_text
             Instruction::BranchConditionalForward { .. } => 0,
+            Instruction::Branch { .. } => 0,
             Instruction::BranchConditionalToLinkRegister { options, condition_bit } => {
                 (19 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | (16 << 1)
             }

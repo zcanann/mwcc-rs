@@ -24,6 +24,7 @@ mod casts;
 mod placement;
 mod floats;
 mod value_tracking;
+mod switch;
 
 use generator::Generator;
 

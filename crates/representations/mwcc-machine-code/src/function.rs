@@ -66,6 +66,10 @@ impl MachineFunction {
                     let offset = (target as i64 - index as i64) * 4;
                     (16 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | ((offset as u32) & 0xfffc)
                 }
+                Instruction::Branch { target } => {
+                    let offset = (target as i64 - index as i64) * 4;
+                    (18 << 26) | ((offset as u32) & 0x03ff_fffc)
+                }
                 ref other => other.encode(),
             };
             bytes.extend_from_slice(&word.to_be_bytes());

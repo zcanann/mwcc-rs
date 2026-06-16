@@ -40,7 +40,7 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | LoadFloatSingleIndexed { .. }
             | FloatCompareOrdered { .. } | CompareWord { .. } | CompareWordImmediate { .. }
             | CompareLogicalWord { .. } | CompareLogicalWordImmediate { .. }
-            | BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. }
+            | BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | Branch { .. }
             | BranchToLinkRegister | BranchAndLink { .. } | MoveFromLinkRegister { .. } | MoveToLinkRegister { .. }
     )
 }
@@ -98,7 +98,7 @@ fn touches_register_zero(instruction: &Instruction) -> bool {
 /// Whether the function has a forward branch — v1 leaves such functions untouched
 /// because reordering would invalidate the branch's instruction-index target.
 fn has_forward_branch(instructions: &[Instruction]) -> bool {
-    instructions.iter().any(|instruction| matches!(instruction, Instruction::BranchConditionalForward { .. }))
+    instructions.iter().any(|instruction| matches!(instruction, Instruction::BranchConditionalForward { .. } | Instruction::Branch { .. }))
 }
 
 /// The (class, register) sets an instruction defines and uses.

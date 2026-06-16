@@ -47,6 +47,24 @@ impl Generator {
         if self.try_value_tracking(function)? {
             return Ok(());
         }
+        // A function whose body is a single `switch` lowers to the dispatch tree:
+        // the comparisons, then the case bodies, then the default (the `default:`
+        // arm if present, else the function's trailing `return`). The cases and
+        // default each end in their own `blr`, so this owns the whole body.
+        if let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() {
+            if function.guards.is_empty() && function.locals.is_empty() && !function_makes_call(function) {
+                let default_expression = default
+                    .as_ref()
+                    .or(function.return_expression.as_ref())
+                    .ok_or_else(|| Diagnostic::error("a switch with no default needs a trailing return"))?;
+                let result = match function.return_type {
+                    Type::Float | Type::Double => return Err(Diagnostic::error("a floating-point switch result is not supported yet (roadmap)")),
+                    Type::Void => return Err(Diagnostic::error("a void switch is not supported yet (roadmap)")),
+                    _ => Eabi::general_result().number,
+                };
+                return self.emit_switch(scrutinee, arms, default_expression, function.return_type, result);
+            }
+        }
         // A function that calls is non-leaf: save the link register around a 16-byte
         // frame before doing anything else.
         if function_makes_call(function) {

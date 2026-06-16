@@ -162,6 +162,10 @@ pub enum Instruction {
     /// is the PowerPC BO field, `condition_bit` the BI field (cr0: 0=LT,1=GT,2=EQ).
     /// The byte offset is resolved at encode time from the instruction positions.
     BranchConditionalForward { options: u8, condition_bit: u8, target: usize },
+    /// An unconditional branch to another instruction (by index). `b target`; the
+    /// byte displacement is resolved at encode time from the instruction positions.
+    /// Used by the `switch` dispatch to jump to a case body or the default.
+    Branch { target: usize },
     /// `bclr BO, BI` — conditional return (e.g. `bnelr`).
     BranchConditionalToLinkRegister { options: u8, condition_bit: u8 },
     /// `blr` — return to link register.
