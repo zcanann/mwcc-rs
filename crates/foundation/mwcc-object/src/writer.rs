@@ -479,7 +479,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
 
     // 5. `.shstrtab` — section names in section order; record each name's offset.
     let mut shstrtab = StringTable::new();
-    let name_offsets: Vec<u32> = order.iter().map(|name| shstrtab.add(name)).collect();
+    // With the small-data area off (`-sdata 0`), the defined-data sections are
+    // named `.bss`/`.data` rather than `.sbss`/`.sdata` (identical otherwise). The
+    // name only appears in `.shstrtab`, so map it here and keep the internal keys.
+    let name_offsets: Vec<u32> = order
+        .iter()
+        .map(|name| {
+            let display = match *name {
+                ".sbss" if !input.small_data => ".bss",
+                ".sdata" if !input.small_data => ".data",
+                other => other,
+            };
+            shstrtab.add(display)
+        })
+        .collect();
     let offset_of = |name: &str| name_offsets[order.iter().position(|entry| *entry == name).unwrap()];
 
     // 6. Assemble the full section table (NULL first), each with its payload.

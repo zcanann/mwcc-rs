@@ -27,6 +27,10 @@ pub struct ObjectInput<'a> {
     /// order. Each becomes a defined symbol in a data section; uninitialized ones
     /// live in `.sbss`. mwcc lays them out in *reverse* declaration order.
     pub data_objects: Vec<DataObject<'a>>,
+    /// Whether the small-data area is in use (the default). With `-sdata 0` it is
+    /// off, and the data sections are named `.bss`/`.data` instead of
+    /// `.sbss`/`.sdata` (identical type/flags/alignment otherwise).
+    pub small_data: bool,
 }
 
 /// A file-scope variable defined in this object: its name, byte size, natural

@@ -23,7 +23,7 @@ pub struct DefinedGlobal {
 /// `version` is the compiler version being reproduced, stamped into `.comment`.
 /// The functions share one `.text`, one `.sdata2` constant pool, one
 /// `.mwcats.text`, the unwind sections, and the `.sbss` data section.
-pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[DefinedGlobal], source_name: &str, version: (u8, u8, u8), build: u16) -> Vec<u8> {
+pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[DefinedGlobal], source_name: &str, version: (u8, u8, u8), build: u16, small_data: bool) -> Vec<u8> {
     // The encoded text is owned here so the borrowed `FunctionObject` can point at
     // it for the lifetime of the call.
     let texts: Vec<Vec<u8>> = functions.iter().map(|function| function.encode_text()).collect();
@@ -71,5 +71,5 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .iter()
         .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone() })
         .collect();
-    mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects })
+    mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data })
 }
