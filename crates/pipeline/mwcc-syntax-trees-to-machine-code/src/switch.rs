@@ -77,12 +77,12 @@ impl Generator {
         // that small. A wider span is sometimes a jump table — a
         // distribution-dependent decision (`{0,2,4,6}` tables but `{0,1,2,6}` does
         // not). The one wide-span shape that is *always* a table is a CONTIGUOUS run
-        // of >= 7 cases; handle that (zero-based, scrutinee in r3) and defer the rest
-        // (never a non-matching tree). `sorted` is ascending, so span = last - first + 1.
+        // of >= 7 cases (any base); handle that and defer the rest (never a
+        // non-matching tree). `sorted` is ascending, so span = last - first + 1.
         let span = sorted[sorted.len() - 1].value - sorted[0].value + 1;
         if span > 6 {
             let contiguous = span == sorted.len() as i64;
-            if contiguous && sorted.len() >= 7 && sorted[0].value == 0 && register == result {
+            if contiguous && sorted.len() >= 7 && register == result {
                 return self.emit_jump_table(register, &sorted, default, default_is_labeled, return_type, result);
             }
             return Err(Diagnostic::error("wide-span switch (jump table) not implemented for this shape yet (roadmap)"));
@@ -126,14 +126,17 @@ impl Generator {
         Ok(())
     }
 
-    /// Emit the jump-table dispatch for a contiguous, zero-based, >= 7-case switch
-    /// (the wide-span shape mwcc always tables). The scrutinee is the table index:
+    /// Emit the jump-table dispatch for a contiguous, >= 7-case switch (the
+    /// wide-span shape mwcc always tables). The scrutinee indexes the table:
     ///
     ///   cmplwi r3, max ; bgt default ; lis r4, table@ha ; slwi r0, r3, 2
     ///   addi r3, r4, table@lo ; lwzx r0, r3, r0 ; mtctr r0 ; bctr
     ///
-    /// followed by the case bodies in value order and the default. The table itself
-    /// (one `.text` body offset per index) is recorded on the function; the writer
+    /// followed by the case bodies in value order and the default. A base of 0..2
+    /// indexes by the scrutinee directly (the table spans 0..max, its low entries
+    /// pointing at the default); a negative or >= 3 base is first rebased to zero
+    /// (`addi r0, r3, -base`, the table holding exactly the cases). The table (one
+    /// `.text` body offset per index) is recorded on the function; the writer
     /// materializes it as an anonymous `@N` object in `.data` and fills in the two
     /// `@N` address relocations (`lis`/`addi`) and the per-entry `ADDR32` relocations.
     fn emit_jump_table(
@@ -145,29 +148,46 @@ impl Generator {
         return_type: Type,
         result: u8,
     ) -> Compilation<()> {
+        let min = sorted[0].value;
         let max = sorted[sorted.len() - 1].value;
-        // Bounds check: an unsigned compare catches both `x > max` and `x < 0`.
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: register, immediate: max as u16 });
+        // mwcc rebases the index only when it must (a negative index) or when it
+        // saves enough table entries (a base of 3+); a base of 0..2 is padded.
+        let subtract = min < 0 || min >= 3;
+        let bound = if subtract { max - min } else { max };
+        let negated_base = -min;
+        if bound > u16::MAX as i64 || (subtract && (negated_base < i16::MIN as i64 || negated_base > i16::MAX as i64)) {
+            return Err(Diagnostic::error("switch jump-table index/base out of immediate range (roadmap)"));
+        }
+
+        // `index_register` holds the 0-based index; `table_register` builds the
+        // table address. Rebasing frees the scrutinee register (so `lis` reuses it);
+        // otherwise the scrutinee stays live for the `slwi`, so `lis` uses r4.
+        let (index_register, table_register) = if subtract {
+            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: register, immediate: negated_base as i16 });
+            (0, 3)
+        } else {
+            (register, 4)
+        };
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: index_register, immediate: bound as u16 });
         let bgt_index = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options: BGT.0, condition_bit: BGT.1, target: 0 });
-        // Table base address (`lis r4, @ha` / `addi r3, r4, @lo`) and the index scale.
         self.record_target(RelocationKind::Addr16Ha, RelocationTarget::JumpTable);
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: register, shift: 2 });
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: table_register, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: index_register, shift: 2 });
         self.record_target(RelocationKind::Addr16Lo, RelocationTarget::JumpTable);
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: table_register, immediate: 0 });
         self.output.instructions.push(Instruction::LoadWordIndexed { d: 0, a: 3, b: 0 });
         self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
         self.output.instructions.push(Instruction::BranchToCountRegister);
 
-        // Case bodies in value order (== index order, since contiguous zero-based),
-        // then the default. The table entry for index i is its body's byte offset.
-        let mut entries = vec![0u32; sorted.len()];
-        for (index, arm) in sorted.iter().enumerate() {
-            entries[index] = self.output.instructions.len() as u32 * 4;
+        // Case bodies in value order, then the default; record each value's offset.
+        let mut body_offset = std::collections::HashMap::new();
+        for arm in sorted {
+            body_offset.insert(arm.value, self.output.instructions.len() as u32 * 4);
             self.evaluate_tail(&arm.result, return_type, result)?;
             self.output.instructions.push(Instruction::BranchToLinkRegister);
         }
+        let default_offset = self.output.instructions.len() as u32 * 4;
         let default_index = self.output.instructions.len();
         self.evaluate_tail(default, return_type, result)?;
         self.output.instructions.push(Instruction::BranchToLinkRegister);
@@ -175,9 +195,19 @@ impl Generator {
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bgt_index] {
             *target = default_index;
         }
-        // mwcc numbers the table's `@N` past one label per case plus the dispatch,
+        // The table runs over indices 0..=bound: a rebased index `i` is value
+        // `min + i`; an un-rebased index is value `i`. An absent value (the padded
+        // low entries) points at the default.
+        let entries: Vec<u32> = (0..=bound)
+            .map(|i| {
+                let value = if subtract { min + i } else { i };
+                *body_offset.get(&value).unwrap_or(&default_offset)
+            })
+            .collect();
+        // mwcc numbers the table's `@N` past one label per case (not per table
+        // entry — a padded table has more entries than cases) plus the dispatch,
         // and one more when the default is an explicit `default:` label.
-        let anonymous_offset = entries.len() as u32 + 1 + if default_is_labeled { 1 } else { 0 };
+        let anonymous_offset = sorted.len() as u32 + 1 + if default_is_labeled { 1 } else { 0 };
         self.output.jump_table = Some(JumpTable { entries, anonymous_offset });
         Ok(())
     }
