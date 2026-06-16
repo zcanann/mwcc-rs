@@ -71,10 +71,15 @@ impl Generator {
                 return Err(Diagnostic::error("duplicate switch case values"));
             }
         }
-        // n <= 6 uses the comparison tree; a larger/denser switch uses a jump table
-        // (roadmap), so defer it.
-        if sorted.len() > 6 {
-            return Err(Diagnostic::error("large/dense switch (jump table) is not implemented yet (roadmap)"));
+        // A switch whose case values span at most 6 (so a jump table would hold at
+        // most 6 entries) is *always* the comparison tree; mwcc never tables a span
+        // that small. A wider span is sometimes a jump table — a
+        // distribution-dependent decision (`{0,2,4,6}` tables but `{0,1,2,6}` does
+        // not) — so defer the whole wide-span family for now (never a non-matching
+        // tree). `sorted` is ascending, so the span is last - first + 1.
+        let span = sorted[sorted.len() - 1].value - sorted[0].value + 1;
+        if span > 6 {
+            return Err(Diagnostic::error("wide-span switch (jump table) is not implemented yet (roadmap)"));
         }
         // The tests are `cmpwi v` and `cmpwi v+1`, so both must fit the signed
         // 16-bit immediate.
