@@ -197,8 +197,11 @@ impl Parser {
                     let _ = self.eat_keyword(Token::KeywordInt);
                     Type::Short
                 }
+                // `signed`, `signed int`, `signed long [long] [int]` — all 32-bit
+                // signed on this target.
                 _ => {
-                    let _ = self.eat_keyword(Token::KeywordInt) || self.eat_word("long");
+                    while self.eat_word("long") {}
+                    let _ = self.eat_keyword(Token::KeywordInt);
                     Type::Int
                 }
             },
