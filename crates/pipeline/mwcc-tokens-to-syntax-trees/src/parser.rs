@@ -35,6 +35,10 @@ pub(crate) struct Parser {
     /// Set by [`Parser::parse_type`] when it just parsed a `struct Name*`, so the
     /// declarator parser can associate the variable name with the struct tag.
     pub(crate) last_struct_tag: Option<String>,
+    /// Set by [`Parser::parse_type`] when the type carried a leading `const`. It is
+    /// transparent on a parameter/local/return type, but on a file-scope global it
+    /// changes the section (read-only) — so the global path defers when it is set.
+    pub(crate) last_type_was_const: bool,
 }
 
 impl Parser {

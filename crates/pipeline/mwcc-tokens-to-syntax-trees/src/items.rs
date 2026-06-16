@@ -112,6 +112,10 @@ impl Parser {
 
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
+        // Leading qualifiers: `const`/`register` are transparent to codegen (`const`
+        // is noted for the global path, which defers a read-only global); `volatile`
+        // changes access semantics (memory accesses can't be elided), so defer it.
+        self.skip_type_qualifiers()?;
         // `struct Name*` — a pointer to a (already declared) struct. The tag is
         // stashed in `last_struct_tag` for the declarator parser to record.
         if *self.peek() == Token::KeywordStruct {
@@ -318,6 +322,11 @@ impl Parser {
             // initialized global `type name = …;` is not in the subset yet and
             // falls through to the function path, which reports it.)
             if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals) {
+                // A `const` file-scope global lands in a read-only section (and may
+                // be folded into its readers), which isn't modeled — defer it.
+                if self.last_type_was_const {
+                    return Err(Diagnostic::error("const file-scope global (read-only section) is not supported yet (roadmap)"));
+                }
                 let mut declarator_name = name;
                 loop {
                     // `[N]` (explicit length), `[]` (length inferred from the
@@ -507,9 +516,35 @@ impl Parser {
             | Token::KeywordFloat
             | Token::KeywordVoid
             | Token::KeywordStruct => true,
-            // The `long`/`signed`/`double` specifier words and any typedef name.
-            Token::Identifier(word) => word == "long" || word == "signed" || word == "double" || self.typedefs.contains_key(word),
+            // The `long`/`signed`/`double` specifier words, the `const`/`volatile`/
+            // `register` qualifiers, and any typedef name.
+            Token::Identifier(word) => {
+                matches!(word.as_str(), "long" | "signed" | "double" | "const" | "volatile" | "register")
+                    || self.typedefs.contains_key(word)
+            }
             _ => false,
+        }
+    }
+
+    /// Consume a run of leading qualifier / storage-class words. `const` (noted in
+    /// `last_type_was_const`) and `register` are ignored; `volatile` is deferred
+    /// (its access semantics aren't modeled yet).
+    pub(crate) fn skip_type_qualifiers(&mut self) -> Compilation<()> {
+        self.last_type_was_const = false;
+        loop {
+            match self.peek() {
+                Token::Identifier(word) if word == "const" => {
+                    self.last_type_was_const = true;
+                    self.advance();
+                }
+                Token::Identifier(word) if word == "register" => {
+                    self.advance();
+                }
+                Token::Identifier(word) if word == "volatile" => {
+                    return Err(Diagnostic::error("volatile is not supported yet (roadmap)"));
+                }
+                _ => return Ok(()),
+            }
         }
     }
 }

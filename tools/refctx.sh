@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Real reference-TU A/B harness.
+#
+# Compiles one source file from a decomp reference_project through both the real
+# mwcceppc and our mwcc, and compares the objects — the path toward matching whole
+# reference projects 1:1.
+#
+# Because our mwcc does NOT preprocess, the input is fully preprocessed first:
+#   1. tools/decompctx.py inlines every #include into one self-contained file
+#      (sidesteps wibo's inability to resolve -i access paths),
+#   2. real mwcceppc -E expands the remaining macros/#defines to a clean .i,
+#   3. both compilers consume that .i.
+#
+# Usage:
+#   tools/refctx.sh <project_dir> <src/file.c> [version] [extra cflags…]
+# Example:
+#   tools/refctx.sh ../Metrowerks/reference_projects/marioparty4 \
+#       src/odenotstub/odenotstub.c 2.6 -inline auto,deferred
+#
+# Runs wibo, so do NOT run it while a full oracle sweep is in progress.
+set -euo pipefail
+
+project="${1:?usage: refctx.sh <project_dir> <src/file.c> [version] [cflags…]}"
+src="${2:?need a source file relative to the project}"
+version="${3:-2.6}"
+shift $(( $# < 3 ? $# : 3 ))
+extra=("$@")
+
+FFCC="${FFCC:-/Users/zcanann/Documents/projects/FFCC-Decomp}"
+wibo="$FFCC/build/tools/wibo"
+sjis="$FFCC/build/tools/sjiswrap.exe"
+compiler="$FFCC/build/compilers/GC/$version/mwcceppc.exe"
+objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
+here="$(cd "$(dirname "$0")/.." && pwd)"
+ours="$here/target/release/mwcc"
+
+project="$(cd "$project" && pwd)"
+dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"
+trap 'rm -rf "$dir"' EXIT
+
+# 1. Inline includes into a self-contained file (run from the project root).
+( cd "$project" && python3 tools/decompctx.py "$src" -I include -o "$dir/ctx.c" ) >/dev/null 2>&1 \
+  || { echo "decompctx failed for $src"; exit 1; }
+
+# Base flags shared by every reference TU; the caller adds the per-group extras.
+base=(-nodefaults -proc gekko -align powerpc -enum int -fp hardware \
+  -Cpp_exceptions off -O4,p -inline auto -maxerrors 1 -nosyspath -RTTI off \
+  -fp_contract on -str reuse)
+
+# 2. Preprocess the self-contained file to a clean .i (no -i needed).
+( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" "${extra[@]}" -E ctx.c -o ctx.i ) 2>/dev/null
+if [[ ! -s "$dir/ctx.i" ]]; then echo "preprocess produced no .i"; exit 1; fi
+
+# 3a. Reference object from the real compiler.
+( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" "${extra[@]}" -c ctx.i -o ref.o ) 2>/dev/null
+[[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected the .i"; exit 1; }
+
+# 3b. Our object.
+if ! "$ours" --build "GC/$version" -c "$dir/ctx.i" -o "$dir/our.o" 2>"$dir/oerr"; then
+  echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
+  exit 0
+fi
+
+if cmp -s "$dir/ref.o" "$dir/our.o"; then
+  echo "BYTE   $src — whole object byte-identical ✅"
+else
+  echo "DIFF   $src — objects differ; first .text diff:"
+  diff <("$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p') \
+       <("$objdump" -dr "$dir/our.o" | sed -n '/>:/,/^$/p') | head -30
+fi
