@@ -111,6 +111,8 @@ impl Instruction {
             Instruction::BranchAndLink { .. } => 0x4800_0001,
             Instruction::MoveFromLinkRegister { d } => 0x7C08_02A6 | ((d as u32) << 21),
             Instruction::MoveToLinkRegister { s } => 0x7C08_03A6 | ((s as u32) << 21),
+            Instruction::MoveToCountRegister { s } => 0x7C09_03A6 | ((s as u32) << 21),
+            Instruction::BranchToCountRegister => 0x4E80_0420,
         }
     }
 }

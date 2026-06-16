@@ -178,6 +178,10 @@ pub enum Instruction {
     MoveFromLinkRegister { d: u8 },
     /// `mtlr rS` — move to the link register.
     MoveToLinkRegister { s: u8 },
+    /// `mtctr rS` — move to the count register (the jump-table dispatch target).
+    MoveToCountRegister { s: u8 },
+    /// `bctr` — branch unconditionally to the count register (`bcctr 20,0`).
+    BranchToCountRegister,
 }
 
 impl Instruction {

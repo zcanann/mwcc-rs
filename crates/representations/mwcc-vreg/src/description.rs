@@ -156,12 +156,13 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         CompareWordImmediate { a, .. } | CompareLogicalWordImmediate { a, .. } => {
             visit(U, G, a);
         }
-        // Link-register moves.
+        // Link-register and count-register moves.
         MoveFromLinkRegister { d } => visit(D, G, d),
         MoveToLinkRegister { s } => visit(U, G, s),
+        MoveToCountRegister { s } => visit(U, G, s),
         // No register fields: branches and the call (its ABI registers are implicit).
         BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | BranchToLinkRegister
-        | Branch { .. } | BranchAndLink { .. } => {}
+        | Branch { .. } | BranchToCountRegister | BranchAndLink { .. } => {}
     }
 }
 
