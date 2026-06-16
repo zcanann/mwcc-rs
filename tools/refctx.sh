@@ -57,8 +57,10 @@ if [[ ! -s "$dir/ctx.i" ]]; then echo "preprocess produced no .i"; exit 1; fi
 ( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" "${extra[@]}" -c ctx.c -o ref.o ) 2>/dev/null
 [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected ctx.c"; exit 1; }
 
-# 3b. Our object.
-if ! "$ours" --build "GC/$version" -c "$dir/ctx.i" -o "$dir/our.o" 2>"$dir/oerr"; then
+# 3b. Our object. Feed the preprocessed text under the name ctx.c so our FILE
+#     symbol matches the reference's (which compiled ctx.c).
+mkdir -p "$dir/ours" && cp "$dir/ctx.i" "$dir/ours/ctx.c"
+if ! "$ours" --build "GC/$version" -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
   echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   exit 0
 fi

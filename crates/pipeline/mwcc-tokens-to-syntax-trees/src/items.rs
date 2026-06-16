@@ -265,6 +265,33 @@ impl Parser {
         let mut functions = Vec::new();
         let mut prototypes = Vec::new();
         while *self.peek() != Token::EndOfFile {
+            let start = self.position;
+            if let Err(error) = self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes) {
+                // A declaration we can't parse (a typedef/struct/extern prototype or
+                // qualified type from a preprocessed header) is skipped so the
+                // function definitions can still be compiled; a function definition we
+                // are expected to compile is propagated, deferring the unit honestly.
+                self.position = start;
+                if self.item_is_function_definition() {
+                    return Err(error);
+                }
+                self.skip_top_level_declaration();
+            }
+        }
+        Ok(TranslationUnit { globals, functions, prototypes })
+    }
+
+    /// Parse one top-level item — a typedef, struct definition, global declaration,
+    /// prototype, or function definition — recording it into the unit. Returns `Err`
+    /// for any form outside the subset; the caller skips a failed declaration or
+    /// propagates a failed function definition.
+    fn parse_top_level_item(
+        &mut self,
+        globals: &mut Vec<GlobalDeclaration>,
+        functions: &mut Vec<Function>,
+        prototypes: &mut Vec<(String, Type)>,
+    ) -> Compilation<()> {
+        {
             // `extern`/`static` storage qualifiers: `extern` makes the declaration a
             // reference to a symbol defined elsewhere; `static` makes a definition
             // local. Both are recorded so the object can classify the symbol.
@@ -279,7 +306,7 @@ impl Parser {
                 self.advance();
             }
             if *self.peek() == Token::EndOfFile {
-                break;
+                return Ok(());
             }
             // `typedef <type> <name>;` registers a type alias. (Function-pointer and
             // array typedefs are not in the subset yet.)
@@ -288,13 +315,13 @@ impl Parser {
                 let name = self.parse_identifier()?;
                 self.expect(Token::Semicolon)?;
                 self.typedefs.insert(name, aliased);
-                continue;
+                return Ok(());
             }
             // A `struct Name { ... };` definition registers a layout. A `struct
             // Name*` use (function return or parameter) falls through to parse_type.
             if *self.peek() == Token::KeywordStruct && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
                 self.parse_struct_definition()?;
-                continue;
+                return Ok(());
             }
             let return_type = self.parse_type()?;
             // Function-pointer declarator: `RET (*name)(params)` — a pointer-typed
@@ -317,7 +344,7 @@ impl Parser {
                 }
                 self.expect(Token::Semicolon)?;
                 globals.push(GlobalDeclaration { declared_type: Type::StructPointer, name: pointer_name, is_extern, is_static, array_length: None, initializer: None });
-                continue;
+                return Ok(());
             }
             let name = self.parse_identifier()?;
             // `type name;`, `type name[N];`, or comma-separated declarators is a
@@ -372,7 +399,7 @@ impl Parser {
                     }
                 }
                 self.expect(Token::Semicolon)?;
-                continue;
+                return Ok(());
             }
             self.expect(Token::ParenOpen)?;
 
@@ -407,11 +434,69 @@ impl Parser {
             if *self.peek() == Token::Semicolon {
                 self.advance(); // a prototype — record its return type, keep looking
                 prototypes.push((name, return_type));
-                continue;
+                return Ok(());
             }
             functions.push(self.function_body(return_type, name, parameters)?);
         }
-        Ok(TranslationUnit { globals, functions, prototypes })
+        Ok(())
+    }
+
+    /// Whether the item starting at the cursor is a function *definition* (a
+    /// `(params) {` body) rather than a declaration. Used after a parse failure to
+    /// decide whether the item can be skipped (a declaration) or must be propagated
+    /// (a function we are expected to compile). Pure lookahead — consumes nothing.
+    fn item_is_function_definition(&self) -> bool {
+        let mut index = self.position;
+        let mut paren_depth = 0i32;
+        let mut saw_parameter_list = false;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                // A typedef is never a function definition. An `inline` definition
+                // is an SDK header helper mwcc only emits when used — skip it rather
+                // than compile it as a standalone symbol.
+                Token::Identifier(word) if word == "typedef" || word == "inline" || word == "__inline" => return false,
+                Token::ParenOpen => paren_depth += 1,
+                Token::ParenClose => {
+                    paren_depth -= 1;
+                    if paren_depth == 0 {
+                        saw_parameter_list = true;
+                    }
+                }
+                // The first top-level `;` ends a declaration.
+                Token::Semicolon if paren_depth == 0 => return false,
+                // A top-level `{` is a function body iff a `(params)` group preceded
+                // it (otherwise it opens a struct/enum/union or an initializer).
+                Token::BraceOpen if paren_depth == 0 => return saw_parameter_list,
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
+    /// Advance past an unparseable top-level declaration to its end: the `;` at
+    /// brace depth zero, or the matching `}` of a struct/enum/union/initializer
+    /// followed by an optional `;`.
+    fn skip_top_level_declaration(&mut self) {
+        let mut brace_depth = 0i32;
+        loop {
+            match self.advance() {
+                Token::BraceOpen => brace_depth += 1,
+                Token::BraceClose => {
+                    brace_depth -= 1;
+                    if brace_depth <= 0 {
+                        if *self.peek() == Token::Semicolon {
+                            self.advance();
+                        }
+                        return;
+                    }
+                }
+                Token::Semicolon if brace_depth == 0 => return,
+                Token::EndOfFile => return,
+                _ => {}
+            }
+        }
     }
 
     /// Parse a function definition's body, given its already-parsed signature.
