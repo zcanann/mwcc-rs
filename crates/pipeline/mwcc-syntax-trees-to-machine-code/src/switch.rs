@@ -18,7 +18,7 @@
 //! value order, with the default last.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, JumpTable, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{Expression, SwitchArm, Type};
 use crate::generator::*;
 
@@ -41,6 +41,7 @@ impl Generator {
         scrutinee: &Expression,
         arms: &[SwitchArm],
         default: &Expression,
+        default_is_labeled: bool,
         return_type: Type,
         result: u8,
     ) -> Compilation<()> {
@@ -75,11 +76,16 @@ impl Generator {
         // most 6 entries) is *always* the comparison tree; mwcc never tables a span
         // that small. A wider span is sometimes a jump table — a
         // distribution-dependent decision (`{0,2,4,6}` tables but `{0,1,2,6}` does
-        // not) — so defer the whole wide-span family for now (never a non-matching
-        // tree). `sorted` is ascending, so the span is last - first + 1.
+        // not). The one wide-span shape that is *always* a table is a CONTIGUOUS run
+        // of >= 7 cases; handle that (zero-based, scrutinee in r3) and defer the rest
+        // (never a non-matching tree). `sorted` is ascending, so span = last - first + 1.
         let span = sorted[sorted.len() - 1].value - sorted[0].value + 1;
         if span > 6 {
-            return Err(Diagnostic::error("wide-span switch (jump table) is not implemented yet (roadmap)"));
+            let contiguous = span == sorted.len() as i64;
+            if contiguous && sorted.len() >= 7 && sorted[0].value == 0 && register == result {
+                return self.emit_jump_table(register, &sorted, default, default_is_labeled, return_type, result);
+            }
+            return Err(Diagnostic::error("wide-span switch (jump table) not implemented for this shape yet (roadmap)"));
         }
         // The tests are `cmpwi v` and `cmpwi v+1`, so both must fit the signed
         // 16-bit immediate.
@@ -117,6 +123,62 @@ impl Generator {
                 _ => unreachable!("switch patch points at a non-branch instruction"),
             }
         }
+        Ok(())
+    }
+
+    /// Emit the jump-table dispatch for a contiguous, zero-based, >= 7-case switch
+    /// (the wide-span shape mwcc always tables). The scrutinee is the table index:
+    ///
+    ///   cmplwi r3, max ; bgt default ; lis r4, table@ha ; slwi r0, r3, 2
+    ///   addi r3, r4, table@lo ; lwzx r0, r3, r0 ; mtctr r0 ; bctr
+    ///
+    /// followed by the case bodies in value order and the default. The table itself
+    /// (one `.text` body offset per index) is recorded on the function; the writer
+    /// materializes it as an anonymous `@N` object in `.data` and fills in the two
+    /// `@N` address relocations (`lis`/`addi`) and the per-entry `ADDR32` relocations.
+    fn emit_jump_table(
+        &mut self,
+        register: u8,
+        sorted: &[&SwitchArm],
+        default: &Expression,
+        default_is_labeled: bool,
+        return_type: Type,
+        result: u8,
+    ) -> Compilation<()> {
+        let max = sorted[sorted.len() - 1].value;
+        // Bounds check: an unsigned compare catches both `x > max` and `x < 0`.
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: register, immediate: max as u16 });
+        let bgt_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: BGT.0, condition_bit: BGT.1, target: 0 });
+        // Table base address (`lis r4, @ha` / `addi r3, r4, @lo`) and the index scale.
+        self.record_target(RelocationKind::Addr16Ha, RelocationTarget::JumpTable);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: register, shift: 2 });
+        self.record_target(RelocationKind::Addr16Lo, RelocationTarget::JumpTable);
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadWordIndexed { d: 0, a: 3, b: 0 });
+        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
+        self.output.instructions.push(Instruction::BranchToCountRegister);
+
+        // Case bodies in value order (== index order, since contiguous zero-based),
+        // then the default. The table entry for index i is its body's byte offset.
+        let mut entries = vec![0u32; sorted.len()];
+        for (index, arm) in sorted.iter().enumerate() {
+            entries[index] = self.output.instructions.len() as u32 * 4;
+            self.evaluate_tail(&arm.result, return_type, result)?;
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+        }
+        let default_index = self.output.instructions.len();
+        self.evaluate_tail(default, return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bgt_index] {
+            *target = default_index;
+        }
+        // mwcc numbers the table's `@N` past one label per case plus the dispatch,
+        // and one more when the default is an explicit `default:` label.
+        let anonymous_offset = entries.len() as u32 + 1 + if default_is_labeled { 1 } else { 0 };
+        self.output.jump_table = Some(JumpTable { entries, anonymous_offset });
         Ok(())
     }
 
@@ -222,3 +284,5 @@ impl Generator {
 const BEQ: (u8, u8) = (12, 2);
 /// `bge` — branch if not cr0[LT] (BO=4 branch-if-false, BI=0 the LT bit).
 const BGE: (u8, u8) = (4, 0);
+/// `bgt` — branch if cr0[GT] (BO=12 branch-if-true, BI=1 the GT bit).
+const BGT: (u8, u8) = (12, 1);

@@ -143,6 +143,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
 
+    // Jump tables (dense switches) live in a `.data` section: one 4-byte entry per
+    // index, every entry filled by an `ADDR32` relocation (so the file bytes are
+    // zero). Each table is recorded at its offset; `.data` is 8-aligned.
+    let mut jump_data_size = 0u32;
+    let mut jump_table_offset: Vec<Option<u32>> = Vec::new();
+    for function in functions {
+        if let Some(table) = &function.jump_table {
+            jump_data_size = jump_data_size.div_ceil(4) * 4;
+            jump_table_offset.push(Some(jump_data_size));
+            jump_data_size += table.entries.len() as u32 * 4;
+        } else {
+            jump_table_offset.push(None);
+        }
+    }
+    let has_jump_table = jump_data_size > 0;
+    let jump_data = vec![0u8; jump_data_size as usize];
+
     // `.sdata2` constant pool — every function's constants appended in source
     // order, each at its natural alignment. Record the byte offset of each
     // function's j-th constant.
@@ -176,6 +193,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     let mut constant_numbers: Vec<Vec<u32>> = Vec::new();
     let mut frame_numbers: Vec<Option<FrameNumbers>> = Vec::new();
+    let mut jump_table_numbers: Vec<Option<u32>> = Vec::new();
     let mut extab_payload_offset = 0u32;
     let mut extabindex_payload_offset = 0u32;
     let mut counter = 5u32;
@@ -187,6 +205,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             number += 1;
         }
         constant_numbers.push(numbers);
+        // A dense switch's jump table is numbered after the function's internal
+        // labels (a label per case, the dispatch, and an explicit `default:`).
+        if let Some(table) = &function.jump_table {
+            let number_of_table = number + table.anonymous_offset;
+            number = number_of_table;
+            jump_table_numbers.push(Some(number_of_table));
+        } else {
+            jump_table_numbers.push(None);
+        }
         if function.frame.is_some() {
             let frame = FrameNumbers {
                 extab: number,
@@ -213,6 +240,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_functions {
         order.push(".text");
     }
+    if has_jump_table {
+        order.push(".data");
+    }
     if has_frame {
         order.push("extab");
         order.push("extabindex");
@@ -235,6 +265,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_frame {
         order.push(".relaextabindex");
     }
+    if has_jump_table {
+        order.push(".rela.data");
+    }
     if has_functions {
         order.push(".rela.mwcats.text");
     }
@@ -250,7 +283,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".sdata2", ".sdata", ".sbss", ".mwcats.text"]
+    let content_sections: Vec<&str> = [".text", ".data", "extab", "extabindex", ".sdata2", ".sdata", ".sbss", ".mwcats.text"]
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
@@ -260,7 +293,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut comment_values: Vec<u32> = Vec::new();
     let section_align = |name: &str| -> u32 {
         match name {
-            ".sdata2" | ".sdata" | ".sbss" => 8,
+            ".sdata2" | ".sdata" | ".sbss" | ".data" => 8,
             _ => 4,
         }
     };
@@ -276,6 +309,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // then its hidden unwind entries.
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
+    let mut jump_table_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
@@ -296,6 +330,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push(4);
         } else {
             extab_entry_symbols.push(0);
+        }
+        // The jump table is a 4-aligned local `@N` object in `.data`.
+        if let Some(number) = jump_table_numbers[index] {
+            jump_table_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
+            let name = strtab.add(&format!("@{}", number));
+            let size = function.jump_table.as_ref().unwrap().entries.len() as u32 * 4;
+            write_symbol(&mut symtab, name, jump_table_offset[index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".data") as u16);
+            comment_values.push(4);
+        } else {
+            jump_table_symbols.push(0);
         }
     }
     // The GLOBAL run. mwcc emits symbols in source-encounter order, which for the
@@ -359,8 +403,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let symbol = match &relocation.target {
                 RelocationTarget::External(name) => global_symbols[name.as_str()],
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
+                RelocationTarget::JumpTable => jump_table_symbols[index],
             };
             write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, 0);
+        }
+    }
+    // `.rela.data` — each jump-table entry is an `ADDR32` to its function with the
+    // case body's byte offset as the addend.
+    let mut rela_data = Vec::new();
+    for (index, function) in functions.iter().enumerate() {
+        if let Some(table) = &function.jump_table {
+            let base = jump_table_offset[index].unwrap();
+            for (entry_index, &body_offset) in table.entries.iter().enumerate() {
+                write_rela(&mut rela_data, base + entry_index as u32 * 4, function_symbols[index], R_PPC_ADDR32, body_offset);
+            }
         }
     }
     let mut rela_extabindex = Vec::new();
@@ -414,6 +470,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_functions {
         push(".text", SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
     }
+    if has_jump_table {
+        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, jump_data, 0);
+    }
     if has_frame {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
         push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex, 0);
@@ -437,6 +496,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     if has_frame {
         push(".relaextabindex", SHT_RELA, 0, symtab_section, index_of("extabindex"), 4, 12, rela_extabindex, 0);
+    }
+    if has_jump_table {
+        push(".rela.data", SHT_RELA, 0, symtab_section, index_of(".data"), 4, 12, rela_data, 0);
     }
     if has_functions {
         push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);

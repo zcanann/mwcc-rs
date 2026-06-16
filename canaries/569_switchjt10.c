@@ -1,0 +1,1 @@
+int swjt10(int x){ switch(x){ case 0: return 100; case 1: return 101; case 2: return 102; case 3: return 103; case 4: return 104; case 5: return 105; case 6: return 106; case 7: return 107; case 8: return 108; case 9: return 109; default: return 7; } }

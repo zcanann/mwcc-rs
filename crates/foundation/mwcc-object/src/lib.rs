@@ -60,6 +60,17 @@ pub struct FunctionObject<'a> {
     /// conditional branch. mwcceppc consumes these counter slots for the
     /// function's internal labels.
     pub anonymous_bump: u32,
+    /// A dense `switch`'s jump table. The writer materializes it as an anonymous
+    /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
+    /// function, and resolves this function's `JumpTable` `.text` relocations.
+    pub jump_table: Option<JumpTable>,
+}
+
+/// A dense `switch`'s jump table — one `.text` body offset per index, plus how far
+/// the table's anonymous `@N` symbol sits past the function's running counter.
+pub struct JumpTable {
+    pub entries: Vec<u32>,
+    pub anonymous_offset: u32,
 }
 
 /// What a `.text` relocation points at.
@@ -68,6 +79,8 @@ pub enum RelocationTarget {
     External(String),
     /// An entry in this object's constant pool, by index.
     Constant(usize),
+    /// This function's own jump table (the anonymous `@N` object in `.data`).
+    JumpTable,
 }
 
 /// A `.text` relocation: a byte offset, the ELF relocation type, and its target.

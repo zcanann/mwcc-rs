@@ -12,6 +12,19 @@ pub struct PoolConstant {
     pub byte_width: u8,
 }
 
+/// A dense `switch`'s jump table (the writer materializes it as an anonymous `@N`
+/// object in `.data`).
+#[derive(Debug, Clone)]
+pub struct JumpTable {
+    /// One `.text` byte offset (within the function) per index — the body the
+    /// dispatch branches to (gaps point at the default body).
+    pub entries: Vec<u32>,
+    /// How far past the function's running anonymous-`@N` counter the table's
+    /// symbol sits: a label per case plus the dispatch, and one more for an
+    /// explicit `default:` label.
+    pub anonymous_offset: u32,
+}
+
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
@@ -30,6 +43,9 @@ pub struct MachineFunction {
     pub has_float_branch: bool,
     /// Frame metadata for the unwind tables; `None` for a leaf with no frame.
     pub frame: Option<FrameInfo>,
+    /// A dense `switch`'s jump table; `None` unless the function dispatches through
+    /// one. The writer materializes it as an anonymous `@N` object in `.data`.
+    pub jump_table: Option<JumpTable>,
 }
 
 impl MachineFunction {
@@ -42,6 +58,7 @@ impl MachineFunction {
             has_conversion: false,
             has_float_branch: false,
             frame: None,
+            jump_table: None,
         }
     }
 

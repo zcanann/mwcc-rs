@@ -48,6 +48,9 @@ impl RelocationKind {
 pub enum RelocationTarget {
     External(String),
     Constant(usize),
+    /// This function's own jump table — the anonymous `@N` object the writer
+    /// materializes in `.data` for a dense `switch` (its `lis`/`addi` address load).
+    JumpTable,
 }
 
 /// A relocation against `.text`, located by the instruction it patches (byte

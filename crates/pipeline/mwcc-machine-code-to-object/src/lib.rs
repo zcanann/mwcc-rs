@@ -5,7 +5,7 @@
 //! relocations, and the Metrowerks metadata records).
 
 use mwcc_machine_code::{MachineFunction, RelocationTarget as MachineTarget};
-use mwcc_object::{DataObject, FrameLayout, FunctionObject, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation};
+use mwcc_object::{DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation};
 
 /// A file-scope variable *defined* in this unit (placed in a data section), in
 /// declaration order. The caller decides which globals qualify (non-`extern`,
@@ -46,6 +46,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                     target: match &relocation.target {
                         MachineTarget::External(symbol) => RelocationTarget::External(symbol.clone()),
                         MachineTarget::Constant(index) => RelocationTarget::Constant(*index),
+                        MachineTarget::JumpTable => RelocationTarget::JumpTable,
                     },
                 })
                 .collect(),
@@ -59,6 +60,10 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             // conversion and by three for a float conditional branch before this
             // function's constants are numbered.
             anonymous_bump: if function.has_conversion { 1 } else { 0 } + if function.has_float_branch { 3 } else { 0 },
+            jump_table: function.jump_table.as_ref().map(|table| JumpTable {
+                entries: table.entries.clone(),
+                anonymous_offset: table.anonymous_offset,
+            }),
         })
         .collect();
     let data_objects = defined_globals

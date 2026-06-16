@@ -62,7 +62,7 @@ impl Generator {
                     Type::Void => return Err(Diagnostic::error("a void switch is not supported yet (roadmap)")),
                     _ => Eabi::general_result().number,
                 };
-                return self.emit_switch(scrutinee, arms, default_expression, function.return_type, result);
+                return self.emit_switch(scrutinee, arms, default_expression, default.is_some(), function.return_type, result);
             }
         }
         // A function that calls is non-leaf: save the link register around a 16-byte
