@@ -56,6 +56,13 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => CharDefault::BuildDefault,
                 };
             }
+            // `-Cpp_exceptions off` suppresses the extab/extabindex unwind tables.
+            "-Cpp_exceptions" => {
+                index += 1;
+                if arguments.get(index).map(String::as_str) == Some("off") {
+                    invocation.flags.cpp_exceptions = false;
+                }
+            }
             // `-inline …`: a `deferred` setting emits functions in reverse order.
             "-inline" => {
                 index += 1;

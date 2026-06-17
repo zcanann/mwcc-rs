@@ -52,6 +52,10 @@ pub struct Flags {
     /// `-inline …,deferred`: deferred inlining emits the object's functions in
     /// REVERSE definition order (and thus their symbols/records too).
     pub inline_deferred: bool,
+    /// Whether C++ exception support is on (the default). `-Cpp_exceptions off`
+    /// suppresses the `extab`/`extabindex` unwind tables entirely (the stack frame
+    /// itself is unchanged).
+    pub cpp_exceptions: bool,
 }
 
 impl Default for Flags {
@@ -63,6 +67,7 @@ impl Default for Flags {
             global_addressing: GlobalAddressing::SmallData,
             char_default: CharDefault::BuildDefault,
             inline_deferred: false,
+            cpp_exceptions: true,
         }
     }
 }

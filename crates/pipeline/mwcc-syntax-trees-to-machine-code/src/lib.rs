@@ -66,7 +66,10 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag
     // is set for a non-leaf function that touches the FPU.
-    if generator.frame_size != 0 {
+    // The `extab`/`extabindex` unwind tables are emitted only with C++ exceptions
+    // on (the default); `-Cpp_exceptions off` suppresses them (the frame itself is
+    // unchanged). `frame` drives those sections, so leave it `None` when off.
+    if generator.frame_size != 0 && config.flags.cpp_exceptions {
         // The extab FPU flag is set for a non-leaf that touches the FPU, and also
         // for a leaf-with-frame that uses single-precision float arithmetic (an
         // `int`->`float` conversion's `fsubs`) — but not a double-only or
