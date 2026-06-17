@@ -247,14 +247,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         order.push("extab");
         order.push("extabindex");
     }
-    if has_constants {
-        order.push(".sdata2");
-    }
+    // Defined small data (`.sdata`/`.sbss`) precedes the read-only constant pool
+    // (`.sdata2`) — mwcc orders the writable small-data sections ahead of it.
     if has_sdata {
         order.push(".sdata");
     }
     if has_sbss {
         order.push(".sbss");
+    }
+    if has_constants {
+        order.push(".sdata2");
     }
     if has_functions {
         order.push(".mwcats.text");
@@ -283,7 +285,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [".text", ".data", "extab", "extabindex", ".sdata2", ".sdata", ".sbss", ".mwcats.text"]
+    let content_sections: Vec<&str> = [".text", ".data", "extab", "extabindex", ".sdata", ".sbss", ".sdata2", ".mwcats.text"]
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
@@ -515,9 +517,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
         push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex, 0);
     }
-    if has_constants {
-        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2, 0);
-    }
+    // Defined small data (`.sdata`/`.sbss`) precedes the read-only constant pool
+    // (`.sdata2`), matching the section-name order above.
     if has_sdata {
         // `.sdata` holds the initialized values as file bytes.
         push(".sdata", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata, 0);
@@ -525,6 +526,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sbss {
         // `.sbss` is NOBITS: no file bytes, but `sh_size` is the in-memory size.
         push(".sbss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, Vec::new(), sbss_size);
+    }
+    if has_constants {
+        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2, 0);
     }
     if has_functions {
         push(".mwcats.text", SHT_MWCATS, 0, index_of(".text"), 0, 4, 1, mwcats, 0);
