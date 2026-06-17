@@ -31,6 +31,36 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             position += 2;
             continue;
         }
+        // string literal: `"…"` with escapes, decoded to its bytes. (Codegen for
+        // strings isn't in the subset; lexing lets the rest of the unit parse.)
+        if character == '"' {
+            position += 1;
+            let mut content = Vec::new();
+            loop {
+                match peek(bytes, position) {
+                    None => return Err(Diagnostic::error("unterminated string literal")),
+                    Some(b'"') => {
+                        position += 1;
+                        break;
+                    }
+                    Some(b'\\') => {
+                        position += 1;
+                        let escaped = *bytes.get(position).ok_or_else(|| Diagnostic::error("unterminated string literal"))?;
+                        position += 1;
+                        content.push(match escaped {
+                            b'n' => 10, b't' => 9, b'r' => 13, b'0' => 0, b'a' => 7,
+                            b'b' => 8, b'f' => 12, b'v' => 11, other => other,
+                        });
+                    }
+                    Some(byte) => {
+                        content.push(byte);
+                        position += 1;
+                    }
+                }
+            }
+            tokens.push(Token::StringLiteral(content));
+            continue;
+        }
         // character literal: `'c'` or an escape like `'\n'`, yielding the
         // character's integer value (an `int`-typed constant in C).
         if character == '\'' {

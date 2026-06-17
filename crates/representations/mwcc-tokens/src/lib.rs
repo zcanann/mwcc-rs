@@ -17,6 +17,10 @@ pub enum Token {
     Identifier(String),
     IntegerLiteral(i64),
     FloatLiteral(f64),
+    /// A string literal's decoded bytes (without the surrounding quotes). Codegen
+    /// for strings is not in the subset yet — the token lets the lexer get past
+    /// `"…"` so the rest of a translation unit still parses.
+    StringLiteral(Vec<u8>),
     // punctuation
     ParenOpen,
     ParenClose,
