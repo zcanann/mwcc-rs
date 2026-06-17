@@ -275,10 +275,79 @@ impl Parser {
                 if self.item_is_function_definition() {
                     return Err(error);
                 }
+                // A skipped `static inline` function with an inline `asm {}` body
+                // still contributes a local undefined symbol (mwcc cannot inline it).
+                if let Some(name) = self.inline_asm_function_name() {
+                    self.inline_asm_symbols.push(name);
+                }
                 self.skip_top_level_declaration();
             }
         }
-        Ok(TranslationUnit { globals, functions, prototypes })
+        Ok(TranslationUnit { globals, functions, prototypes, inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols) })
+    }
+
+    /// If the item at the cursor is an `inline`/`static inline` function whose body
+    /// contains an inline `asm` block, return its name (mwcc emits a local symbol
+    /// for it). Pure lookahead — consumes nothing.
+    fn inline_asm_function_name(&self) -> Option<String> {
+        let mut index = self.position;
+        let mut is_inline = false;
+        let mut name: Option<String> = None;
+        // Signature up to the first `(`: note `inline`, and the last identifier
+        // before the `(` (the function name).
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::Identifier(word) if word == "inline" || word == "__inline" => is_inline = true,
+                Token::Identifier(word) => name = Some(word.clone()),
+                Token::ParenOpen => break,
+                Token::Semicolon | Token::BraceOpen | Token::EndOfFile => return None,
+                _ => {}
+            }
+            index += 1;
+        }
+        if !is_inline {
+            return None;
+        }
+        let name = name?;
+        // Skip the (balanced) parameter list.
+        let mut parens = 0;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::ParenOpen => parens += 1,
+                Token::ParenClose => {
+                    parens -= 1;
+                    if parens == 0 {
+                        index += 1;
+                        break;
+                    }
+                }
+                Token::EndOfFile => return None,
+                _ => {}
+            }
+            index += 1;
+        }
+        // The body must be a `{...}` block; scan it for an `asm` token.
+        if self.tokens.get(index) != Some(&Token::BraceOpen) {
+            return None;
+        }
+        let mut braces = 0;
+        let mut has_asm = false;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::BraceOpen => braces += 1,
+                Token::BraceClose => {
+                    braces -= 1;
+                    if braces == 0 {
+                        break;
+                    }
+                }
+                Token::Identifier(word) if word == "asm" || word == "__asm" => has_asm = true,
+                Token::EndOfFile => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        has_asm.then_some(name)
     }
 
     /// Parse one top-level item — a typedef, struct definition, global declaration,

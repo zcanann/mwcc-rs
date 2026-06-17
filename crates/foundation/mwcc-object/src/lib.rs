@@ -31,6 +31,10 @@ pub struct ObjectInput<'a> {
     /// off, and the data sections are named `.bss`/`.data` instead of
     /// `.sbss`/`.sdata` (identical type/flags/alignment otherwise).
     pub small_data: bool,
+    /// Names of `static inline` asm functions skipped from the source, in
+    /// declaration order. Each becomes a local *undefined* symbol (mwcc keeps
+    /// inline-asm helpers as deferred symbols even when unused).
+    pub inline_asm_symbols: &'a [String],
 }
 
 /// A file-scope variable defined in this object: its name, byte size, natural

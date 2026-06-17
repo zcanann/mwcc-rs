@@ -204,7 +204,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         })
         .collect();
     let small_data = config.flags.global_addressing == mwcc_versions::GlobalAddressing::SmallData;
-    let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, source_name, config.build.version, config.build.build, small_data);
+    let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
 
     if let Some(directory) = artifacts {
         write_artifacts(directory, config, &tokens, &unit.functions, &machine_functions, &object);

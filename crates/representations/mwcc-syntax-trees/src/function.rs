@@ -79,6 +79,11 @@ pub struct TranslationUnit {
     /// call to an externally-defined function knows its result type (e.g. a
     /// `double`-returning math routine).
     pub prototypes: Vec<(String, Type)>,
+    /// Names of `static inline` functions whose body contains an inline `asm {}`
+    /// block, in declaration order. mwcc keeps each as a deferred function and
+    /// emits a local *undefined* symbol for it even when unused (it cannot inline
+    /// the assembly) — e.g. the `OSFastCast.h` fast-cast helpers.
+    pub inline_asm_symbols: Vec<String>,
 }
 
 /// A function definition. Bodies are zero or more local declarations, then zero

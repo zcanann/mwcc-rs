@@ -307,6 +307,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
         comment_values.push(section_align(name));
     }
+    // `static inline` asm helpers (e.g. OSFastCast.h) — a local undefined symbol
+    // each, in declaration order, right after the section symbols. `info = 0` is
+    // STB_LOCAL | STT_NOTYPE; an undefined symbol has `.comment` alignment 0.
+    for name in input.inline_asm_symbols {
+        write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
+        comment_values.push(0);
+    }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
     // then its hidden unwind entries.
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
