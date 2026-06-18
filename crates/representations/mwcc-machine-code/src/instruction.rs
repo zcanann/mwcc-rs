@@ -120,6 +120,8 @@ pub enum Instruction {
     FloatMultiplyAddDouble { d: u8, a: u8, c: u8, b: u8 },
     /// `fmsub frD, frA, frC, frB` => frD = frA*frC - frB.
     FloatMultiplySubtractDouble { d: u8, a: u8, c: u8, b: u8 },
+    /// `fnmsub frD, frA, frC, frB` => frD = frB - frA*frC.
+    FloatNegativeMultiplySubtractDouble { d: u8, a: u8, c: u8, b: u8 },
     /// `frsp frD, frB` — round a double to single precision.
     RoundToSingle { d: u8, b: u8 },
     /// `fmr frD, frB`
@@ -246,6 +248,7 @@ impl Instruction {
                 | FloatMultiplyDouble { .. }
                 | FloatMultiplyAddDouble { .. }
                 | FloatMultiplySubtractDouble { .. }
+                | FloatNegativeMultiplySubtractDouble { .. }
                 | RoundToSingle { .. }
                 | FloatMove { .. }
                 | FloatNegate { .. }

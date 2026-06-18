@@ -81,6 +81,7 @@ impl Instruction {
             Instruction::FloatMultiplyDouble { d, a, c } => a_form(63, d, a, 0, c, 25),
             Instruction::FloatMultiplyAddDouble { d, a, c, b } => a_form(63, d, a, b, c, 29),
             Instruction::FloatMultiplySubtractDouble { d, a, c, b } => a_form(63, d, a, b, c, 28),
+            Instruction::FloatNegativeMultiplySubtractDouble { d, a, c, b } => a_form(63, d, a, b, c, 30),
             Instruction::RoundToSingle { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (12 << 1),
             Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
             Instruction::FloatNegate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (40 << 1),

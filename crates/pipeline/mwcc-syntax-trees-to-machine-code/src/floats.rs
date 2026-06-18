@@ -103,11 +103,6 @@ impl Generator {
             return Ok(true);
         }
         if let Some((x, y)) = as_multiplication(right) {
-            // The `left - x*y` -> fnmsub fusion has no double variant here yet, so
-            // a double subtraction of that shape falls through to the plain path.
-            if double && operator == BinaryOperator::Subtract {
-                return Ok(false);
-            }
             let multiplicand = self.float_register_of_leaf(x)?;
             let multiplier = self.float_register_of_leaf(y)?;
             let addend = self.place_float_addend(left)?;
@@ -115,6 +110,7 @@ impl Generator {
                 (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
                 (BinaryOperator::Subtract, false) => Instruction::FloatNegativeMultiplySubtractSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
                 (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Subtract, true) => Instruction::FloatNegativeMultiplySubtractDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
                 _ => unreachable!("caller restricts to add/subtract"),
             });
             return Ok(true);
