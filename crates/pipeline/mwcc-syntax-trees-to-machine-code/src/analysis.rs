@@ -30,7 +30,7 @@ pub(crate) fn function_makes_call(function: &Function) -> bool {
                 || default.as_ref().is_some_and(expression_has_call)
         }
     }) || function.return_expression.as_ref().is_some_and(expression_has_call)
-        || function.locals.iter().any(|local| expression_has_call(&local.initializer))
+        || function.locals.iter().any(|local| local.initializer.as_ref().is_some_and(expression_has_call))
         || function.guards.iter().any(|guard| expression_has_call(&guard.condition) || expression_has_call(&guard.value))
 }
 

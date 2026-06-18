@@ -52,9 +52,12 @@ impl Generator {
         // use that would duplicate a non-leaf value.
         let mut values: HashMap<String, Expression> = HashMap::new();
         for local in &function.locals {
-            guard_no_duplication(&local.initializer, &values)?;
-            let value = substitute(&local.initializer, &values);
-            values.insert(local.name.clone(), value);
+            // An uninitialized local has no value until it is assigned below.
+            if let Some(initializer) = &local.initializer {
+                guard_no_duplication(initializer, &values)?;
+                let value = substitute(initializer, &values);
+                values.insert(local.name.clone(), value);
+            }
         }
         for statement in &function.statements {
             match statement {

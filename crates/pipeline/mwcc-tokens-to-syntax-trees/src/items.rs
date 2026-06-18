@@ -749,14 +749,21 @@ impl Parser {
         while self.peek_is_type() {
             let declared_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
-            let name = self.parse_identifier()?;
-            if let Some(tag) = struct_tag {
-                self.variable_structs.insert(name.clone(), tag);
+            // One or more comma-separated declarators, each optionally initialized.
+            loop {
+                let name = self.parse_identifier()?;
+                if let Some(tag) = &struct_tag {
+                    self.variable_structs.insert(name.clone(), tag.clone());
+                }
+                let initializer = if self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
+                locals.push(LocalDeclaration { declared_type, name, initializer });
+                if *self.peek() == Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
             }
-            self.expect(Token::Equals)?;
-            let initializer = self.expression()?;
             self.expect(Token::Semicolon)?;
-            locals.push(LocalDeclaration { declared_type, name, initializer });
         }
 
         // Zero or more statements: a store `*p = v;` / `p[i] = v;`, or a bare

@@ -234,11 +234,17 @@ impl Generator {
         result: u8,
     ) -> Compilation<()> {
         let class = class_of(local.declared_type)?;
+        // The single-local straight-line path needs the local's initializer; an
+        // uninitialized local (its value comes from an assignment) is value-tracked.
+        let initializer = local
+            .initializer
+            .as_ref()
+            .ok_or_else(|| Diagnostic::error("an uninitialized single local is not supported here (roadmap)"))?;
 
         // `return x;` — the local is the result, so compute its initializer
         // straight into the result register.
         if matches!(return_expression, Expression::Variable(name) if *name == local.name) {
-            return self.evaluate(&local.initializer, local.declared_type, result);
+            return self.evaluate(initializer, local.declared_type, result);
         }
 
         // Otherwise the local lives in the scratch register and is used as a leaf.
@@ -250,7 +256,7 @@ impl Generator {
             ValueClass::General => GENERAL_SCRATCH,
             ValueClass::Float => FLOAT_SCRATCH,
         };
-        self.evaluate(&local.initializer, local.declared_type, scratch)?;
+        self.evaluate(initializer, local.declared_type, scratch)?;
         let signed = self.signed_of(local.declared_type);
         let pointee = match local.declared_type {
             Type::Pointer(pointee) => Some(pointee),

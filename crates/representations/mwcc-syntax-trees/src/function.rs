@@ -10,12 +10,14 @@ pub struct Parameter {
     pub name: String,
 }
 
-/// A local variable declaration with an initializer: `type name = expression;`.
+/// A local variable declaration: `type name [= expression];`. The initializer is
+/// `None` for an uninitialized local (`int x;`), whose value comes from a later
+/// assignment.
 #[derive(Debug, Clone)]
 pub struct LocalDeclaration {
     pub declared_type: Type,
     pub name: String,
-    pub initializer: Expression,
+    pub initializer: Option<Expression>,
 }
 
 /// A guarded early return: `if (condition) return value;`.
