@@ -96,10 +96,10 @@ pub(crate) fn is_zero_literal(expression: &Expression) -> bool {
 pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
     match expression {
         Expression::IntegerLiteral(value) => Some(*value),
-        Expression::Unary { operator: UnaryOperator::Negate, operand } => match operand.as_ref() {
-            Expression::IntegerLiteral(value) => Some(-*value),
-            _ => None,
-        },
+        // Fold `-c` and `~c` of a constant operand, so e.g. `x & ~7` becomes a
+        // mask immediate rather than falling into a broken two-operand path.
+        Expression::Unary { operator: UnaryOperator::Negate, operand } => constant_value(operand).map(|value| value.wrapping_neg()),
+        Expression::Unary { operator: UnaryOperator::BitNot, operand } => constant_value(operand).map(|value| !value),
         _ => None,
     }
 }
