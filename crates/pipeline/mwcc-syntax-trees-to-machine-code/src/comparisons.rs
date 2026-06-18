@@ -129,12 +129,22 @@ impl Generator {
             // The other idioms use an operand once (mwcc keeps it in the scratch);
             // those non-leaf shapes still defer rather than mismatch.
             // signed `x > C` : materialize C in r0 (the `>` idiom uses the right
-            // operand once), then the same sign-bit idiom with a fresh temp.
+            // operand once), then the same sign-bit idiom with a fresh temp. `x` is
+            // a leaf or a full-word load (e.g. `*p > C`, `s->a > C`).
             BinaryOperator::Greater
-                if signed_left && leaf_name(left).is_some() && !self.is_narrow_leaf(left)
+                if signed_left && !self.is_narrow_leaf(left)
+                    && (leaf_name(left).is_some() || self.is_word_load(left))
                     && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
             {
-                let x = self.general_register_of_leaf(left)?;
+                let x = if leaf_name(left).is_some() {
+                    self.general_register_of_leaf(left)?
+                } else {
+                    // The load avoids the destination so the later temp (the
+                    // intermediate `(x^C)>>1`) can coalesce onto it, as mwcc does.
+                    let register = self.fresh_virtual_general_avoiding(vec![d]);
+                    self.evaluate_general(left, register)?;
+                    register
+                };
                 let constant = constant_value(right).unwrap();
                 self.load_integer_constant(GENERAL_SCRATCH, constant);
                 let scratch = GENERAL_SCRATCH;
@@ -338,6 +348,18 @@ impl Generator {
             return Ok(FLOAT_SCRATCH);
         }
         self.float_register_of_leaf(operand)
+    }
+
+    /// Whether `value` is a full-word (32-bit) memory load — a dereference,
+    /// index, or struct member — which can be evaluated into a register and used
+    /// as a comparison operand without narrow extension.
+    fn is_word_load(&self, value: &Expression) -> bool {
+        match value {
+            Expression::Dereference { pointer } => self.dereferenced_width(pointer) == Some(32),
+            Expression::Index { base, .. } => self.dereferenced_width(base) == Some(32),
+            Expression::Member { member_type, .. } => member_type.width() == 32,
+            _ => false,
+        }
     }
 
     /// Whether `value` is a load of a signed 8-bit value (a `char`/`signed char`
