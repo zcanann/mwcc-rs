@@ -117,6 +117,75 @@ impl Generator {
         Ok(true)
     }
 
+    /// A shift fused with a mask collapses to one `rlwinm` (rotate-and-mask):
+    ///   `(x << n) & m`, `(x >> n) & m`, `(x & m) << n`, `(x & m) >> n`.
+    /// Each is `ROTL(x, r) & mask[begin,end]` for the right `r` and contiguous
+    /// mask; the cases differ only in how `r` and the mask are derived. The masked
+    /// region must avoid the bits the rotation wraps in (so the rotate equals the
+    /// shift), and the logical-right forms require an unsigned value.
+    pub(crate) fn try_emit_rotate_mask(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let Some((value, rotate, begin, end, needs_unsigned)) = self.fused_rotate_mask(operator, left, right)? else {
+            return Ok(false);
+        };
+        let Some(register) = leaf_name(value).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        if needs_unsigned && self.signedness_of(value)? {
+            return Ok(false);
+        }
+        self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: register, shift: rotate, begin, end });
+        Ok(true)
+    }
+
+    /// Resolve a shift-and-mask expression to `(x, rotate, begin, end, needs_unsigned)`
+    /// for the fused `rlwinm`, or `None` when the shape does not collapse cleanly.
+    fn fused_rotate_mask<'e>(&self, operator: BinaryOperator, left: &'e Expression, right: &'e Expression) -> Compilation<Option<(&'e Expression, u8, u8, u8, bool)>> {
+        let result = match operator {
+            // `(x << n) & m` / `(x >> n) & m` — shift inside, mask outside.
+            BinaryOperator::BitAnd => {
+                let Expression::IntegerLiteral(mask) = *right else { return Ok(None) };
+                let mask = mask as u32;
+                let Some((value, is_left, shift)) = as_constant_shift(left) else { return Ok(None) };
+                if is_left {
+                    // `x << n` zeroes the low n bits, so they cannot survive the mask.
+                    let effective = mask & !((1u32 << shift) - 1);
+                    let Some((begin, end)) = mask_to_run(effective) else { return Ok(None) };
+                    Some((value, shift, begin, end, false))
+                } else {
+                    // `x >> n`: the mask must stay below the (possibly sign-extended)
+                    // high n bits, so the rotate reproduces the shift for either sign.
+                    if shift == 0 || mask >= (1u32 << (32 - shift)) {
+                        return Ok(None);
+                    }
+                    let Some((begin, end)) = mask_to_run(mask) else { return Ok(None) };
+                    Some((value, 32 - shift, begin, end, false))
+                }
+            }
+            // `(x & m) << n` — mask inside, left shift outside.
+            BinaryOperator::ShiftLeft => {
+                let Expression::IntegerLiteral(shift) = *right else { return Ok(None) };
+                if !(1..=31).contains(&shift) {
+                    return Ok(None);
+                }
+                let Some((value, mask)) = as_masked_leaf(left) else { return Ok(None) };
+                let Some((begin, end)) = mask_to_run(mask << shift) else { return Ok(None) };
+                Some((value, shift as u8, begin, end, false))
+            }
+            // `(x & m) >> n` — mask inside, logical right shift outside (unsigned).
+            BinaryOperator::ShiftRight => {
+                let Expression::IntegerLiteral(shift) = *right else { return Ok(None) };
+                if !(1..=31).contains(&shift) {
+                    return Ok(None);
+                }
+                let Some((value, mask)) = as_masked_leaf(left) else { return Ok(None) };
+                let Some((begin, end)) = mask_to_run(mask >> shift) else { return Ok(None) };
+                Some((value, (32 - shift) as u8, begin, end, true))
+            }
+            _ => None,
+        };
+        Ok(result)
+    }
+
     /// Emit a right shift, choosing arithmetic (signed) or logical (unsigned)
     /// from the type of the shifted value.
     pub(crate) fn emit_shift_right(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {

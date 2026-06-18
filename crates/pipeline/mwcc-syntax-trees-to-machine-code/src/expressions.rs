@@ -122,6 +122,14 @@ impl Generator {
                 if is_comparison(*operator) {
                     return self.emit_comparison(*operator, left, right, destination);
                 }
+                // A shift fused with a mask — `(x >> n) & m`, `(x & m) << n`, etc. —
+                // is a single rotate-and-mask (`rlwinm`). Caught before the per-shift
+                // paths so the fused form wins over a plain shift.
+                if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight)
+                    && self.try_emit_rotate_mask(*operator, left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // Right shift, divide, and modulo select instructions by signedness.
                 if *operator == BinaryOperator::ShiftRight {
                     return self.emit_shift_right(left, right, destination);
