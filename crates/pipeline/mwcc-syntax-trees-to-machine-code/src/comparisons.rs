@@ -193,18 +193,24 @@ impl Generator {
                 }
                 Ok(())
             }
-            // unsigned a < b / a > b : xor/cntlzw/slw/srwi. `x > C` materializes C
-            // in r0 (the `>` idiom reads the low operand once); `< C` would need C
-            // kept (the high operand is read twice), so only `>` takes a constant.
+            // unsigned a < b / a > b : xor/cntlzw/slw/srwi. A constant operand `x > C`
+            // is the low side (read once) → r0; `x < C` is the high side (read twice)
+            // → a fresh register the allocator places at the lowest free GPR.
             BinaryOperator::Less | BinaryOperator::Greater
                 if !signed_left && leaf_name(left).is_some()
                     && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
                     && (leaf_name(right).is_some()
-                        || (matches!(operator, BinaryOperator::Greater)
-                            && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()))) =>
+                        || constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok())) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
-                let right_register = self.compare_right_operand(right)?;
+                let right_register = match constant_value(right) {
+                    Some(constant) if matches!(operator, BinaryOperator::Less) => {
+                        let register = self.fresh_virtual_general();
+                        self.load_integer_constant(register, constant);
+                        register
+                    }
+                    _ => self.compare_right_operand(right)?,
+                };
                 // a < b uses b as the high side; a > b is b < a.
                 let high = if matches!(operator, BinaryOperator::Less) { right_register } else { left_register };
                 let low = if matches!(operator, BinaryOperator::Less) { left_register } else { right_register };
