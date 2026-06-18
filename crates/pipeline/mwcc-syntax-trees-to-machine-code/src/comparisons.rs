@@ -23,6 +23,17 @@ impl Generator {
             BinaryOperator::Equal => {
                 if is_zero_literal(right) || is_zero_literal(left) {
                     let value = if is_zero_literal(right) { left } else { right };
+                    // `(x & (1<<k)) == 0`: extract bit k to the low bit (one rlwinm),
+                    // then flip it.
+                    if let Some((variable, mask)) = as_masked_leaf(value) {
+                        if mask.is_power_of_two() {
+                            let register = self.general_register_of_leaf(variable)?;
+                            let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
+                            self.output.instructions.push(Instruction::RotateAndMask { a: GENERAL_SCRATCH, s: register, shift, begin: 31, end: 31 });
+                            self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
+                            return Ok(());
+                        }
+                    }
                     let source = self.place_operand_or_scratch(value, d)?;
                     // A signed byte load is `lbz` (zero-extended); mwcc re-extends it
                     // with `extsb` before the leading-zero test. Signed halfword loads
@@ -56,6 +67,15 @@ impl Generator {
             }
             // x != 0 : sign bit of (-x | x)
             BinaryOperator::NotEqual if is_zero_literal(right) => {
+                // `(x & (1<<k)) != 0`: extract bit k to the low bit with one rlwinm.
+                if let Some((variable, mask)) = as_masked_leaf(left) {
+                    if mask.is_power_of_two() {
+                        let register = self.general_register_of_leaf(variable)?;
+                        let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
+                        self.output.instructions.push(Instruction::RotateAndMask { a: d, s: register, shift, begin: 31, end: 31 });
+                        return Ok(());
+                    }
+                }
                 self.evaluate_general(left, d)?;
                 self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: d });
                 self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: d });
