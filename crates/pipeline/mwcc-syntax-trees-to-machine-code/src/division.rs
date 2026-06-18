@@ -169,6 +169,65 @@ impl Generator {
         Ok(())
     }
 
+    /// Modulo by a non-power-of-two constant: compute the magic quotient into r0
+    /// (the dividend staying live in its own register), then `n - q*d` via
+    /// `mulli`/`subf`. The quotient sequence mirrors the divide but always lands
+    /// in r0, using the magic's home register for the rounding temporary.
+    fn emit_magic_modulo(&mut self, dividend: &Expression, divisor: i64, signed: bool, destination: u8) -> Compilation<()> {
+        let Some(dividend_register) = leaf_name(dividend).and_then(|name| self.lookup_general(name)) else {
+            return Err(Diagnostic::error("magic-number modulo needs a leaf dividend (roadmap)"));
+        };
+        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r)) else {
+            return Err(Diagnostic::error("out of registers for magic-number modulo"));
+        };
+        let scratch = GENERAL_SCRATCH;
+        let materialize = |this: &mut Self, magic: i32| {
+            let low = magic as i16;
+            let high = (magic.wrapping_sub(low as i32) >> 16) as i16;
+            this.output.instructions.push(Instruction::AddImmediateShifted { d: temp, a: 0, immediate: high });
+            this.output.instructions.push(Instruction::AddImmediate { d: scratch, a: temp, immediate: low });
+        };
+
+        // The rounded quotient ends up in r0.
+        if signed {
+            let (magic, shift) = signed_magic(divisor as i32);
+            materialize(self, magic);
+            let correction = magic < 0;
+            if correction || shift > 0 {
+                self.output.instructions.push(Instruction::MultiplyHighWord { d: scratch, a: scratch, b: dividend_register });
+                if correction {
+                    self.output.instructions.push(Instruction::Add { d: scratch, a: scratch, b: dividend_register });
+                }
+                if shift > 0 {
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: scratch, s: scratch, shift });
+                }
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: temp, s: scratch, shift: 31 });
+                self.output.instructions.push(Instruction::Add { d: scratch, a: scratch, b: temp });
+            } else {
+                self.output.instructions.push(Instruction::MultiplyHighWord { d: temp, a: scratch, b: dividend_register });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: temp, shift: 31 });
+                self.output.instructions.push(Instruction::Add { d: scratch, a: temp, b: scratch });
+            }
+        } else {
+            let (magic, add, shift) = unsigned_magic(divisor as u32);
+            materialize(self, magic as i32);
+            if !add {
+                self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: scratch, a: scratch, b: dividend_register });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: scratch, shift });
+            } else {
+                self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: temp, a: scratch, b: dividend_register });
+                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: temp, b: dividend_register });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: scratch, shift: 1 });
+                self.output.instructions.push(Instruction::Add { d: scratch, a: scratch, b: temp });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: scratch, shift: shift - 1 });
+            }
+        }
+        // n - q*d.
+        self.output.instructions.push(Instruction::MultiplyImmediate { d: scratch, a: scratch, immediate: divisor as i16 });
+        self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: scratch, b: dividend_register });
+        Ok(())
+    }
+
     /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
     pub(crate) fn emit_modulo(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
@@ -182,6 +241,16 @@ impl Generator {
                     self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear });
                     return Ok(());
                 }
+            }
+        }
+
+        // Modulo by a non-power-of-two constant: the magic quotient times the
+        // divisor subtracted from the dividend. The divisor must fit `mulli`'s
+        // signed-16-bit immediate.
+        if let Expression::IntegerLiteral(divisor) = right {
+            let divisor = *divisor;
+            if divisor >= 3 && divisor <= i16::MAX as i64 && !(divisor as u64).is_power_of_two() {
+                return self.emit_magic_modulo(left, divisor, signed, destination);
             }
         }
 
