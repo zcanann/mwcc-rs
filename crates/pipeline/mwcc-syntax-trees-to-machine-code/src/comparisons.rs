@@ -246,11 +246,17 @@ impl Generator {
         const LT: u8 = 0;
         const GT: u8 = 1;
         const EQ: u8 = 2;
-        let a = self.float_register_of_leaf(left)?;
-        let b = self.float_register_of_leaf(right)?;
+        // The comparison's precision comes from the typed (non-literal) operand; a
+        // float literal (e.g. `x > 0.0`) is loaded from the constant pool.
+        let double = self.is_double_value(left) || self.is_double_value(right);
+        let a = self.place_float_compare_operand(left, double)?;
+        let b = self.place_float_compare_operand(right, double)?;
         let scratch = GENERAL_SCRATCH;
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-            self.output.instructions.push(Instruction::FloatCompareUnordered { a, b });
+            // `==`/`!=` are commutative; mwcc canonicalizes a literal operand to
+            // the front (it loaded the constant first), so `x == 0.0` is `fcmpu 0,x`.
+            let (first, second) = if matches!(right, Expression::FloatLiteral(_)) { (b, a) } else { (a, b) };
+            self.output.instructions.push(Instruction::FloatCompareUnordered { a: first, b: second });
         } else {
             self.output.instructions.push(Instruction::FloatCompareOrdered { a, b });
         }
@@ -276,6 +282,21 @@ impl Generator {
             self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: scratch, shift, begin: 31, end: 31 });
         }
         Ok(())
+    }
+
+    /// Place a floating-point comparison operand: a leaf stays in its register; a
+    /// float literal is loaded from the constant pool (`lfs`/`lfd`) into the float
+    /// scratch, matching mwcc's `x > 0.0` form.
+    fn place_float_compare_operand(&mut self, operand: &Expression, double: bool) -> Compilation<u8> {
+        if let Expression::FloatLiteral(value) = operand {
+            if double {
+                self.load_double_constant(FLOAT_SCRATCH, value.to_bits());
+            } else {
+                self.load_float_constant(FLOAT_SCRATCH, *value as f32);
+            }
+            return Ok(FLOAT_SCRATCH);
+        }
+        self.float_register_of_leaf(operand)
     }
 
     /// Whether `value` is a load of a signed 8-bit value (a `char`/`signed char`
