@@ -50,10 +50,15 @@ impl Generator {
                 self.output.instructions.push(Instruction::AddToZeroExtended { d, a: GENERAL_SCRATCH });
                 return Ok(());
             }
-            // Signed division by a positive, non-power-of-two constant: the
-            // magic-number multiply (Granlund–Montgomery).
-            if signed && divisor >= 3 && i32::try_from(divisor).is_ok() {
-                return self.emit_signed_magic_divide(left, divisor as i32, d);
+            // Division by a non-power-of-two constant: the magic-number multiply
+            // (Granlund–Montgomery), in its signed or unsigned form.
+            if divisor >= 3 {
+                if signed && i32::try_from(divisor).is_ok() {
+                    return self.emit_signed_magic_divide(left, divisor as i32, d);
+                }
+                if !signed && u32::try_from(divisor).is_ok() {
+                    return self.emit_unsigned_magic_divide(left, divisor as u32, d);
+                }
             }
             return Err(Diagnostic::error("division by this constant needs magic-number lowering (roadmap)"));
         }
@@ -131,6 +136,39 @@ impl Generator {
         Ok(())
     }
 
+    /// Unsigned division by a constant via the magic-number multiply. The simple
+    /// form is `mulhwu; srwi s`. When the magic needs an extra precision bit (the
+    /// "add" form), mwcc emits the saturating-add sequence
+    /// `q=mulhwu; t=(n-q)>>1; q=t+q; result=q>>(s-1)`, keeping the multiply result
+    /// in the magic's home register and the dividend live in its own.
+    fn emit_unsigned_magic_divide(&mut self, dividend: &Expression, divisor: u32, destination: u8) -> Compilation<()> {
+        let (magic, add, shift) = unsigned_magic(divisor);
+        let Some(dividend_register) = leaf_name(dividend).and_then(|name| self.lookup_general(name)) else {
+            return Err(Diagnostic::error("magic-number division needs a leaf dividend (roadmap)"));
+        };
+        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r)) else {
+            return Err(Diagnostic::error("out of registers for magic-number division"));
+        };
+        let low = magic as i16;
+        let high = ((magic as i32).wrapping_sub(low as i32) >> 16) as i16;
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: temp, a: 0, immediate: high });
+        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: temp, immediate: low });
+
+        if !add {
+            // result = MULHWU(M, n) >> s.
+            self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: dividend_register });
+            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: GENERAL_SCRATCH, shift });
+        } else {
+            // q = MULHWU(M, n); result = ((n - q) >> 1 + q) >> (s - 1).
+            self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: temp, a: GENERAL_SCRATCH, b: dividend_register });
+            self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: temp, b: dividend_register });
+            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 1 });
+            self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: temp });
+            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: GENERAL_SCRATCH, shift: shift - 1 });
+        }
+        Ok(())
+    }
+
     /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
     pub(crate) fn emit_modulo(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
@@ -197,4 +235,45 @@ fn signed_magic(d: i32) -> (i32, u8) {
         magic = magic.wrapping_neg();
     }
     (magic, (p - 32) as u8)
+}
+
+/// The unsigned magic number, "add" indicator, and post-shift for unsigned
+/// division by `d` (Hacker's Delight `magicu`). The "add" form needs an extra
+/// precision bit the simple `mulhwu; srwi` cannot supply.
+fn unsigned_magic(d: u32) -> (u32, bool, u8) {
+    let mut add = false;
+    let nc = (0u32).wrapping_sub(1).wrapping_sub((0u32).wrapping_sub(d) % d);
+    let mut p = 31u32;
+    let mut q1 = 0x8000_0000u32 / nc;
+    let mut r1 = 0x8000_0000u32 - q1 * nc;
+    let mut q2 = 0x7FFF_FFFFu32 / d;
+    let mut r2 = 0x7FFF_FFFFu32 - q2 * d;
+    loop {
+        p += 1;
+        if r1 >= nc - r1 {
+            q1 = 2 * q1 + 1;
+            r1 = 2 * r1 - nc;
+        } else {
+            q1 *= 2;
+            r1 *= 2;
+        }
+        if r2 + 1 >= d - r2 {
+            if q2 >= 0x7FFF_FFFF {
+                add = true;
+            }
+            q2 = 2 * q2 + 1;
+            r2 = 2 * r2 + 1 - d;
+        } else {
+            if q2 >= 0x8000_0000 {
+                add = true;
+            }
+            q2 *= 2;
+            r2 = 2 * r2 + 1;
+        }
+        let delta = d - 1 - r2;
+        if p >= 64 || !(q1 < delta || (q1 == delta && r1 == 0)) {
+            break;
+        }
+    }
+    (q2 + 1, add, (p - 32) as u8)
 }
