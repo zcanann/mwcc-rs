@@ -36,6 +36,23 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // `x / C` for a power-of-two constant >= 2 strength-reduces to a
+                // multiply by the exact reciprocal: mwcc pools `1/C` and emits fmul(s).
+                if *operator == BinaryOperator::Divide {
+                    if let Expression::FloatLiteral(value) = right.as_ref() {
+                        if let Some(reciprocal) = reciprocal_if_power_of_two(*value, double) {
+                            let dividend = self.float_register_of_leaf(left)?;
+                            if double {
+                                self.load_double_constant(FLOAT_SCRATCH, reciprocal.to_bits());
+                                self.output.instructions.push(Instruction::FloatMultiplyDouble { d: destination, a: dividend, c: FLOAT_SCRATCH });
+                            } else {
+                                self.load_float_constant(FLOAT_SCRATCH, reciprocal as f32);
+                                self.output.instructions.push(Instruction::FloatMultiplySingle { d: destination, a: dividend, c: FLOAT_SCRATCH });
+                            }
+                            return Ok(());
+                        }
+                    }
+                }
                 if !fits_single_scratch(expression, destination == FLOAT_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
@@ -280,4 +297,20 @@ impl Generator {
             }
         }
     }
+}
+
+/// If `value` is a power-of-two constant `>= 2` in the given precision, return
+/// its exact reciprocal, so `x / value` becomes `x * reciprocal`. mwcc reduces
+/// `/2`, `/4`, `/8`, … this way but keeps `fdiv` for fractional powers of two
+/// (`/0.5`) and non-powers.
+fn reciprocal_if_power_of_two(value: f64, double: bool) -> Option<f64> {
+    if !(value >= 2.0) || !value.is_finite() {
+        return None;
+    }
+    let is_power_of_two = if double {
+        value.to_bits() & 0x000F_FFFF_FFFF_FFFF == 0
+    } else {
+        (value as f32).to_bits() & 0x007F_FFFF == 0
+    };
+    is_power_of_two.then(|| 1.0 / value)
 }
