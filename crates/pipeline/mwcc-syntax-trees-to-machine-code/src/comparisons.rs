@@ -128,6 +128,24 @@ impl Generator {
             // temporary — reproducing mwcc (p->a > x, (a+b) > c; x < p->a, x < (a+b)).
             // The other idioms use an operand once (mwcc keeps it in the scratch);
             // those non-leaf shapes still defer rather than mismatch.
+            // signed `x > C` : materialize C in r0 (the `>` idiom uses the right
+            // operand once), then the same sign-bit idiom with a fresh temp.
+            BinaryOperator::Greater
+                if signed_left && leaf_name(left).is_some() && !self.is_narrow_leaf(left)
+                    && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
+            {
+                let x = self.general_register_of_leaf(left)?;
+                let constant = constant_value(right).unwrap();
+                self.load_integer_constant(GENERAL_SCRATCH, constant);
+                let scratch = GENERAL_SCRATCH;
+                let temp = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::Xor { a: scratch, s: x, b: scratch });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
+                self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: x });
+                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                Ok(())
+            }
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
                 if signed_left && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
                     && (
@@ -175,13 +193,18 @@ impl Generator {
                 }
                 Ok(())
             }
-            // unsigned a < b / a > b : xor/cntlzw/slw/srwi.
+            // unsigned a < b / a > b : xor/cntlzw/slw/srwi. `x > C` materializes C
+            // in r0 (the `>` idiom reads the low operand once); `< C` would need C
+            // kept (the high operand is read twice), so only `>` takes a constant.
             BinaryOperator::Less | BinaryOperator::Greater
-                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
-                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
+                if !signed_left && leaf_name(left).is_some()
+                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
+                    && (leaf_name(right).is_some()
+                        || (matches!(operator, BinaryOperator::Greater)
+                            && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()))) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
-                let right_register = self.general_register_of_leaf(right)?;
+                let right_register = self.compare_right_operand(right)?;
                 // a < b uses b as the high side; a > b is b < a.
                 let high = if matches!(operator, BinaryOperator::Less) { right_register } else { left_register };
                 let low = if matches!(operator, BinaryOperator::Less) { left_register } else { right_register };
@@ -210,13 +233,16 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
-            // signed a <= b / a >= b : carry-based, with two temporaries.
+            // signed a <= b / a >= b : carry-based, with two temporaries. A
+            // constant right operand materializes into r0 (read twice before being
+            // overwritten by the subfc).
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
-                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
+                if signed_left && leaf_name(left).is_some()
+                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
+                    && (leaf_name(right).is_some() || constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok())) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
-                let right_register = self.general_register_of_leaf(right)?;
+                let right_register = self.compare_right_operand(right)?;
                 let mut free = (3u8..=12).filter(|r| ![left_register, right_register, GENERAL_SCRATCH].contains(r));
                 let (Some(lower), Some(higher)) = (free.next(), free.next()) else {
                     return Err(Diagnostic::error("out of registers for comparison"));
@@ -227,8 +253,17 @@ impl Generator {
                     BinaryOperator::LessEqual => (right_register, left_register, left_register, right_register),
                     _ => (left_register, right_register, right_register, left_register),
                 };
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: higher, s: sign_high, shift: 31 });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: lower, s: sign_low, shift: 31 });
+                let sign_of_high = Instruction::ShiftRightAlgebraicImmediate { a: higher, s: sign_high, shift: 31 };
+                let sign_of_low = Instruction::ShiftRightLogicalImmediate { a: lower, s: sign_low, shift: 31 };
+                // With a materialized constant, mwcc shifts the ready variable
+                // operand (the left leaf) before the constant's.
+                if constant_value(right).is_some() && sign_low == left_register {
+                    self.output.instructions.push(sign_of_low);
+                    self.output.instructions.push(sign_of_high);
+                } else {
+                    self.output.instructions.push(sign_of_high);
+                    self.output.instructions.push(sign_of_low);
+                }
                 self.output.instructions.push(Instruction::SubtractFromCarrying { d: GENERAL_SCRATCH, a: subtrahend, b: minuend });
                 self.output.instructions.push(Instruction::AddExtended { d, a: higher, b: lower });
                 Ok(())
@@ -355,6 +390,18 @@ impl Generator {
     ///    internal temp but still settle into the scratch.
     ///
     /// Two non-leaf operands are not handled here.
+    /// The register holding a comparison's right operand: a leaf in its home
+    /// register, or a constant materialized into the scratch (`li r0, C`). The
+    /// caller's idiom must read the right operand before overwriting r0.
+    fn compare_right_operand(&mut self, right: &Expression) -> Compilation<u8> {
+        if let Some(constant) = constant_value(right) {
+            self.load_integer_constant(GENERAL_SCRATCH, constant);
+            Ok(GENERAL_SCRATCH)
+        } else {
+            self.general_register_of_leaf(right)
+        }
+    }
+
     fn place_compare_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<(u8, u8)> {
         let left_leaf = leaf_name(left).is_some();
         let right_leaf = leaf_name(right).is_some();
