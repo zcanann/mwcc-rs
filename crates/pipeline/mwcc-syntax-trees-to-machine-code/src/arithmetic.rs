@@ -30,90 +30,69 @@ impl Generator {
         true
     }
 
-    /// `(x << c) | (x >> (32-c))` — a constant rotate. mwcc does not fold this to
-    /// a single `rotlwi`; it computes the OR's **right** operand directly with one
-    /// shift, then inserts the **left** operand with `rlwimi`. When the destination
-    /// is the value's own register it first copies the value to r0, because the
-    /// right-operand shift would otherwise clobber it before the insert reads it.
-    /// The rotated value must be unsigned so its `>>` is the logical `srwi`.
-    pub(crate) fn try_emit_rotate_or(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
-        let (Some((left_value, left_is_left, left_shift)), Some((right_value, right_is_left, right_shift))) =
-            (as_constant_shift(left), as_constant_shift(right))
+    /// `L | R` where each operand is a contiguous bit field of a leaf variable
+    /// (a constant shift or a mask) and the two fields tile the word exactly.
+    /// This one shape subsumes a constant rotate `(x<<c)|(x>>(32-c))`, a
+    /// sign/magnitude mask merge `(a&m)|(b&~m)`, and any mix such as
+    /// `(a<<16)|(b&0xffff)`. mwcc computes the OR's **right** operand (the base)
+    /// directly into the destination, then inserts the **left** operand's field
+    /// with `rlwimi`, preserving the inserted value in r0 first when computing the
+    /// base would otherwise clobber it. A logical right-shift operand (the base's
+    /// `srwi`) requires an unsigned value.
+    pub(crate) fn try_emit_field_merge(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let (Some((insert_value, insert_kind, insert_begin, insert_end)), Some((base_value, base_kind, base_begin, base_end))) =
+            (as_field(left), as_field(right))
         else {
             return Ok(false);
         };
-        // Same variable, opposite directions, amounts summing to a whole word.
-        if leaf_name(left_value) != leaf_name(right_value)
-            || left_is_left == right_is_left
-            || left_shift as u16 + right_shift as u16 != 32
-        {
+        // The two fields must cover the whole word with no overlap.
+        let insert_mask = run_mask(insert_begin, insert_end);
+        let base_mask = run_mask(base_begin, base_end);
+        if insert_mask & base_mask != 0 || insert_mask | base_mask != 0xFFFF_FFFF {
             return Ok(false);
         }
-        if self.signedness_of(left_value)? {
+        // A `srwi` (the base's logical right shift) needs an unsigned operand; the
+        // inserted `>>` reduces to a sign-agnostic rlwimi, but require it too to be safe.
+        if matches!(insert_kind, FieldSource::ShiftRight(_)) && self.signedness_of(insert_value)? {
             return Ok(false);
         }
-        let Some(x) = leaf_name(left_value).and_then(|name| self.lookup_general(name)) else {
-            return Ok(false);
-        };
-        // Preserve the value when the destination is its home register.
-        let source = if destination == x {
-            self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, x));
-            GENERAL_SCRATCH
-        } else {
-            x
-        };
-        // Right operand of the OR, computed directly into the destination.
-        self.output.instructions.push(if right_is_left {
-            Instruction::ShiftLeftImmediate { a: destination, s: x, shift: right_shift }
-        } else {
-            Instruction::ShiftRightLogicalImmediate { a: destination, s: x, shift: right_shift }
-        });
-        // Left operand, inserted with rlwimi. `x << c` occupies bits [0, 31-c];
-        // `x >> c` occupies bits [c, 31] (rotate by 32-c).
-        let (shift, begin, end) = if left_is_left {
-            (left_shift, 0, 31 - left_shift)
-        } else {
-            (32 - left_shift, left_shift, 31)
-        };
-        self.output.instructions.push(Instruction::RotateAndMaskInsert { a: destination, s: source, shift, begin, end });
-        Ok(true)
-    }
-
-    /// `(a & maskA) | (b & maskB)` with complementary contiguous masks merges two
-    /// disjoint bit fields. mwcc moves the OR's **right** operand (the base) into
-    /// the destination, then inserts the **left** operand's masked field with a
-    /// `rlwimi` (rotate 0). It preserves the inserted value in r0 first when moving
-    /// the base would clobber it (insert in the destination, base elsewhere).
-    pub(crate) fn try_emit_mask_merge(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
-        let (Some((insert_value, insert_mask)), Some((base_value, base_mask))) = (as_masked_leaf(left), as_masked_leaf(right)) else {
-            return Ok(false);
-        };
-        // The masks must be exact complements, and the inserted one a contiguous run.
-        if insert_mask == 0 || base_mask == 0 || base_mask != !insert_mask {
+        if matches!(base_kind, FieldSource::ShiftRight(_)) && self.signedness_of(base_value)? {
             return Ok(false);
         }
-        let Some((begin, end)) = mask_to_run(insert_mask) else {
-            return Ok(false);
-        };
         let (Some(insert_register), Some(base_register)) = (
             leaf_name(insert_value).and_then(|name| self.lookup_general(name)),
             leaf_name(base_value).and_then(|name| self.lookup_general(name)),
         ) else {
             return Ok(false);
         };
-        let insert_source = if base_register == destination {
-            // The base already sits in the destination; insert straight away.
-            insert_register
-        } else if insert_register == destination {
-            // Moving the base into the destination would clobber the insert value.
+        // Computing the base writes the destination, except an unshifted mask whose
+        // value already sits there.
+        let base_writes_destination = !(matches!(base_kind, FieldSource::Mask) && base_register == destination);
+        // Preserve the inserted value when the base computation would overwrite it.
+        let insert_source = if base_writes_destination && insert_register == destination {
             self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, insert_register));
-            self.output.instructions.push(Instruction::move_register(destination, base_register));
             GENERAL_SCRATCH
         } else {
-            self.output.instructions.push(Instruction::move_register(destination, base_register));
             insert_register
         };
-        self.output.instructions.push(Instruction::RotateAndMaskInsert { a: destination, s: insert_source, shift: 0, begin, end });
+        // The base, computed directly into the destination.
+        match base_kind {
+            FieldSource::ShiftLeft(n) => self.output.instructions.push(Instruction::ShiftLeftImmediate { a: destination, s: base_register, shift: n }),
+            FieldSource::ShiftRight(n) => self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: base_register, shift: n }),
+            FieldSource::Mask => {
+                if base_register != destination {
+                    self.output.instructions.push(Instruction::move_register(destination, base_register));
+                }
+            }
+        }
+        // The inserted field via rlwimi: `x << n` occupies [0, 31-n] at rotate n;
+        // `x >> n` occupies [n, 31] at rotate 32-n; a mask keeps its run at rotate 0.
+        let rotate = match insert_kind {
+            FieldSource::ShiftLeft(n) => n,
+            FieldSource::ShiftRight(n) => 32 - n,
+            FieldSource::Mask => 0,
+        };
+        self.output.instructions.push(Instruction::RotateAndMaskInsert { a: destination, s: insert_source, shift: rotate, begin: insert_begin, end: insert_end });
         Ok(true)
     }
 

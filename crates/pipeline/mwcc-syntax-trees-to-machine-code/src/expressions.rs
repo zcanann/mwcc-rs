@@ -154,15 +154,10 @@ impl Generator {
                 {
                     return Ok(());
                 }
-                // `(x << c) | (x >> (32-c))` is a rotate: one shift, then rlwimi.
+                // An OR of two complementary bit fields (shifts and/or masks) —
+                // including a constant rotate — merges via one rlwimi.
                 if matches!(operator, BinaryOperator::BitOr)
-                    && self.try_emit_rotate_or(left, right, destination)?
-                {
-                    return Ok(());
-                }
-                // `(a & maskA) | (b & ~maskA)` merges two disjoint fields via rlwimi.
-                if matches!(operator, BinaryOperator::BitOr)
-                    && self.try_emit_mask_merge(left, right, destination)?
+                    && self.try_emit_field_merge(left, right, destination)?
                 {
                     return Ok(());
                 }

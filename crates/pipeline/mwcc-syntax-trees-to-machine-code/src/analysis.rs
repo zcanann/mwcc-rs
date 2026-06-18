@@ -140,8 +140,39 @@ pub(crate) fn mask_to_run(mask: u32) -> Option<(u8, u8)> {
     }
     let begin = mask.leading_zeros() as u8;
     let end = 31 - mask.trailing_zeros() as u8;
-    let expected = (0xFFFF_FFFFu32 >> begin) & (0xFFFF_FFFFu32 << (31 - end));
+    let expected = run_mask(begin, end);
     (expected == mask).then_some((begin, end))
+}
+
+/// The 32-bit mask whose set bits are the contiguous run `[begin, end]`
+/// (bit 0 = the most significant bit).
+pub(crate) fn run_mask(begin: u8, end: u8) -> u32 {
+    (0xFFFF_FFFFu32 >> begin) & (0xFFFF_FFFFu32 << (31 - end))
+}
+
+/// How one operand of a bitfield merge produces its contiguous masked region.
+pub(crate) enum FieldSource {
+    ShiftLeft(u8),
+    ShiftRight(u8),
+    Mask,
+}
+
+/// Decompose an expression into a contiguous bit field of a leaf variable: a
+/// constant shift (`x << n` / `x >> n`) or a mask (`x & m`). Returns the
+/// variable, how the field is produced, and its PowerPC `[begin, end]` span.
+pub(crate) fn as_field(expression: &Expression) -> Option<(&Expression, FieldSource, u8, u8)> {
+    if let Some((value, is_left, shift)) = as_constant_shift(expression) {
+        return Some(if is_left {
+            (value, FieldSource::ShiftLeft(shift), 0, 31 - shift)
+        } else {
+            (value, FieldSource::ShiftRight(shift), shift, 31)
+        });
+    }
+    if let Some((value, mask)) = as_masked_leaf(expression) {
+        let (begin, end) = mask_to_run(mask)?;
+        return Some((value, FieldSource::Mask, begin, end));
+    }
+    None
 }
 
 /// A nonzero integer literal that fits a signed 16-bit immediate.
