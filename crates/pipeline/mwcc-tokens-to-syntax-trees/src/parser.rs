@@ -54,6 +54,34 @@ impl Parser {
     pub(crate) fn peek(&self) -> &Token {
         &self.tokens[self.position]
     }
+    /// The token `offset` positions ahead, clamped to the final (end-of-input)
+    /// token so lookahead never runs off the end.
+    pub(crate) fn peek_at(&self, offset: usize) -> &Token {
+        let index = (self.position + offset).min(self.tokens.len() - 1);
+        &self.tokens[index]
+    }
+    /// If the next two tokens are an arithmetic/bitwise operator followed by `=`
+    /// (a compound assignment like `+=`), return the operator. The operator and
+    /// `=` are NOT consumed.
+    pub(crate) fn peek_compound_assignment(&self) -> Option<mwcc_syntax_trees::BinaryOperator> {
+        use mwcc_syntax_trees::BinaryOperator;
+        if *self.peek_at(1) != Token::Equals {
+            return None;
+        }
+        Some(match self.peek() {
+            Token::Plus => BinaryOperator::Add,
+            Token::Minus => BinaryOperator::Subtract,
+            Token::Star => BinaryOperator::Multiply,
+            Token::Slash => BinaryOperator::Divide,
+            Token::Percent => BinaryOperator::Modulo,
+            Token::Ampersand => BinaryOperator::BitAnd,
+            Token::Pipe => BinaryOperator::BitOr,
+            Token::Caret => BinaryOperator::BitXor,
+            Token::ShiftLeft => BinaryOperator::ShiftLeft,
+            Token::ShiftRight => BinaryOperator::ShiftRight,
+            _ => return None,
+        })
+    }
     pub(crate) fn advance(&mut self) -> Token {
         let token = self.tokens[self.position].clone();
         self.position += 1;

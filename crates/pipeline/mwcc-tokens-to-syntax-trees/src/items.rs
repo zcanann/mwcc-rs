@@ -778,7 +778,20 @@ impl Parser {
                 continue;
             }
             let first = self.factor()?;
-            if *self.peek() == Token::Equals {
+            // A compound assignment `target op= rhs` desugars to `target = target op rhs`.
+            if let Some(operator) = self.peek_compound_assignment() {
+                self.advance(); // the operator
+                self.advance(); // the `=`
+                let rhs = self.expression()?;
+                self.expect(Token::Semicolon)?;
+                let value = Expression::Binary { operator, left: Box::new(first.clone()), right: Box::new(rhs) };
+                match &first {
+                    Expression::Variable(name) if local_names.contains(name.as_str()) => {
+                        statements.push(Statement::Assign { name: name.clone(), value });
+                    }
+                    _ => statements.push(Statement::Store { target: first, value }),
+                }
+            } else if *self.peek() == Token::Equals {
                 self.advance();
                 let value = self.expression()?;
                 self.expect(Token::Semicolon)?;
