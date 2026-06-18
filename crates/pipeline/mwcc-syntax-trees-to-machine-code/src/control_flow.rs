@@ -123,6 +123,13 @@ impl Generator {
             return Ok(true);
         }
         if let Some(constant) = constant_value(value) {
+            // `cond ? -1 : 0` is exactly the all-ones-when-true mask — no `and`.
+            if constant == -1 && !complement {
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
+                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: GENERAL_SCRATCH, shift: 31 });
+                return Ok(true);
+            }
             // Constant value: it occupies r0, so the mask computes through a free
             // register (`neg`) and the destination (`or`/`srawi`).
             let Some(temp) = (3u8..=12).find(|r| *r != condition_register && !self.reserved.contains(r)) else {

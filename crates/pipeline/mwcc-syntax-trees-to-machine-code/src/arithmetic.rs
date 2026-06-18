@@ -386,6 +386,34 @@ impl Generator {
             }
         }
 
+        // `x | C` / `x ^ C` with a constant wider than 16 bits combines the high
+        // and low halves: `oris`/`xoris` for the high half, then `ori`/`xori` for
+        // the low. (A constant fitting 16 bits uses the single-immediate path below.)
+        if matches!(operator, BinaryOperator::BitOr | BinaryOperator::BitXor)
+            && !fits_unsigned_16(constant)
+            && (0..=u32::MAX as i64).contains(&constant)
+        {
+            let value = constant as u32;
+            let high = (value >> 16) as u16;
+            let low = (value & 0xffff) as u16;
+            let source = self.place_operand_or_scratch(variable, destination)?;
+            let mut from = source;
+            if high != 0 {
+                self.output.instructions.push(match operator {
+                    BinaryOperator::BitOr => Instruction::OrImmediateShifted { a: destination, s: from, immediate: high },
+                    _ => Instruction::XorImmediateShifted { a: destination, s: from, immediate: high },
+                });
+                from = destination;
+            }
+            if low != 0 {
+                self.output.instructions.push(match operator {
+                    BinaryOperator::BitOr => Instruction::OrImmediate { a: destination, s: from, immediate: low },
+                    _ => Instruction::XorImmediate { a: destination, s: from, immediate: low },
+                });
+            }
+            return Ok(true);
+        }
+
         enum Immediate {
             Add,
             ShiftLeft(u8),

@@ -11,6 +11,8 @@ pub enum Instruction {
     AddImmediateShifted { d: u8, a: u8, immediate: i16 },
     /// `ori rA, rS, UIMM`
     OrImmediate { a: u8, s: u8, immediate: u16 },
+    /// `oris rA, rS, UIMM` — OR the immediate into the high half.
+    OrImmediateShifted { a: u8, s: u8, immediate: u16 },
     /// `add rD, rA, rB`
     Add { d: u8, a: u8, b: u8 },
     /// `subf rD, rA, rB` => rD = rB - rA.

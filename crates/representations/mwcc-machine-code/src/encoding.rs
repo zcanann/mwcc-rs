@@ -11,6 +11,7 @@ impl Instruction {
             Instruction::AddImmediate { d, a, immediate } => d_form(14, d, a, immediate as u16),
             Instruction::AddImmediateShifted { d, a, immediate } => d_form(15, d, a, immediate as u16),
             Instruction::OrImmediate { a, s, immediate } => d_form(24, s, a, immediate),
+            Instruction::OrImmediateShifted { a, s, immediate } => d_form(25, s, a, immediate),
             Instruction::Add { d, a, b } => xo_form(d, a, b, 266),
             Instruction::SubtractFrom { d, a, b } => xo_form(d, a, b, 40),
             Instruction::Negate { d, a } => xo_form(d, a, 0, 104),
