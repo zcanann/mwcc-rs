@@ -132,6 +132,19 @@ impl Parser {
             self.last_struct_tag = Some(tag);
             return Ok(Type::StructPointer);
         }
+        // A struct typedef (`FILE`) behaves like its `struct Tag`: `FILE *` is a
+        // struct pointer carrying the layout's tag; a struct value isn't supported.
+        if let Token::Identifier(name) = self.peek() {
+            if let Some(tag) = self.struct_typedefs.get(name).cloned() {
+                self.advance();
+                if *self.peek() != Token::Star {
+                    return Err(Diagnostic::error("struct values are not supported yet — use a struct pointer"));
+                }
+                self.advance();
+                self.last_struct_tag = Some(tag);
+                return Ok(Type::StructPointer);
+            }
+        }
         // A `typedef`-declared alias resolves to its underlying type.
         if let Token::Identifier(name) = self.peek() {
             if let Some(&aliased) = self.typedefs.get(name) {
@@ -224,6 +237,16 @@ impl Parser {
     pub(crate) fn parse_struct_definition(&mut self) -> Compilation<()> {
         self.expect(Token::KeywordStruct)?;
         let tag = self.parse_identifier()?;
+        let layout = self.parse_struct_body()?;
+        self.expect(Token::Semicolon)?;
+        self.structs.insert(tag, layout);
+        Ok(())
+    }
+
+    /// Parse a struct body `{ field; … }` (the cursor is at the `{`), returning its
+    /// layout. Does not consume any trailing `;` — the caller (a definition or a
+    /// typedef) does.
+    pub(crate) fn parse_struct_body(&mut self) -> Compilation<StructLayout> {
         self.expect(Token::BraceOpen)?;
         let mut layout = StructLayout::default();
         let mut offset: u16 = 0;
@@ -254,9 +277,7 @@ impl Parser {
             offset += size;
         }
         self.expect(Token::BraceClose)?;
-        self.expect(Token::Semicolon)?;
-        self.structs.insert(tag, layout);
-        Ok(())
+        Ok(layout)
     }
 
     pub(crate) fn translation_unit(&mut self) -> Compilation<TranslationUnit> {
@@ -384,6 +405,22 @@ impl Parser {
             // `typedef <type> <name>;` registers a type alias. (Function-pointer and
             // array typedefs are not in the subset yet.)
             if self.eat_word("typedef") {
+                // `typedef struct [Tag] { … } Alias;` registers the layout and the
+                // alias->tag mapping (an anonymous struct uses the alias as its tag).
+                let tagged = *self.peek() == Token::KeywordStruct
+                    && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
+                        || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen));
+                if tagged {
+                    self.advance(); // `struct`
+                    let tag = if matches!(self.peek(), Token::Identifier(_)) { self.parse_identifier()? } else { String::new() };
+                    let layout = self.parse_struct_body()?;
+                    let alias = self.parse_identifier()?;
+                    self.expect(Token::Semicolon)?;
+                    let tag = if tag.is_empty() { alias.clone() } else { tag };
+                    self.structs.insert(tag.clone(), layout);
+                    self.struct_typedefs.insert(alias, tag);
+                    return Ok(());
+                }
                 let aliased = self.parse_type()?;
                 let name = self.parse_identifier()?;
                 self.expect(Token::Semicolon)?;
@@ -704,6 +741,7 @@ impl Parser {
             Token::Identifier(word) => {
                 matches!(word.as_str(), "long" | "signed" | "double" | "const" | "volatile" | "register")
                     || self.typedefs.contains_key(word)
+                    || self.struct_typedefs.contains_key(word)
             }
             _ => false,
         }

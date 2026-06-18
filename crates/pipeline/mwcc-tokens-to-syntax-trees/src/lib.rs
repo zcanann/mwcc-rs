@@ -19,6 +19,6 @@ use parser::Parser;
 /// function definition).
 pub fn parse_translation_unit(tokens: Vec<Token>) -> Compilation<TranslationUnit> {
     let mut parser =
-        Parser { tokens, position: 0, structs: HashMap::new(), variable_structs: HashMap::new(), last_struct_tag: None, typedefs: HashMap::new(), last_type_was_const: false, inline_asm_symbols: Vec::new() };
+        Parser { tokens, position: 0, structs: HashMap::new(), variable_structs: HashMap::new(), last_struct_tag: None, typedefs: HashMap::new(), last_type_was_const: false, inline_asm_symbols: Vec::new(), struct_typedefs: HashMap::new() };
     parser.translation_unit()
 }

@@ -42,6 +42,9 @@ pub(crate) struct Parser {
     /// Names of skipped `static inline` functions with an inline `asm {}` body, in
     /// declaration order; mwcc emits a local undefined symbol for each.
     pub(crate) inline_asm_symbols: Vec<String>,
+    /// `typedef`-declared struct aliases (`typedef struct _FILE {…} FILE;`) mapped
+    /// to their struct tag, so `FILE *p` resolves to the right layout.
+    pub(crate) struct_typedefs: HashMap<String, String>,
 }
 
 impl Parser {
