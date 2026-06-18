@@ -82,6 +82,23 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
+            // `x != C` (nonzero constant): sign bit of ((C - x) | (x - C)), both
+            // halves built with immediates (`subfic` and `addi`).
+            BinaryOperator::NotEqual
+                if leaf_name(left).is_some() && !self.is_narrow_leaf(left)
+                    && constant_value(right).is_some_and(|constant| constant != 0 && i16::try_from(constant).is_ok() && i16::try_from(-constant).is_ok()) =>
+            {
+                let constant = constant_value(right).unwrap() as i16;
+                let x = self.general_register_of_leaf(left)?;
+                let Some(temp) = (3u8..=12).find(|register| *register != x && !self.reserved.contains(register)) else {
+                    return Err(Diagnostic::error("out of registers for the != idiom"));
+                };
+                self.output.instructions.push(Instruction::SubtractFromImmediate { d: temp, a: x, immediate: constant });
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: x, immediate: -constant });
+                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: temp, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                Ok(())
+            }
             // signed x < 0 : the sign bit.
             BinaryOperator::Less if is_zero_literal(right) && signed_left => {
                 let source = self.place_operand_or_scratch(left, d)?;
