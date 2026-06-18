@@ -168,7 +168,7 @@ impl Generator {
             return member_type == Type::Float;
         }
         if let Some(pointer) = as_dereference(operand) {
-            return matches!(self.pointee_of(pointer), Ok(Pointee::Float));
+            return matches!(self.pointee_of(pointer), Ok(Pointee::Float | Pointee::Double));
         }
         if let Expression::Variable(name) = operand {
             if !self.locations.contains_key(name) {

@@ -12,6 +12,7 @@ pub enum Pointee {
     Short,
     UnsignedShort,
     Float,
+    Double,
 }
 
 impl Pointee {
@@ -25,6 +26,7 @@ impl Pointee {
             Pointee::Short => Type::Short,
             Pointee::UnsignedShort => Type::UnsignedShort,
             Pointee::Float => Type::Float,
+            Pointee::Double => Type::Double,
         }
     }
     /// Size in bytes of one element (for indexing).

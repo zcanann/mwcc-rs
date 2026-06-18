@@ -17,6 +17,7 @@ fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction
         Pointee::Short => Instruction::LoadHalfwordAlgebraic { d, a, offset },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZero { d, a, offset },
         Pointee::Float => Instruction::LoadFloatSingle { d, a, offset },
+        Pointee::Double => Instruction::LoadFloatDouble { d, a, offset },
     }
 }
 
@@ -28,6 +29,7 @@ fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Instruction {
         Pointee::Short => Instruction::LoadHalfwordAlgebraicIndexed { d, a, b },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZeroIndexed { d, a, b },
         Pointee::Float => Instruction::LoadFloatSingleIndexed { d, a, b },
+        Pointee::Double => Instruction::LoadFloatDoubleIndexed { d, a, b },
     }
 }
 
@@ -44,7 +46,8 @@ fn pointee_of_type(value_type: Type) -> Option<Pointee> {
         // A pointer value is a 4-byte address (stored/loaded with `stw`/`lwz`).
         Type::Pointer(_) | Type::StructPointer => Pointee::UnsignedInt,
         // `double` storage (8-byte lfd/stfd) is a later stage.
-        Type::Double | Type::Void => return None,
+        Type::Double => Pointee::Double,
+        Type::Void => return None,
     })
 }
 
@@ -55,6 +58,7 @@ fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instructio
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByte { s, a, offset },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfword { s, a, offset },
         Pointee::Float => Instruction::StoreFloatSingle { s, a, offset },
+        Pointee::Double => Instruction::StoreFloatDouble { s, a, offset },
     }
 }
 
@@ -65,6 +69,7 @@ fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByteIndexed { s, a, b },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfwordIndexed { s, a, b },
         Pointee::Float => Instruction::StoreFloatSingleIndexed { s, a, b },
+        Pointee::Double => Instruction::StoreFloatDoubleIndexed { s, a, b },
     }
 }
 
@@ -174,7 +179,7 @@ impl Generator {
                     // The pointer and the integer result share the destination, so a
                     // float pointee (which needs a separate general register for the
                     // address) is deferred rather than miscompiled.
-                    if pointee != Pointee::Float {
+                    if !matches!(pointee, Pointee::Float | Pointee::Double) {
                         self.emit_global_load(name, destination)?;
                         self.output.instructions.push(displacement_load(pointee, destination, destination, 0));
                         return Ok(());
@@ -474,7 +479,7 @@ impl Generator {
     /// anything else is computed into the scratch (`li r0,0; stw r0,…`,
     /// `add r0,…; stw r0,…`) ahead of the store.
     fn place_store_value(&mut self, value: &Expression, pointee: Pointee) -> Compilation<u8> {
-        if pointee == Pointee::Float {
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
             if matches!(value, Expression::Variable(_)) {
                 return self.float_register_of_leaf(value);
             }
@@ -549,8 +554,8 @@ impl Generator {
         match expression {
             Expression::FloatLiteral(_) => true,
             Expression::Variable(_) => self.is_float_leaf(expression),
-            Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Float)),
-            Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Float)),
+            Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Float | Pointee::Double)),
+            Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Float | Pointee::Double)),
             Expression::Member { member_type, .. } => *member_type == Type::Float,
             _ => false,
         }

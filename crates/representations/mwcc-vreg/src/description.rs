@@ -95,7 +95,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(D, F, d);
             visit(U, G, a);
         }
-        LoadFloatSingleIndexed { d, a, b } => {
+        LoadFloatSingleIndexed { d, a, b } | LoadFloatDoubleIndexed { d, a, b } => {
             visit(D, F, d);
             visit(U, G, a);
             visit(U, G, b);
@@ -115,7 +115,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, F, s);
             visit(U, G, a);
         }
-        StoreFloatSingleIndexed { s, a, b } => {
+        StoreFloatSingleIndexed { s, a, b } | StoreFloatDoubleIndexed { s, a, b } => {
             visit(U, F, s);
             visit(U, G, a);
             visit(U, G, b);

@@ -17,6 +17,7 @@ fn pointee_of(base: Type) -> Compilation<Pointee> {
         Type::Short => Ok(Pointee::Short),
         Type::UnsignedShort => Ok(Pointee::UnsignedShort),
         Type::Float => Ok(Pointee::Float),
+        Type::Double => Ok(Pointee::Double),
         // `void *` is a 4-byte opaque pointer — only passed, stored, or compared
         // (dereferencing or indexing it is not valid C), so the pointee width is
         // never used. Model it as a word pointer.

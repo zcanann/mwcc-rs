@@ -57,6 +57,8 @@ impl Instruction {
             Instruction::StoreHalfwordIndexed { s, a, b } => xo_form(s, a, b, 407),
             Instruction::StoreFloatSingleIndexed { s, a, b } => xo_form(s, a, b, 663),
             Instruction::LoadFloatDouble { d, a, offset } => d_form(50, d, a, offset as u16),
+            Instruction::LoadFloatDoubleIndexed { d, a, b } => xo_form(d, a, b, 599),
+            Instruction::StoreFloatDoubleIndexed { s, a, b } => xo_form(s, a, b, 727),
             // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
             Instruction::ClearLeftImmediate { a, s, clear } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1)

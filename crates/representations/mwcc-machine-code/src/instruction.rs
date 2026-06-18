@@ -83,6 +83,10 @@ pub enum Instruction {
     StoreFloatSingleIndexed { s: u8, a: u8, b: u8 },
     /// `lfd frD, offset(rA)` — load float double.
     LoadFloatDouble { d: u8, a: u8, offset: i16 },
+    /// `lfdx frD, rA, rB` — load float double indexed.
+    LoadFloatDoubleIndexed { d: u8, a: u8, b: u8 },
+    /// `stfdx frS, rA, rB` — store float double indexed.
+    StoreFloatDoubleIndexed { s: u8, a: u8, b: u8 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
     ClearLeftImmediate { a: u8, s: u8, clear: u8 },
     /// `rlwinm rA, rS, 0, begin, end` — keep the contiguous bit run `[begin, end]`.
@@ -225,6 +229,8 @@ impl Instruction {
             StoreFloatSingle { .. }
                 | StoreFloatSingleIndexed { .. }
                 | StoreFloatDouble { .. }
+                | LoadFloatDoubleIndexed { .. }
+                | StoreFloatDoubleIndexed { .. }
                 | LoadFloatSingle { .. }
                 | LoadFloatSingleIndexed { .. }
                 | LoadFloatDouble { .. }
