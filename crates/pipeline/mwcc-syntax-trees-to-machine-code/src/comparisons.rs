@@ -162,6 +162,24 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
                 Ok(())
             }
+            // signed `(load) < C` : the load is the low operand (read once) → r0;
+            // the constant is the high operand (read twice) → a fresh register.
+            BinaryOperator::Less
+                if signed_left && self.is_word_load(left) && !self.is_narrow_leaf(right)
+                    && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
+            {
+                self.evaluate_general(left, GENERAL_SCRATCH)?;
+                let load = GENERAL_SCRATCH;
+                let constant_register = self.fresh_virtual_general();
+                self.load_integer_constant(constant_register, constant_value(right).unwrap());
+                let scratch = GENERAL_SCRATCH;
+                self.output.instructions.push(Instruction::Xor { a: scratch, s: constant_register, b: load });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
+                self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: constant_register });
+                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                Ok(())
+            }
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
                 if signed_left && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
                     && (
