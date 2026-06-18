@@ -42,6 +42,13 @@ impl Generator {
                     self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: GENERAL_SCRATCH, shift: 1 });
                     return Ok(());
                 }
+                // signed /2^k (k>=2): arithmetic shift, then `addze` adds the carry
+                // the shift sets for a negative dividend (round toward zero).
+                let shift = divisor.trailing_zeros() as u8;
+                let source = self.place_operand_or_scratch(left, GENERAL_SCRATCH)?;
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: source, shift });
+                self.output.instructions.push(Instruction::AddToZeroExtended { d, a: GENERAL_SCRATCH });
+                return Ok(());
             }
             return Err(Diagnostic::error("division by this constant needs magic-number lowering (roadmap)"));
         }

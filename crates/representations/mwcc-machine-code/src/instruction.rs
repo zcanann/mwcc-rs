@@ -35,6 +35,9 @@ pub enum Instruction {
     SubtractFromCarrying { d: u8, a: u8, b: u8 },
     /// `adde rD, rA, rB` => rD = rA + rB + carry.
     AddExtended { d: u8, a: u8, b: u8 },
+    /// `addze rD, rA` => rD = rA + carry. Used to round a signed power-of-two
+    /// division toward zero after an arithmetic shift.
+    AddToZeroExtended { d: u8, a: u8 },
     /// `mullw rD, rA, rB`
     MultiplyLow { d: u8, a: u8, b: u8 },
     /// `mulli rD, rA, SIMM`

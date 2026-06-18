@@ -23,6 +23,7 @@ impl Instruction {
             Instruction::SubtractFromImmediate { d, a, immediate } => d_form(8, d, a, immediate as u16),
             Instruction::SubtractFromCarrying { d, a, b } => xo_form(d, a, b, 8),
             Instruction::AddExtended { d, a, b } => xo_form(d, a, b, 138),
+            Instruction::AddToZeroExtended { d, a } => (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (202 << 1),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
             Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
             Instruction::DivideWord { d, a, b } => xo_form(d, a, b, 491),

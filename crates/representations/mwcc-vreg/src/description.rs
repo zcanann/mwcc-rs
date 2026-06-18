@@ -55,7 +55,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, b);
         }
         AddImmediate { d, a, .. } | AddImmediateShifted { d, a, .. } | SubtractFromImmediate { d, a, .. }
-        | MultiplyImmediate { d, a, .. } => {
+        | MultiplyImmediate { d, a, .. } | AddToZeroExtended { d, a } => {
             visit(D, G, d);
             visit(U, G, a);
         }
