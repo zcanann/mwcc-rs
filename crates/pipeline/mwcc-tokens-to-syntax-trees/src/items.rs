@@ -1,10 +1,24 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
+
+/// `target` assigned `value`: a reassignment of a tracked local, or a memory
+/// store to any other lvalue (`*p`, `p[i]`, a member, a global).
+fn store_or_assign(target: Expression, value: Expression, local_names: &std::collections::HashSet<&str>) -> Statement {
+    match &target {
+        Expression::Variable(name) if local_names.contains(name.as_str()) => Statement::Assign { name: name.clone(), value },
+        _ => Statement::Store { target, value },
+    }
+}
+
+/// The `target +/- 1` expression an increment/decrement statement assigns back.
+fn increment_value(operator: BinaryOperator, target: &Expression) -> Expression {
+    Expression::Binary { operator, left: Box::new(target.clone()), right: Box::new(Expression::IntegerLiteral(1)) }
+}
 
 /// The pointee kind for `<scalar>*`. Pointer-to-pointer and pointer-to-aggregate
 /// are not in the subset yet.
@@ -777,32 +791,40 @@ impl Parser {
                 statements.push(switch);
                 continue;
             }
+            // Prefix `++target;` / `--target;` — a value-free statement, so it is
+            // the same as `target = target +/- 1`.
+            if let Some(operator) = self.peek_increment() {
+                self.advance();
+                self.advance();
+                let target = self.factor()?;
+                self.expect(Token::Semicolon)?;
+                let value = increment_value(operator, &target);
+                statements.push(store_or_assign(target, value, &local_names));
+                continue;
+            }
             let first = self.factor()?;
-            // A compound assignment `target op= rhs` desugars to `target = target op rhs`.
-            if let Some(operator) = self.peek_compound_assignment() {
+            if let Some(operator) = self.peek_increment() {
+                // Postfix `target++;` / `target--;` — value unused, so identical.
+                self.advance();
+                self.advance();
+                self.expect(Token::Semicolon)?;
+                let value = increment_value(operator, &first);
+                statements.push(store_or_assign(first, value, &local_names));
+            } else if let Some(operator) = self.peek_compound_assignment() {
+                // `target op= rhs` desugars to `target = target op rhs`.
                 self.advance(); // the operator
                 self.advance(); // the `=`
                 let rhs = self.expression()?;
                 self.expect(Token::Semicolon)?;
                 let value = Expression::Binary { operator, left: Box::new(first.clone()), right: Box::new(rhs) };
-                match &first {
-                    Expression::Variable(name) if local_names.contains(name.as_str()) => {
-                        statements.push(Statement::Assign { name: name.clone(), value });
-                    }
-                    _ => statements.push(Statement::Store { target: first, value }),
-                }
+                statements.push(store_or_assign(first, value, &local_names));
             } else if *self.peek() == Token::Equals {
                 self.advance();
                 let value = self.expression()?;
                 self.expect(Token::Semicolon)?;
                 // `local = value;` is a value-tracked reassignment; any other
                 // target (`*p`, `p[i]`, a member, a global) is a memory store.
-                match &first {
-                    Expression::Variable(name) if local_names.contains(name.as_str()) => {
-                        statements.push(Statement::Assign { name: name.clone(), value });
-                    }
-                    _ => statements.push(Statement::Store { target: first, value }),
-                }
+                statements.push(store_or_assign(first, value, &local_names));
             } else {
                 self.expect(Token::Semicolon)?;
                 statements.push(Statement::Expression(first));

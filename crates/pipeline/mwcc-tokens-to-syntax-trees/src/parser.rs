@@ -60,6 +60,16 @@ impl Parser {
         let index = (self.position + offset).min(self.tokens.len() - 1);
         &self.tokens[index]
     }
+    /// If the next two tokens form `++` or `--` (each lexed as two operator
+    /// tokens), return the implied operator (Add / Subtract). Not consumed.
+    pub(crate) fn peek_increment(&self) -> Option<mwcc_syntax_trees::BinaryOperator> {
+        use mwcc_syntax_trees::BinaryOperator;
+        match (self.peek(), self.peek_at(1)) {
+            (Token::Plus, Token::Plus) => Some(BinaryOperator::Add),
+            (Token::Minus, Token::Minus) => Some(BinaryOperator::Subtract),
+            _ => None,
+        }
+    }
     /// If the next two tokens are an arithmetic/bitwise operator followed by `=`
     /// (a compound assignment like `+=`), return the operator. The operator and
     /// `=` are NOT consumed.
