@@ -477,24 +477,46 @@ impl Parser {
             self.expect(Token::ParenOpen)?;
 
             let mut parameters = Vec::new();
-            if *self.peek() == Token::KeywordVoid {
+            // `(void)` is an empty parameter list — but only when the `void` is the
+            // whole list; `void *p` / `void (*f)()` are real first parameters.
+            if *self.peek() == Token::KeywordVoid && self.tokens.get(self.position + 1) == Some(&Token::ParenClose) {
                 self.advance();
             } else if *self.peek() != Token::ParenClose {
                 loop {
                     let parameter_type = self.parse_type()?;
                     let struct_tag = self.last_struct_tag.take();
-                    // The name is optional (a prototype may write just the type).
-                    let name = if matches!(self.peek(), Token::Identifier(_)) {
-                        self.parse_identifier()?
-                    } else {
-                        String::new()
-                    };
-                    if let Some(tag) = struct_tag {
-                        if !name.is_empty() {
-                            self.variable_structs.insert(name.clone(), tag);
+                    // A function-pointer parameter `RET (*name)(params)` is a 4-byte
+                    // opaque pointer; consume its declarator and signature.
+                    if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                        self.advance(); // `(`
+                        self.advance(); // `*`
+                        let name = if matches!(self.peek(), Token::Identifier(_)) { self.parse_identifier()? } else { String::new() };
+                        self.expect(Token::ParenClose)?;
+                        self.expect(Token::ParenOpen)?;
+                        let mut depth = 1;
+                        while depth > 0 {
+                            match self.advance() {
+                                Token::ParenOpen => depth += 1,
+                                Token::ParenClose => depth -= 1,
+                                Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer parameter")),
+                                _ => {}
+                            }
                         }
+                        parameters.push(Parameter { parameter_type: Type::StructPointer, name });
+                    } else {
+                        // The name is optional (a prototype may write just the type).
+                        let name = if matches!(self.peek(), Token::Identifier(_)) {
+                            self.parse_identifier()?
+                        } else {
+                            String::new()
+                        };
+                        if let Some(tag) = struct_tag {
+                            if !name.is_empty() {
+                                self.variable_structs.insert(name.clone(), tag);
+                            }
+                        }
+                        parameters.push(Parameter { parameter_type, name });
                     }
-                    parameters.push(Parameter { parameter_type, name });
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {
