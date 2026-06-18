@@ -97,6 +97,47 @@ impl Generator {
     /// matching mwcc's shape: the false value's register is the working register,
     /// conditionally overwritten with the true value, then moved to the result.
     /// Leaf operands only for now.
+    /// Branchless `cond ? value : 0` (`complement` false → `and`) or
+    /// `cond ? 0 : value` (`complement` true → `andc`): build a mask that is
+    /// all-ones when `cond != 0` (`neg`/`or`/`srawi`), then combine it with
+    /// `value`. A leaf value keeps the mask in r0; a non-zero constant is
+    /// materialized in r0, so the mask instead flows through a free register and
+    /// the destination. The condition must be a plain (truthy) leaf.
+    fn try_emit_branchless_mask(&mut self, condition: &Expression, value: &Expression, complement: bool, destination: u8) -> Compilation<bool> {
+        let Some(condition_register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        let combine = |destination: u8, source: u8, mask: u8| {
+            if complement {
+                Instruction::AndComplement { a: destination, s: source, b: mask }
+            } else {
+                Instruction::And { a: destination, s: source, b: mask }
+            }
+        };
+        if let Some(value_register) = leaf_name(value).and_then(|name| self.lookup_general(name)) {
+            // Leaf value: the mask lives in r0.
+            self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
+            self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+            self.output.instructions.push(combine(destination, value_register, GENERAL_SCRATCH));
+            return Ok(true);
+        }
+        if let Some(constant) = constant_value(value) {
+            // Constant value: it occupies r0, so the mask computes through a free
+            // register (`neg`) and the destination (`or`/`srawi`).
+            let Some(temp) = (3u8..=12).find(|r| *r != condition_register && !self.reserved.contains(r)) else {
+                return Ok(false);
+            };
+            self.output.instructions.push(Instruction::Negate { d: temp, a: condition_register });
+            self.load_integer_constant(GENERAL_SCRATCH, constant);
+            self.output.instructions.push(Instruction::Or { a: destination, s: temp, b: condition_register });
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: destination, shift: 31 });
+            self.output.instructions.push(combine(destination, GENERAL_SCRATCH, destination));
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Place a select arm into the result: a constant is materialized with `li`
     /// (or `lis`/`ori`); a leaf variable is moved unless it already sits there.
     fn place_select_value(&mut self, value: &Expression, destination: u8) -> Compilation<()> {
@@ -146,35 +187,17 @@ impl Generator {
             }
         }
 
-        // `cond ? x : 0` with a plain truth condition is branchless: AND x with a
-        // mask that is all-ones when cond != 0.
-        if is_zero_literal(when_false) {
-            if let (Some(condition_name), Some(value_name)) = (leaf_name(condition), leaf_name(when_true)) {
-                if let (Some(condition_register), Some(value_register)) =
-                    (self.lookup_general(condition_name), self.lookup_general(value_name))
-                {
-                    self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
-                    self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
-                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
-                    self.output.instructions.push(Instruction::And { a: destination, s: value_register, b: GENERAL_SCRATCH });
-                    return Ok(());
-                }
+        // `cond ? x : 0` (AND) and `cond ? 0 : x` (ANDC) with a plain truth
+        // condition are branchless: a mask all-ones when cond != 0, combined with
+        // `x` (a leaf, or a non-zero constant materialized in r0).
+        if is_zero_literal(when_false) && !is_zero_literal(when_true) {
+            if self.try_emit_branchless_mask(condition, when_true, false, destination)? {
+                return Ok(());
             }
         }
-
-        // `cond ? 0 : x` is the complementary branchless form: AND x with the mask
-        // that is all-ones when cond == 0 (`andc`), the mirror of `cond ? x : 0`.
-        if is_zero_literal(when_true) {
-            if let (Some(condition_name), Some(value_name)) = (leaf_name(condition), leaf_name(when_false)) {
-                if let (Some(condition_register), Some(value_register)) =
-                    (self.lookup_general(condition_name), self.lookup_general(value_name))
-                {
-                    self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
-                    self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
-                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
-                    self.output.instructions.push(Instruction::AndComplement { a: destination, s: value_register, b: GENERAL_SCRATCH });
-                    return Ok(());
-                }
+        if is_zero_literal(when_true) && !is_zero_literal(when_false) {
+            if self.try_emit_branchless_mask(condition, when_false, true, destination)? {
+                return Ok(());
             }
         }
 
