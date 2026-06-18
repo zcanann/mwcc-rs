@@ -611,6 +611,7 @@ impl Generator {
             Type::Short => Instruction::LoadHalfwordAlgebraic { d, a, offset: 0 },
             Type::UnsignedShort => Instruction::LoadHalfwordZero { d, a, offset: 0 },
             Type::Float => Instruction::LoadFloatSingle { d, a, offset: 0 },
+            Type::Double => Instruction::LoadFloatDouble { d, a, offset: 0 },
             // A pointer global is a 32-bit address word.
             Type::Pointer(_) | Type::StructPointer => Instruction::LoadWord { d, a, offset: 0 },
             other => return Err(Diagnostic::error(format!("global of type {other:?} is not supported yet"))),

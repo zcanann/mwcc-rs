@@ -172,7 +172,7 @@ impl Generator {
         }
         if let Expression::Variable(name) = operand {
             if !self.locations.contains_key(name) {
-                return self.globals.get(name) == Some(&Type::Float);
+                return matches!(self.globals.get(name), Some(Type::Float | Type::Double));
             }
         }
         false
