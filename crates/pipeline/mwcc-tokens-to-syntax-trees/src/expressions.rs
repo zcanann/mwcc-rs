@@ -118,7 +118,24 @@ impl Parser {
             Token::ParenOpen => {
                 // `(type) expr` is a cast; otherwise a parenthesised expression.
                 if self.peek_is_type() {
-                    let target_type = self.parse_type()?;
+                    let mut target_type = self.parse_type()?;
+                    // A function-pointer cast `(RET (*)(params))` targets a pointer.
+                    if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                        self.advance(); // `(`
+                        self.advance(); // `*`
+                        self.expect(Token::ParenClose)?;
+                        self.expect(Token::ParenOpen)?;
+                        let mut depth = 1;
+                        while depth > 0 {
+                            match self.advance() {
+                                Token::ParenOpen => depth += 1,
+                                Token::ParenClose => depth -= 1,
+                                Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer cast")),
+                                _ => {}
+                            }
+                        }
+                        target_type = mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Int);
+                    }
                     self.expect(Token::ParenClose)?;
                     let operand = self.factor()?;
                     Expression::Cast { target_type, operand: Box::new(operand) }

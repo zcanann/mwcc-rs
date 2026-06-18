@@ -617,6 +617,14 @@ impl Parser {
                 self.advance();
             } else if *self.peek() != Token::ParenClose {
                 loop {
+                    // A `...` varargs marker ends the parameter list. (A function
+                    // that actually reads its varargs defers later in codegen.)
+                    if *self.peek() == Token::Dot {
+                        self.advance();
+                        self.expect(Token::Dot)?;
+                        self.expect(Token::Dot)?;
+                        break;
+                    }
                     let parameter_type = self.parse_type()?;
                     let struct_tag = self.last_struct_tag.take();
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
