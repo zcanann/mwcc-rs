@@ -282,9 +282,30 @@ impl Generator {
         // leaf operand (which stays in its own register) is handled here; a loaded
         // operand (member/global) needs the register allocator.
         if operator == BinaryOperator::Multiply && !fits_signed_16(constant) {
+            // A power-of-two factor is a left shift, even when it is too large for
+            // `mulli` (e.g. `x * 65536` -> `slwi x, 16`). 2^31 does not fit a signed
+            // int, so mwcc treats it as a wide constant (materialize + mullw) instead.
+            if constant >= 2 && constant <= i32::MAX as i64 && (constant as u64).is_power_of_two() {
+                let shift = constant.trailing_zeros() as u8;
+                if let Ok((register, width, leaf_signed)) = self.leaf_info(variable) {
+                    if width < 32 && !leaf_signed {
+                        return Ok(self.emit_narrow_unsigned_shift(destination, register, width, true, shift));
+                    }
+                }
+                let source = self.place_operand_or_scratch(variable, destination)?;
+                self.output.instructions.push(Instruction::ShiftLeftImmediate { a: destination, s: source, shift });
+                return Ok(true);
+            }
             let low = (constant as u32 & 0xffff) as i16;
             let high = ((constant as i32 - low as i32) >> 16) as i16;
             if let Ok(operand_register) = self.general_register_of_leaf(variable) {
+                if low == 0 {
+                    // No low half: build the constant straight in the scratch with a
+                    // single `lis r0, high`, then multiply.
+                    self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, high));
+                    self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: operand_register, b: GENERAL_SCRATCH });
+                    return Ok(true);
+                }
                 // Leaf operand: it stays in its register; the constant is built in
                 // the scratch via a free register.
                 let free = self.free_general_excluding(operand_register)?;

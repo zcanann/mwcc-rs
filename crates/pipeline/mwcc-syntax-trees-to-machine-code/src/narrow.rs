@@ -85,6 +85,12 @@ impl Generator {
             return self.evaluate_general(expression, result);
         }
 
+        // A narrow result truncates, so an expression whose low bits depend only
+        // on its operands' low bits could read its narrow operands raw and
+        // re-truncate at the end (mwcc: `addi r0,r3,1; extsh r3,r0`). Reproducing
+        // that needs raw (un-extended) operand reads — a threaded flag through the
+        // operand placement — which is not yet modeled, so it still defers rather
+        // than emit the redundant leading extension.
         if self.contains_narrow_leaf(expression) {
             return Err(Diagnostic::error("narrow return of a narrow-operand expression needs the truncation-context optimization (roadmap)"));
         }
