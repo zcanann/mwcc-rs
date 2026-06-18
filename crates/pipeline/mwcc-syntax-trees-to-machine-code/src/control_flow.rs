@@ -97,6 +97,20 @@ impl Generator {
     /// matching mwcc's shape: the false value's register is the working register,
     /// conditionally overwritten with the true value, then moved to the result.
     /// Leaf operands only for now.
+    /// Place a select arm into the result: a constant is materialized with `li`
+    /// (or `lis`/`ori`); a leaf variable is moved unless it already sits there.
+    fn place_select_value(&mut self, value: &Expression, destination: u8) -> Compilation<()> {
+        if let Some(constant) = constant_value(value) {
+            self.load_integer_constant(destination, constant);
+            return Ok(());
+        }
+        let register = self.general_register_of_leaf(value)?;
+        if register != destination {
+            self.output.instructions.push(Instruction::move_register(destination, register));
+        }
+        Ok(())
+    }
+
     pub(crate) fn emit_conditional(
         &mut self,
         condition: &Expression,
@@ -148,6 +162,22 @@ impl Generator {
             }
         }
 
+        // `cond ? 0 : x` is the complementary branchless form: AND x with the mask
+        // that is all-ones when cond == 0 (`andc`), the mirror of `cond ? x : 0`.
+        if is_zero_literal(when_true) {
+            if let (Some(condition_name), Some(value_name)) = (leaf_name(condition), leaf_name(when_false)) {
+                if let (Some(condition_register), Some(value_register)) =
+                    (self.lookup_general(condition_name), self.lookup_general(value_name))
+                {
+                    self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
+                    self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                    self.output.instructions.push(Instruction::AndComplement { a: destination, s: value_register, b: GENERAL_SCRATCH });
+                    return Ok(());
+                }
+            }
+        }
+
         // `(x < 0) ? -x : x` is the branchless abs idiom: a sign mask via srawi,
         // then `(x ^ mask) - mask`. mwcc emits `srawi t,x,31; xor r0,t,x; subf d,t,r0`.
         if let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition {
@@ -167,6 +197,32 @@ impl Generator {
                     }
                 }
             }
+        }
+
+        // A select with a non-zero constant arm uses a branch, not a register
+        // move: mwcc tests the condition, materializes the constant-bearing arm
+        // into the result, conditional-returns on that arm's branch, then the
+        // other arm. When both are constant the false arm goes first (`beqlr`). A
+        // zero arm instead uses the branchless and/andc forms above (with the
+        // other arm materialized), whose register layout differs — those defer.
+        if tail
+            && !is_zero_literal(when_true)
+            && !is_zero_literal(when_false)
+            && (constant_value(when_false).is_some() || constant_value(when_true).is_some())
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            if constant_value(when_false).is_some() {
+                // false-first: place false, return on the false branch, then true.
+                self.place_select_value(when_false, destination)?;
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                self.place_select_value(when_true, destination)?;
+            } else {
+                // true-first: place true, return on the negated (true) branch, then false.
+                self.place_select_value(when_true, destination)?;
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                self.place_select_value(when_false, destination)?;
+            }
+            return Ok(());
         }
 
         let true_register = self.general_register_of_leaf(when_true)?;
