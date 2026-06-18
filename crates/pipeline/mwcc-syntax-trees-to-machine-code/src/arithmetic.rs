@@ -79,6 +79,44 @@ impl Generator {
         Ok(true)
     }
 
+    /// `(a & maskA) | (b & maskB)` with complementary contiguous masks merges two
+    /// disjoint bit fields. mwcc moves the OR's **right** operand (the base) into
+    /// the destination, then inserts the **left** operand's masked field with a
+    /// `rlwimi` (rotate 0). It preserves the inserted value in r0 first when moving
+    /// the base would clobber it (insert in the destination, base elsewhere).
+    pub(crate) fn try_emit_mask_merge(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let (Some((insert_value, insert_mask)), Some((base_value, base_mask))) = (as_masked_leaf(left), as_masked_leaf(right)) else {
+            return Ok(false);
+        };
+        // The masks must be exact complements, and the inserted one a contiguous run.
+        if insert_mask == 0 || base_mask == 0 || base_mask != !insert_mask {
+            return Ok(false);
+        }
+        let Some((begin, end)) = mask_to_run(insert_mask) else {
+            return Ok(false);
+        };
+        let (Some(insert_register), Some(base_register)) = (
+            leaf_name(insert_value).and_then(|name| self.lookup_general(name)),
+            leaf_name(base_value).and_then(|name| self.lookup_general(name)),
+        ) else {
+            return Ok(false);
+        };
+        let insert_source = if base_register == destination {
+            // The base already sits in the destination; insert straight away.
+            insert_register
+        } else if insert_register == destination {
+            // Moving the base into the destination would clobber the insert value.
+            self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, insert_register));
+            self.output.instructions.push(Instruction::move_register(destination, base_register));
+            GENERAL_SCRATCH
+        } else {
+            self.output.instructions.push(Instruction::move_register(destination, base_register));
+            insert_register
+        };
+        self.output.instructions.push(Instruction::RotateAndMaskInsert { a: destination, s: insert_source, shift: 0, begin, end });
+        Ok(true)
+    }
+
     /// Emit a right shift, choosing arithmetic (signed) or logical (unsigned)
     /// from the type of the shifted value.
     pub(crate) fn emit_shift_right(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {

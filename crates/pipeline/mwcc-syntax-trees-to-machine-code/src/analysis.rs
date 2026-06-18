@@ -120,6 +120,30 @@ pub(crate) fn complemented_leaf_name(expression: &Expression) -> Option<&str> {
     }
 }
 
+/// Decompose `x & mask` where `x` is a leaf variable and `mask` an integer
+/// literal. Returns `(x, mask)` with the mask narrowed to 32 bits.
+pub(crate) fn as_masked_leaf(expression: &Expression) -> Option<(&Expression, u32)> {
+    let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expression else { return None };
+    leaf_name(left)?;
+    match **right {
+        Expression::IntegerLiteral(mask) => Some((left, mask as u32)),
+        _ => None,
+    }
+}
+
+/// If `mask` is a single contiguous run of set bits, return its PowerPC
+/// `[begin, end]` bit span (bit 0 = the most significant bit). Non-contiguous
+/// (or wrapping) masks return `None`.
+pub(crate) fn mask_to_run(mask: u32) -> Option<(u8, u8)> {
+    if mask == 0 {
+        return None;
+    }
+    let begin = mask.leading_zeros() as u8;
+    let end = 31 - mask.trailing_zeros() as u8;
+    let expected = (0xFFFF_FFFFu32 >> begin) & (0xFFFF_FFFFu32 << (31 - end));
+    (expected == mask).then_some((begin, end))
+}
+
 /// A nonzero integer literal that fits a signed 16-bit immediate.
 pub(crate) fn as_small_integer(expression: &Expression) -> Option<i16> {
     match expression {

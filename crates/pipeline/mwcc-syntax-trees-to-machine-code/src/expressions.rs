@@ -152,6 +152,12 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // `(a & maskA) | (b & ~maskA)` merges two disjoint fields via rlwimi.
+                if matches!(operator, BinaryOperator::BitOr)
+                    && self.try_emit_mask_merge(left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());
