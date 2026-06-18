@@ -210,7 +210,7 @@ impl Generator {
     pub(crate) fn evaluate_tail(&mut self, expression: &Expression, value_type: Type, result: u8) -> Compilation<()> {
         match expression {
             Expression::Conditional { condition, when_true, when_false } => match value_type {
-                Type::Float => self.emit_float_conditional(condition, when_true, when_false, result, true),
+                Type::Float | Type::Double => self.emit_float_conditional(condition, when_true, when_false, result, true),
                 _ => self.emit_conditional(condition, when_true, when_false, result, true),
             },
             Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), left, right } => {
