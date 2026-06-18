@@ -140,15 +140,31 @@ impl Generator {
                     Some((value, 32 - shift, begin, end, false))
                 }
             }
-            // `(x & m) << n` — mask inside, left shift outside.
+            // `(x & m) << n` — mask inside, left shift outside; or a right shift
+            // then a left shift `(x >> k) << n`.
             BinaryOperator::ShiftLeft => {
                 let Expression::IntegerLiteral(shift) = *right else { return Ok(None) };
                 if !(1..=31).contains(&shift) {
                     return Ok(None);
                 }
-                let Some((value, mask)) = as_masked_leaf(left) else { return Ok(None) };
-                let Some((begin, end)) = mask_to_run(mask << shift) else { return Ok(None) };
-                Some((value, shift as u8, begin, end, false))
+                let shift = shift as u8;
+                if let Some((value, mask)) = as_masked_leaf(left) {
+                    let Some((begin, end)) = mask_to_run(mask << shift) else { return Ok(None) };
+                    Some((value, shift, begin, end, false))
+                } else if let Some((value, false, inner)) = as_constant_shift(left) {
+                    // `(x >> k) << n`: clears the low `n` bits. n == k is the
+                    // round-to-multiple `clrrwi` (valid for either sign); n > k keeps
+                    // the shifted value and needs an unsigned (logical) right shift.
+                    if shift == inner {
+                        Some((value, 0, 0, 31 - shift, false))
+                    } else if shift > inner {
+                        Some((value, shift - inner, 0, 31 - shift, true))
+                    } else {
+                        return Ok(None);
+                    }
+                } else {
+                    return Ok(None);
+                }
             }
             // `(x & m) >> n` — mask inside, logical right shift outside (unsigned).
             BinaryOperator::ShiftRight => {
@@ -239,6 +255,20 @@ impl Generator {
         if is_commutative(operator) {
             if let Some(constant) = constant_value(left) {
                 if self.emit_constant_form(operator, right, constant, destination)? {
+                    return Ok(true);
+                }
+            }
+        }
+        // `C - x` with a leaf `x`: `0 - x` is a `neg`, any other constant is a
+        // single `subfic`.
+        if operator == BinaryOperator::Subtract {
+            if let (Some(constant), Some(register)) = (constant_value(left), leaf_name(right).and_then(|name| self.lookup_general(name))) {
+                if constant == 0 {
+                    self.output.instructions.push(Instruction::Negate { d: destination, a: register });
+                    return Ok(true);
+                }
+                if fits_signed_16(constant) {
+                    self.output.instructions.push(Instruction::SubtractFromImmediate { d: destination, a: register, immediate: constant as i16 });
                     return Ok(true);
                 }
             }
