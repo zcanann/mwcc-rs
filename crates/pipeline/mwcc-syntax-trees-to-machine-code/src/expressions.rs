@@ -82,7 +82,14 @@ impl Generator {
                 self.load_integer_constant(destination, *value);
                 Ok(())
             }
+            // `&x` for a frame-resident variable is its address: `addi d, r1, slot`.
+            Expression::AddressOf { operand } => self.emit_address_of(operand, destination),
             Expression::Variable(name) => {
+                // A frame-resident variable is reloaded from its stack slot.
+                if let Some(slot) = self.frame_slots.get(name).copied() {
+                    self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: slot.offset });
+                    return Ok(());
+                }
                 if let Some(location) = self.locations.get(name) {
                     if location.class != ValueClass::General {
                         return Err(Diagnostic::error(format!("'{name}' is not an integer")));
@@ -161,6 +168,13 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // The same merge where the operands are memory loads (the pointer-pun
+                // `__HI`/`__LO` merge): load both, then rlwimi.
+                if matches!(operator, BinaryOperator::BitOr)
+                    && self.try_emit_field_merge_loads(left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());
@@ -186,6 +200,12 @@ impl Generator {
     /// must be a leaf variable holding the address; richer addressing is on the
     /// roadmap.
     pub(crate) fn emit_load_from_pointer(&mut self, pointer: &Expression, destination: u8) -> Compilation<()> {
+        // A type-pun through a frame-resident address (`*(int*)&x`) is a plain
+        // displacement load from r1.
+        if let Some((pointee, offset)) = self.resolve_frame_pointer(pointer) {
+            self.output.instructions.push(displacement_load(pointee, destination, 1, offset));
+            return Ok(());
+        }
         // A global pointer: load the pointer value into the destination (an SDA21
         // word load), then dereference it from there, as mwcc does.
         if let Expression::Variable(name) = pointer {
@@ -376,6 +396,15 @@ impl Generator {
     /// place addressed by the pointer (with a folded displacement for a constant
     /// index, or a scaled indexed store for a variable one).
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
+        // A type-pun store through a frame-resident address (`*(int*)&x = v`) is a
+        // plain displacement store to r1.
+        if let Expression::Dereference { pointer } = target {
+            if let Some((pointee, offset)) = self.resolve_frame_pointer(pointer) {
+                let source = self.place_store_value(value, pointee)?;
+                self.output.instructions.push(displacement_store(pointee, source, 1, offset));
+                return Ok(());
+            }
+        }
         // `g = v;` — a store to a file-scope global.
         if let Expression::Variable(name) = target {
             if let Some(&global_type) = self.globals.get(name.as_str()) {

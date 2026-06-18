@@ -75,6 +75,7 @@ fn collect(expression: &Expression, names: &mut Vec<String>) {
         Expression::Unary { operand, .. } => collect(operand, names),
         Expression::Cast { operand, .. } => collect(operand, names),
         Expression::Dereference { pointer } => collect(pointer, names),
+        Expression::AddressOf { operand } => collect(operand, names),
         Expression::Index { base, index } => {
             collect(base, names);
             collect(index, names);

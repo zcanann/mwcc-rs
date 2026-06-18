@@ -29,6 +29,21 @@ pub(crate) struct Location {
     pub(crate) pointee: Option<Pointee>,
 }
 
+/// A variable whose address is taken: it lives in a stack-frame slot rather than
+/// a register. `&v` is `addi d, r1, offset`, and a type-punned access `*(t*)&v`
+/// is a displacement load/store from `r1`.
+#[derive(Clone, Copy)]
+pub(crate) struct FrameSlot {
+    /// Byte offset from the stack pointer (`r1`).
+    pub(crate) offset: i16,
+    /// Whether the variable is a float/double (spilled with `stfd`/`stfs`).
+    pub(crate) class: ValueClass,
+    /// Byte size of the variable (4 or 8).
+    pub(crate) size: u8,
+    /// The incoming argument register, if this is a spilled parameter.
+    pub(crate) parameter_register: Option<u8>,
+}
+
 pub(crate) struct Generator {
     pub(crate) output: MachineFunction,
     pub(crate) locations: HashMap<String, Location>,
@@ -72,6 +87,9 @@ pub(crate) struct Generator {
     /// instruction has been emitted since (so the value is provably still there).
     /// This reproduces mwcc keeping a just-written global live in its register.
     pub(crate) stored_globals: HashMap<String, (u8, usize)>,
+    /// Address-taken variables and their stack-frame slots. A name here is
+    /// frame-resident: `&v` and type-punned accesses read/write its slot.
+    pub(crate) frame_slots: HashMap<String, FrameSlot>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
@@ -218,6 +236,8 @@ impl Generator {
             Expression::Member { member_type, .. } => Ok(self.signed_of(*member_type)),
             // An array member's address is an unsigned pointer.
             Expression::MemberAddress { .. } => Ok(false),
+            // The address of an lvalue is an unsigned pointer.
+            Expression::AddressOf { .. } => Ok(false),
             // An assignment yields the stored value.
             Expression::Assign { value, .. } => self.signedness_of(value),
             // A call returns an int by default (we have no prototype types yet).

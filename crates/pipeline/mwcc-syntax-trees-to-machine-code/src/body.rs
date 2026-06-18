@@ -41,6 +41,12 @@ impl Generator {
 
     /// Emit the whole function body, including its `blr`(s).
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        // A function that takes the address of a variable lowers it to a stack
+        // slot (frame-resident); this takes over the whole body. Checked first,
+        // since an address-taken variable cannot be value-tracked in a register.
+        if self.try_frame_resident(function)? {
+            return Ok(());
+        }
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
         // return expression and compiled there; this takes over the whole body when
         // it applies, leaving the straight-line paths below byte-identical.

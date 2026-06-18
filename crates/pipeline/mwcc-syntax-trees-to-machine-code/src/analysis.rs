@@ -131,6 +131,19 @@ pub(crate) fn as_masked_leaf(expression: &Expression) -> Option<(&Expression, u3
     }
 }
 
+/// Decompose `load & mask` where `load` is a memory load (dereference, member,
+/// or index) and `mask` an integer literal. Returns `(load, mask)`.
+pub(crate) fn as_masked_load(expression: &Expression) -> Option<(&Expression, u32)> {
+    let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expression else { return None };
+    if !matches!(left.as_ref(), Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. }) {
+        return None;
+    }
+    match **right {
+        Expression::IntegerLiteral(mask) => Some((left, mask as u32)),
+        _ => None,
+    }
+}
+
 /// If `mask` is a single contiguous run of set bits, return its PowerPC
 /// `[begin, end]` bit span (bit 0 = the most significant bit). Non-contiguous
 /// (or wrapping) masks return `None`.

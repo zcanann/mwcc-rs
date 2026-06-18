@@ -13,6 +13,16 @@ impl Generator {
     pub(crate) fn evaluate_float(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         match expression {
             Expression::Variable(name) => {
+                // A frame-resident float is reloaded from its stack slot.
+                if let Some(slot) = self.frame_slots.get(name).copied() {
+                    let instruction = if slot.size == 8 {
+                        Instruction::LoadFloatDouble { d: destination, a: 1, offset: slot.offset }
+                    } else {
+                        Instruction::LoadFloatSingle { d: destination, a: 1, offset: slot.offset }
+                    };
+                    self.output.instructions.push(instruction);
+                    return Ok(());
+                }
                 if self.locations.contains_key(name) {
                     let source = self.float_register_of(name)?;
                     if source != destination {
@@ -92,6 +102,7 @@ impl Generator {
                 Ok(())
             }
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
+            Expression::AddressOf { .. } => Err(Diagnostic::error("an address is not a float value")),
         }
     }
 

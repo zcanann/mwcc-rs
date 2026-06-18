@@ -31,6 +31,11 @@ pub enum Expression {
     Dereference {
         pointer: Box<Expression>,
     },
+    /// `&operand` — the address of an lvalue (a variable, dereference, member, or
+    /// index). Taking a variable's address forces it to be frame-resident.
+    AddressOf {
+        operand: Box<Expression>,
+    },
     /// `base[index]` — load `*(base + index)`, the index scaled by element size.
     Index {
         base: Box<Expression>,

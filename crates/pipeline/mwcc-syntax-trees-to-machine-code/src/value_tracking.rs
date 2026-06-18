@@ -117,6 +117,7 @@ fn count_references(name: &str, expression: &Expression) -> usize {
         Expression::Index { base, index } => count_references(name, base) + count_references(name, index),
         Expression::Member { base, .. } => count_references(name, base),
         Expression::MemberAddress { base, .. } => count_references(name, base),
+        Expression::AddressOf { operand } => count_references(name, operand),
         Expression::Assign { target, value } => count_references(name, target) + count_references(name, value),
         Expression::Call { arguments, .. } => arguments.iter().map(|argument| count_references(name, argument)).sum(),
     }
@@ -144,6 +145,7 @@ fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> 
             Expression::Cast { target_type: *target_type, operand: Box::new(substitute(operand, values)) }
         }
         Expression::Dereference { pointer } => Expression::Dereference { pointer: Box::new(substitute(pointer, values)) },
+        Expression::AddressOf { operand } => Expression::AddressOf { operand: Box::new(substitute(operand, values)) },
         Expression::Index { base, index } => Expression::Index {
             base: Box::new(substitute(base, values)),
             index: Box::new(substitute(index, values)),

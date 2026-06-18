@@ -77,6 +77,12 @@ impl Parser {
             let pointer = self.factor()?;
             return Ok(Expression::Dereference { pointer: Box::new(pointer) });
         }
+        // prefix address-of: `&lvalue`
+        if *self.peek() == Token::Ampersand {
+            self.advance();
+            let operand = self.factor()?;
+            return Ok(Expression::AddressOf { operand: Box::new(operand) });
+        }
         // prefix unary operators
         let unary = match self.peek() {
             Token::Minus => Some(UnaryOperator::Negate),

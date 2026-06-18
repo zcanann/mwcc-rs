@@ -26,6 +26,7 @@ mod floats;
 mod value_tracking;
 mod switch;
 mod symbol_order;
+mod frame;
 
 use generator::Generator;
 
@@ -46,6 +47,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         next_virtual: 0,
         register_avoid: HashMap::new(),
         stored_globals: HashMap::new(),
+        frame_slots: HashMap::new(),
         call_return_types: call_return_types.clone(),
     };
     generator.assign_parameters(function)?;

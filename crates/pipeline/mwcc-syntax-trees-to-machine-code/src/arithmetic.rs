@@ -96,6 +96,27 @@ impl Generator {
         Ok(true)
     }
 
+    /// `(load_a & maskA) | (load_b & maskB)` with complementary masks where the
+    /// operands are memory loads (e.g. the `__HI`/`__LO` pointer-pun merge in
+    /// copysign). mwcc loads the inserted (left) operand first into a temporary,
+    /// the base (right) operand into the destination, then merges with `rlwimi`.
+    pub(crate) fn try_emit_field_merge_loads(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let (Some((insert_load, insert_mask)), Some((base_load, base_mask))) = (as_masked_load(left), as_masked_load(right)) else {
+            return Ok(false);
+        };
+        if insert_mask & base_mask != 0 || insert_mask | base_mask != 0xFFFF_FFFF {
+            return Ok(false);
+        }
+        let Some((begin, end)) = mask_to_run(insert_mask) else {
+            return Ok(false);
+        };
+        let insert_register = self.fresh_virtual_general_avoiding(vec![destination]);
+        self.evaluate_general(insert_load, insert_register)?;
+        self.evaluate_general(base_load, destination)?;
+        self.output.instructions.push(Instruction::RotateAndMaskInsert { a: destination, s: insert_register, shift: 0, begin, end });
+        Ok(true)
+    }
+
     /// A shift fused with a mask collapses to one `rlwinm` (rotate-and-mask):
     ///   `(x << n) & m`, `(x >> n) & m`, `(x & m) << n`, `(x & m) >> n`.
     /// Each is `ROTL(x, r) & mask[begin,end]` for the right `r` and contiguous
