@@ -12,6 +12,11 @@ impl Generator {
     /// `== 0`) and signed `< 0`; the richer signed less/greater idioms are not
     /// implemented yet.
     pub(crate) fn emit_comparison(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+        // A comparison whose operands are floating-point materializes a boolean
+        // from cr0 rather than using the integer branchless idioms below.
+        if self.is_float_leaf(left) || self.is_float_leaf(right) {
+            return self.emit_float_comparison(operator, left, right, destination);
+        }
         let d = destination;
         let signed_left = self.signedness_of(left)?;
         match operator {
@@ -187,6 +192,47 @@ impl Generator {
             }
             _ => Err(Diagnostic::error("this comparison needs the branchless compare idioms (roadmap)")),
         }
+    }
+
+    /// A comparison whose operands are floating-point. mwcc compares into cr0
+    /// (`fcmpu` for `==`/`!=`, `fcmpo` for the ordered relations), then moves cr0
+    /// into a GPR with `mfcr` and rotates the relevant bit (lt=0, gt=1, eq=2) down
+    /// to the low bit. `<=`/`>=` first fold equality into the eq bit with `cror`;
+    /// `!=` extracts eq and flips it with `xori`.
+    pub(crate) fn emit_float_comparison(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+        const LT: u8 = 0;
+        const GT: u8 = 1;
+        const EQ: u8 = 2;
+        let a = self.float_register_of_leaf(left)?;
+        let b = self.float_register_of_leaf(right)?;
+        let scratch = GENERAL_SCRATCH;
+        if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+            self.output.instructions.push(Instruction::FloatCompareUnordered { a, b });
+        } else {
+            self.output.instructions.push(Instruction::FloatCompareOrdered { a, b });
+        }
+        // `<=`/`>=` fold equality into the eq bit so one extract covers both relations.
+        match operator {
+            BinaryOperator::LessEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: LT, b: EQ }),
+            BinaryOperator::GreaterEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: GT, b: EQ }),
+            _ => {}
+        }
+        self.output.instructions.push(Instruction::MoveFromConditionRegister { d: scratch });
+        let bit = match operator {
+            BinaryOperator::Less => LT,
+            BinaryOperator::Greater => GT,
+            BinaryOperator::Equal | BinaryOperator::NotEqual | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual => EQ,
+            _ => return Err(Diagnostic::error("unsupported floating-point comparison")),
+        };
+        // Rotate the bit (at position `bit` from the MSB) into bit 31 and mask it.
+        let shift = bit + 1;
+        if matches!(operator, BinaryOperator::NotEqual) {
+            self.output.instructions.push(Instruction::RotateAndMask { a: scratch, s: scratch, shift, begin: 31, end: 31 });
+            self.output.instructions.push(Instruction::XorImmediate { a: destination, s: scratch, immediate: 1 });
+        } else {
+            self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: scratch, shift, begin: 31, end: 31 });
+        }
+        Ok(())
     }
 
     /// Place two leaf operands for the equality idiom, extending narrow operands

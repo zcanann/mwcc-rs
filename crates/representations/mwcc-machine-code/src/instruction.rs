@@ -156,6 +156,13 @@ pub enum Instruction {
     StoreFloatDouble { s: u8, a: u8, offset: i16 },
     /// `fcmpo crf0, frA, frB` — ordered float compare.
     FloatCompareOrdered { a: u8, b: u8 },
+    /// `fcmpu crf0, frA, frB` — unordered float compare (mwcc uses this for `==`/`!=`).
+    FloatCompareUnordered { a: u8, b: u8 },
+    /// `mfcr rD` — move the whole condition register into a GPR.
+    MoveFromConditionRegister { d: u8 },
+    /// `cror crbD, crbA, crbB` — OR two condition-register bits into a third.
+    /// Bit numbers are absolute (cr0 occupies bits 0..=3: lt=0, gt=1, eq=2, so=3).
+    ConditionRegisterOr { d: u8, a: u8, b: u8 },
     /// `cmpwi crf0, rA, SIMM` — signed compare against an immediate.
     CompareWordImmediate { a: u8, immediate: i16 },
     /// `cmpw crf0, rA, rB` — signed compare.
@@ -253,6 +260,7 @@ impl Instruction {
                 | FloatMove { .. }
                 | FloatNegate { .. }
                 | FloatCompareOrdered { .. }
+                | FloatCompareUnordered { .. }
                 | ConvertToIntegerWordZero { .. }
         )
     }
