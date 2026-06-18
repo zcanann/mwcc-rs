@@ -56,6 +56,64 @@ impl Parser {
     }
 
     /// Parse a single integer constant: an integer literal, optionally negated.
+    /// Parse an enum body `{ NAME [= value], … }` (cursor at the `{`), registering
+    /// each enumerator's value (auto-incrementing from 0, or an explicit constant).
+    fn parse_enum_body(&mut self) -> Compilation<()> {
+        self.expect(Token::BraceOpen)?;
+        let mut next = 0i64;
+        while *self.peek() != Token::BraceClose {
+            let name = self.parse_identifier()?;
+            let value = if self.eat_keyword(Token::Equals) { self.parse_enum_value()? } else { next };
+            self.enum_constants.insert(name, value);
+            next = value + 1;
+            if *self.peek() == Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(())
+    }
+
+    /// Evaluate a constant enumerator expression — integer/char literals, prior
+    /// enumerators, parentheses, and left-to-right `+ - * & | ^ << >>`.
+    fn parse_enum_value(&mut self) -> Compilation<i64> {
+        let mut value = self.parse_enum_primary()?;
+        loop {
+            value = match self.peek() {
+                Token::Plus => { self.advance(); value + self.parse_enum_primary()? }
+                Token::Minus => { self.advance(); value - self.parse_enum_primary()? }
+                Token::Star => { self.advance(); value * self.parse_enum_primary()? }
+                Token::Ampersand => { self.advance(); value & self.parse_enum_primary()? }
+                Token::Pipe => { self.advance(); value | self.parse_enum_primary()? }
+                Token::Caret => { self.advance(); value ^ self.parse_enum_primary()? }
+                Token::ShiftLeft => { self.advance(); value << self.parse_enum_primary()? }
+                Token::ShiftRight => { self.advance(); value >> self.parse_enum_primary()? }
+                _ => break,
+            };
+        }
+        Ok(value)
+    }
+
+    fn parse_enum_primary(&mut self) -> Compilation<i64> {
+        let negative = self.eat_keyword(Token::Minus);
+        let value = match self.advance() {
+            Token::IntegerLiteral(value) => value,
+            Token::Identifier(name) => *self
+                .enum_constants
+                .get(&name)
+                .ok_or_else(|| Diagnostic::error(format!("non-constant enumerator value '{name}'")))?,
+            Token::ParenOpen => {
+                let value = self.parse_enum_value()?;
+                self.expect(Token::ParenClose)?;
+                value
+            }
+            other => return Err(Diagnostic::error(format!("expected an enumerator value, found {other}"))),
+        };
+        Ok(if negative { -value } else { value })
+    }
+
     fn parse_integer_constant(&mut self) -> Compilation<i64> {
         let negative = self.eat_keyword(Token::Minus);
         match self.advance() {
@@ -120,6 +178,18 @@ impl Parser {
         // is noted for the global path, which defers a read-only global); `volatile`
         // changes access semantics (memory accesses can't be elided), so defer it.
         self.skip_type_qualifiers()?;
+        // `enum [Tag] [{ … }]` — an `int` (`-enum int`); a `{ … }` body registers
+        // its enumerators so a bare enumerator resolves to its value.
+        if matches!(self.peek(), Token::Identifier(word) if word == "enum") {
+            self.advance();
+            if matches!(self.peek(), Token::Identifier(_)) {
+                self.advance(); // the tag
+            }
+            if *self.peek() == Token::BraceOpen {
+                self.parse_enum_body()?;
+            }
+            return Ok(Type::Int);
+        }
         // `struct Name*` — a pointer to a (already declared) struct. The tag is
         // stashed in `last_struct_tag` for the declarator parser to record.
         if *self.peek() == Token::KeywordStruct {
@@ -422,6 +492,27 @@ impl Parser {
                     return Ok(());
                 }
                 let aliased = self.parse_type()?;
+                // Function-pointer typedef `typedef RET (*name)(params);` — the
+                // alias is a 4-byte pointer (modeled as a word pointer).
+                if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                    self.advance(); // `(`
+                    self.advance(); // `*`
+                    let alias = self.parse_identifier()?;
+                    self.expect(Token::ParenClose)?;
+                    self.expect(Token::ParenOpen)?;
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match self.advance() {
+                            Token::ParenOpen => depth += 1,
+                            Token::ParenClose => depth -= 1,
+                            Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer typedef")),
+                            _ => {}
+                        }
+                    }
+                    self.expect(Token::Semicolon)?;
+                    self.typedefs.insert(alias, Type::Pointer(Pointee::Int));
+                    return Ok(());
+                }
                 let name = self.parse_identifier()?;
                 self.expect(Token::Semicolon)?;
                 self.typedefs.insert(name, aliased);
@@ -434,6 +525,12 @@ impl Parser {
                 return Ok(());
             }
             let return_type = self.parse_type()?;
+            // A bare type with no declarator (`enum E { … };`, a forward decl) just
+            // registers the type; there is nothing else to emit.
+            if *self.peek() == Token::Semicolon {
+                self.advance();
+                return Ok(());
+            }
             // Function-pointer declarator: `RET (*name)(params)` — a pointer-typed
             // global (a 4-byte address). The return/parameter types don't affect
             // codegen, so the signature is skipped.
@@ -739,7 +836,7 @@ impl Parser {
             // The `long`/`signed`/`double` specifier words, the `const`/`volatile`/
             // `register` qualifiers, and any typedef name.
             Token::Identifier(word) => {
-                matches!(word.as_str(), "long" | "signed" | "double" | "const" | "volatile" | "register")
+                matches!(word.as_str(), "long" | "signed" | "double" | "const" | "volatile" | "register" | "enum")
                     || self.typedefs.contains_key(word)
                     || self.struct_typedefs.contains_key(word)
             }

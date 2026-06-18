@@ -110,7 +110,11 @@ impl Parser {
                 self.expect(Token::ParenClose)?;
                 Expression::Call { name, arguments }
             }
-            Token::Identifier(name) => Expression::Variable(name),
+            // A bare name is an enumerator (its integer value) if known, else a variable.
+            Token::Identifier(name) => match self.enum_constants.get(&name) {
+                Some(&value) => Expression::IntegerLiteral(value),
+                None => Expression::Variable(name),
+            },
             Token::ParenOpen => {
                 // `(type) expr` is a cast; otherwise a parenthesised expression.
                 if self.peek_is_type() {
