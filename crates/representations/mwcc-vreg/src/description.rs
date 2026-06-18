@@ -78,6 +78,12 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(D, G, a);
             visit(U, G, s);
         }
+        // rlwimi inserts into the existing bits of `a`, so it both uses and defines it.
+        RotateAndMaskInsert { a, s, .. } => {
+            visit(D, G, a);
+            visit(U, G, a);
+            visit(U, G, s);
+        }
         // Loads: general destination, general base (+ index for the x-forms).
         LoadWord { d, a, .. } | LoadByteZero { d, a, .. } | LoadHalfwordZero { d, a, .. }
         | LoadHalfwordAlgebraic { d, a, .. } => {

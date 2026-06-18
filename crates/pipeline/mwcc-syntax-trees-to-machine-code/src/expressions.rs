@@ -146,6 +146,12 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // `(x << c) | (x >> (32-c))` is a rotate: one shift, then rlwimi.
+                if matches!(operator, BinaryOperator::BitOr)
+                    && self.try_emit_rotate_or(left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());

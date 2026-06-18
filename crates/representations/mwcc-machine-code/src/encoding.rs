@@ -69,6 +69,9 @@ impl Instruction {
             Instruction::RotateAndMask { a, s, shift, begin, end } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
+            Instruction::RotateAndMaskInsert { a, s, shift, begin, end } => {
+                (20 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
+            }
             Instruction::FloatAddSingle { d, a, b } => a_form(59, d, a, b, 0, 21),
             Instruction::FloatSubtractSingle { d, a, b } => a_form(59, d, a, b, 0, 20),
             Instruction::FloatMultiplySingle { d, a, c } => a_form(59, d, a, 0, c, 25),

@@ -30,6 +30,55 @@ impl Generator {
         true
     }
 
+    /// `(x << c) | (x >> (32-c))` — a constant rotate. mwcc does not fold this to
+    /// a single `rotlwi`; it computes the OR's **right** operand directly with one
+    /// shift, then inserts the **left** operand with `rlwimi`. When the destination
+    /// is the value's own register it first copies the value to r0, because the
+    /// right-operand shift would otherwise clobber it before the insert reads it.
+    /// The rotated value must be unsigned so its `>>` is the logical `srwi`.
+    pub(crate) fn try_emit_rotate_or(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let (Some((left_value, left_is_left, left_shift)), Some((right_value, right_is_left, right_shift))) =
+            (as_constant_shift(left), as_constant_shift(right))
+        else {
+            return Ok(false);
+        };
+        // Same variable, opposite directions, amounts summing to a whole word.
+        if leaf_name(left_value) != leaf_name(right_value)
+            || left_is_left == right_is_left
+            || left_shift as u16 + right_shift as u16 != 32
+        {
+            return Ok(false);
+        }
+        if self.signedness_of(left_value)? {
+            return Ok(false);
+        }
+        let Some(x) = leaf_name(left_value).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        // Preserve the value when the destination is its home register.
+        let source = if destination == x {
+            self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, x));
+            GENERAL_SCRATCH
+        } else {
+            x
+        };
+        // Right operand of the OR, computed directly into the destination.
+        self.output.instructions.push(if right_is_left {
+            Instruction::ShiftLeftImmediate { a: destination, s: x, shift: right_shift }
+        } else {
+            Instruction::ShiftRightLogicalImmediate { a: destination, s: x, shift: right_shift }
+        });
+        // Left operand, inserted with rlwimi. `x << c` occupies bits [0, 31-c];
+        // `x >> c` occupies bits [c, 31] (rotate by 32-c).
+        let (shift, begin, end) = if left_is_left {
+            (left_shift, 0, 31 - left_shift)
+        } else {
+            (32 - left_shift, left_shift, 31)
+        };
+        self.output.instructions.push(Instruction::RotateAndMaskInsert { a: destination, s: source, shift, begin, end });
+        Ok(true)
+    }
+
     /// Emit a right shift, choosing arithmetic (signed) or logical (unsigned)
     /// from the type of the shifted value.
     pub(crate) fn emit_shift_right(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {

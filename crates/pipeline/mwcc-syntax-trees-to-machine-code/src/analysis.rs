@@ -128,6 +128,23 @@ pub(crate) fn as_small_integer(expression: &Expression) -> Option<i16> {
     }
 }
 
+/// Decompose a constant shift of a leaf variable: `x << c` or `x >> c` with
+/// `c` in `1..=31`. Returns `(x, is_left_shift, c)`. Used to recognize the
+/// rotate idiom `(x << c) | (x >> (32-c))`.
+pub(crate) fn as_constant_shift(expression: &Expression) -> Option<(&Expression, bool, u8)> {
+    let Expression::Binary { operator, left, right } = expression else { return None };
+    let is_left = match operator {
+        BinaryOperator::ShiftLeft => true,
+        BinaryOperator::ShiftRight => false,
+        _ => return None,
+    };
+    leaf_name(left)?;
+    match **right {
+        Expression::IntegerLiteral(amount) if (1..=31).contains(&amount) => Some((left, is_left, amount as u8)),
+        _ => None,
+    }
+}
+
 /// The `(BO, BI)` of the branch that fires when `operator` is **true** (cr0 bits:
 /// 0=LT, 1=GT, 2=EQ; BO 12 = if-true, 4 = if-false). The negated branch is
 /// `(BO ^ 8, BI)`.

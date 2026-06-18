@@ -95,6 +95,11 @@ pub enum Instruction {
     /// `[begin, end]`. The general form; mwcc fuses a narrow unsigned shift and
     /// its width mask into one of these.
     RotateAndMask { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
+    /// `rlwimi rA, rS, shift, begin, end` — rotate `rS` left by `shift` and insert
+    /// bits `[begin, end]` into `rA`, leaving `rA`'s other bits intact. mwcc uses
+    /// it to merge two disjoint bit fields (e.g. an OR of two shifts, or a masked
+    /// sign/magnitude merge) into one instruction.
+    RotateAndMaskInsert { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
     /// `fadds frD, frA, frB`
     FloatAddSingle { d: u8, a: u8, b: u8 },
     /// `fsubs frD, frA, frB`
