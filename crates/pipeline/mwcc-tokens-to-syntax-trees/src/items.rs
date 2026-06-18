@@ -17,6 +17,10 @@ fn pointee_of(base: Type) -> Compilation<Pointee> {
         Type::Short => Ok(Pointee::Short),
         Type::UnsignedShort => Ok(Pointee::UnsignedShort),
         Type::Float => Ok(Pointee::Float),
+        // `void *` is a 4-byte opaque pointer — only passed, stored, or compared
+        // (dereferencing or indexing it is not valid C), so the pointee width is
+        // never used. Model it as a word pointer.
+        Type::Void => Ok(Pointee::Int),
         other => Err(Diagnostic::error(format!("pointer to {other:?} is not supported yet"))),
     }
 }
