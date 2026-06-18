@@ -25,6 +25,8 @@ impl Instruction {
             Instruction::AddExtended { d, a, b } => xo_form(d, a, b, 138),
             Instruction::AddToZeroExtended { d, a } => (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (202 << 1),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),
+            Instruction::MultiplyHighWord { d, a, b } => xo_form(d, a, b, 75),
+            Instruction::MultiplyHighWordUnsigned { d, a, b } => xo_form(d, a, b, 11),
             Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
             Instruction::DivideWord { d, a, b } => xo_form(d, a, b, 491),
             Instruction::DivideWordUnsigned { d, a, b } => xo_form(d, a, b, 459),

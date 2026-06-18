@@ -40,6 +40,10 @@ pub enum Instruction {
     AddToZeroExtended { d: u8, a: u8 },
     /// `mullw rD, rA, rB`
     MultiplyLow { d: u8, a: u8, b: u8 },
+    /// `mulhw rD, rA, rB` — high 32 bits of the signed product.
+    MultiplyHighWord { d: u8, a: u8, b: u8 },
+    /// `mulhwu rD, rA, rB` — high 32 bits of the unsigned product.
+    MultiplyHighWordUnsigned { d: u8, a: u8, b: u8 },
     /// `mulli rD, rA, SIMM`
     MultiplyImmediate { d: u8, a: u8, immediate: i16 },
     /// `divw rD, rA, rB` — signed divide.

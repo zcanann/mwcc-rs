@@ -49,7 +49,8 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
     match instruction {
         // d = rA op rB / rA op SIMM — general destination, general sources.
         Add { d, a, b } | SubtractFrom { d, a, b } | SubtractFromCarrying { d, a, b } | AddExtended { d, a, b }
-        | MultiplyLow { d, a, b } | DivideWord { d, a, b } | DivideWordUnsigned { d, a, b } => {
+        | MultiplyLow { d, a, b } | MultiplyHighWord { d, a, b } | MultiplyHighWordUnsigned { d, a, b }
+        | DivideWord { d, a, b } | DivideWordUnsigned { d, a, b } => {
             visit(D, G, d);
             visit(U, G, a);
             visit(U, G, b);
