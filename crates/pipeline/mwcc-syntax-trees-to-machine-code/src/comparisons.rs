@@ -24,6 +24,12 @@ impl Generator {
                 if is_zero_literal(right) || is_zero_literal(left) {
                     let value = if is_zero_literal(right) { left } else { right };
                     let source = self.place_operand_or_scratch(value, d)?;
+                    // A signed byte load is `lbz` (zero-extended); mwcc re-extends it
+                    // with `extsb` before the leading-zero test. Signed halfword loads
+                    // use `lha` (already sign-extended) and unsigned loads need nothing.
+                    if self.is_signed_byte_load(value)? {
+                        self.emit_widen(source, source, 8, true);
+                    }
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 } else if let Some(constant) = as_small_integer(right) {
                     // a == c : (c - a) leading zeros. A narrow operand is extended
@@ -233,6 +239,19 @@ impl Generator {
             self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: scratch, shift, begin: 31, end: 31 });
         }
         Ok(())
+    }
+
+    /// Whether `value` is a load of a signed 8-bit value (a `char`/`signed char`
+    /// dereference, index, or struct member) — emitted as `lbz`, which zero-extends
+    /// and so needs a following `extsb` in the sign-sensitive idioms.
+    pub(crate) fn is_signed_byte_load(&self, value: &Expression) -> Compilation<bool> {
+        let width = match value {
+            Expression::Dereference { pointer } => self.dereferenced_width(pointer),
+            Expression::Index { base, .. } => self.dereferenced_width(base),
+            Expression::Member { member_type, .. } => Some(member_type.width()),
+            _ => return Ok(false),
+        };
+        Ok(width == Some(8) && self.signedness_of(value)?)
     }
 
     /// Place two leaf operands for the equality idiom, extending narrow operands

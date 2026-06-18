@@ -10,7 +10,7 @@ impl Generator {
 
     /// The natural width of a value loaded by dereferencing `pointer` — through a
     /// leaf pointer variable or a pointer-typed struct member (`*p->cq`).
-    fn dereferenced_width(&self, pointer: &Expression) -> Option<u8> {
+    pub(crate) fn dereferenced_width(&self, pointer: &Expression) -> Option<u8> {
         if let Some((_, _, Type::Pointer(pointee))) = as_member(pointer) {
             return Some(pointee.element().width());
         }
