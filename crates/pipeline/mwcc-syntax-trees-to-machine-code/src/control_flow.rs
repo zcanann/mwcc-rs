@@ -407,6 +407,18 @@ impl Generator {
     pub(crate) fn emit_condition_test(&mut self, condition: &Expression) -> Compilation<(u8, u8)> {
         // `!x` as a condition is `x == 0`: skip the guarded code when x != 0.
         if let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition {
+            // `!(x & mask)` is the negated bit-test: rlwinm. then `bne` (skip when
+            // the masked bits are set, so the body runs only when they are clear).
+            if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = operand.as_ref() {
+                if let (Some(register), Some(constant)) =
+                    (leaf_name(left).and_then(|name| self.lookup_general(name)), constant_value(right))
+                {
+                    if let Some((begin, end)) = mask_to_run(constant as u32) {
+                        self.output.instructions.push(Instruction::AndMaskRecord { a: GENERAL_SCRATCH, s: register, begin, end });
+                        return Ok((4, 2)); // bne — skip when the masked bits are set
+                    }
+                }
+            }
             let register = self.condition_operand_register(operand)?;
             self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
             return Ok((4, 2)); // bne — skip when x != 0

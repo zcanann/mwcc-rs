@@ -126,20 +126,15 @@ impl Generator {
                 // into the prologue — both defer for now.
                 if then_body.len() == 1 && !function_makes_call(function) {
                     let trailing_void = index + 1 == statement_count && function.return_type == Type::Void;
-                    if else_body.is_empty() {
-                        if trailing_void {
-                            // The false path is the function exit: conditional return.
-                            self.emit_if_returning(condition, then_body)?;
-                        } else {
-                            // The false path skips the body: forward branch.
-                            self.emit_if_forward(condition, then_body)?;
-                        }
+                    if trailing_void {
+                        // The false path is the function exit (or the else / else-if):
+                        // a conditional return, or a branch into the else chain.
+                        self.emit_trailing_if(condition, then_body, else_body)?;
                         continue;
                     }
-                    // A trailing void `if/else`: the then-path returns, the else-path
-                    // falls through to the function's `blr`.
-                    if else_body.len() == 1 && trailing_void {
-                        self.emit_if_else_returning(condition, then_body, else_body)?;
+                    if else_body.is_empty() {
+                        // The false path skips the body: forward branch.
+                        self.emit_if_forward(condition, then_body)?;
                         continue;
                     }
                 }
@@ -223,14 +218,36 @@ impl Generator {
         }
     }
 
-    /// A trailing `if (c) { body }` in a leaf void function: test the condition,
-    /// conditionally return on the false branch, then emit the body (which falls
-    /// through to the function's normal `blr`).
-    fn emit_if_returning(&mut self, condition: &Expression, then_body: &[Statement]) -> Compilation<()> {
+    /// A trailing leaf `if (c) then; [else otherwise | else if …]` in a void
+    /// function. With no else, the false path is a conditional return (the body
+    /// then falls through to the function `blr`). With an else, branch over the
+    /// then-body (and its `blr`) to the else, which is either a single statement
+    /// or a nested trailing if (an `else if` chain). Each then-body is a single
+    /// statement — multiple statements need the scheduler.
+    fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement]) -> Compilation<()> {
+        if then_body.len() != 1 {
+            return Err(Diagnostic::error("a multi-statement if-body needs the scheduler (roadmap)"));
+        }
         let (options, condition_bit) = self.emit_condition_test(condition)?;
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
-        for statement in then_body {
-            self.emit_statement(statement)?;
+        if else_body.is_empty() {
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+            return self.emit_statement(&then_body[0]);
+        }
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.emit_statement(&then_body[0])?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        let label = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = label;
+        }
+        // The else: a nested trailing `if` (an `else if`), or a single statement.
+        if let [Statement::If { condition, then_body, else_body }] = else_body {
+            self.emit_trailing_if(condition, then_body, else_body)?;
+        } else if else_body.len() == 1 {
+            self.emit_statement(&else_body[0])?;
+        } else {
+            return Err(Diagnostic::error("a multi-statement else-body needs the scheduler (roadmap)"));
         }
         Ok(())
     }
@@ -247,27 +264,6 @@ impl Generator {
         let label = self.output.instructions.len();
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
             *target = label;
-        }
-        Ok(())
-    }
-
-    /// A trailing void `if (c) then; else otherwise;`: branch to the else on the
-    /// false condition, emit the then-body and its `blr`, then the else-body —
-    /// which falls through to the function's normal `blr`.
-    fn emit_if_else_returning(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement]) -> Compilation<()> {
-        let (options, condition_bit) = self.emit_condition_test(condition)?;
-        let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-        for statement in then_body {
-            self.emit_statement(statement)?;
-        }
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
-        let label = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-            *target = label;
-        }
-        for statement in else_body {
-            self.emit_statement(statement)?;
         }
         Ok(())
     }
