@@ -162,6 +162,20 @@ impl Generator {
                 return Ok(());
             }
         }
+        // `&p[i]` is the element address `p + i` — the same pointer arithmetic as
+        // `p + i`, scaling the index by the pointee size.
+        if let Expression::Index { base, index } = operand {
+            let address = Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Add,
+                left: base.clone(),
+                right: index.clone(),
+            };
+            return self.evaluate_general(&address, destination);
+        }
+        // `&*p` is just `p`.
+        if let Expression::Dereference { pointer } = operand {
+            return self.evaluate_general(pointer, destination);
+        }
         Err(Diagnostic::error("address-of a non-frame-resident lvalue is not supported yet (roadmap)"))
     }
 }
