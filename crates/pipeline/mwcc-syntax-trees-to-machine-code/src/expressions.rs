@@ -229,6 +229,13 @@ impl Generator {
             return Ok(false);
         };
         let (x, y, z) = (x.as_ref(), y.as_ref(), right);
+        // `(loadA + loadB) + Z` reassociates in mwcc (`A + (B + Z)`) with an
+        // allocator-specific register assignment we do not reproduce yet. Defer it
+        // rather than fall through to the constant-fold path, which would emit the
+        // left-associated form (a mismatch) now that the two-load add is selected.
+        if self.is_word_load(x) && self.is_word_load(y) {
+            return Err(Diagnostic::error("additive chain over two loads needs the allocator (roadmap)"));
+        }
         let Some(x_register) = self.plain_integer_leaf_register(x) else { return Ok(false) };
         // The tail operands must be simple: a full-width integer leaf or a constant.
         let simple = |me: &Self, operand: &Expression| {
