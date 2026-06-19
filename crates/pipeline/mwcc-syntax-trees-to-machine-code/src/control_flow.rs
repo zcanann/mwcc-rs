@@ -285,6 +285,14 @@ impl Generator {
             }
         }
 
+        // mwcc only branches for NON-consecutive constant arms; two consecutive
+        // constants (|c1-c2| == 1) always take a branchless mask form. If the
+        // branchless path above could not produce it (an unhandled condition),
+        // we must defer rather than emit the mismatching branch form.
+        let consecutive_constants = matches!(
+            (constant_value(when_true), constant_value(when_false)),
+            (Some(a), Some(b)) if (a - b).abs() == 1
+        );
         // A select with a non-zero constant arm uses a branch, not a register
         // move: mwcc tests the condition, materializes the constant-bearing arm
         // into the result, conditional-returns on that arm's branch, then the
@@ -292,6 +300,7 @@ impl Generator {
         // zero arm instead uses the branchless and/andc forms above (with the
         // other arm materialized), whose register layout differs — those defer.
         if tail
+            && !consecutive_constants
             && !is_zero_literal(when_true)
             && !is_zero_literal(when_false)
             && (constant_value(when_false).is_some() || constant_value(when_true).is_some())

@@ -810,13 +810,9 @@ impl Parser {
             self.expect(Token::ParenOpen)?;
             let condition = self.expression()?;
             self.expect(Token::ParenClose)?;
-            self.expect(Token::KeywordReturn)?;
-            let value = self.expression()?;
-            self.expect(Token::Semicolon)?;
+            let value = self.parse_guard_return()?;
             if self.eat_word("else") {
-                self.expect(Token::KeywordReturn)?;
-                let otherwise = self.expression()?;
-                self.expect(Token::Semicolon)?;
+                let otherwise = self.parse_guard_return()?;
                 conditional_return = Some(Expression::Conditional {
                     condition: Box::new(condition),
                     when_true: Box::new(value),
@@ -954,8 +950,30 @@ impl Parser {
                 return false;
             }
         }
-        // A `return` body is a guard; anything else is an if-statement.
-        *self.peek_at(index + 1) != Token::KeywordReturn
+        // A `return` body — bare `return …` or a braced single-return block
+        // `{ return …` — is a guard; anything else is an if-statement.
+        let after = self.peek_at(index + 1);
+        if *after == Token::KeywordReturn {
+            return false;
+        }
+        if *after == Token::BraceOpen && *self.peek_at(index + 2) == Token::KeywordReturn {
+            return false;
+        }
+        true
+    }
+
+    /// Parse a guard's return body: `return <expr>;`, optionally wrapped in a
+    /// single-statement block `{ return <expr>; }`. The braces are syntactic — the
+    /// guard codegen is identical either way.
+    fn parse_guard_return(&mut self) -> Compilation<Expression> {
+        let braced = self.eat_keyword(Token::BraceOpen);
+        self.expect(Token::KeywordReturn)?;
+        let value = self.expression()?;
+        self.expect(Token::Semicolon)?;
+        if braced {
+            self.expect(Token::BraceClose)?;
+        }
+        Ok(value)
     }
 
     /// `if (condition) <block-or-statement> [else <block-or-statement> | else if]`.
