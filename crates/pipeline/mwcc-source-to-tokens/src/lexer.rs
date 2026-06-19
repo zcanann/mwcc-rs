@@ -15,6 +15,15 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             position += 1;
             continue;
         }
+        // A preprocessor directive surviving in the `-E` output (mwcc passes
+        // `#pragma` through). It is not a C token; skip the line. (A directive
+        // that changes codegen, like `#pragma section`, is handled downstream.)
+        if character == '#' {
+            while position < bytes.len() && bytes[position] != b'\n' {
+                position += 1;
+            }
+            continue;
+        }
         // line comment
         if character == '/' && peek(bytes, position + 1) == Some(b'/') {
             while position < bytes.len() && bytes[position] != b'\n' {

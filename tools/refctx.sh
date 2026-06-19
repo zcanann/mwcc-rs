@@ -36,16 +36,30 @@ ours="$here/target/release/mwcc"
 
 project="$(cd "$project" && pwd)"
 dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"
-trap 'rm -rf "$dir"' EXIT
+# Only ever remove the mktemp scratch dir — guard against a clobbered $dir so the
+# cleanup can never delete a real tree (a stray loop variable once aliased $dir).
+trap 'case "$dir" in */refctx.??????) rm -rf "$dir";; esac' EXIT
 
-# 1. Inline includes into a self-contained file (run from the project root).
-( cd "$project" && python3 tools/decompctx.py "$src" -I include -o "$dir/ctx.c" ) >/dev/null 2>&1 \
+# 1. Inline includes into a self-contained file (run from the project root). The
+#    include search path defaults to `include`; a project with extra roots (e.g.
+#    include/libc) sets REFCTX_INCLUDES="include include/libc …" in the env.
+read -r -a include_dirs <<< "${REFCTX_INCLUDES:-include}"
+include_flags=()
+# NB: not `dir` — that variable holds the mktemp scratch dir the EXIT trap removes.
+for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
+( cd "$project" && python3 tools/decompctx.py "$src" "${include_flags[@]}" -o "$dir/ctx.c" ) >/dev/null 2>&1 \
   || { echo "decompctx failed for $src"; exit 1; }
 
 # Base flags shared by every reference TU; the caller adds the per-group extras.
-base=(-nodefaults -proc gekko -align powerpc -enum int -fp hardware \
-  -Cpp_exceptions off -O4,p -inline auto -maxerrors 1 -nosyspath -RTTI off \
-  -fp_contract on -str reuse)
+# Default to marioparty4's set; a different project (different -O/-inline/-char)
+# can replace it wholesale via REFCTX_BASE="flag1 flag2 …" in the environment.
+if [[ -n "${REFCTX_BASE:-}" ]]; then
+  read -r -a base <<< "$REFCTX_BASE"
+else
+  base=(-nodefaults -proc gekko -align powerpc -enum int -fp hardware \
+    -Cpp_exceptions off -O4,p -inline auto -maxerrors 1 -nosyspath -RTTI off \
+    -fp_contract on -str reuse)
+fi
 
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
 #    preprocess). mwcceppc only accepts .c/.cpp, so the real compiler builds the
