@@ -405,6 +405,16 @@ impl Generator {
     /// the scratch and the wide operand stays in its home register. Build-aware via
     /// each leaf's signedness; transparent (home registers) for the all-int case.
     pub(crate) fn place_compare_leaves(&mut self, left: &Expression, right: &Expression) -> Compilation<(u8, u8)> {
+        // Two full-word memory loads: mwcc loads the left operand into a fresh
+        // register (the allocator colors it at the lowest free GPR) and the right
+        // into the scratch, in source order — `lwz r4,…; lwz r0,…`. The equality
+        // idiom that follows (`subf r0,r4,r0; cntlzw; srwi 5`) then matches.
+        if self.is_word_load(left) && self.is_word_load(right) {
+            let left_register = self.fresh_virtual_general();
+            self.evaluate_general(left, left_register)?;
+            self.evaluate_general(right, GENERAL_SCRATCH)?;
+            return Ok((left_register, GENERAL_SCRATCH));
+        }
         let (left_register, left_width, left_signed) = self.leaf_info(left)?;
         let (right_register, right_width, right_signed) = self.leaf_info(right)?;
         let left_narrow = left_width < 32;
