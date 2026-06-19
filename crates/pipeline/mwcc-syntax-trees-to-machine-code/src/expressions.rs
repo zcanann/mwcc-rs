@@ -271,11 +271,8 @@ impl Generator {
         if !self.is_word_load(left) || !self.is_word_load(right) {
             return Ok(false);
         }
-        // The two loads must share a base register (so the primary cannot reuse a
-        // now-dead base — that case needs precise live-range splitting and defers).
-        match (load_base_name(left), load_base_name(right)) {
-            (Some(a), Some(b)) if a == b => {}
-            _ => return Ok(false),
+        if load_base_name(left).is_none() || load_base_name(right).is_none() {
+            return Ok(false);
         }
         // `subf` computes `b - a`; to get `left - right` the right operand is the
         // primary (first source) and the left is the secondary (in r0). The
