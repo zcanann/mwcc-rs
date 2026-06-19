@@ -408,6 +408,22 @@ impl Generator {
             (constant_value(when_true), constant_value(when_false)),
             (Some(a), Some(b)) if (a - b).abs() == 1
         );
+        // `cond ? cond : C` / `cond ? C : cond` (one arm IS the condition, the
+        // other a non-zero constant) when the condition leaf occupies the result
+        // register: the branch form below materializes the constant into the
+        // result first, clobbering the condition before the aliasing arm is read.
+        // mwcc keeps the value in r0 (`li r0,C; …; mr r0,cond; mr d,r0`); until
+        // that form is modeled we defer rather than miscompile. A non-constant
+        // other arm (`cond ? b : cond`) takes the register-move path, which reads
+        // the condition before overwriting it, so it stays correct.
+        if let Some(condition_register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) {
+            let aliases_constant_arm = (same_operand(when_true, condition) && constant_value(when_false).is_some_and(|c| c != 0))
+                || (same_operand(when_false, condition) && constant_value(when_true).is_some_and(|c| c != 0));
+            if tail && condition_register == destination && aliases_constant_arm {
+                return Err(Diagnostic::error("cond ? cond : C with the condition in the result register needs the r0 form (roadmap)"));
+            }
+        }
+
         // A select with a non-zero constant arm uses a branch, not a register
         // move: mwcc tests the condition, materializes the constant-bearing arm
         // into the result, conditional-returns on that arm's branch, then the
