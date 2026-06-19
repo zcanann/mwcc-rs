@@ -208,6 +208,53 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
                 Ok(())
             }
+            // `a[i] < a[j]` / `a[i] > a[j]` (two same-base full-word loads): the
+            // operand the signed idiom reads twice goes to a fresh virtual (the
+            // allocator colors it r4, the base reg being live), the once-read
+            // operand to the scratch; loads in source order. `<` reads its RIGHT
+            // operand twice (`xor`+`and`), `>` reads its LEFT twice. Different
+            // bases defer (the same allocator-coloring gap as the != case).
+            //
+            // The `>` form loads its twice-read operand FIRST, while the shared
+            // base is still needed for the second load, so that operand is forced
+            // off the (soon-dead) base register exactly as mwcc places it — it
+            // matches in every destination context. The `<` form loads its
+            // twice-read operand SECOND, after the base dies; there it relies on
+            // the fixed `srawi → d` write to keep that operand off the destination
+            // register, which only reproduces mwcc when `d` is a real register
+            // (return/arg). In a value/store context (`d` == scratch) that write
+            // would collide with the scratch and mwcc declines to reuse the dead
+            // base anyway, so `<` defers there.
+            BinaryOperator::Less | BinaryOperator::Greater
+                if signed_left && self.is_word_load(left) && self.is_word_load(right)
+                    && load_base_name(left).is_some()
+                    && load_base_name(left) == load_base_name(right)
+                    && (matches!(operator, BinaryOperator::Greater) || d != GENERAL_SCRATCH) =>
+            {
+                let scratch = GENERAL_SCRATCH;
+                if matches!(operator, BinaryOperator::Less) {
+                    // a < b : sign bit of (((a^b)>>1) - ((a^b)&b)). b is read twice.
+                    self.evaluate_general(left, scratch)?;
+                    let right_register = self.fresh_virtual_general();
+                    self.evaluate_general(right, right_register)?;
+                    self.output.instructions.push(Instruction::Xor { a: scratch, s: right_register, b: scratch });
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
+                    self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: right_register });
+                    self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
+                } else {
+                    // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)). a is read twice.
+                    let left_register = self.fresh_virtual_general();
+                    self.evaluate_general(left, left_register)?;
+                    self.evaluate_general(right, scratch)?;
+                    let temp = self.fresh_virtual_general();
+                    self.output.instructions.push(Instruction::Xor { a: scratch, s: left_register, b: scratch });
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
+                    self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: left_register });
+                    self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
+                }
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                Ok(())
+            }
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
                 if signed_left && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
                     && (
