@@ -217,6 +217,15 @@ impl Parser {
             self.last_struct_tag = Some(tag);
             return Ok(Type::StructPointer);
         }
+        // A struct-pointer typedef (`VecPtr`) is itself a pointer to the struct —
+        // no trailing `*` — carrying the layout's tag.
+        if let Token::Identifier(name) = self.peek() {
+            if let Some(tag) = self.struct_pointer_typedefs.get(name).cloned() {
+                self.advance();
+                self.last_struct_tag = Some(tag);
+                return Ok(Type::StructPointer);
+            }
+        }
         // A struct typedef (`FILE`) behaves like its `struct Tag`: `FILE *` is a
         // struct pointer carrying the layout's tag; a struct value isn't supported.
         if let Token::Identifier(name) = self.peek() {
@@ -338,28 +347,35 @@ impl Parser {
         while *self.peek() != Token::BraceClose {
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
-            let field_name = self.parse_identifier()?;
-            // An array member `type name[N]` occupies `N` elements; its access
-            // yields the array address rather than a loaded value.
-            let mut array_element = None;
-            let mut size = type_size(field_type);
-            let element_size = size;
-            if *self.peek() == Token::BracketOpen {
-                self.advance();
-                let count = match self.advance() {
-                    Token::IntegerLiteral(value) => value as u16,
-                    other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
-                };
-                self.expect(Token::BracketClose)?;
-                array_element = Some(pointee_of(field_type)?);
-                size = count * element_size;
+            // One or more comma-separated declarators share the field type, e.g.
+            // `f32 x, y, z;`. Each gets its own naturally-aligned offset.
+            loop {
+                let field_name = self.parse_identifier()?;
+                // An array member `type name[N]` occupies `N` elements; its access
+                // yields the array address rather than a loaded value.
+                let mut array_element = None;
+                let mut size = type_size(field_type);
+                let element_size = size;
+                if *self.peek() == Token::BracketOpen {
+                    self.advance();
+                    let count = match self.advance() {
+                        Token::IntegerLiteral(value) => value as u16,
+                        other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
+                    };
+                    self.expect(Token::BracketClose)?;
+                    array_element = Some(pointee_of(field_type)?);
+                    size = count * element_size;
+                }
+                // Natural alignment: to the element size (for an array, that element).
+                let alignment = element_size.max(1);
+                offset = offset.div_ceil(alignment) * alignment;
+                layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element });
+                offset += size;
+                if !self.eat_keyword(Token::Comma) {
+                    break;
+                }
             }
             self.expect(Token::Semicolon)?;
-            // Natural alignment: to the element size (for an array, that element).
-            let alignment = element_size.max(1);
-            offset = offset.div_ceil(alignment) * alignment;
-            layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag, array_element });
-            offset += size;
         }
         self.expect(Token::BraceClose)?;
         Ok(layout)
@@ -499,11 +515,26 @@ impl Parser {
                     self.advance(); // `struct`
                     let tag = if matches!(self.peek(), Token::Identifier(_)) { self.parse_identifier()? } else { String::new() };
                     let layout = self.parse_struct_body()?;
-                    let alias = self.parse_identifier()?;
-                    self.expect(Token::Semicolon)?;
+                    // One or more comma-separated declarators: a value alias `Vec`
+                    // or a pointer alias `*VecPtr`. The first value alias names an
+                    // anonymous struct's tag.
+                    let mut is_pointer = self.eat_keyword(Token::Star);
+                    let mut alias = self.parse_identifier()?;
                     let tag = if tag.is_empty() { alias.clone() } else { tag };
                     self.structs.insert(tag.clone(), layout);
-                    self.struct_typedefs.insert(alias, tag);
+                    loop {
+                        if is_pointer {
+                            self.struct_pointer_typedefs.insert(alias, tag.clone());
+                        } else {
+                            self.struct_typedefs.insert(alias, tag.clone());
+                        }
+                        if !self.eat_keyword(Token::Comma) {
+                            break;
+                        }
+                        is_pointer = self.eat_keyword(Token::Star);
+                        alias = self.parse_identifier()?;
+                    }
+                    self.expect(Token::Semicolon)?;
                     return Ok(());
                 }
                 let aliased = self.parse_type()?;
@@ -855,6 +886,7 @@ impl Parser {
                 matches!(word.as_str(), "long" | "signed" | "double" | "const" | "volatile" | "register" | "enum")
                     || self.typedefs.contains_key(word)
                     || self.struct_typedefs.contains_key(word)
+                    || self.struct_pointer_typedefs.contains_key(word)
             }
             _ => false,
         }

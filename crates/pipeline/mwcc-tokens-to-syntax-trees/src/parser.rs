@@ -45,6 +45,9 @@ pub(crate) struct Parser {
     /// `typedef`-declared struct aliases (`typedef struct _FILE {…} FILE;`) mapped
     /// to their struct tag, so `FILE *p` resolves to the right layout.
     pub(crate) struct_typedefs: HashMap<String, String>,
+    /// `typedef`-declared struct-POINTER aliases (`typedef struct {…} *VecPtr;`)
+    /// mapped to their struct tag — the alias itself is already a struct pointer.
+    pub(crate) struct_pointer_typedefs: HashMap<String, String>,
     /// Enumeration constant values, so a bare enumerator resolves to its integer
     /// value in an expression. (`-enum int`: an enum type is a 4-byte `int`.)
     pub(crate) enum_constants: HashMap<String, i64>,
