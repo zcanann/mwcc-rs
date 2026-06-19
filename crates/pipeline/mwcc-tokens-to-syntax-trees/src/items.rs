@@ -1051,8 +1051,10 @@ impl Parser {
         Ok(vec![self.parse_simple_statement(local_names)?])
     }
 
-    /// A `{ ... }` block of simple statements (and nested if-blocks). A `return`
-    /// inside a block is not modeled as a statement yet.
+    /// A `{ ... }` block of simple statements, nested if-blocks, and `return`s. A
+    /// trailing `if (c) { return X; } return Y;` collapses to `return (c ? X : Y)`
+    /// (mwcc lowers an if-return followed by a return to a select), which also
+    /// makes nested if-return chains fold into nested ternaries.
     fn parse_block(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Vec<Statement>> {
         self.expect(Token::BraceOpen)?;
         let mut statements = Vec::new();
@@ -1067,7 +1069,33 @@ impl Parser {
             }
             statements.push(self.parse_simple_statement(local_names)?);
         }
+        collapse_if_return_chain(&mut statements);
         self.expect(Token::BraceClose)?;
         Ok(statements)
+    }
+}
+
+/// Collapse a trailing `if (c) { return X; } return Y;` into `return (c ? X : Y)`,
+/// repeatedly, so nested if-return chains fold into nested ternaries — matching
+/// mwcc, which lowers an if-return immediately followed by a return to a select.
+fn collapse_if_return_chain(statements: &mut Vec<Statement>) {
+    while statements.len() >= 2 {
+        let n = statements.len();
+        let collapsible = matches!(&statements[n - 2],
+            Statement::If { then_body, else_body, .. }
+                if else_body.is_empty()
+                    && matches!(then_body.as_slice(), [Statement::Return(Some(_))]))
+            && matches!(&statements[n - 1], Statement::Return(Some(_)));
+        if !collapsible {
+            break;
+        }
+        let Some(Statement::Return(Some(when_false))) = statements.pop() else { unreachable!() };
+        let Some(Statement::If { condition, then_body, .. }) = statements.pop() else { unreachable!() };
+        let Some(Statement::Return(Some(when_true))) = then_body.into_iter().next() else { unreachable!() };
+        statements.push(Statement::Return(Some(Expression::Conditional {
+            condition: Box::new(condition),
+            when_true: Box::new(when_true),
+            when_false: Box::new(when_false),
+        })));
     }
 }
