@@ -149,6 +149,48 @@ impl Generator {
     /// constants: `neg`/`or` form the truth value (the sign bit of `-cond|cond`),
     /// then `srawi` (a -1/0 mask when the true value is lower) or `srwi` (a 0/1
     /// bool when it is higher), and `addi` the lower constant.
+    /// `(x REL 0) ? x : 0` / `(x REL 0) ? 0 : x` (a clamp-to-zero): the sign mask
+    /// of x combined with x via `and`/`andc`. The base mask is `srawi x,31` for the
+    /// `<0` conditions and `neg; andc; srawi` for the `>0` conditions; which arm
+    /// keeps x and whether the condition is the negated (`>=`/`<=`) sense pick
+    /// `and` vs `andc`.
+    fn try_emit_sign_clamp(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
+        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        if !is_zero_literal(right) {
+            return Ok(false);
+        }
+        let Some(x_name) = leaf_name(left) else { return Ok(false) };
+        let x_is_true = is_zero_literal(when_false) && leaf_name(when_true) == Some(x_name);
+        let x_is_false = is_zero_literal(when_true) && leaf_name(when_false) == Some(x_name);
+        if !(x_is_true || x_is_false) || !self.signedness_of(left)? {
+            return Ok(false);
+        }
+        // `< 0` uses a `srawi` sign mask; `> 0` uses a `neg; andc; srawi` mask.
+        // (`>= 0` / `<= 0` use different sequences — `srwi; addi` / `neg; orc;
+        // srawi` — so they defer here rather than reuse these via and<->andc.)
+        let positive = match operator {
+            BinaryOperator::Less => false,
+            BinaryOperator::Greater => true,
+            _ => return Ok(false),
+        };
+        let use_andc = x_is_false;
+        let x = self.general_register_of_leaf(left)?;
+        // The base mask (all-ones when the base condition holds) goes in the scratch.
+        if positive {
+            self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
+            self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: x });
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+        } else {
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: x, shift: 31 });
+        }
+        self.output.instructions.push(if use_andc {
+            Instruction::AndComplement { a: destination, s: x, b: GENERAL_SCRATCH }
+        } else {
+            Instruction::And { a: destination, s: x, b: GENERAL_SCRATCH }
+        });
+        Ok(true)
+    }
+
     fn try_emit_consecutive_constants(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
         let Some(cond_register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) else {
             return Ok(false);
@@ -266,6 +308,11 @@ impl Generator {
                 self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: select.offset });
                 return Ok(());
             }
+        }
+
+        // `(x REL 0) ? x : 0` (clamp-to-zero): a sign mask of x combined with x.
+        if self.try_emit_sign_clamp(condition, when_true, when_false, destination)? {
+            return Ok(());
         }
 
         // `cond ? c1 : c2` with consecutive non-zero constants is branchless: the
