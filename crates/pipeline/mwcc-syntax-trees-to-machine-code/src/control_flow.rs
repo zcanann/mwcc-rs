@@ -104,7 +104,20 @@ impl Generator {
     /// materialized in r0, so the mask instead flows through a free register and
     /// the destination. The condition must be a plain (truthy) leaf.
     fn try_emit_branchless_mask(&mut self, condition: &Expression, value: &Expression, complement: bool, destination: u8) -> Compilation<bool> {
-        let Some(condition_register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) else {
+        // The condition is a leaf in its register, or — in a tail context with a
+        // leaf value that does not occupy the destination — a full-word load brought
+        // into the destination first (`*q ? x : 0` is `lwz r3; neg; or; srawi; and`).
+        let value_leaf = leaf_name(value).and_then(|name| self.lookup_general(name));
+        let condition_register = if let Some(register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) {
+            register
+        } else if destination != GENERAL_SCRATCH
+            && self.is_word_load(condition)
+            && value_leaf.is_some()
+            && value_leaf != Some(destination)
+        {
+            self.evaluate_general(condition, destination)?;
+            destination
+        } else {
             return Ok(false);
         };
         let combine = |destination: u8, source: u8, mask: u8| {
