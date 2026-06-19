@@ -932,6 +932,13 @@ impl Generator {
     /// anything else is computed into the scratch (`li r0,0; stw r0,…`,
     /// `add r0,…; stw r0,…`) ahead of the store.
     fn place_store_value(&mut self, value: &Expression, pointee: Pointee) -> Compilation<u8> {
+        // A constant pre-materialized into a fixed register (a distinct-constant
+        // store run) reuses that register instead of re-materializing.
+        if let Some(constant) = constant_value(value) {
+            if let Some(&(_, register)) = self.prematerialized_constants.iter().find(|(c, _)| *c == constant as i32) {
+                return Ok(register);
+            }
+        }
         // During a constant-store-fill run, a constant value reuses the scratch
         // register when it already holds that constant (mwcc materializes a
         // repeated store value once: `li r0,0; stw; stw; stw`). The run guarantees

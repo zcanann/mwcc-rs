@@ -98,6 +98,10 @@ pub(crate) struct Generator {
     /// The constant currently materialized in the scratch register, during a
     /// constant-store-fill run.
     pub(crate) scratch_constant: Option<i32>,
+    /// Constants pre-materialized into specific registers ahead of a run of
+    /// distinct-constant stores, so each store reuses its register rather than
+    /// re-materializing (mwcc materializes both values up front, then stores).
+    pub(crate) prematerialized_constants: Vec<(i32, u8)>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {

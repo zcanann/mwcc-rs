@@ -50,6 +50,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         frame_slots: HashMap::new(),
         reuse_scratch_constant: false,
         scratch_constant: None,
+        prematerialized_constants: Vec::new(),
         call_return_types: call_return_types.clone(),
     };
     generator.assign_parameters(function)?;

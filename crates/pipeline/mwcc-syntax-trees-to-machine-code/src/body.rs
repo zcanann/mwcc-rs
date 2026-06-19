@@ -223,7 +223,31 @@ impl Generator {
             }
         }
         if constants.iter().any(|constant| *constant != constants[0]) {
-            return Err(Diagnostic::error("a run of differing constant stores needs the scheduler (roadmap)"));
+            // Two distinct constants: mwcc materializes both up front (the first
+            // into a free register, the second into the scratch), then stores both
+            // — `li r4,v1; li r0,v2; stw r4; stw r0`. Three or more interleave on a
+            // sliding window the scheduler models; defer those.
+            if constants.len() != 2 {
+                return Err(Diagnostic::error("a run of 3+ differing constant stores needs the scheduler (roadmap)"));
+            }
+            let base_registers: Vec<u8> = function.statements.iter()
+                .filter_map(|statement| match statement {
+                    Statement::Store { target, .. } => self.store_base_register(target),
+                    _ => None,
+                })
+                .collect();
+            let Some(first_register) = (3u8..=12).find(|r| *r != GENERAL_SCRATCH && !base_registers.contains(r) && !self.reserved.contains(r)) else {
+                return Err(Diagnostic::error("no free register for the two-constant store run"));
+            };
+            self.load_integer_constant(first_register, constants[0] as i64);
+            self.load_integer_constant(GENERAL_SCRATCH, constants[1] as i64);
+            self.prematerialized_constants = vec![(constants[0], first_register), (constants[1], GENERAL_SCRATCH)];
+            for statement in &function.statements {
+                self.emit_statement(statement)?;
+            }
+            self.prematerialized_constants.clear();
+            self.emit_epilogue_and_return();
+            return Ok(true);
         }
         self.reuse_scratch_constant = true;
         self.scratch_constant = None;
@@ -250,6 +274,16 @@ impl Generator {
             }
             _ => false,
         }
+    }
+
+    /// The register holding the base pointer of a scratch-safe store target.
+    fn store_base_register(&self, target: &Expression) -> Option<u8> {
+        let name = match target {
+            Expression::Member { base, .. } | Expression::Index { base, .. } => leaf_name(base),
+            Expression::Dereference { pointer } => leaf_name(pointer),
+            _ => None,
+        }?;
+        self.lookup_general(name)
     }
 
     /// Tear down the stack frame (if one was allocated) and return. A non-leaf
