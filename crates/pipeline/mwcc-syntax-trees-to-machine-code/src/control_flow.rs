@@ -145,6 +145,39 @@ impl Generator {
         Ok(false)
     }
 
+    /// `cond ? c1 : c2` with a truthy leaf condition and consecutive non-zero
+    /// constants: `neg`/`or` form the truth value (the sign bit of `-cond|cond`),
+    /// then `srawi` (a -1/0 mask when the true value is lower) or `srwi` (a 0/1
+    /// bool when it is higher), and `addi` the lower constant.
+    fn try_emit_consecutive_constants(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
+        let Some(cond_register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        let (Some(c1), Some(c2)) = (constant_value(when_true), constant_value(when_false)) else {
+            return Ok(false);
+        };
+        if c1 == 0 || c2 == 0 || (c1 - c2).abs() != 1 || i16::try_from(c2).is_err() {
+            return Ok(false);
+        }
+        // The `neg`/`or` use r0; when the destination *is* r0 (a value/store
+        // context) the mask goes to a fresh register so the final `addi` can land
+        // in r0, matching mwcc. In a tail context the mask uses the destination.
+        let mask_register = if destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            destination
+        };
+        self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: cond_register });
+        self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: cond_register });
+        if c1 < c2 {
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: mask_register, s: GENERAL_SCRATCH, shift: 31 });
+        } else {
+            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: mask_register, s: GENERAL_SCRATCH, shift: 31 });
+        }
+        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: mask_register, immediate: c2 as i16 });
+        Ok(true)
+    }
+
     /// Place a select arm into the result: a constant is materialized with `li`
     /// (or `lis`/`ori`); a leaf variable is moved unless it already sits there.
     fn place_select_value(&mut self, value: &Expression, destination: u8) -> Compilation<()> {
@@ -192,6 +225,12 @@ impl Generator {
                 (Some(0), Some(1)) => return self.emit_comparison(BinaryOperator::Equal, condition, &zero, destination),
                 _ => {}
             }
+        }
+
+        // `cond ? c1 : c2` with consecutive non-zero constants is branchless: the
+        // truth value (a -1/0 sign mask or a 0/1 bool) plus the lower constant.
+        if self.try_emit_consecutive_constants(condition, when_true, when_false, destination)? {
+            return Ok(());
         }
 
         // `cond ? x : 0` (AND) and `cond ? 0 : x` (ANDC) with a plain truth
