@@ -143,7 +143,7 @@ impl Generator {
         let result = match operator {
             // `(x << n) & m` / `(x >> n) & m` — shift inside, mask outside.
             BinaryOperator::BitAnd => {
-                let Expression::IntegerLiteral(mask) = *right else { return Ok(None) };
+                let Some(mask) = constant_value(right) else { return Ok(None) };
                 let mask = mask as u32;
                 let Some((value, is_left, shift)) = as_constant_shift(left) else { return Ok(None) };
                 if is_left {
@@ -164,7 +164,7 @@ impl Generator {
             // `(x & m) << n` — mask inside, left shift outside; or a right shift
             // then a left shift `(x >> k) << n`.
             BinaryOperator::ShiftLeft => {
-                let Expression::IntegerLiteral(shift) = *right else { return Ok(None) };
+                let Some(shift) = constant_value(right) else { return Ok(None) };
                 if !(1..=31).contains(&shift) {
                     return Ok(None);
                 }
@@ -192,7 +192,7 @@ impl Generator {
             // shift is sign-agnostic and fuses for signed x too; only a mask that
             // reaches bit 31 needs an unsigned (logical) shift.
             BinaryOperator::ShiftRight => {
-                let Expression::IntegerLiteral(shift) = *right else { return Ok(None) };
+                let Some(shift) = constant_value(right) else { return Ok(None) };
                 if !(1..=31).contains(&shift) {
                     return Ok(None);
                 }

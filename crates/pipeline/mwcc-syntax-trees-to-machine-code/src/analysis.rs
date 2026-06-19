@@ -177,10 +177,7 @@ pub(crate) fn complemented_leaf_name(expression: &Expression) -> Option<&str> {
 pub(crate) fn as_masked_leaf(expression: &Expression) -> Option<(&Expression, u32)> {
     let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expression else { return None };
     leaf_name(left)?;
-    match **right {
-        Expression::IntegerLiteral(mask) => Some((left, mask as u32)),
-        _ => None,
-    }
+    constant_value(right).map(|mask| (left.as_ref(), mask as u32))
 }
 
 /// Decompose `load & mask` where `load` is a memory load (dereference, member,
@@ -190,10 +187,7 @@ pub(crate) fn as_masked_load(expression: &Expression) -> Option<(&Expression, u3
     if !matches!(left.as_ref(), Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. }) {
         return None;
     }
-    match **right {
-        Expression::IntegerLiteral(mask) => Some((left, mask as u32)),
-        _ => None,
-    }
+    constant_value(right).map(|mask| (left.as_ref(), mask as u32))
 }
 
 /// If `mask` is a single contiguous run of set bits, return its PowerPC
