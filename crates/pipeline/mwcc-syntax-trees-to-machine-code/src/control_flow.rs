@@ -244,6 +244,21 @@ impl Generator {
             }
         }
 
+        // `(x < 0) ? c1 : c2` / `(x >= 0) ? c1 : c2` with consecutive non-zero
+        // constants: the shifted sign bit (`srawi`/`srwi`) plus an offset.
+        if let Some((value, arithmetic, offset)) = sign_consecutive_select(condition, when_true, when_false) {
+            if self.signedness_of(value)? {
+                let register = self.general_register_of_leaf(value)?;
+                self.output.instructions.push(if arithmetic {
+                    Instruction::ShiftRightAlgebraicImmediate { a: destination, s: register, shift: 31 }
+                } else {
+                    Instruction::ShiftRightLogicalImmediate { a: destination, s: register, shift: 31 }
+                });
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: offset });
+                return Ok(());
+            }
+        }
+
         // `cond ? c1 : c2` with consecutive non-zero constants is branchless: the
         // truth value (a -1/0 sign mask or a 0/1 bool) plus the lower constant.
         if self.try_emit_consecutive_constants(condition, when_true, when_false, destination)? {
@@ -547,5 +562,31 @@ fn sign_mask_select<'e>(condition: &'e Expression, when_true: &'e Expression, wh
         Some((left.as_ref(), true)) // 0 when negative, -1 otherwise
     } else {
         None
+    }
+}
+
+/// Recognize a sign-compare select with consecutive non-zero constant arms —
+/// `(x < 0) ? c1 : c2` or `(x >= 0) ? c1 : c2` with `|c1-c2| == 1` — returning
+/// `(x, arithmetic_shift, offset)` for `srawi`/`srwi x,31` then `addi x,offset`.
+/// The shifted sign bit (`-1/0` arithmetic or `0/1` logical) plus the offset
+/// reproduces the two constants.
+fn sign_consecutive_select<'e>(condition: &'e Expression, when_true: &Expression, when_false: &Expression) -> Option<(&'e Expression, bool, i16)> {
+    let Expression::Binary { operator, left, right } = condition else { return None };
+    if !is_zero_literal(right) {
+        return None;
+    }
+    let (c1, c2) = (constant_value(when_true)?, constant_value(when_false)?);
+    if c1 == 0 || c2 == 0 || (c1 - c2).abs() != 1 {
+        return None;
+    }
+    match operator {
+        // x < 0 ? c1 : c2 — mask + c2; the mask is -1/0 (srawi) when the negative
+        // arm c1 is the lower constant, else 0/1 (srwi). Both orders match mwcc.
+        BinaryOperator::Less => Some((left.as_ref(), c1 < c2, i16::try_from(c2).ok()?)),
+        // x >= 0 ? c1 : c2 — only the c1<c2 order is this clean `srwi d,x,31; addi c1`
+        // form (the negative arm c2 is the higher constant). The reverse order uses
+        // an extra `xori`, so defer it rather than emit the two-instruction shape.
+        BinaryOperator::GreaterEqual if c1 < c2 => Some((left.as_ref(), false, i16::try_from(c1).ok()?)),
+        _ => None,
     }
 }

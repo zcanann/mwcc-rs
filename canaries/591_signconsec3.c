@@ -1,0 +1,1 @@
+int fsc3(int x){ return x >= 0 ? 1 : 2; }
