@@ -210,15 +210,28 @@ impl Generator {
     }
 
     fn try_emit_consecutive_constants(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
-        let Some(cond_register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) else {
+        // The truth value comes from a leaf in its register, or — in a tail context
+        // — a full-word memory load brought into the destination (`*q ? 1 : 2` is
+        // `lwz r3,…; neg r0,r3; or; srawi r3; addi`). A load is taken only after the
+        // arms are confirmed (so a non-matching shape emits nothing).
+        let leaf_register = leaf_name(condition).and_then(|name| self.lookup_general(name));
+        let loadable = leaf_register.is_none() && destination != GENERAL_SCRATCH && self.is_word_load(condition);
+        if leaf_register.is_none() && !loadable {
             return Ok(false);
-        };
+        }
         let (Some(c1), Some(c2)) = (constant_value(when_true), constant_value(when_false)) else {
             return Ok(false);
         };
         if c1 == 0 || c2 == 0 || (c1 - c2).abs() != 1 || i16::try_from(c2).is_err() {
             return Ok(false);
         }
+        let cond_register = match leaf_register {
+            Some(register) => register,
+            None => {
+                self.evaluate_general(condition, destination)?;
+                destination
+            }
+        };
         // The `neg`/`or` use r0; when the destination *is* r0 (a value/store
         // context) the mask goes to a fresh register so the final `addi` can land
         // in r0, matching mwcc. In a tail context the mask uses the destination.

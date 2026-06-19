@@ -192,6 +192,11 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // `(cond ? c1 : c2) +/- k` distributes the constant into the arms
+                // (mwcc folds the select's trailing `addi`).
+                if self.try_emit_select_constant_fold(*operator, left, right, destination)? {
+                    return Ok(());
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());
@@ -336,6 +341,27 @@ impl Generator {
             _ => Instruction::Xor { a: destination, s: a, b },
         };
         self.output.instructions.push(combined);
+        Ok(true)
+    }
+
+    /// `(cond ? c1 : c2) +/- k` with both arms constant distributes the constant
+    /// into the arms — `cond ? (c1±k) : (c2±k)` — so the select's trailing `addi`
+    /// absorbs it, as mwcc does (a leaf `(x?1:2)+5` is `…; addi r3,r3,7`).
+    fn try_emit_select_constant_fold(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let constant_select = |expression: &Expression| matches!(expression,
+            Expression::Conditional { when_true, when_false, .. }
+                if constant_value(when_true).is_some() && constant_value(when_false).is_some());
+        // Add commutes (select either side); subtract distributes only `select - k`.
+        let (select, delta) = match operator {
+            BinaryOperator::Add if constant_select(left) => match constant_value(right) { Some(k) => (left, k), None => return Ok(false) },
+            BinaryOperator::Add if constant_select(right) => match constant_value(left) { Some(k) => (right, k), None => return Ok(false) },
+            BinaryOperator::Subtract if constant_select(left) => match constant_value(right) { Some(k) => (left, -k), None => return Ok(false) },
+            _ => return Ok(false),
+        };
+        let Expression::Conditional { condition, when_true, when_false } = select else { return Ok(false) };
+        let shifted_true = Expression::IntegerLiteral(constant_value(when_true).unwrap() + delta);
+        let shifted_false = Expression::IntegerLiteral(constant_value(when_false).unwrap() + delta);
+        self.emit_conditional(condition, &shifted_true, &shifted_false, destination, false)?;
         Ok(true)
     }
 
