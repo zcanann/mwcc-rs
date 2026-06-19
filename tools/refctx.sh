@@ -50,18 +50,18 @@ base=(-nodefaults -proc gekko -align powerpc -enum int -fp hardware \
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
 #    preprocess). mwcceppc only accepts .c/.cpp, so the real compiler builds the
 #    reference straight from ctx.c (preprocessing it internally) — identical input.
-( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" "${extra[@]}" -E ctx.c -o ctx.i ) 2>/dev/null
+( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" ${extra[@]+"${extra[@]}"} -E ctx.c -o ctx.i ) 2>/dev/null
 if [[ ! -s "$dir/ctx.i" ]]; then echo "preprocess produced no .i"; exit 1; fi
 
 # 3a. Reference object from the real compiler (from the self-contained ctx.c).
-( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" "${extra[@]}" -c ctx.c -o ref.o ) 2>/dev/null
+( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" ${extra[@]+"${extra[@]}"} -c ctx.c -o ref.o ) 2>/dev/null
 [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected ctx.c"; exit 1; }
 
 # 3b. Our object. Feed the preprocessed text under the name ctx.c so our FILE
 #     symbol matches the reference's (which compiled ctx.c). Pass the same flags
 #     the real compiler got — our mwcc models the ones it knows and ignores the rest.
 mkdir -p "$dir/ours" && cp "$dir/ctx.i" "$dir/ours/ctx.c"
-if ! "$ours" --build "GC/$version" "${base[@]}" "${extra[@]}" -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
+if ! "$ours" --build "GC/$version" "${base[@]}" ${extra[@]+"${extra[@]}"} -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
   echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   exit 0
 fi
