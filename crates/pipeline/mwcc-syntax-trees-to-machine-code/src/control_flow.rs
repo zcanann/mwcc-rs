@@ -414,6 +414,18 @@ impl Generator {
                 });
             }
         }
+        // `if (x & mask)` tests the masked bits with a record-form `rlwinm.` that
+        // sets cr0 directly — no separate compare.
+        if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = condition {
+            if let (Some(register), Some(constant)) =
+                (leaf_name(left).and_then(|name| self.lookup_general(name)), constant_value(right))
+            {
+                if let Some((begin, end)) = mask_to_run(constant as u32) {
+                    self.output.instructions.push(Instruction::AndMaskRecord { a: GENERAL_SCRATCH, s: register, begin, end });
+                    return Ok((12, 2)); // beq — skip when the masked bits are all zero
+                }
+            }
+        }
         // Plain truth test: compare against zero, skip when equal.
         let register = self.condition_operand_register(condition)?;
         self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });

@@ -109,6 +109,9 @@ pub enum Instruction {
     /// it to merge two disjoint bit fields (e.g. an OR of two shifts, or a masked
     /// sign/magnitude merge) into one instruction.
     RotateAndMaskInsert { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
+    /// `rlwinm. rA, rS, 0, begin, end` — keep the bit run `[begin, end]` of `rS`
+    /// and set cr0 from the result. Used to test `(x & mask)` in a condition.
+    AndMaskRecord { a: u8, s: u8, begin: u8, end: u8 },
     /// `fadds frD, frA, frB`
     FloatAddSingle { d: u8, a: u8, b: u8 },
     /// `fsubs frD, frA, frB`
