@@ -191,22 +191,24 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
                 Ok(())
             }
-            // `a[i] != a[j]` / `s->x != s->y` (two full-word loads sharing one
-            // still-live base): the left operand loads into a fresh virtual (the
-            // allocator colors it r4, since the base reg stays live), the right
-            // into the scratch, in source order, then the leaf != idiom — sign
-            // bit of ((b-a)|(a-b)). Equality is sign-agnostic so this also covers
-            // unsigned loads. mwcc: lwz r4; lwz r0; subf r3,r4,r0; subf r0,r0,r4;
-            // or r0,r3,r0; srwi r3,r0,31. Different bases defer: the != idiom
-            // keeps the left value live across both subtracts, and mwcc does not
-            // reuse the dead base register there (it picks r5) — a coloring our
-            // allocator does not yet reproduce.
+            // `a[i] != a[j]` / `*p != *q` (two full-word loads): the left operand
+            // loads into a fresh virtual, the right into the scratch, in source
+            // order, then the leaf != idiom — sign bit of ((b-a)|(a-b)). Equality
+            // is sign-agnostic so this also covers unsigned loads. The left value
+            // is live across both subtracts, and mwcc keeps it off BOTH base
+            // registers (a same base stays live for the second load; a different
+            // base is dead but mwcc still does not reuse it) — so the left virtual
+            // avoids both bases: it colors r4 for a shared base, r5 for distinct
+            // bases, matching `lwz r4/r5; lwz r0; subf …`.
             BinaryOperator::NotEqual
                 if self.is_simple_word_load(left) && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
-                    && load_base_name(left) == load_base_name(right) =>
+                    && load_base_name(right).is_some() =>
             {
-                let left_register = self.fresh_virtual_general();
+                let avoid: Vec<u8> = [&*left, &*right].iter()
+                    .filter_map(|operand| load_base_name(operand).and_then(|name| self.lookup_general(name)))
+                    .collect();
+                let left_register = self.fresh_virtual_general_avoiding(avoid);
                 self.evaluate_general(left, left_register)?;
                 self.evaluate_general(right, GENERAL_SCRATCH)?;
                 let right_register = GENERAL_SCRATCH;
@@ -238,22 +240,30 @@ impl Generator {
             BinaryOperator::Less | BinaryOperator::Greater
                 if signed_left && self.is_simple_word_load(left) && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
-                    && load_base_name(left) == load_base_name(right)
+                    && load_base_name(right).is_some()
                     && (matches!(operator, BinaryOperator::Greater) || d != GENERAL_SCRATCH) =>
             {
                 let scratch = GENERAL_SCRATCH;
+                let left_base = load_base_name(left).and_then(|name| self.lookup_general(name));
+                let right_base = load_base_name(right).and_then(|name| self.lookup_general(name));
                 if matches!(operator, BinaryOperator::Less) {
-                    // a < b : sign bit of (((a^b)>>1) - ((a^b)&b)). b is read twice.
+                    // a < b : sign bit of (((a^b)>>1) - ((a^b)&b)). b is read twice
+                    // and loaded second, so it reuses its own (now-dead) base — it
+                    // only avoids the LEFT operand's base (r4 same-base, or the
+                    // right base it coalesces onto for distinct bases).
                     self.evaluate_general(left, scratch)?;
-                    let right_register = self.fresh_virtual_general();
+                    let right_register = self.fresh_virtual_general_avoiding(left_base.into_iter().collect());
                     self.evaluate_general(right, right_register)?;
                     self.output.instructions.push(Instruction::Xor { a: scratch, s: right_register, b: scratch });
                     self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
                     self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: right_register });
                     self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
                 } else {
-                    // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)). a is read twice.
-                    let left_register = self.fresh_virtual_general();
+                    // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)). a is read twice
+                    // and loaded first, so it must stay off BOTH bases (its own is
+                    // live during the load, the other until the second load) — r4
+                    // same-base, r5 distinct.
+                    let left_register = self.fresh_virtual_general_avoiding([left_base, right_base].into_iter().flatten().collect());
                     self.evaluate_general(left, left_register)?;
                     self.evaluate_general(right, scratch)?;
                     let temp = self.fresh_virtual_general();
