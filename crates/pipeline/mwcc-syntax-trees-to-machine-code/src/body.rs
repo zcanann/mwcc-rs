@@ -464,6 +464,15 @@ impl Generator {
                 if self.is_float_value(expression) {
                     return self.emit_cast_to_integer(value_type, expression, destination);
                 }
+                // A whole signed-`char` load promoted to `int` sign-extends the
+                // loaded byte: `lbz d,…; extsb d,d`. (`lbz` zero-extends, so the
+                // promotion needs the trailing `extsb`; the narrow-return path
+                // calls `evaluate_general` directly and so keeps the bare `lbz`.)
+                if matches!(value_type, Type::Int | Type::UnsignedInt) && self.is_signed_byte_load(expression)? {
+                    self.evaluate_general(expression, destination)?;
+                    self.emit_widen(destination, destination, 8, true);
+                    return Ok(());
+                }
                 self.evaluate_general(expression, destination)
             }
         }
