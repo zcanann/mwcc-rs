@@ -11,7 +11,7 @@ use crate::operands::*;
 
 /// The base variable a memory load addresses through — `a` for `a[i]`, `s` for
 /// `s->x`, `p` for `*p`. Used to recognize two loads that share a base register.
-fn load_base_name(expression: &Expression) -> Option<&str> {
+pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
     match expression {
         Expression::Index { base, .. } | Expression::Member { base, .. } => leaf_name(base),
         Expression::Dereference { pointer } => leaf_name(pointer),

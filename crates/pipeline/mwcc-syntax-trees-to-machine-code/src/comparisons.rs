@@ -4,6 +4,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression};
 use crate::analysis::*;
+use crate::expressions::load_base_name;
 use crate::generator::*;
 
 impl Generator {
@@ -177,6 +178,33 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
                 self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: constant_register });
                 self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                Ok(())
+            }
+            // `a[i] != a[j]` / `s->x != s->y` (two full-word loads sharing one
+            // still-live base): the left operand loads into a fresh virtual (the
+            // allocator colors it r4, since the base reg stays live), the right
+            // into the scratch, in source order, then the leaf != idiom — sign
+            // bit of ((b-a)|(a-b)). Equality is sign-agnostic so this also covers
+            // unsigned loads. mwcc: lwz r4; lwz r0; subf r3,r4,r0; subf r0,r0,r4;
+            // or r0,r3,r0; srwi r3,r0,31. Different bases defer: the != idiom
+            // keeps the left value live across both subtracts, and mwcc does not
+            // reuse the dead base register there (it picks r5) — a coloring our
+            // allocator does not yet reproduce.
+            BinaryOperator::NotEqual
+                if self.is_word_load(left) && self.is_word_load(right)
+                    && load_base_name(left).is_some()
+                    && load_base_name(left) == load_base_name(right) =>
+            {
+                let left_register = self.fresh_virtual_general();
+                self.evaluate_general(left, left_register)?;
+                self.evaluate_general(right, GENERAL_SCRATCH)?;
+                let right_register = GENERAL_SCRATCH;
+                let scratch = GENERAL_SCRATCH;
+                let temp = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::SubtractFrom { d: temp, a: left_register, b: right_register });
+                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: right_register, b: left_register });
+                self.output.instructions.push(Instruction::Or { a: scratch, s: temp, b: scratch });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
                 Ok(())
             }
