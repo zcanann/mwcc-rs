@@ -748,6 +748,29 @@ impl Generator {
                 return Ok(true);
             }
         }
+
+        // `a[i] |= C` / `^= C` / `&= C` / `*= C`: the loaded value flows through
+        // the scratch and the op is an in-place immediate (`ori`/`xori`/`mulli`,
+        // or `rlwinm` for a contiguous-mask AND) — the leaf-shape coloring, so the
+        // scaled index coalesces onto the dead index register.
+        if let Some(constant) = constant_value(right) {
+            let immediate_op = match operator {
+                BitOr if u16::try_from(constant).is_ok() => Instruction::OrImmediate { a: scratch, s: scratch, immediate: constant as u16 },
+                BitXor if u16::try_from(constant).is_ok() => Instruction::XorImmediate { a: scratch, s: scratch, immediate: constant as u16 },
+                Multiply if i16::try_from(constant).is_ok() => Instruction::MultiplyImmediate { d: scratch, a: scratch, immediate: constant as i16 },
+                BitAnd => match rlwinm_mask(constant) {
+                    Some((begin, end)) => Instruction::RotateAndMask { a: scratch, s: scratch, shift: 0, begin, end },
+                    None => return Ok(false),
+                },
+                _ => return Ok(false),
+            };
+            let scaled = self.fresh_virtual_general();
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: size_shift });
+            self.output.instructions.push(indexed_load(pointee, scratch, address, scaled));
+            self.output.instructions.push(immediate_op);
+            self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
+            return Ok(true);
+        }
         Ok(false)
     }
 
