@@ -211,13 +211,13 @@ impl Generator {
         let signed = self.signedness_of(left)?;
         let d = destination;
 
-        if let Expression::IntegerLiteral(amount) = right {
-            if (1..=31).contains(amount) {
+        if let Some(amount) = constant_value(right) {
+            if (1..=31).contains(&amount) {
                 // An unsigned narrow value fuses extension and shift into one
                 // rlwinm; a signed narrow value extends (extsb/extsh) then shifts.
                 if let Ok((register, width, leaf_signed)) = self.leaf_info(left) {
                     if width < 32 && !leaf_signed {
-                        if self.emit_narrow_unsigned_shift(d, register, width, false, *amount as u8) {
+                        if self.emit_narrow_unsigned_shift(d, register, width, false, amount as u8) {
                             return Ok(());
                         }
                         return Err(Diagnostic::error("narrow unsigned shift out of the single-rlwinm range (roadmap)"));
@@ -226,7 +226,7 @@ impl Generator {
                 // The shifted value: a leaf stays put, a sub-expression goes to the
                 // scratch (its temporaries are virtuals the allocator places).
                 let source = self.place_operand_or_scratch(left, d)?;
-                let shift = *amount as u8;
+                let shift = amount as u8;
                 self.output.instructions.push(if signed {
                     Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift }
                 } else {

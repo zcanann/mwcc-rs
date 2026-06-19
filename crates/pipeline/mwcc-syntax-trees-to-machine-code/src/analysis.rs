@@ -258,8 +258,8 @@ pub(crate) fn as_constant_shift(expression: &Expression) -> Option<(&Expression,
         _ => return None,
     };
     leaf_name(left)?;
-    match **right {
-        Expression::IntegerLiteral(amount) if (1..=31).contains(&amount) => Some((left, is_left, amount as u8)),
+    match constant_value(right) {
+        Some(amount) if (1..=31).contains(&amount) => Some((left, is_left, amount as u8)),
         _ => None,
     }
 }
