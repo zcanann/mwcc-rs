@@ -318,11 +318,16 @@ impl Generator {
         if !matches!(operator, Add | Subtract | BitAnd | BitOr | BitXor | Multiply) {
             return Ok(false);
         }
-        let is_const_subscript = |me: &Self, expression: &Expression| {
-            matches!(expression, Expression::Index { index, .. } if constant_value(index).is_some()) && me.is_word_load(expression)
+        // A full-word subscript load with either a constant index (`a[3]`, a plain
+        // `lwz off(base)`) or a variable index (`a[i]`, scaled `slwi r0,i,2; lwzx
+        // r0,base,r0`). Either way `evaluate_general` lands it in the scratch, and
+        // the binary then reads the wide leaf in place — matching mwcc's
+        // `…; add d,leaf,r0`.
+        let is_word_subscript = |me: &Self, expression: &Expression| {
+            matches!(expression, Expression::Index { .. }) && me.is_word_load(expression)
         };
         // Exactly one operand is the subscript load; the other a wide integer leaf.
-        let (load, leaf, load_is_left) = match (is_const_subscript(self, left), is_const_subscript(self, right)) {
+        let (load, leaf, load_is_left) = match (is_word_subscript(self, left), is_word_subscript(self, right)) {
             (true, false) => (left, right, true),
             (false, true) => (right, left, false),
             _ => return Ok(false),
@@ -330,8 +335,20 @@ impl Generator {
         let Some(leaf_register) = self.plain_integer_leaf_register(leaf) else {
             return Ok(false);
         };
+        // A scaled (variable-index) subscript is the heavier subtree, so mwcc
+        // canonicalizes it to the SECOND operand of a commutative op (leaf first),
+        // regardless of source order — `add d,leaf,r0`. A plain (constant-index)
+        // subscript keeps source order. Subtract is non-commutative either way.
+        let variable_index = matches!(load, Expression::Index { index, .. } if constant_value(index).is_none());
+        let commutative = !matches!(operator, BinaryOperator::Subtract);
         self.evaluate_general(load, GENERAL_SCRATCH)?;
-        let (a, b) = if load_is_left { (GENERAL_SCRATCH, leaf_register) } else { (leaf_register, GENERAL_SCRATCH) };
+        let (a, b) = if commutative && variable_index {
+            (leaf_register, GENERAL_SCRATCH)
+        } else if load_is_left {
+            (GENERAL_SCRATCH, leaf_register)
+        } else {
+            (leaf_register, GENERAL_SCRATCH)
+        };
         let combined = match operator {
             Add => Instruction::Add { d: destination, a, b },
             Subtract => Instruction::SubtractFrom { d: destination, a: b, b: a },
