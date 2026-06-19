@@ -30,8 +30,10 @@ impl Generator {
                             return Err(Diagnostic::error("narrow unsigned divide out of the single-rlwinm range (roadmap)"));
                         }
                     }
-                    self.evaluate_general(left, d)?;
-                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: d, shift });
+                    // A leaf shifts in place; a sub-expression operand goes through
+                    // the scratch (`addi r0,x,7; srwi d,r0,3`), as mwcc routes it.
+                    let source = self.place_operand_or_scratch(left, GENERAL_SCRATCH)?;
+                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift });
                     return Ok(());
                 }
                 if divisor == 2 {
