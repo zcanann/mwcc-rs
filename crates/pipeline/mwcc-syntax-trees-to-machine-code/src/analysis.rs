@@ -242,10 +242,9 @@ pub(crate) fn as_field(expression: &Expression) -> Option<(&Expression, FieldSou
 
 /// A nonzero integer literal that fits a signed 16-bit immediate.
 pub(crate) fn as_small_integer(expression: &Expression) -> Option<i16> {
-    match expression {
-        Expression::IntegerLiteral(value) if *value != 0 => i16::try_from(*value).ok(),
-        _ => None,
-    }
+    // A nonzero compile-time constant (a literal or a folded expression like
+    // `2 + 3`) that fits a signed 16-bit immediate.
+    constant_value(expression).filter(|value| *value != 0).and_then(|value| i16::try_from(value).ok())
 }
 
 /// Decompose a constant shift of a leaf variable: `x << c` or `x >> c` with
