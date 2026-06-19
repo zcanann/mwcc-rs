@@ -71,6 +71,35 @@ impl Generator {
                 return self.emit_switch(scrutinee, arms, default_expression, default.is_some(), function.return_type, result);
             }
         }
+        // A non-leaf function whose whole body is `if (c) <call>;`: mwcc schedules
+        // the condition test (`cmpwi`) into the prologue, between `mflr` and the LR
+        // store, then branches forward over the body to the epilogue when false.
+        if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
+            if function_makes_call(function)
+                && function.return_type == Type::Void
+                && function.guards.is_empty()
+                && else_body.is_empty()
+                && then_body.len() == 1
+            {
+                self.non_leaf = true;
+                self.frame_size = 16;
+                self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+                self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                for statement in then_body {
+                    self.emit_statement(statement)?;
+                }
+                let label = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = label;
+                }
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+        }
         // A function that calls is non-leaf: save the link register around a 16-byte
         // frame before doing anything else.
         if function_makes_call(function) {
@@ -92,19 +121,27 @@ impl Generator {
             // then the normal `blr`. (Non-leaf needs a forward branch to the
             // epilogue, and a non-final if needs to skip forward — both deferred.)
             if let Statement::If { condition, then_body, else_body } = statement {
-                // A single-statement leaf if-block (no else). A multi-statement
-                // body needs the instruction scheduler, and a non-leaf if needs the
-                // cmpwi scheduled into the prologue — both defer for now.
-                if else_body.is_empty() && then_body.len() == 1 && !function_makes_call(function) {
+                // Single-statement leaf if-blocks. A multi-statement body needs the
+                // instruction scheduler, and a non-leaf if needs the cmpwi scheduled
+                // into the prologue — both defer for now.
+                if then_body.len() == 1 && !function_makes_call(function) {
                     let trailing_void = index + 1 == statement_count && function.return_type == Type::Void;
-                    if trailing_void {
-                        // The false path is the function exit: conditional return.
-                        self.emit_if_returning(condition, then_body)?;
-                    } else {
-                        // The false path skips the body: forward branch.
-                        self.emit_if_forward(condition, then_body)?;
+                    if else_body.is_empty() {
+                        if trailing_void {
+                            // The false path is the function exit: conditional return.
+                            self.emit_if_returning(condition, then_body)?;
+                        } else {
+                            // The false path skips the body: forward branch.
+                            self.emit_if_forward(condition, then_body)?;
+                        }
+                        continue;
                     }
-                    continue;
+                    // A trailing void `if/else`: the then-path returns, the else-path
+                    // falls through to the function's `blr`.
+                    if else_body.len() == 1 && trailing_void {
+                        self.emit_if_else_returning(condition, then_body, else_body)?;
+                        continue;
+                    }
                 }
             }
             self.emit_statement(statement)?;
@@ -210,6 +247,27 @@ impl Generator {
         let label = self.output.instructions.len();
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
             *target = label;
+        }
+        Ok(())
+    }
+
+    /// A trailing void `if (c) then; else otherwise;`: branch to the else on the
+    /// false condition, emit the then-body and its `blr`, then the else-body —
+    /// which falls through to the function's normal `blr`.
+    fn emit_if_else_returning(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement]) -> Compilation<()> {
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        for statement in then_body {
+            self.emit_statement(statement)?;
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        let label = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = label;
+        }
+        for statement in else_body {
+            self.emit_statement(statement)?;
         }
         Ok(())
     }
