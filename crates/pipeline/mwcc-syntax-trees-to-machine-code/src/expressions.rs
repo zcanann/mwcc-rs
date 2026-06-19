@@ -1197,6 +1197,15 @@ impl Generator {
     }
 
     pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
+        // A same-width 32-bit integer cast (`(unsigned)x` / `(int)u`) is a bit-exact
+        // reinterpretation — place its operand directly rather than copying it
+        // through the scratch. The consumer takes the signedness from the cast, so
+        // e.g. `(unsigned)x >> n` stays a single `srwi`.
+        if let Expression::Cast { target_type, operand: inner } = operand {
+            if target_type.width() == 32 && self.plain_integer_leaf_register(inner).is_some() {
+                return self.place_operand(inner, destination, prefer_destination);
+            }
+        }
         if let Expression::Variable(name) = operand {
             // A global is loaded into the consumer's register (the destination for
             // addi-family consumers, otherwise the scratch), like a dereference —
