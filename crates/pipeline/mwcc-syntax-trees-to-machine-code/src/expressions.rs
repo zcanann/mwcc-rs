@@ -259,7 +259,8 @@ impl Generator {
     /// next free volatile (r4). The primary is the left operand for `add` and the
     /// right operand for `subf` (which computes `b - a`), loaded first.
     fn try_emit_two_load_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+        use BinaryOperator::*;
+        if !matches!(operator, Add | Subtract | BitAnd | BitOr | BitXor | Multiply) {
             return Ok(false);
         }
         if !self.is_word_load(left) || !self.is_word_load(right) {
@@ -272,17 +273,23 @@ impl Generator {
             _ => return Ok(false),
         }
         // `subf` computes `b - a`; to get `left - right` the right operand is the
-        // primary (first source) and the left is the secondary (in r0).
+        // primary (first source) and the left is the secondary (in r0). The
+        // commutative operators keep the left operand as the primary.
         let (primary, secondary) = match operator {
-            BinaryOperator::Subtract => (right, left),
+            Subtract => (right, left),
             _ => (left, right),
         };
         let primary_register = self.fresh_virtual_general();
         self.evaluate_general(primary, primary_register)?;
         self.evaluate_general(secondary, GENERAL_SCRATCH)?;
+        let (p, s) = (primary_register, GENERAL_SCRATCH);
         let combined = match operator {
-            BinaryOperator::Add => Instruction::Add { d: destination, a: primary_register, b: GENERAL_SCRATCH },
-            _ => Instruction::SubtractFrom { d: destination, a: primary_register, b: GENERAL_SCRATCH },
+            Add => Instruction::Add { d: destination, a: p, b: s },
+            Subtract => Instruction::SubtractFrom { d: destination, a: p, b: s },
+            Multiply => Instruction::MultiplyLow { d: destination, a: p, b: s },
+            BitAnd => Instruction::And { a: destination, s: p, b: s },
+            BitOr => Instruction::Or { a: destination, s: p, b: s },
+            _ => Instruction::Xor { a: destination, s: p, b: s },
         };
         self.output.instructions.push(combined);
         Ok(true)
