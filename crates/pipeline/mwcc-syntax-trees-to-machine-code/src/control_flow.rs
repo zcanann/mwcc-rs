@@ -490,6 +490,13 @@ impl Generator {
             self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);
         }
+        // A full-word memory load (`*p`, `a[i]`) goes into the scratch; the caller
+        // then compares it. (A narrow signed load needs a record-form extend
+        // instead of a compare, so it is not taken here.)
+        if self.is_word_load(operand) {
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            return Ok(GENERAL_SCRATCH);
+        }
         self.general_register_of_leaf(operand)
     }
 }

@@ -377,7 +377,7 @@ impl Generator {
     /// Whether `value` is a full-word (32-bit) memory load — a dereference,
     /// index, or struct member — which can be evaluated into a register and used
     /// as a comparison operand without narrow extension.
-    fn is_word_load(&self, value: &Expression) -> bool {
+    pub(crate) fn is_word_load(&self, value: &Expression) -> bool {
         match value {
             Expression::Dereference { pointer } => self.dereferenced_width(pointer) == Some(32),
             Expression::Index { base, .. } => self.dereferenced_width(base) == Some(32),
