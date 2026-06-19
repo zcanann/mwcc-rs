@@ -19,6 +19,26 @@ pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
     }
 }
 
+/// Whether two expressions are the SAME single-instruction memory load — the
+/// same dereference, struct member, or constant-index subscript of the same
+/// leaf base. mwcc treats `*p op *p` / `a[0]+a[0]` / `s->x & s->x` as one load
+/// (a common subexpression), not two.
+fn same_simple_load(a: &Expression, b: &Expression) -> bool {
+    match (a, b) {
+        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => {
+            leaf_name(pa).is_some() && leaf_name(pa) == leaf_name(pb)
+        }
+        (Expression::Member { base: ba, offset: oa, .. }, Expression::Member { base: bb, offset: ob, .. }) => {
+            oa == ob && leaf_name(ba).is_some() && leaf_name(ba) == leaf_name(bb)
+        }
+        (Expression::Index { base: ba, index: ia }, Expression::Index { base: bb, index: ib }) => {
+            constant_value(ia).is_some() && constant_value(ia) == constant_value(ib)
+                && leaf_name(ba).is_some() && leaf_name(ba) == leaf_name(bb)
+        }
+        _ => false,
+    }
+}
+
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
 fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction {
     match pointee {
@@ -138,6 +158,12 @@ impl Generator {
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
                     return self.emit_comparison(*operator, left, right, destination);
+                }
+                // Identical simple loads on both sides (`*p op *p`, `a[0]+a[0]`):
+                // mwcc loads the value ONCE and folds operator identities, rather
+                // than the two-operand double load.
+                if self.try_emit_identical_load_binary(*operator, left, right, destination)? {
+                    return Ok(());
                 }
                 // A shift fused with a mask — `(x >> n) & m`, `(x & m) << n`, etc. —
                 // is a single rotate-and-mask (`rlwinm`). Caught before the per-shift
@@ -275,12 +301,43 @@ impl Generator {
     /// the allocator colors; the shared base stays live, so the primary takes the
     /// next free volatile (r4). The primary is the left operand for `add` and the
     /// right operand for `subf` (which computes `b - a`), loaded first.
+    /// `L op L` with both operands the identical single-instruction load: mwcc
+    /// loads the value ONCE. `x-x`/`x^x` fold to `li d,0`; `x&x`/`x|x` are the
+    /// value itself; the rest load once into the scratch and apply the op to that
+    /// register twice (`add d,r0,r0`, `mullw`, `slw`, `sraw`/`srw`).
+    fn try_emit_identical_load_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        use BinaryOperator::*;
+        if !self.is_simple_word_load(left) || !same_simple_load(left, right) {
+            return Ok(false);
+        }
+        match operator {
+            Subtract | BitXor => self.load_integer_constant(destination, 0),
+            BitAnd | BitOr => self.evaluate_general(left, destination)?,
+            Add | Multiply | ShiftLeft | ShiftRight => {
+                self.evaluate_general(left, GENERAL_SCRATCH)?;
+                let r = GENERAL_SCRATCH;
+                let instruction = match operator {
+                    Add => Instruction::Add { d: destination, a: r, b: r },
+                    Multiply => Instruction::MultiplyLow { d: destination, a: r, b: r },
+                    ShiftLeft => Instruction::ShiftLeftWord { a: destination, s: r, b: r },
+                    _ if self.signedness_of(left)? => Instruction::ShiftRightAlgebraicWord { a: destination, s: r, b: r },
+                    _ => Instruction::ShiftRightWord { a: destination, s: r, b: r },
+                };
+                self.output.instructions.push(instruction);
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
     fn try_emit_two_load_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
         use BinaryOperator::*;
         if !matches!(operator, Add | Subtract | BitAnd | BitOr | BitXor | Multiply) {
             return Ok(false);
         }
-        if !self.is_word_load(left) || !self.is_word_load(right) {
+        // Single-instruction loads only: a variable-index subscript scales to
+        // `slwi; lwzx`, and two of those mis-schedule against each other.
+        if !self.is_simple_word_load(left) || !self.is_simple_word_load(right) {
             return Ok(false);
         }
         if load_base_name(left).is_none() || load_base_name(right).is_none() {
