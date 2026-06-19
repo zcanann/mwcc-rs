@@ -385,12 +385,34 @@ impl Generator {
 
     pub(crate) fn evaluate(&mut self, expression: &Expression, value_type: Type, destination: u8) -> Compilation<()> {
         match value_type {
-            Type::Float => self.evaluate_float(expression, destination),
-            // A `double` value shares the FPR file with `float`; the float path
-            // picks the double-precision instructions via is_double_value.
-            Type::Double => self.evaluate_float(expression, destination),
+            // A `double` shares the FPR file with `float`; the float path picks the
+            // double-precision instructions via is_double_value. An integer leaf in
+            // a float context is an implicit int->float conversion (the same magic-
+            // constant sequence as the explicit `(float)`/`(double)` cast).
+            Type::Float | Type::Double => {
+                if self.is_integer_leaf(expression) {
+                    return self.emit_cast_to_float(expression, destination, value_type == Type::Double);
+                }
+                self.evaluate_float(expression, destination)
+            }
             Type::Void => Err(Diagnostic::error("cannot evaluate a void expression")),
-            _ => self.evaluate_general(expression, destination),
+            // A float leaf in an integer context is an implicit float->int conversion
+            // (the same `fctiwz` + frame bounce as the explicit `(int)` cast).
+            _ => {
+                if self.is_float_value(expression) {
+                    return self.emit_cast_to_integer(value_type, expression, destination);
+                }
+                self.evaluate_general(expression, destination)
+            }
         }
+    }
+
+    /// Whether `expression` is a full-width integer leaf variable (an int/unsigned
+    /// in a GPR, not a pointer or a narrow type) — the operand an implicit
+    /// int->float conversion accepts.
+    fn is_integer_leaf(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::Variable(name)
+            if self.locations.get(name.as_str())
+                .is_some_and(|location| location.class == ValueClass::General && location.width == 32 && location.pointee.is_none()))
     }
 }

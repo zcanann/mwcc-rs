@@ -69,6 +69,11 @@ impl Generator {
     /// is handled separately once .sdata2 lands.
     pub(crate) fn emit_cast_to_integer(&mut self, target_type: Type, operand: &Expression, destination: u8) -> Compilation<()> {
         if self.is_float_leaf(operand) {
+            // float -> unsigned uses a runtime helper call (the value may exceed
+            // INT_MAX, which `fctiwz` cannot represent), not the signed frame bounce.
+            if !self.signed_of(target_type) {
+                return Err(mwcc_core::Diagnostic::error("float-to-unsigned conversion needs a runtime helper (roadmap)"));
+            }
             // float -> int: convert, bounce through the frame, then narrow if needed.
             let source = self.float_register_of_leaf(operand)?;
             self.output.has_conversion = true;
