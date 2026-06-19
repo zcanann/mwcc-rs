@@ -90,6 +90,14 @@ pub(crate) struct Generator {
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
+    /// When set, a constant store value reuses the scratch register if it already
+    /// holds that constant (`scratch_constant`). Enabled only by the
+    /// constant-store-fill path, which guarantees nothing clobbers the scratch
+    /// between stores, so the reuse is provably valid.
+    pub(crate) reuse_scratch_constant: bool,
+    /// The constant currently materialized in the scratch register, during a
+    /// constant-store-fill run.
+    pub(crate) scratch_constant: Option<i32>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {

@@ -53,6 +53,11 @@ impl Generator {
         if self.try_value_tracking(function)? {
             return Ok(());
         }
+        // A leaf void body that is purely constant stores of one repeated value
+        // (struct/array zeroing) materializes the value once and reuses it.
+        if self.try_constant_store_fill(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and
@@ -188,6 +193,63 @@ impl Generator {
         }
         self.emit_epilogue_and_return();
         Ok(())
+    }
+
+    /// A leaf `void` body that is purely constant stores: mwcc materializes a
+    /// repeated store value once and reuses the register (`li r0,0; stw; stw; stw`
+    /// for struct/array zeroing). A run of *differing* constants instead needs the
+    /// instruction scheduler (distinct registers, interleaved) — defer rather than
+    /// emit the unscheduled form. Returns `false` (use the normal path) for bodies
+    /// outside this shape, e.g. stores of register-resident values, which already
+    /// match.
+    pub(crate) fn try_constant_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || function.statements.len() < 2
+        {
+            return Ok(false);
+        }
+        let mut constants = Vec::new();
+        for statement in &function.statements {
+            let Statement::Store { target, value } = statement else { return Ok(false) };
+            if !self.is_scratch_safe_store_target(target) {
+                return Ok(false);
+            }
+            match constant_value(value) {
+                Some(constant) => constants.push(constant as i32),
+                None => return Ok(false),
+            }
+        }
+        if constants.iter().any(|constant| *constant != constants[0]) {
+            return Err(Diagnostic::error("a run of differing constant stores needs the scheduler (roadmap)"));
+        }
+        self.reuse_scratch_constant = true;
+        self.scratch_constant = None;
+        for statement in &function.statements {
+            self.emit_statement(statement)?;
+        }
+        self.reuse_scratch_constant = false;
+        self.scratch_constant = None;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// Whether a store to `target` writes only memory (and the value register),
+    /// never the scratch — so a constant-fill run can keep its value live in the
+    /// scratch across it. A leaf-based member/dereference/constant-index store
+    /// qualifies; a global (absolute-addressing base) or variable index (scratch
+    /// scaling) does not.
+    fn is_scratch_safe_store_target(&self, target: &Expression) -> bool {
+        match target {
+            Expression::Member { base, .. } => matches!(base.as_ref(), Expression::Variable(_)),
+            Expression::Dereference { pointer } => matches!(pointer.as_ref(), Expression::Variable(_)),
+            Expression::Index { base, index } => {
+                matches!(base.as_ref(), Expression::Variable(_)) && constant_value(index).is_some()
+            }
+            _ => false,
+        }
     }
 
     /// Tear down the stack frame (if one was allocated) and return. A non-leaf

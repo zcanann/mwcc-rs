@@ -570,6 +570,20 @@ impl Generator {
     /// anything else is computed into the scratch (`li r0,0; stw r0,…`,
     /// `add r0,…; stw r0,…`) ahead of the store.
     fn place_store_value(&mut self, value: &Expression, pointee: Pointee) -> Compilation<u8> {
+        // During a constant-store-fill run, a constant value reuses the scratch
+        // register when it already holds that constant (mwcc materializes a
+        // repeated store value once: `li r0,0; stw; stw; stw`). The run guarantees
+        // nothing clobbers the scratch between stores, so this is provably valid.
+        if self.reuse_scratch_constant {
+            if let Some(constant) = constant_value(value) {
+                let constant = constant as i32;
+                if self.scratch_constant != Some(constant) {
+                    self.load_integer_constant(GENERAL_SCRATCH, constant as i64);
+                    self.scratch_constant = Some(constant);
+                }
+                return Ok(GENERAL_SCRATCH);
+            }
+        }
         if matches!(pointee, Pointee::Float | Pointee::Double) {
             if matches!(value, Expression::Variable(_)) {
                 return self.float_register_of_leaf(value);

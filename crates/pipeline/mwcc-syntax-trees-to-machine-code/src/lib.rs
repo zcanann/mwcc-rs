@@ -48,6 +48,8 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         register_avoid: HashMap::new(),
         stored_globals: HashMap::new(),
         frame_slots: HashMap::new(),
+        reuse_scratch_constant: false,
+        scratch_constant: None,
         call_return_types: call_return_types.clone(),
     };
     generator.assign_parameters(function)?;
