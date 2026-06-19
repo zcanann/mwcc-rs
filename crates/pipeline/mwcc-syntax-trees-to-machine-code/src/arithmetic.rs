@@ -127,12 +127,22 @@ impl Generator {
         let Some((value, rotate, begin, end, needs_unsigned)) = self.fused_rotate_mask(operator, left, right)? else {
             return Ok(false);
         };
-        let Some(register) = leaf_name(value).and_then(|name| self.lookup_general(name)) else {
-            return Ok(false);
-        };
+        // The signedness guard is checked before any load is emitted so an
+        // unsupported shape defers without leaving a stray instruction.
         if needs_unsigned && self.signedness_of(value)? {
             return Ok(false);
         }
+        // A leaf rotates in place; a full-word memory load (`(p[0] & m) >> n`)
+        // is evaluated into the scratch first, then the rotate-and-mask reads it,
+        // matching mwcc's `lwz r0,…; rlwinm d,r0,…`.
+        let register = if let Some(register) = leaf_name(value).and_then(|name| self.lookup_general(name)) {
+            register
+        } else if self.is_simple_word_load(value) {
+            self.evaluate_general(value, GENERAL_SCRATCH)?;
+            GENERAL_SCRATCH
+        } else {
+            return Ok(false);
+        };
         self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: register, shift: rotate, begin, end });
         Ok(true)
     }
@@ -196,7 +206,8 @@ impl Generator {
                 if !(1..=31).contains(&shift) {
                     return Ok(None);
                 }
-                let Some((value, mask)) = as_masked_leaf(left) else { return Ok(None) };
+                // `x & m` for a leaf x, or `(p[0] & m)` / `(s->a & m)` for a load.
+                let Some((value, mask)) = as_masked_leaf(left).or_else(|| as_masked_load(left)) else { return Ok(None) };
                 let Some((begin, end)) = mask_to_run(mask >> shift) else { return Ok(None) };
                 Some((value, (32 - shift) as u8, begin, end, mask & 0x8000_0000 != 0))
             }
