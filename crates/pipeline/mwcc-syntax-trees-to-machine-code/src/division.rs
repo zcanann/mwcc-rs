@@ -15,8 +15,9 @@ impl Generator {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
         let d = destination;
 
-        if let Expression::IntegerLiteral(divisor) = right {
-            let divisor = *divisor;
+        // A constant divisor — a literal or a folded constant expression like
+        // `1 << 3` or `2 + 2` — selects the shift/magic lowering.
+        if let Some(divisor) = constant_value(right) {
             if divisor >= 2 && (divisor as u64).is_power_of_two() {
                 if !signed {
                     let shift = divisor.trailing_zeros() as u8;
@@ -236,8 +237,8 @@ impl Generator {
 
         // Unsigned modulo by a power of two is a low-bit mask: a % 2^k == a & (2^k - 1).
         if !signed {
-            if let Expression::IntegerLiteral(divisor) = right {
-                if *divisor >= 2 && (*divisor as u64).is_power_of_two() {
+            if let Some(divisor) = constant_value(right) {
+                if divisor >= 2 && (divisor as u64).is_power_of_two() {
                     let source = self.place_operand_or_scratch(left, destination)?;
                     let clear = 32 - divisor.trailing_zeros() as u8;
                     self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear });
@@ -249,8 +250,8 @@ impl Generator {
         // Signed modulo by a power of two. `x % 2` is the parity-with-sign idiom;
         // `x % 2^k` (k>=2) rotates the low k bits down with a sign correction.
         if signed {
-            if let Expression::IntegerLiteral(divisor) = right {
-                if *divisor >= 2 && (*divisor as u64).is_power_of_two() {
+            if let Some(divisor) = constant_value(right) {
+                if divisor >= 2 && (divisor as u64).is_power_of_two() {
                     let k = divisor.trailing_zeros() as u8;
                     let x = self.general_register_of_leaf(left)?;
                     if k == 1 {
@@ -278,8 +279,7 @@ impl Generator {
         // Modulo by a non-power-of-two constant: the magic quotient times the
         // divisor subtracted from the dividend. The divisor must fit `mulli`'s
         // signed-16-bit immediate.
-        if let Expression::IntegerLiteral(divisor) = right {
-            let divisor = *divisor;
+        if let Some(divisor) = constant_value(right) {
             if divisor >= 3 && divisor <= i16::MAX as i64 && !(divisor as u64).is_power_of_two() {
                 return self.emit_magic_modulo(left, divisor, signed, destination);
             }
