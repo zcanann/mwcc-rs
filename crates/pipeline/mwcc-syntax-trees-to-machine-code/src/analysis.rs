@@ -112,7 +112,47 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
         // mask immediate rather than falling into a broken two-operand path.
         Expression::Unary { operator: UnaryOperator::Negate, operand } => constant_value(operand).map(|value| value.wrapping_neg()),
         Expression::Unary { operator: UnaryOperator::BitNot, operand } => constant_value(operand).map(|value| !value),
+        Expression::Binary { operator, left, right } => {
+            use BinaryOperator::*;
+            // `x - x` and `x ^ x` are 0 for any side-effect-free operand, even a
+            // non-constant one (mwcc folds them without touching memory).
+            if matches!(operator, Subtract | BitXor) && same_operand(left, right) {
+                return Some(0);
+            }
+            // Otherwise fold arithmetic of two compile-time constants (`2 + 3`,
+            // `FLAG_A | FLAG_B`, `1 << 3`), matching mwcc's `li`/`lis;ori`. The
+            // result is truncated to 32 bits (C `int` arithmetic) so e.g. `1 << 31`
+            // is the negative `0x80000000`, materialized by a single `lis`.
+            let (l, r) = (constant_value(left)?, constant_value(right)?);
+            let folded = match operator {
+                Add => l.wrapping_add(r),
+                Subtract => l.wrapping_sub(r),
+                Multiply => l.wrapping_mul(r),
+                BitAnd => l & r,
+                BitOr => l | r,
+                BitXor => l ^ r,
+                ShiftLeft if (0..32).contains(&r) => l.wrapping_shl(r as u32),
+                ShiftRight if (0..32).contains(&r) => l >> r,
+                _ => return None,
+            };
+            Some(folded as i32 as i64)
+        }
         _ => None,
+    }
+}
+
+/// Whether two expressions are the SAME side-effect-free value — identical
+/// variable, dereference, member, or subscript (recursively). Calls and other
+/// effectful nodes never match, so `x - x`/`x == x` style identities are only
+/// folded when re-evaluating `x` would be observably identical.
+pub(crate) fn same_operand(a: &Expression, b: &Expression) -> bool {
+    match (a, b) {
+        (Expression::IntegerLiteral(x), Expression::IntegerLiteral(y)) => x == y,
+        (Expression::Variable(x), Expression::Variable(y)) => x == y,
+        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => same_operand(pa, pb),
+        (Expression::Member { base: ba, offset: oa, .. }, Expression::Member { base: bb, offset: ob, .. }) => oa == ob && same_operand(ba, bb),
+        (Expression::Index { base: ba, index: ia }, Expression::Index { base: bb, index: ib }) => same_operand(ba, bb) && same_operand(ia, ib),
+        _ => false,
     }
 }
 

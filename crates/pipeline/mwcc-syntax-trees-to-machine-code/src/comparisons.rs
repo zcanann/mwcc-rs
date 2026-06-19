@@ -18,6 +18,16 @@ impl Generator {
         if self.is_float_leaf(left) || self.is_float_leaf(right) {
             return self.emit_float_comparison(operator, left, right, destination);
         }
+        // An INTEGER comparison of a value against itself (`x == x`, `a[0] < a[0]`)
+        // is a compile-time constant — mwcc folds it to `li 0`/`li 1` without
+        // evaluating the operand. (Floats are excluded above: `NaN == NaN` is
+        // false, so that fold would be wrong.)
+        if same_operand(left, right) {
+            let value = i64::from(matches!(operator,
+                BinaryOperator::Equal | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual));
+            self.load_integer_constant(destination, value);
+            return Ok(());
+        }
         let d = destination;
         let signed_left = self.signedness_of(left)?;
         match operator {

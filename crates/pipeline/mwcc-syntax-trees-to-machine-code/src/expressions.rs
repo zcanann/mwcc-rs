@@ -19,26 +19,6 @@ pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
     }
 }
 
-/// Whether two expressions are the SAME single-instruction memory load — the
-/// same dereference, struct member, or constant-index subscript of the same
-/// leaf base. mwcc treats `*p op *p` / `a[0]+a[0]` / `s->x & s->x` as one load
-/// (a common subexpression), not two.
-fn same_simple_load(a: &Expression, b: &Expression) -> bool {
-    match (a, b) {
-        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => {
-            leaf_name(pa).is_some() && leaf_name(pa) == leaf_name(pb)
-        }
-        (Expression::Member { base: ba, offset: oa, .. }, Expression::Member { base: bb, offset: ob, .. }) => {
-            oa == ob && leaf_name(ba).is_some() && leaf_name(ba) == leaf_name(bb)
-        }
-        (Expression::Index { base: ba, index: ia }, Expression::Index { base: bb, index: ib }) => {
-            constant_value(ia).is_some() && constant_value(ia) == constant_value(ib)
-                && leaf_name(ba).is_some() && leaf_name(ba) == leaf_name(bb)
-        }
-        _ => false,
-    }
-}
-
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
 fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction {
     match pointee {
@@ -107,6 +87,16 @@ impl Generator {
 
     /// Evaluate an integer expression into general register `destination`.
     pub(crate) fn evaluate_general(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
+        // A compile-time-constant expression — folded constant arithmetic
+        // (`2 + 3`, `FLAG_A | FLAG_B`, `1 << 3`) or a side-effect-free identity
+        // (`x - x`, `x ^ x`) — materializes the value directly, as mwcc folds it.
+        // Bare literals fall through to the arm below.
+        if !matches!(expression, Expression::IntegerLiteral(_)) {
+            if let Some(value) = constant_value(expression) {
+                self.load_integer_constant(destination, value);
+                return Ok(());
+            }
+        }
         match expression {
             Expression::IntegerLiteral(value) => {
                 self.load_integer_constant(destination, *value);
@@ -301,19 +291,22 @@ impl Generator {
     /// the allocator colors; the shared base stays live, so the primary takes the
     /// next free volatile (r4). The primary is the left operand for `add` and the
     /// right operand for `subf` (which computes `b - a`), loaded first.
-    /// `L op L` with both operands the identical single-instruction load: mwcc
-    /// loads the value ONCE. `x-x`/`x^x` fold to `li d,0`; `x&x`/`x|x` are the
-    /// value itself; the rest load once into the scratch and apply the op to that
-    /// register twice (`add d,r0,r0`, `mullw`, `slw`, `sraw`/`srw`).
+    /// `L op L` with both operands the identical side-effect-free value: mwcc
+    /// uses it ONCE. `x&x`/`x|x` are the value itself; for a memory LOAD, `x+x`/
+    /// `x*x`/`x<<x`/`x>>x` load once into the scratch then apply the op to that
+    /// register twice (`add d,r0,r0`, `mullw`, `slw`, `sraw`/`srw`). `x-x`/`x^x`
+    /// fold to 0 in `constant_value` before reaching here (kept as a fallback). A
+    /// leaf `x+x`/`x*x`/… falls through — its operand is already in a register so
+    /// the generic path emits `op d,a,a`.
     fn try_emit_identical_load_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
         use BinaryOperator::*;
-        if !self.is_simple_word_load(left) || !same_simple_load(left, right) {
+        if !same_operand(left, right) {
             return Ok(false);
         }
         match operator {
-            Subtract | BitXor => self.load_integer_constant(destination, 0),
             BitAnd | BitOr => self.evaluate_general(left, destination)?,
-            Add | Multiply | ShiftLeft | ShiftRight => {
+            Subtract | BitXor => self.load_integer_constant(destination, 0),
+            Add | Multiply | ShiftLeft | ShiftRight if self.is_simple_word_load(left) => {
                 self.evaluate_general(left, GENERAL_SCRATCH)?;
                 let r = GENERAL_SCRATCH;
                 let instruction = match operator {

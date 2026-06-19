@@ -325,7 +325,11 @@ impl Generator {
             let low = (value as u32 & 0xffff) as i16;
             let high_adjusted = ((value - low as i32) >> 16) as i16;
             self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
-            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: low });
+            // A constant whose low half is zero (`0x10000`, `0x80000000`) is a
+            // single `lis`; mwcc omits the redundant `addi d,d,0`.
+            if low != 0 {
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: low });
+            }
         }
     }
 }
