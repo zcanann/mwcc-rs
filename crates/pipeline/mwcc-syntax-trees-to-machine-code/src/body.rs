@@ -135,6 +135,19 @@ impl Generator {
                 // false path is the immediate exit, which is a `beqlr` form — that
                 // and the multi-statement case defer.
                 let has_continuation = index + 1 < statement_count || function.return_expression.is_some();
+                // A trailing void `if (c) { stmt; return; }` (nothing after): the
+                // `return;` coincides with the function exit, so drop it and use
+                // the conditional-return (`beqlr`) form of a plain trailing if.
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && !has_continuation
+                    && function.return_type == Type::Void
+                    && then_body.len() == 2
+                    && matches!(then_body.last(), Some(Statement::Return(None)))
+                {
+                    self.emit_trailing_if(condition, &then_body[..1], else_body)?;
+                    continue;
+                }
                 if !function_makes_call(function)
                     && else_body.is_empty()
                     && then_body.len() <= 2
