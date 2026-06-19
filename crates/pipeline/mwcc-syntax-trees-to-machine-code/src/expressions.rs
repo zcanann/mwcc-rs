@@ -155,6 +155,22 @@ impl Generator {
                 if self.try_emit_identical_load_binary(*operator, left, right, destination)? {
                     return Ok(());
                 }
+                // Negation folds in a subtraction: `X - (-Y)` is `X + Y`, and
+                // `(-a) - Y` (non-constant Y) is `-(a + Y)` — mwcc cancels the
+                // double negative / hoists the negate over the sum.
+                if *operator == BinaryOperator::Subtract {
+                    if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = right.as_ref() {
+                        let sum = Expression::Binary { operator: BinaryOperator::Add, left: left.clone(), right: inner.clone() };
+                        return self.evaluate_general(&sum, destination);
+                    }
+                    if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = left.as_ref() {
+                        if constant_value(right).is_none() {
+                            let sum = Expression::Binary { operator: BinaryOperator::Add, left: inner.clone(), right: right.clone() };
+                            let negated = Expression::Unary { operator: UnaryOperator::Negate, operand: Box::new(sum) };
+                            return self.evaluate_general(&negated, destination);
+                        }
+                    }
+                }
                 // A shift fused with a mask — `(x >> n) & m`, `(x & m) << n`, etc. —
                 // is a single rotate-and-mask (`rlwinm`). Caught before the per-shift
                 // paths so the fused form wins over a plain shift.
