@@ -316,9 +316,49 @@ impl Generator {
         Ok(None)
     }
 
+    /// The register and pointee size of a leaf pointer variable, with no side
+    /// effects (just the home register). Used to recognize `ptr - ptr`.
+    fn pointer_leaf_register_size(&self, operand: &Expression) -> Option<(u8, u8)> {
+        if let Expression::Variable(name) = operand {
+            let location = self.locations.get(name)?;
+            return Some((location.register, location.pointee?.size()));
+        }
+        None
+    }
+
     /// Try to emit `pointer ± integer` with the integer scaled by the pointee
     /// size. Returns `false` for non-pointer (or byte leaf-pointer) operands.
     fn try_emit_pointer_arithmetic(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        // `ptr - ptr` (same pointee) is the element-count difference: the byte
+        // difference (`subf`) divided by the element size — a signed power-of-two
+        // divide (`srawi; addze`) for sizes above one byte, just the difference for
+        // a byte element.
+        if operator == BinaryOperator::Subtract {
+            if let (Some((left_register, size)), Some((right_register, right_size))) =
+                (self.pointer_leaf_register_size(left), self.pointer_leaf_register_size(right))
+            {
+                if size == right_size && size.is_power_of_two() {
+                    match size.trailing_zeros() {
+                        // byte element: the difference is the element count.
+                        0 => self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: right_register, b: left_register }),
+                        // 2-byte element: signed divide by 2 (`srwi; add; srawi 1`).
+                        1 => {
+                            self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: right_register, b: left_register });
+                            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: destination, shift: 31 });
+                            self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: destination });
+                            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: GENERAL_SCRATCH, shift: 1 });
+                        }
+                        // larger power-of-two element: signed divide via `srawi; addze`.
+                        k => {
+                            self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: right_register, b: left_register });
+                            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: k as u8 });
+                            self.output.instructions.push(Instruction::AddToZeroExtended { d: destination, a: GENERAL_SCRATCH });
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
         // Identify the pointer and integer operands (`i + p` is commutative).
         let (pointer_register, size, integer) = if let Some((register, size)) = self.pointer_arithmetic_base(left)? {
             (register, size, right)
