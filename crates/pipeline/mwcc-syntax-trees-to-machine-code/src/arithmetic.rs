@@ -330,6 +330,31 @@ impl Generator {
             _ => {}
         }
 
+        // An add of a 32-bit constant too large for `addi` splits into `addis`
+        // (high half) + `addi` (low half), the low half sign-extended so the high
+        // half is carry-adjusted: `addis d,x,ha; addi d,d,lo`. Both ops read the
+        // running register, which must not be the scratch — `addi/addis` with `r0`
+        // as the source operand means literal zero, not r0's contents — so a
+        // value/store context (destination r0) defers to the register allocator.
+        if operator == BinaryOperator::Add
+            && !fits_signed_16(constant)
+            && destination != GENERAL_SCRATCH
+            && (i32::MIN as i64..=u32::MAX as i64).contains(&constant)
+        {
+            let value = constant as u32;
+            let low = value as u16 as i16;
+            let high = ((value >> 16) as i16).wrapping_add(if value & 0x8000 != 0 { 1 } else { 0 });
+            let Some(source) = self.place_operand(variable, destination, true)? else {
+                return Ok(false);
+            };
+            self.output.instructions.push(Instruction::AddImmediateShifted { d: destination, a: source, immediate: high });
+            // A zero low half needs no `addi` (mwcc emits the bare `addis`).
+            if low != 0 {
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: low });
+            }
+            return Ok(true);
+        }
+
         // A multiply by a constant too large for `mulli` loads the constant into a
         // register and uses `mullw`. mwcc materializes the constant in the scratch
         // via a free register: `lis free,ha; addi r0,free,lo; mullw d,x,r0`. Only a
