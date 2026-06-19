@@ -46,6 +46,8 @@ pub enum Statement {
     Assign { name: String, value: Expression },
     /// A bare expression evaluated for its side effects, e.g. `g();`.
     Expression(Expression),
+    /// `if (condition) { then_body } [else { else_body }]` — a conditional block.
+    If { condition: Expression, then_body: Vec<Statement>, else_body: Vec<Statement> },
     /// `switch (scrutinee) { case V: return E; ... default: return D; }` — a
     /// terminal multi-way return (each arm and the default return a value).
     Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<Expression> },

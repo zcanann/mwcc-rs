@@ -19,8 +19,8 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
 }
 
 /// Whether a function makes a call (and so needs the non-leaf prologue).
-pub(crate) fn function_makes_call(function: &Function) -> bool {
-    function.statements.iter().any(|statement| match statement {
+pub(crate) fn statement_has_call(statement: &Statement) -> bool {
+    match statement {
         Statement::Store { target, value } => expression_has_call(target) || expression_has_call(value),
         Statement::Assign { value, .. } => expression_has_call(value),
         Statement::Expression(expression) => expression_has_call(expression),
@@ -29,7 +29,19 @@ pub(crate) fn function_makes_call(function: &Function) -> bool {
                 || arms.iter().any(|arm| expression_has_call(&arm.result))
                 || default.as_ref().is_some_and(expression_has_call)
         }
-    }) || function.return_expression.as_ref().is_some_and(expression_has_call)
+        Statement::If { condition, then_body, else_body } => {
+            expression_has_call(condition) || block_has_call(then_body) || block_has_call(else_body)
+        }
+    }
+}
+
+pub(crate) fn block_has_call(statements: &[Statement]) -> bool {
+    statements.iter().any(statement_has_call)
+}
+
+pub(crate) fn function_makes_call(function: &Function) -> bool {
+    function.statements.iter().any(statement_has_call)
+        || function.return_expression.as_ref().is_some_and(expression_has_call)
         || function.locals.iter().any(|local| local.initializer.as_ref().is_some_and(expression_has_call))
         || function.guards.iter().any(|guard| expression_has_call(&guard.condition) || expression_has_call(&guard.value))
 }

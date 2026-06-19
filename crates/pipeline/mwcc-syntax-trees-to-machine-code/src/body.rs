@@ -85,7 +85,26 @@ impl Generator {
         }
 
         // Body statements (stores, calls) run first.
-        for statement in &function.statements {
+        let statement_count = function.statements.len();
+        for (index, statement) in function.statements.iter().enumerate() {
+            // A trailing `if (c) { body }` in a leaf void function: the false path
+            // is the function exit, so it is a conditional return, then the body,
+            // then the normal `blr`. (Non-leaf needs a forward branch to the
+            // epilogue, and a non-final if needs to skip forward — both deferred.)
+            if let Statement::If { condition, then_body, else_body } = statement {
+                // A single-statement body has no cross-statement scheduling; a
+                // multi-statement body needs the instruction scheduler (mwcc
+                // interleaves the stores), so it defers for now.
+                if index + 1 == statement_count
+                    && function.return_type == Type::Void
+                    && else_body.is_empty()
+                    && then_body.len() == 1
+                    && !function_makes_call(function)
+                {
+                    self.emit_if_returning(condition, then_body)?;
+                    continue;
+                }
+            }
             self.emit_statement(statement)?;
         }
 
@@ -159,7 +178,22 @@ impl Generator {
             // The binary-search dispatch codegen is the next piece; switches parse
             // but defer for now (never miscompile).
             Statement::Switch { .. } => Err(Diagnostic::error("switch dispatch codegen is not implemented yet (roadmap)")),
+            // A general if-statement (non-trailing, non-leaf, or with an else) needs
+            // forward branches and basic-block scheduling — deferred for now.
+            Statement::If { .. } => Err(Diagnostic::error("general if-statement codegen is not implemented yet (roadmap)")),
         }
+    }
+
+    /// A trailing `if (c) { body }` in a leaf void function: test the condition,
+    /// conditionally return on the false branch, then emit the body (which falls
+    /// through to the function's normal `blr`).
+    fn emit_if_returning(&mut self, condition: &Expression, then_body: &[Statement]) -> Compilation<()> {
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+        for statement in then_body {
+            self.emit_statement(statement)?;
+        }
+        Ok(())
     }
 
     /// Emit a sequence of `if (c) return v;` guards followed by the final return.

@@ -15,20 +15,7 @@ use mwcc_syntax_trees::{Expression, Function, Statement};
 pub(crate) fn referenced_names(function: &Function) -> Vec<String> {
     let mut names = Vec::new();
     for statement in &function.statements {
-        match statement {
-            Statement::Store { target, value } => collect_assignment(target, value, &mut names),
-            Statement::Assign { value, .. } => collect(value, &mut names),
-            Statement::Expression(expression) => collect(expression, &mut names),
-            Statement::Switch { scrutinee, arms, default } => {
-                collect(scrutinee, &mut names);
-                for arm in arms {
-                    collect(&arm.result, &mut names);
-                }
-                if let Some(default) = default {
-                    collect(default, &mut names);
-                }
-            }
-        }
+        collect_statement(statement, &mut names);
     }
     for guard in &function.guards {
         collect(&guard.condition, &mut names);
@@ -56,6 +43,29 @@ fn collect_assignment(target: &Expression, value: &Expression, names: &mut Vec<S
     } else {
         collect(target, names);
         collect(value, names);
+    }
+}
+
+fn collect_statement(statement: &Statement, names: &mut Vec<String>) {
+    match statement {
+        Statement::Store { target, value } => collect_assignment(target, value, names),
+        Statement::Assign { value, .. } => collect(value, names),
+        Statement::Expression(expression) => collect(expression, names),
+        Statement::Switch { scrutinee, arms, default } => {
+            collect(scrutinee, names);
+            for arm in arms {
+                collect(&arm.result, names);
+            }
+            if let Some(default) = default {
+                collect(default, names);
+            }
+        }
+        Statement::If { condition, then_body, else_body } => {
+            collect(condition, names);
+            for statement in then_body.iter().chain(else_body) {
+                collect_statement(statement, names);
+            }
+        }
     }
 }
 

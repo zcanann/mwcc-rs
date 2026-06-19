@@ -193,15 +193,7 @@ fn spill_instruction(register: u8, slot: FrameSlot) -> Instruction {
 fn collect_address_taken(function: &Function) -> HashSet<String> {
     let mut names = HashSet::new();
     for statement in &function.statements {
-        match statement {
-            Statement::Store { target, value } => {
-                walk(target, &mut names);
-                walk(value, &mut names);
-            }
-            Statement::Expression(expression) => walk(expression, &mut names),
-            Statement::Assign { value, .. } => walk(value, &mut names),
-            Statement::Switch { scrutinee, .. } => walk(scrutinee, &mut names),
-        }
+        walk_statement(statement, &mut names);
     }
     if let Some(expression) = &function.return_expression {
         walk(expression, &mut names);
@@ -211,6 +203,25 @@ fn collect_address_taken(function: &Function) -> HashSet<String> {
         walk(value, &mut names);
     }
     names
+}
+
+/// Record `&variable` occurrences within a statement (recursing into if-blocks).
+fn walk_statement(statement: &Statement, names: &mut HashSet<String>) {
+    match statement {
+        Statement::Store { target, value } => {
+            walk(target, names);
+            walk(value, names);
+        }
+        Statement::Expression(expression) => walk(expression, names),
+        Statement::Assign { value, .. } => walk(value, names),
+        Statement::Switch { scrutinee, .. } => walk(scrutinee, names),
+        Statement::If { condition, then_body, else_body } => {
+            walk(condition, names);
+            for statement in then_body.iter().chain(else_body) {
+                walk_statement(statement, names);
+            }
+        }
+    }
 }
 
 /// Record `&variable` occurrences within `expression`.

@@ -785,50 +785,19 @@ impl Parser {
         // expression evaluated for effect like a call `g();`.
         let local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
         let mut statements = Vec::new();
-        while !matches!(self.peek(), Token::KeywordReturn | Token::KeywordIf | Token::BraceClose) {
-            if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
-                let switch = self.parse_switch()?;
-                statements.push(switch);
-                continue;
+        while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
+            // `if (c) { ... }` is a conditional block statement; a trailing
+            // `if (c) return ...` is a guard, handled after the statement list.
+            if *self.peek() == Token::KeywordIf {
+                if self.block_if_ahead() {
+                    let statement = self.parse_if_statement(&local_names)?;
+                    statements.push(statement);
+                    continue;
+                }
+                break;
             }
-            // Prefix `++target;` / `--target;` — a value-free statement, so it is
-            // the same as `target = target +/- 1`.
-            if let Some(operator) = self.peek_increment() {
-                self.advance();
-                self.advance();
-                let target = self.factor()?;
-                self.expect(Token::Semicolon)?;
-                let value = increment_value(operator, &target);
-                statements.push(store_or_assign(target, value, &local_names));
-                continue;
-            }
-            let first = self.factor()?;
-            if let Some(operator) = self.peek_increment() {
-                // Postfix `target++;` / `target--;` — value unused, so identical.
-                self.advance();
-                self.advance();
-                self.expect(Token::Semicolon)?;
-                let value = increment_value(operator, &first);
-                statements.push(store_or_assign(first, value, &local_names));
-            } else if let Some(operator) = self.peek_compound_assignment() {
-                // `target op= rhs` desugars to `target = target op rhs`.
-                self.advance(); // the operator
-                self.advance(); // the `=`
-                let rhs = self.expression()?;
-                self.expect(Token::Semicolon)?;
-                let value = Expression::Binary { operator, left: Box::new(first.clone()), right: Box::new(rhs) };
-                statements.push(store_or_assign(first, value, &local_names));
-            } else if *self.peek() == Token::Equals {
-                self.advance();
-                let value = self.expression()?;
-                self.expect(Token::Semicolon)?;
-                // `local = value;` is a value-tracked reassignment; any other
-                // target (`*p`, `p[i]`, a member, a global) is a memory store.
-                statements.push(store_or_assign(first, value, &local_names));
-            } else {
-                self.expect(Token::Semicolon)?;
-                statements.push(Statement::Expression(first));
-            }
+            let statement = self.parse_simple_statement(&local_names)?;
+            statements.push(statement);
         }
 
         // Zero or more guarded early returns: `if (condition) return value;`. An
@@ -915,5 +884,130 @@ impl Parser {
                 _ => return Ok(()),
             }
         }
+    }
+}
+
+impl Parser {
+    /// Parse one simple (non-control-flow) statement: a `switch`, an increment,
+    /// an assignment / compound assignment / memory store, or a bare expression.
+    fn parse_simple_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Statement> {
+        if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
+            return self.parse_switch();
+        }
+        // Prefix `++target;` / `--target;` — a value-free statement.
+        if let Some(operator) = self.peek_increment() {
+            self.advance();
+            self.advance();
+            let target = self.factor()?;
+            self.expect(Token::Semicolon)?;
+            let value = increment_value(operator, &target);
+            return Ok(store_or_assign(target, value, local_names));
+        }
+        let first = self.factor()?;
+        if let Some(operator) = self.peek_increment() {
+            // Postfix `target++;` / `target--;`.
+            self.advance();
+            self.advance();
+            self.expect(Token::Semicolon)?;
+            let value = increment_value(operator, &first);
+            Ok(store_or_assign(first, value, local_names))
+        } else if let Some(operator) = self.peek_compound_assignment() {
+            self.advance();
+            self.advance();
+            let rhs = self.expression()?;
+            self.expect(Token::Semicolon)?;
+            let value = Expression::Binary { operator, left: Box::new(first.clone()), right: Box::new(rhs) };
+            Ok(store_or_assign(first, value, local_names))
+        } else if *self.peek() == Token::Equals {
+            self.advance();
+            let value = self.expression()?;
+            self.expect(Token::Semicolon)?;
+            Ok(store_or_assign(first, value, local_names))
+        } else {
+            self.expect(Token::Semicolon)?;
+            Ok(Statement::Expression(first))
+        }
+    }
+
+    /// At a `KeywordIf`, whether it is a conditional block/statement (body is a
+    /// `{ ... }` block or a non-`return` statement) rather than a guard
+    /// (`if (c) return …`). Scans the balanced condition parentheses.
+    fn block_if_ahead(&self) -> bool {
+        if *self.peek_at(1) != Token::ParenOpen {
+            return false;
+        }
+        let mut depth = 0i32;
+        let mut index = 1;
+        loop {
+            match self.peek_at(index) {
+                Token::ParenOpen => depth += 1,
+                Token::ParenClose => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+            if index > 4096 {
+                return false;
+            }
+        }
+        // A `return` body is a guard; anything else is an if-statement.
+        *self.peek_at(index + 1) != Token::KeywordReturn
+    }
+
+    /// `if (condition) <block-or-statement> [else <block-or-statement> | else if]`.
+    fn parse_if_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Statement> {
+        self.expect(Token::KeywordIf)?;
+        self.expect(Token::ParenOpen)?;
+        let condition = self.expression()?;
+        self.expect(Token::ParenClose)?;
+        let then_body = self.parse_block_or_statement(local_names)?;
+        let else_body = if self.eat_word("else") {
+            if *self.peek() == Token::KeywordIf {
+                vec![self.parse_if_statement(local_names)?]
+            } else {
+                self.parse_block_or_statement(local_names)?
+            }
+        } else {
+            Vec::new()
+        };
+        Ok(Statement::If { condition, then_body, else_body })
+    }
+
+    /// A `{ ... }` block, or a single (non-`return`) statement, as a conditional
+    /// branch body.
+    fn parse_block_or_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Vec<Statement>> {
+        if *self.peek() == Token::BraceOpen {
+            return self.parse_block(local_names);
+        }
+        if *self.peek() == Token::KeywordIf {
+            return Ok(vec![self.parse_if_statement(local_names)?]);
+        }
+        Ok(vec![self.parse_simple_statement(local_names)?])
+    }
+
+    /// A `{ ... }` block of simple statements (and nested if-blocks). A `return`
+    /// inside a block is not modeled as a statement yet.
+    fn parse_block(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Vec<Statement>> {
+        self.expect(Token::BraceOpen)?;
+        let mut statements = Vec::new();
+        while *self.peek() != Token::BraceClose {
+            if *self.peek() == Token::KeywordIf {
+                if self.block_if_ahead() {
+                    statements.push(self.parse_if_statement(local_names)?);
+                    continue;
+                }
+                return Err(Diagnostic::error("an `if (c) return` inside a block is not supported yet (roadmap)"));
+            }
+            if *self.peek() == Token::KeywordReturn {
+                return Err(Diagnostic::error("a `return` inside a block is not supported yet (roadmap)"));
+            }
+            statements.push(self.parse_simple_statement(local_names)?);
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(statements)
     }
 }
