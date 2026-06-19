@@ -92,16 +92,18 @@ impl Generator {
             // then the normal `blr`. (Non-leaf needs a forward branch to the
             // epilogue, and a non-final if needs to skip forward — both deferred.)
             if let Statement::If { condition, then_body, else_body } = statement {
-                // A single-statement body has no cross-statement scheduling; a
-                // multi-statement body needs the instruction scheduler (mwcc
-                // interleaves the stores), so it defers for now.
-                if index + 1 == statement_count
-                    && function.return_type == Type::Void
-                    && else_body.is_empty()
-                    && then_body.len() == 1
-                    && !function_makes_call(function)
-                {
-                    self.emit_if_returning(condition, then_body)?;
+                // A single-statement leaf if-block (no else). A multi-statement
+                // body needs the instruction scheduler, and a non-leaf if needs the
+                // cmpwi scheduled into the prologue — both defer for now.
+                if else_body.is_empty() && then_body.len() == 1 && !function_makes_call(function) {
+                    let trailing_void = index + 1 == statement_count && function.return_type == Type::Void;
+                    if trailing_void {
+                        // The false path is the function exit: conditional return.
+                        self.emit_if_returning(condition, then_body)?;
+                    } else {
+                        // The false path skips the body: forward branch.
+                        self.emit_if_forward(condition, then_body)?;
+                    }
                     continue;
                 }
             }
@@ -192,6 +194,22 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
         for statement in then_body {
             self.emit_statement(statement)?;
+        }
+        Ok(())
+    }
+
+    /// A non-trailing `if (c) { body }`: the false path branches forward over the
+    /// body to the code that follows.
+    fn emit_if_forward(&mut self, condition: &Expression, then_body: &[Statement]) -> Compilation<()> {
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        for statement in then_body {
+            self.emit_statement(statement)?;
+        }
+        let label = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = label;
         }
         Ok(())
     }
