@@ -187,7 +187,10 @@ impl Generator {
                     return Ok(None);
                 }
             }
-            // `(x & m) >> n` — mask inside, logical right shift outside (unsigned).
+            // `(x & m) >> n` — mask inside, right shift outside. The masked value
+            // `x & m` is non-negative when the mask clears the sign bit, so the
+            // shift is sign-agnostic and fuses for signed x too; only a mask that
+            // reaches bit 31 needs an unsigned (logical) shift.
             BinaryOperator::ShiftRight => {
                 let Expression::IntegerLiteral(shift) = *right else { return Ok(None) };
                 if !(1..=31).contains(&shift) {
@@ -195,7 +198,7 @@ impl Generator {
                 }
                 let Some((value, mask)) = as_masked_leaf(left) else { return Ok(None) };
                 let Some((begin, end)) = mask_to_run(mask >> shift) else { return Ok(None) };
-                Some((value, (32 - shift) as u8, begin, end, true))
+                Some((value, (32 - shift) as u8, begin, end, mask & 0x8000_0000 != 0))
             }
             _ => None,
         };
