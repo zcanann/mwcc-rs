@@ -147,6 +147,26 @@ impl Generator {
         Ok(true)
     }
 
+    /// Like `as_constant_shift`, but the shifted value may be a full-word memory
+    /// load (`p[0] >> n`, `s->a << n`) as well as a leaf — `try_emit_rotate_mask`
+    /// places a load into the scratch before the `rlwinm`. Kept local to the
+    /// fusion so `as_constant_shift`/`as_field` stay leaf-only.
+    fn constant_shift_placeable<'e>(&self, expression: &'e Expression) -> Option<(&'e Expression, bool, u8)> {
+        let Expression::Binary { operator, left, right } = expression else { return None };
+        let is_left = match operator {
+            BinaryOperator::ShiftLeft => true,
+            BinaryOperator::ShiftRight => false,
+            _ => return None,
+        };
+        if leaf_name(left).is_none() && !self.is_simple_word_load(left) {
+            return None;
+        }
+        match constant_value(right) {
+            Some(amount) if (1..=31).contains(&amount) => Some((left, is_left, amount as u8)),
+            _ => None,
+        }
+    }
+
     /// Resolve a shift-and-mask expression to `(x, rotate, begin, end, needs_unsigned)`
     /// for the fused `rlwinm`, or `None` when the shape does not collapse cleanly.
     fn fused_rotate_mask<'e>(&self, operator: BinaryOperator, left: &'e Expression, right: &'e Expression) -> Compilation<Option<(&'e Expression, u8, u8, u8, bool)>> {
@@ -155,7 +175,7 @@ impl Generator {
             BinaryOperator::BitAnd => {
                 let Some(mask) = constant_value(right) else { return Ok(None) };
                 let mask = mask as u32;
-                let Some((value, is_left, shift)) = as_constant_shift(left) else { return Ok(None) };
+                let Some((value, is_left, shift)) = self.constant_shift_placeable(left) else { return Ok(None) };
                 if is_left {
                     // `x << n` zeroes the low n bits, so they cannot survive the mask.
                     let effective = mask & !((1u32 << shift) - 1);
@@ -179,10 +199,10 @@ impl Generator {
                     return Ok(None);
                 }
                 let shift = shift as u8;
-                if let Some((value, mask)) = as_masked_leaf(left) {
+                if let Some((value, mask)) = as_masked_leaf(left).or_else(|| as_masked_load(left)) {
                     let Some((begin, end)) = mask_to_run(mask << shift) else { return Ok(None) };
                     Some((value, shift, begin, end, false))
-                } else if let Some((value, false, inner)) = as_constant_shift(left) {
+                } else if let Some((value, false, inner)) = self.constant_shift_placeable(left) {
                     // `(x >> k) << n`: clears the low `n` bits. n == k is the
                     // round-to-multiple `clrrwi` (valid for either sign); n > k keeps
                     // the shifted value and needs an unsigned (logical) right shift.
