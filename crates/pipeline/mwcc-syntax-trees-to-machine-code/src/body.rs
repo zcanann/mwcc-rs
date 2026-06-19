@@ -127,12 +127,18 @@ impl Generator {
             // epilogue, and a non-final if needs to skip forward — both deferred.)
             if let Statement::If { condition, then_body, else_body } = statement {
                 // A leaf if whose then-body is at most one statement then an early
-                // `return`: forward-branch over the body, and the return is the
-                // function exit. Two or more leading statements (e.g. constant
-                // stores mwcc would interleave) need the scheduler, so they defer.
+                // `return`, with a continuation after it (more statements or the
+                // trailing return): forward-branch over the body, the return is an
+                // exit, and the branch lands on the continuation. Two or more
+                // leading statements (constant stores mwcc would interleave) need
+                // the scheduler. With no continuation (a trailing void if) the
+                // false path is the immediate exit, which is a `beqlr` form — that
+                // and the multi-statement case defer.
+                let has_continuation = index + 1 < statement_count || function.return_expression.is_some();
                 if !function_makes_call(function)
                     && else_body.is_empty()
                     && then_body.len() <= 2
+                    && has_continuation
                     && matches!(then_body.last(), Some(Statement::Return(_)))
                 {
                     self.emit_if_early_return(condition, then_body, function.return_type)?;
