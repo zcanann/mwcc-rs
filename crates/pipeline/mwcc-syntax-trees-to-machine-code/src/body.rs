@@ -126,6 +126,18 @@ impl Generator {
             // then the normal `blr`. (Non-leaf needs a forward branch to the
             // epilogue, and a non-final if needs to skip forward — both deferred.)
             if let Statement::If { condition, then_body, else_body } = statement {
+                // A leaf if whose then-body is at most one statement then an early
+                // `return`: forward-branch over the body, and the return is the
+                // function exit. Two or more leading statements (e.g. constant
+                // stores mwcc would interleave) need the scheduler, so they defer.
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && then_body.len() <= 2
+                    && matches!(then_body.last(), Some(Statement::Return(_)))
+                {
+                    self.emit_if_early_return(condition, then_body, function.return_type)?;
+                    continue;
+                }
                 // Single-statement leaf if-blocks. A multi-statement body needs the
                 // instruction scheduler, and a non-leaf if needs the cmpwi scheduled
                 // into the prologue — both defer for now.
@@ -365,6 +377,36 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
         for statement in then_body {
             self.emit_statement(statement)?;
+        }
+        let label = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = label;
+        }
+        Ok(())
+    }
+
+    /// A leaf `if (c) { … return [v]; }` whose then-body ends in an early return:
+    /// forward-branch over the body when the condition is false, emit the body
+    /// (the `return` materializes the value and runs the epilogue — `blr` for a
+    /// leaf), then patch the branch to land on the continuation (the rest of the
+    /// function, which supplies the other exit).
+    fn emit_if_early_return(&mut self, condition: &Expression, then_body: &[Statement], return_type: Type) -> Compilation<()> {
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        for statement in then_body {
+            if let Statement::Return(value) = statement {
+                if let Some(value) = value {
+                    let result = match return_type {
+                        Type::Float | Type::Double => Eabi::float_result().number,
+                        _ => Eabi::general_result().number,
+                    };
+                    self.evaluate_tail(value, return_type, result)?;
+                }
+                self.emit_epilogue_and_return();
+            } else {
+                self.emit_statement(statement)?;
+            }
         }
         let label = self.output.instructions.len();
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
