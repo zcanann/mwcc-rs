@@ -244,6 +244,35 @@ impl Generator {
             }
         }
 
+        // Signed modulo by a power of two. `x % 2` is the parity-with-sign idiom;
+        // `x % 2^k` (k>=2) rotates the low k bits down with a sign correction.
+        if signed {
+            if let Expression::IntegerLiteral(divisor) = right {
+                if *divisor >= 2 && (*divisor as u64).is_power_of_two() {
+                    let k = divisor.trailing_zeros() as u8;
+                    let x = self.general_register_of_leaf(left)?;
+                    if k == 1 {
+                        // srwi s,x,31; clrlwi r0,x,31; xor r0,r0,s; subf d,s,r0
+                        let Some(sign) = (3u8..=12).find(|r| *r != x && *r != destination && !self.reserved.contains(r)) else {
+                            return Err(Diagnostic::error("no free register for signed %2 (roadmap)"));
+                        };
+                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: sign, s: x, shift: 31 });
+                        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: x, clear: 31 });
+                        self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: sign });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: sign, b: GENERAL_SCRATCH });
+                    } else {
+                        // slwi r0,x,32-k; srwi d,x,31; subf r0,d,r0; rotlwi r0,r0,k; add d,r0,d
+                        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: x, shift: 32 - k });
+                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: x, shift: 31 });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: destination, b: GENERAL_SCRATCH });
+                        self.output.instructions.push(Instruction::RotateAndMask { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: k, begin: 0, end: 31 });
+                        self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: destination });
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         // Modulo by a non-power-of-two constant: the magic quotient times the
         // divisor subtracted from the dividend. The divisor must fit `mulli`'s
         // signed-16-bit immediate.
