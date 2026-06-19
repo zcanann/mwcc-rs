@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression};
+use mwcc_syntax_trees::{BinaryOperator, Expression, UnaryOperator};
 use crate::analysis::*;
 use crate::generator::*;
 
@@ -296,6 +296,20 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        // `-a +/- C` (negate of a leaf, plus/minus a constant) is `C - a` /
+        // `-C - a`, a single `subfic a, ±C` (e.g. `-a - 1` -> `subfic r3,r3,-1`,
+        // `-a + 1` -> `subfic r3,r3,1`), rather than a `neg` followed by `addi`.
+        if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+            if let Expression::Unary { operator: UnaryOperator::Negate, operand } = left {
+                if let (Some(register), Some(constant)) = (leaf_name(operand).and_then(|name| self.lookup_general(name)), constant_value(right)) {
+                    let immediate = if operator == BinaryOperator::Subtract { constant.wrapping_neg() } else { constant };
+                    if fits_signed_16(immediate) {
+                        self.output.instructions.push(Instruction::SubtractFromImmediate { d: destination, a: register, immediate: immediate as i16 });
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         // variable op constant — subtraction becomes addition of the negation.
         if let Some(constant) = constant_value(right) {
             let (effective, value) = match operator {
