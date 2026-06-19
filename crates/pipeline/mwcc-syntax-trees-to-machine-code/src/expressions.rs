@@ -9,6 +9,16 @@ use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
 
+/// The base variable a memory load addresses through — `a` for `a[i]`, `s` for
+/// `s->x`, `p` for `*p`. Used to recognize two loads that share a base register.
+fn load_base_name(expression: &Expression) -> Option<&str> {
+    match expression {
+        Expression::Index { base, .. } | Expression::Member { base, .. } => leaf_name(base),
+        Expression::Dereference { pointer } => leaf_name(pointer),
+        _ => None,
+    }
+}
+
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
 fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction {
     match pointee {
@@ -186,6 +196,11 @@ impl Generator {
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());
                 }
+                // Two memory loads from a common base (`a[i] op a[j]`, `s->x op s->y`)
+                // — the first multi-operand shape on the register allocator.
+                if self.try_emit_two_load_binary(*operator, left, right, destination)? {
+                    return Ok(());
+                }
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
@@ -234,6 +249,42 @@ impl Generator {
         };
         self.evaluate_general(&tail, destination)?;
         self.output.instructions.push(Instruction::Add { d: destination, a: leading, b: destination });
+        Ok(true)
+    }
+
+    /// `loadA op loadB` where both operands are full-word memory loads from a
+    /// COMMON base (`a[i] op a[j]`, `s->x op s->y`). mwcc's binary-node convention
+    /// puts the secondary source in the scratch (r0) and the primary in a register
+    /// the allocator colors; the shared base stays live, so the primary takes the
+    /// next free volatile (r4). The primary is the left operand for `add` and the
+    /// right operand for `subf` (which computes `b - a`), loaded first.
+    fn try_emit_two_load_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+            return Ok(false);
+        }
+        if !self.is_word_load(left) || !self.is_word_load(right) {
+            return Ok(false);
+        }
+        // The two loads must share a base register (so the primary cannot reuse a
+        // now-dead base — that case needs precise live-range splitting and defers).
+        match (load_base_name(left), load_base_name(right)) {
+            (Some(a), Some(b)) if a == b => {}
+            _ => return Ok(false),
+        }
+        // `subf` computes `b - a`; to get `left - right` the right operand is the
+        // primary (first source) and the left is the secondary (in r0).
+        let (primary, secondary) = match operator {
+            BinaryOperator::Subtract => (right, left),
+            _ => (left, right),
+        };
+        let primary_register = self.fresh_virtual_general();
+        self.evaluate_general(primary, primary_register)?;
+        self.evaluate_general(secondary, GENERAL_SCRATCH)?;
+        let combined = match operator {
+            BinaryOperator::Add => Instruction::Add { d: destination, a: primary_register, b: GENERAL_SCRATCH },
+            _ => Instruction::SubtractFrom { d: destination, a: primary_register, b: GENERAL_SCRATCH },
+        };
+        self.output.instructions.push(combined);
         Ok(true)
     }
 
