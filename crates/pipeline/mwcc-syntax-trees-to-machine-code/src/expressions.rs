@@ -175,6 +175,13 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // mwcc reassociates a left-leaning pure-addition chain before the
+                // generic paths see it (`a+b+c` -> `a+(b+c)`).
+                if *operator == BinaryOperator::Add
+                    && self.try_emit_additive_chain(left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());
@@ -188,6 +195,46 @@ impl Generator {
             }
             Expression::FloatLiteral(_) => Err(Diagnostic::error("float literal in integer context")),
         }
+    }
+
+    /// mwcc reassociates a left-leaning pure-addition chain `(x + y) + z` into
+    /// `x + (y + z)`: it evaluates the tail `y + z` into the destination first,
+    /// then adds the leading operand `x`. `x` is copied to the scratch beforehand
+    /// only when it lives in the destination (which the tail overwrites). Only a
+    /// full-width integer leaf `x` with simple integer tail operands is taken;
+    /// pointers (scaled arithmetic), narrow leaves, and deeper or right-leaning
+    /// chains keep the generic paths.
+    fn try_emit_additive_chain(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let Expression::Binary { operator: BinaryOperator::Add, left: x, right: y } = left else {
+            return Ok(false);
+        };
+        let (x, y, z) = (x.as_ref(), y.as_ref(), right);
+        let Some(x_register) = self.plain_integer_leaf_register(x) else { return Ok(false) };
+        // The tail operands must be simple: a full-width integer leaf or a constant.
+        let simple = |me: &Self, operand: &Expression| {
+            constant_value(operand).is_some() || me.plain_integer_leaf_register(operand).is_some()
+        };
+        if !simple(self, y) || !simple(self, z) {
+            return Ok(false);
+        }
+        // Saving x needs a scratch register distinct from the destination.
+        if x_register == destination && destination == GENERAL_SCRATCH {
+            return Ok(false);
+        }
+        let leading = if x_register == destination {
+            self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, x_register));
+            GENERAL_SCRATCH
+        } else {
+            x_register
+        };
+        let tail = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(y.clone()),
+            right: Box::new(z.clone()),
+        };
+        self.evaluate_general(&tail, destination)?;
+        self.output.instructions.push(Instruction::Add { d: destination, a: leading, b: destination });
+        Ok(true)
     }
 
     /// Place an operand and return the register holding it. A leaf stays in its

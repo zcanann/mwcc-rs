@@ -188,6 +188,17 @@ impl Generator {
         self.locations.get(name).filter(|location| location.class == ValueClass::General).map(|location| location.register)
     }
 
+    /// The register of a full-width, non-pointer integer leaf variable — the
+    /// operand shape that participates in mwcc's additive-chain reassociation.
+    /// Narrow leaves (which need width extension) and pointers (scaled
+    /// arithmetic) return `None`.
+    pub(crate) fn plain_integer_leaf_register(&self, expression: &Expression) -> Option<u8> {
+        let name = leaf_name(expression)?;
+        let location = self.locations.get(name)?;
+        (location.class == ValueClass::General && location.width == 32 && location.pointee.is_none())
+            .then_some(location.register)
+    }
+
     /// Whether `expression` is a narrow (sub-32-bit) integer variable. Such an
     /// operand needs width extension before use, and a few consumers (left shift
     /// and pow2 multiply) fuse extension and shift into a single `rlwinm` on the
