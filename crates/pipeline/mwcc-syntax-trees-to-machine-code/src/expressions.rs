@@ -698,29 +698,57 @@ impl Generator {
         if !same_operand(target, left) {
             return Ok(false);
         }
-        let Some(rhs_register) = self.plain_integer_leaf_register(right) else {
-            return Ok(false);
-        };
         let (pointee, address) = self.resolve_pointer(base)?;
         if !matches!(pointee, Pointee::Int | Pointee::UnsignedInt) {
             return Ok(false);
         }
         let index_register = self.general_register_of_leaf(index)?;
-        let scaled = self.fresh_virtual_general();
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: pointee.size().trailing_zeros() as u8 });
-        self.output.instructions.push(indexed_load(pointee, GENERAL_SCRATCH, address, scaled));
+        let size_shift = pointee.size().trailing_zeros() as u8;
         let scratch = GENERAL_SCRATCH;
-        let combined = match operator {
-            Add => Instruction::Add { d: scratch, a: scratch, b: rhs_register },
-            Subtract => Instruction::SubtractFrom { d: scratch, a: rhs_register, b: scratch },
-            Multiply => Instruction::MultiplyLow { d: scratch, a: scratch, b: rhs_register },
-            BitAnd => Instruction::And { a: scratch, s: scratch, b: rhs_register },
-            BitOr => Instruction::Or { a: scratch, s: scratch, b: rhs_register },
-            _ => Instruction::Xor { a: scratch, s: scratch, b: rhs_register },
-        };
-        self.output.instructions.push(combined);
-        self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
-        Ok(true)
+
+        // `a[i] op= leaf`: the loaded value flows through the scratch and the op
+        // works in place — `slwi r4,i,2; lwzx r0,base,r4; <op> r0,r0,rhs; stwx r0`.
+        if let Some(rhs_register) = self.plain_integer_leaf_register(right) {
+            let scaled = self.fresh_virtual_general();
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: size_shift });
+            self.output.instructions.push(indexed_load(pointee, scratch, address, scaled));
+            let combined = match operator {
+                Add => Instruction::Add { d: scratch, a: scratch, b: rhs_register },
+                Subtract => Instruction::SubtractFrom { d: scratch, a: rhs_register, b: scratch },
+                Multiply => Instruction::MultiplyLow { d: scratch, a: scratch, b: rhs_register },
+                BitAnd => Instruction::And { a: scratch, s: scratch, b: rhs_register },
+                BitOr => Instruction::Or { a: scratch, s: scratch, b: rhs_register },
+                _ => Instruction::Xor { a: scratch, s: scratch, b: rhs_register },
+            };
+            self.output.instructions.push(combined);
+            self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
+            return Ok(true);
+        }
+
+        // `a[i] += C` / `a[i] -= C` / `a[i]++` (a constant addend that fits an
+        // immediate): mwcc loads the value into a register (not the scratch) and
+        // the `addi` targets the scratch — `slwi r5,i,2; lwzx r4,base,r5; addi
+        // r0,r4,C; stwx r0,base,r5`. Both the scaled index and the loaded value
+        // are virtuals; at the `slwi` the index source is still live, so the
+        // allocator places the index above the value, reproducing mwcc.
+        if matches!(operator, Add | Subtract) {
+            let immediate = constant_value(right)
+                .and_then(|c| if matches!(operator, Subtract) { c.checked_neg() } else { Some(c) })
+                .and_then(|c| i16::try_from(c).ok());
+            if let Some(immediate) = immediate {
+                // The scaled index avoids the index register so the loaded value
+                // (not the index) coalesces onto the now-dead index register —
+                // mwcc's `slwi r5,i,2; lwzx r4,…` rather than the reverse.
+                let scaled = self.fresh_virtual_general_avoiding(vec![index_register]);
+                self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: size_shift });
+                let loaded = self.fresh_virtual_general();
+                self.output.instructions.push(indexed_load(pointee, loaded, address, scaled));
+                self.output.instructions.push(Instruction::AddImmediate { d: scratch, a: loaded, immediate });
+                self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
