@@ -181,6 +181,11 @@ impl Generator {
             [local] => self.evaluate_single_local(local, return_expression, function.return_type, result)?,
             _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
         }
+        // A `float` function returning a double-precision value rounds to single
+        // (`frsp`) before returning, as mwcc does.
+        if function.return_type == Type::Float && self.is_double_value(return_expression) {
+            self.output.instructions.push(Instruction::RoundToSingle { d: result, b: result });
+        }
         self.emit_epilogue_and_return();
         Ok(())
     }
