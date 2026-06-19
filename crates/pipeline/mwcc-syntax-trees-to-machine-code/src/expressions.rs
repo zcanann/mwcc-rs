@@ -915,14 +915,32 @@ impl Generator {
                 self.output.instructions.push(Instruction::Nor { a: d, s: source, b: source });
             }
             UnaryOperator::LogicalNot => {
-                // !(comparison) is the flipped comparison.
-                if let Expression::Binary { operator, left, right } = operand {
-                    if let Some(flipped) = (is_comparison(*operator)).then(|| flip_comparison(*operator)).flatten() {
-                        return self.emit_comparison(flipped, left, right, d);
+                // Fold a chain of `!`: mwcc collapses repeated negations by parity.
+                // An even chain is the boolean normalization `inner != 0`; an odd
+                // chain is `inner == 0` — and `!comparison` flips the comparison.
+                let mut negations = 1usize;
+                let mut inner = operand;
+                while let Expression::Unary { operator: UnaryOperator::LogicalNot, operand: next } = inner {
+                    negations += 1;
+                    inner = next;
+                }
+                let odd = negations % 2 == 1;
+                // `!(comparison)` is the flipped comparison; an even chain keeps it.
+                if let Expression::Binary { operator, left, right } = inner {
+                    if is_comparison(*operator) {
+                        let resolved = if odd { flip_comparison(*operator) } else { Some(*operator) };
+                        if let Some(operator) = resolved {
+                            return self.emit_comparison(operator, left, right, d);
+                        }
                     }
                 }
-                // !x == (x == 0): cntlzw then srwi by 5.
-                let source = self.place_operand_or_scratch(operand, d)?;
+                // An even chain is `inner != 0` (the `neg; or; srwi` boolean).
+                if !odd {
+                    let zero = Expression::IntegerLiteral(0);
+                    return self.emit_comparison(BinaryOperator::NotEqual, inner, &zero, d);
+                }
+                // An odd chain is `inner == 0`: cntlzw then srwi by 5.
+                let source = self.place_operand_or_scratch(inner, d)?;
                 self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
             }
