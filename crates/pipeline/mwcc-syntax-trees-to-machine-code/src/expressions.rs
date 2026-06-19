@@ -201,6 +201,11 @@ impl Generator {
                 if self.try_emit_two_load_binary(*operator, left, right, destination)? {
                     return Ok(());
                 }
+                // A constant-index subscript load paired with a wide-int leaf
+                // (`a[k] op x`) — the load goes to the scratch like a dereference.
+                if self.try_emit_subscript_leaf_binary(*operator, left, right, destination)? {
+                    return Ok(());
+                }
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
@@ -290,6 +295,41 @@ impl Generator {
             BitAnd => Instruction::And { a: destination, s: p, b: s },
             BitOr => Instruction::Or { a: destination, s: p, b: s },
             _ => Instruction::Xor { a: destination, s: p, b: s },
+        };
+        self.output.instructions.push(combined);
+        Ok(true)
+    }
+
+    /// `a[k] op x` — a constant-index subscript word-load combined with a wide
+    /// integer leaf. The subscript loads into the scratch (`lwz r0,off(base)`) and
+    /// the leaf stays in its register, like the dereference/member + leaf paths
+    /// (subscripts just were not routed there). Source operand order is kept.
+    fn try_emit_subscript_leaf_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        use BinaryOperator::*;
+        if !matches!(operator, Add | Subtract | BitAnd | BitOr | BitXor | Multiply) {
+            return Ok(false);
+        }
+        let is_const_subscript = |me: &Self, expression: &Expression| {
+            matches!(expression, Expression::Index { index, .. } if constant_value(index).is_some()) && me.is_word_load(expression)
+        };
+        // Exactly one operand is the subscript load; the other a wide integer leaf.
+        let (load, leaf, load_is_left) = match (is_const_subscript(self, left), is_const_subscript(self, right)) {
+            (true, false) => (left, right, true),
+            (false, true) => (right, left, false),
+            _ => return Ok(false),
+        };
+        let Some(leaf_register) = self.plain_integer_leaf_register(leaf) else {
+            return Ok(false);
+        };
+        self.evaluate_general(load, GENERAL_SCRATCH)?;
+        let (a, b) = if load_is_left { (GENERAL_SCRATCH, leaf_register) } else { (leaf_register, GENERAL_SCRATCH) };
+        let combined = match operator {
+            Add => Instruction::Add { d: destination, a, b },
+            Subtract => Instruction::SubtractFrom { d: destination, a: b, b: a },
+            Multiply => Instruction::MultiplyLow { d: destination, a, b },
+            BitAnd => Instruction::And { a: destination, s: a, b },
+            BitOr => Instruction::Or { a: destination, s: a, b },
+            _ => Instruction::Xor { a: destination, s: a, b },
         };
         self.output.instructions.push(combined);
         Ok(true)
