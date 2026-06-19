@@ -227,6 +227,23 @@ impl Generator {
             }
         }
 
+        // `x < 0 ? -1 : 0` (and its mirror `x >= 0 ? 0 : -1`) is the sign mask:
+        // arithmetic-shift the sign bit across the word, `srawi d, x, 31`. The
+        // complement `x < 0 ? 0 : -1` instead broadcasts the inverted sign,
+        // `srwi d, x, 31; addi d, d, -1` (0/1 then minus one).
+        if let Some((value, complemented)) = sign_mask_select(condition, when_true, when_false) {
+            if self.signedness_of(value)? {
+                let register = self.general_register_of_leaf(value)?;
+                if complemented {
+                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: register, shift: 31 });
+                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: -1 });
+                } else {
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: register, shift: 31 });
+                }
+                return Ok(());
+            }
+        }
+
         // `cond ? c1 : c2` with consecutive non-zero constants is branchless: the
         // truth value (a -1/0 sign mask or a 0/1 bool) plus the lower constant.
         if self.try_emit_consecutive_constants(condition, when_true, when_false, destination)? {
@@ -498,5 +515,28 @@ impl Generator {
             return Ok(GENERAL_SCRATCH);
         }
         self.general_register_of_leaf(operand)
+    }
+}
+
+/// Recognize a sign-mask select on `x`, returning `(x, complemented)`:
+///   `x < 0 ? -1 : 0` / `x >= 0 ? 0 : -1` → `(x, false)` — plain sign mask.
+///   `x < 0 ? 0 : -1` / `x >= 0 ? -1 : 0` → `(x, true)`  — inverted sign mask.
+fn sign_mask_select<'e>(condition: &'e Expression, when_true: &'e Expression, when_false: &'e Expression) -> Option<(&'e Expression, bool)> {
+    let Expression::Binary { operator, left, right } = condition else { return None };
+    if !is_zero_literal(right) {
+        return None;
+    }
+    // Normalize the arms to (negative-case value, nonnegative-case value).
+    let (negative_arm, nonnegative_arm) = match operator {
+        BinaryOperator::Less => (when_true, when_false),         // x < 0 ? a : b
+        BinaryOperator::GreaterEqual => (when_false, when_true), // x >= 0 ? b : a
+        _ => return None,
+    };
+    if constant_value(negative_arm) == Some(-1) && is_zero_literal(nonnegative_arm) {
+        Some((left.as_ref(), false)) // -1 when negative, 0 otherwise
+    } else if is_zero_literal(negative_arm) && constant_value(nonnegative_arm) == Some(-1) {
+        Some((left.as_ref(), true)) // 0 when negative, -1 otherwise
+    } else {
+        None
     }
 }
