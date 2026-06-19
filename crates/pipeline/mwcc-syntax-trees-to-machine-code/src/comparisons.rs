@@ -368,6 +368,42 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
+            // `a[i] <= a[j]` / `s->x >= s->y` (two same-base full-word loads): the
+            // carry idiom over loaded operands. The operands load high-first — one
+            // into the scratch, the other into a free register; sign(high) goes to
+            // another free register and sign(low) to the destination:
+            // `lwz r0; lwz r5; srawi r4,high,31; srwi d,low,31; subfc r0,low,high;
+            // adde d,r4,d`. Different bases / value context defer.
+            BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
+                if signed_left && self.is_simple_word_load(left) && self.is_simple_word_load(right)
+                    && load_base_name(left).is_some()
+                    && load_base_name(left) == load_base_name(right)
+                    && d != GENERAL_SCRATCH =>
+            {
+                let base = load_base_name(left).and_then(|name| self.lookup_general(name));
+                let mut free = (3u8..=12).filter(|r| *r != GENERAL_SCRATCH && *r != d && Some(*r) != base && !self.reserved.contains(r));
+                let (Some(sign_high_reg), Some(operand_reg)) = (free.next(), free.next()) else {
+                    return Err(Diagnostic::error("out of registers for the two-load <=/>= idiom"));
+                };
+                let scratch = GENERAL_SCRATCH;
+                let (high, low) = if matches!(operator, BinaryOperator::LessEqual) { (right, left) } else { (left, right) };
+                // The high operand loads first; for `<=` it lands in the scratch,
+                // for `>=` in the free register (and the low operand vice versa).
+                let (high_reg, low_reg) = if matches!(operator, BinaryOperator::LessEqual) {
+                    self.evaluate_general(high, scratch)?;
+                    self.evaluate_general(low, operand_reg)?;
+                    (scratch, operand_reg)
+                } else {
+                    self.evaluate_general(high, operand_reg)?;
+                    self.evaluate_general(low, scratch)?;
+                    (operand_reg, scratch)
+                };
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: sign_high_reg, s: high_reg, shift: 31 });
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: low_reg, shift: 31 });
+                self.output.instructions.push(Instruction::SubtractFromCarrying { d: scratch, a: low_reg, b: high_reg });
+                self.output.instructions.push(Instruction::AddExtended { d, a: sign_high_reg, b: d });
+                Ok(())
+            }
             // signed a <= b / a >= b : carry-based, with two temporaries. A
             // constant right operand materializes into r0 (read twice before being
             // overwritten by the subfc).
