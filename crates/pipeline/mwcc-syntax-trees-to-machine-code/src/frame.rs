@@ -235,6 +235,11 @@ fn walk_statement(statement: &Statement, names: &mut HashSet<String>) {
                 walk_statement(statement, names);
             }
         }
+        Statement::Return(value) => {
+            if let Some(value) = value {
+                walk(value, names);
+            }
+        }
     }
 }
 

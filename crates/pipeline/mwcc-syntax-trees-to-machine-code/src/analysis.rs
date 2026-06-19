@@ -32,6 +32,7 @@ pub(crate) fn statement_has_call(statement: &Statement) -> bool {
         Statement::If { condition, then_body, else_body } => {
             expression_has_call(condition) || block_has_call(then_body) || block_has_call(else_body)
         }
+        Statement::Return(value) => value.as_ref().is_some_and(expression_has_call),
     }
 }
 

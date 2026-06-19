@@ -316,6 +316,10 @@ impl Generator {
             // A general if-statement (non-trailing, non-leaf, or with an else) needs
             // forward branches and basic-block scheduling — deferred for now.
             Statement::If { .. } => Err(Diagnostic::error("general if-statement codegen is not implemented yet (roadmap)")),
+            // An early `return` inside the body needs early-return codegen (blr for
+            // a leaf, a forward branch to the shared epilogue otherwise) — the
+            // parser now models it, but the codegen is the next piece.
+            Statement::Return(_) => Err(Diagnostic::error("early-return codegen is not implemented yet (roadmap)")),
         }
     }
 

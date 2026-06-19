@@ -1008,6 +1008,15 @@ impl Parser {
         Ok(value)
     }
 
+    /// `return [value];` as a body statement (an early return), with an optional
+    /// value (absent for `return;` in a void function).
+    fn parse_return_statement(&mut self) -> Compilation<Statement> {
+        self.expect(Token::KeywordReturn)?;
+        let value = if *self.peek() == Token::Semicolon { None } else { Some(self.expression()?) };
+        self.expect(Token::Semicolon)?;
+        Ok(Statement::Return(value))
+    }
+
     /// `if (condition) <block-or-statement> [else <block-or-statement> | else if]`.
     fn parse_if_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Statement> {
         self.expect(Token::KeywordIf)?;
@@ -1036,6 +1045,9 @@ impl Parser {
         if *self.peek() == Token::KeywordIf {
             return Ok(vec![self.parse_if_statement(local_names)?]);
         }
+        if *self.peek() == Token::KeywordReturn {
+            return Ok(vec![self.parse_return_statement()?]);
+        }
         Ok(vec![self.parse_simple_statement(local_names)?])
     }
 
@@ -1046,14 +1058,12 @@ impl Parser {
         let mut statements = Vec::new();
         while *self.peek() != Token::BraceClose {
             if *self.peek() == Token::KeywordIf {
-                if self.block_if_ahead() {
-                    statements.push(self.parse_if_statement(local_names)?);
-                    continue;
-                }
-                return Err(Diagnostic::error("an `if (c) return` inside a block is not supported yet (roadmap)"));
+                statements.push(self.parse_if_statement(local_names)?);
+                continue;
             }
             if *self.peek() == Token::KeywordReturn {
-                return Err(Diagnostic::error("a `return` inside a block is not supported yet (roadmap)"));
+                statements.push(self.parse_return_statement()?);
+                continue;
             }
             statements.push(self.parse_simple_statement(local_names)?);
         }

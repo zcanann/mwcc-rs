@@ -66,6 +66,11 @@ fn collect_statement(statement: &Statement, names: &mut Vec<String>) {
                 collect_statement(statement, names);
             }
         }
+        Statement::Return(value) => {
+            if let Some(value) = value {
+                collect(value, names);
+            }
+        }
     }
 }
 

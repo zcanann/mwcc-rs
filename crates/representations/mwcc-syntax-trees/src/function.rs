@@ -48,6 +48,10 @@ pub enum Statement {
     Expression(Expression),
     /// `if (condition) { then_body } [else { else_body }]` — a conditional block.
     If { condition: Expression, then_body: Vec<Statement>, else_body: Vec<Statement> },
+    /// `return [value];` — an early return from within the body (as opposed to the
+    /// function's trailing `return_expression`). `None` for `return;` in a void
+    /// function.
+    Return(Option<Expression>),
     /// `switch (scrutinee) { case V: return E; ... default: return D; }` — a
     /// terminal multi-way return (each arm and the default return a value).
     Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<Expression> },
