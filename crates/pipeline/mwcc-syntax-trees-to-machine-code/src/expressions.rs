@@ -187,6 +187,12 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // `(x & m1) | (x & m2)` for the same leaf folds to `x & (m1|m2)`.
+                if matches!(operator, BinaryOperator::BitOr)
+                    && self.try_emit_same_leaf_mask_or(left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // An OR of two complementary bit fields (shifts and/or masks) —
                 // including a constant rotate — merges via one rlwimi.
                 if matches!(operator, BinaryOperator::BitOr)
@@ -320,6 +326,25 @@ impl Generator {
             }
             _ => return Ok(false),
         }
+        Ok(true)
+    }
+
+    /// `(x & m1) | (x & m2)` over the same leaf `x` is `x & (m1 | m2)` — mwcc
+    /// merges the masks into one `rlwinm`/`clrlwi` rather than extracting both
+    /// fields and OR-ing them.
+    fn try_emit_same_leaf_mask_or(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        let (Some((left_leaf, m1)), Some((right_leaf, m2))) = (as_masked_leaf(left), as_masked_leaf(right)) else {
+            return Ok(false);
+        };
+        if leaf_name(left_leaf).is_none() || leaf_name(left_leaf) != leaf_name(right_leaf) {
+            return Ok(false);
+        }
+        let combined = Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(left_leaf.clone()),
+            right: Box::new(Expression::IntegerLiteral((m1 | m2) as i64)),
+        };
+        self.evaluate_general(&combined, destination)?;
         Ok(true)
     }
 
