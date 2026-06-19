@@ -304,6 +304,24 @@ pub(crate) fn contiguous_mask(value: i64) -> Option<(u8, u8)> {
     Some(((31 - highest) as u8, (31 - lowest) as u8))
 }
 
+/// A 32-bit mask representable by a single `rlwinm rA,rS,0,MB,ME` — a contiguous
+/// run of set bits, possibly wrapping around bit 31->0 (then `begin > end`, e.g.
+/// `x & ~16` clears one bit via `rlwinm 0,28,26`). Returns the `(begin, end)`
+/// mask-bit pair, or `None` for an all-clear mask or one with two or more runs.
+pub(crate) fn rlwinm_mask(value: i64) -> Option<(u8, u8)> {
+    if value as u32 == 0 {
+        return None;
+    }
+    if let Some(run) = contiguous_mask(value) {
+        return Some(run);
+    }
+    // A wrapping run of set bits: its complement is a non-wrapping run. If the
+    // cleared bits are the run `[begin, end]`, the set bits run from `end+1`
+    // wrapping to `begin-1`.
+    let (begin, end) = contiguous_mask(!(value as u32) as i64)?;
+    Some(((end + 1) & 31, (begin + 31) & 31))
+}
+
 /// Whether evaluating `expression` uses the scratch register at all — true when
 /// any binary node has a binary child.
 pub(crate) fn needs_scratch(expression: &Expression) -> bool {

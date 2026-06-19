@@ -482,8 +482,8 @@ impl Generator {
             }
             BinaryOperator::BitOr if fits_unsigned_16(constant) => Immediate::Or,
             BinaryOperator::BitXor if fits_unsigned_16(constant) => Immediate::Xor,
-            BinaryOperator::BitAnd if contiguous_mask(constant).is_some() => {
-                let (begin, end) = contiguous_mask(constant).unwrap();
+            BinaryOperator::BitAnd if rlwinm_mask(constant).is_some() => {
+                let (begin, end) = rlwinm_mask(constant).unwrap();
                 Immediate::Mask(begin, end)
             }
             BinaryOperator::ShiftLeft if (1..=31).contains(&constant) => Immediate::ShiftLeft(constant as u8),
