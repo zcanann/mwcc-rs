@@ -16,6 +16,8 @@ impl Instruction {
             Instruction::SubtractFrom { d, a, b } => xo_form(d, a, b, 40),
             Instruction::Negate { d, a } => xo_form(d, a, 0, 104),
             Instruction::Nor { a, s, b } => logical_form(s, a, b, 124),
+            Instruction::Nand { a, s, b } => logical_form(s, a, b, 476),
+            Instruction::Eqv { a, s, b } => logical_form(s, a, b, 284),
             Instruction::CountLeadingZeros { a, s } => logical_form(s, a, 0, 26),
             Instruction::ExtendSignByte { a, s } => logical_form(s, a, 0, 954),
             Instruction::ExtendSignHalfword { a, s } => logical_form(s, a, 0, 922),

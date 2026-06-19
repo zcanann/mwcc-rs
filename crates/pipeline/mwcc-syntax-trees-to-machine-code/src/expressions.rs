@@ -911,6 +911,29 @@ impl Generator {
                 if let Expression::Unary { operator: UnaryOperator::BitNot, operand: inner } = operand {
                     return self.evaluate_general(inner, d);
                 }
+                // `~(a | b)` / `~(a & b)` / `~(a ^ b)` fuse to a single nor / nand /
+                // eqv. Both operands must be in registers: two leaves, or a leaf and
+                // a constant materialized into the scratch (`li r0,c; nor d,a,r0`).
+                if let Expression::Binary { operator: inner @ (BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor), left, right } = operand {
+                    let left_register = leaf_name(left).and_then(|name| self.lookup_general(name));
+                    let right_register = leaf_name(right).and_then(|name| self.lookup_general(name));
+                    let registers = match (left_register, right_register) {
+                        (Some(ra), Some(rb)) => Some((ra, rb)),
+                        (Some(ra), None) => constant_value(right).filter(|c| fits_signed_16(*c)).map(|constant| {
+                            self.load_integer_constant(GENERAL_SCRATCH, constant);
+                            (ra, GENERAL_SCRATCH)
+                        }),
+                        _ => None,
+                    };
+                    if let Some((ra, rb)) = registers {
+                        self.output.instructions.push(match inner {
+                            BinaryOperator::BitOr => Instruction::Nor { a: d, s: ra, b: rb },
+                            BinaryOperator::BitAnd => Instruction::Nand { a: d, s: ra, b: rb },
+                            _ => Instruction::Eqv { a: d, s: ra, b: rb },
+                        });
+                        return Ok(());
+                    }
+                }
                 let source = self.place_operand_or_scratch(operand, d)?;
                 self.output.instructions.push(Instruction::Nor { a: d, s: source, b: source });
             }

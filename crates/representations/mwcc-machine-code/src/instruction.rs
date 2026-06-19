@@ -21,6 +21,10 @@ pub enum Instruction {
     Negate { d: u8, a: u8 },
     /// `nor rA, rS, rB` — spells `not rA, rS` when `s == b`.
     Nor { a: u8, s: u8, b: u8 },
+    /// `nand rA, rS, rB` — `~(rS & rB)`.
+    Nand { a: u8, s: u8, b: u8 },
+    /// `eqv rA, rS, rB` — `~(rS ^ rB)`.
+    Eqv { a: u8, s: u8, b: u8 },
     /// `cntlzw rA, rS` — count leading zero bits.
     CountLeadingZeros { a: u8, s: u8 },
     /// `extsb rA, rS` — sign-extend byte.
