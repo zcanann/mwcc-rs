@@ -168,20 +168,38 @@ impl Generator {
         // `< 0` uses a `srawi` sign mask; `> 0` uses a `neg; andc; srawi` mask.
         // (`>= 0` / `<= 0` use different sequences — `srwi; addi` / `neg; orc;
         // srawi` — so they defer here rather than reuse these via and<->andc.)
-        let positive = match operator {
-            BinaryOperator::Less => false,
-            BinaryOperator::Greater => true,
-            _ => return Ok(false),
-        };
+        if !matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::LessEqual) {
+            return Ok(false);
+        }
         let use_andc = x_is_false;
         let x = self.general_register_of_leaf(left)?;
-        // The base mask (all-ones when the base condition holds) goes in the scratch.
-        if positive {
-            self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
-            self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: x });
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
-        } else {
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: x, shift: 31 });
+        // The mask (all-ones exactly when the condition holds) goes in the scratch;
+        // each relation builds it differently.
+        match operator {
+            // x < 0: the sign bit broadcast.
+            BinaryOperator::Less => {
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: x, shift: 31 });
+            }
+            // x > 0: `(-x) & ~x` has the sign bit set iff x > 0.
+            BinaryOperator::Greater => {
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
+                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: x });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+            }
+            // x >= 0: `(x >>> 31) - 1` (0/1 then minus one) — needs a free register.
+            BinaryOperator::GreaterEqual => {
+                let Some(free) = (3u8..=12).find(|r| *r != x && *r != destination && !self.reserved.contains(r)) else {
+                    return Ok(false);
+                };
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: free, s: x, shift: 31 });
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: free, immediate: -1 });
+            }
+            // x <= 0: `(x | ~(-x))` has the sign bit set iff x <= 0.
+            _ => {
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
+                self.output.instructions.push(Instruction::OrComplement { a: GENERAL_SCRATCH, s: x, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+            }
         }
         self.output.instructions.push(if use_andc {
             Instruction::AndComplement { a: destination, s: x, b: GENERAL_SCRATCH }
