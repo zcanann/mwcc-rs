@@ -140,7 +140,7 @@ impl Generator {
             // a leaf or a full-word load (e.g. `*p > C`, `s->a > C`).
             BinaryOperator::Greater
                 if signed_left && !self.is_narrow_leaf(left)
-                    && (leaf_name(left).is_some() || self.is_word_load(left))
+                    && (leaf_name(left).is_some() || self.is_simple_word_load(left))
                     && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
             {
                 let x = if leaf_name(left).is_some() {
@@ -166,7 +166,7 @@ impl Generator {
             // signed `(load) < C` : the load is the low operand (read once) → r0;
             // the constant is the high operand (read twice) → a fresh register.
             BinaryOperator::Less
-                if signed_left && self.is_word_load(left) && !self.is_narrow_leaf(right)
+                if signed_left && self.is_simple_word_load(left) && !self.is_narrow_leaf(right)
                     && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
             {
                 self.evaluate_general(left, GENERAL_SCRATCH)?;
@@ -192,7 +192,7 @@ impl Generator {
             // reuse the dead base register there (it picks r5) — a coloring our
             // allocator does not yet reproduce.
             BinaryOperator::NotEqual
-                if self.is_word_load(left) && self.is_word_load(right)
+                if self.is_simple_word_load(left) && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
                     && load_base_name(left) == load_base_name(right) =>
             {
@@ -226,7 +226,7 @@ impl Generator {
             // would collide with the scratch and mwcc declines to reuse the dead
             // base anyway, so `<` defers there.
             BinaryOperator::Less | BinaryOperator::Greater
-                if signed_left && self.is_word_load(left) && self.is_word_load(right)
+                if signed_left && self.is_simple_word_load(left) && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
                     && load_base_name(left) == load_base_name(right)
                     && (matches!(operator, BinaryOperator::Greater) || d != GENERAL_SCRATCH) =>
@@ -461,6 +461,18 @@ impl Generator {
         }
     }
 
+    /// A full-word load that is a SINGLE machine instruction — a dereference,
+    /// struct member, or constant-index subscript (`lwz off(base)`). A
+    /// variable-index subscript is excluded: it scales to `slwi; lwzx`, and the
+    /// branchless comparison idioms then mis-schedule the constant/second-load
+    /// against that two-instruction sequence (mwcc fills the `lwzx` latency gap
+    /// with the independent `li`/load, which the scheduler does not reproduce),
+    /// so those defer.
+    pub(crate) fn is_simple_word_load(&self, value: &Expression) -> bool {
+        self.is_word_load(value)
+            && !matches!(value, Expression::Index { index, .. } if constant_value(index).is_none())
+    }
+
     /// Whether `value` is a load of a signed 8-bit value (a `char`/`signed char`
     /// dereference, index, or struct member) — emitted as `lbz`, which zero-extends
     /// and so needs a following `extsb` in the sign-sensitive idioms.
@@ -480,11 +492,13 @@ impl Generator {
     /// the scratch and the wide operand stays in its home register. Build-aware via
     /// each leaf's signedness; transparent (home registers) for the all-int case.
     pub(crate) fn place_compare_leaves(&mut self, left: &Expression, right: &Expression) -> Compilation<(u8, u8)> {
-        // Two full-word memory loads: mwcc loads the left operand into a fresh
-        // register (the allocator colors it at the lowest free GPR) and the right
-        // into the scratch, in source order — `lwz r4,…; lwz r0,…`. The equality
-        // idiom that follows (`subf r0,r4,r0; cntlzw; srwi 5`) then matches.
-        if self.is_word_load(left) && self.is_word_load(right) {
+        // Two single-instruction full-word loads: mwcc loads the left operand into
+        // a fresh register (the allocator colors it at the lowest free GPR) and the
+        // right into the scratch, in source order — `lwz r4,…; lwz r0,…`. The
+        // equality idiom that follows (`subf r0,r4,r0; cntlzw; srwi 5`) then
+        // matches. Variable-index subscripts (scaled `slwi; lwzx`) are excluded —
+        // two of them mis-schedule, so they defer.
+        if self.is_simple_word_load(left) && self.is_simple_word_load(right) {
             let left_register = self.fresh_virtual_general();
             self.evaluate_general(left, left_register)?;
             self.evaluate_general(right, GENERAL_SCRATCH)?;
