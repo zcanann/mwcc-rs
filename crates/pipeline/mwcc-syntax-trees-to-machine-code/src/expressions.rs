@@ -677,6 +677,52 @@ impl Generator {
     /// Emit a store: `*p = v;` or `p[i] = v;`. The value goes to memory at the
     /// place addressed by the pointer (with a folded displacement for a constant
     /// index, or a scaled indexed store for a variable one).
+    /// `a[i] op= rhs` — a read-modify-write of a variable-index word element with
+    /// a leaf right-hand side (`a[i] += x`, `a[i] |= flags`). mwcc scales the
+    /// index once into its own register and reuses it for both the indexed load
+    /// and store, computing the new value in the scratch:
+    /// `slwi r4,i,2; lwzx r0,base,r4; <op> r0,r0,rhs; stwx r0,base,r4`. The scaled
+    /// index is a fresh virtual the allocator colors (off the base, rhs and r0).
+    /// A constant or computed rhs has a different register shape and is deferred.
+    fn try_emit_indexed_rmw(&mut self, target: &Expression, value: &Expression) -> Compilation<bool> {
+        use BinaryOperator::*;
+        let Expression::Index { base, index } = target else { return Ok(false) };
+        if leaf_name(base).is_none() || constant_value(index).is_some() {
+            return Ok(false);
+        }
+        let Expression::Binary { operator, left, right } = value else { return Ok(false) };
+        if !matches!(operator, Add | Subtract | BitAnd | BitOr | BitXor | Multiply) {
+            return Ok(false);
+        }
+        // The modified value must read the very same element being stored.
+        if !same_operand(target, left) {
+            return Ok(false);
+        }
+        let Some(rhs_register) = self.plain_integer_leaf_register(right) else {
+            return Ok(false);
+        };
+        let (pointee, address) = self.resolve_pointer(base)?;
+        if !matches!(pointee, Pointee::Int | Pointee::UnsignedInt) {
+            return Ok(false);
+        }
+        let index_register = self.general_register_of_leaf(index)?;
+        let scaled = self.fresh_virtual_general();
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: pointee.size().trailing_zeros() as u8 });
+        self.output.instructions.push(indexed_load(pointee, GENERAL_SCRATCH, address, scaled));
+        let scratch = GENERAL_SCRATCH;
+        let combined = match operator {
+            Add => Instruction::Add { d: scratch, a: scratch, b: rhs_register },
+            Subtract => Instruction::SubtractFrom { d: scratch, a: rhs_register, b: scratch },
+            Multiply => Instruction::MultiplyLow { d: scratch, a: scratch, b: rhs_register },
+            BitAnd => Instruction::And { a: scratch, s: scratch, b: rhs_register },
+            BitOr => Instruction::Or { a: scratch, s: scratch, b: rhs_register },
+            _ => Instruction::Xor { a: scratch, s: scratch, b: rhs_register },
+        };
+        self.output.instructions.push(combined);
+        self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
+        Ok(true)
+    }
+
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
         // A type-pun store through a frame-resident address (`*(int*)&x = v`) is a
         // plain displacement store to r1.
@@ -716,6 +762,11 @@ impl Generator {
                 }
                 return Ok(());
             }
+        }
+        // `a[i] op= rhs` (variable index, leaf rhs) — scale the index once and
+        // reuse it for the indexed load and store, the value flowing through r0.
+        if self.try_emit_indexed_rmw(target, value)? {
+            return Ok(());
         }
         // `p->field = v;` — a displacement store to the struct member.
         if let Expression::Member { base, offset, member_type } = target {
