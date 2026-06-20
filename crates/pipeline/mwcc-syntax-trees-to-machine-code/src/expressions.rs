@@ -530,6 +530,20 @@ impl Generator {
                 self.output.instructions.push(displacement_load(pointee, destination, 1, slot.offset + offset as i16));
                 return Ok(());
             }
+            // `gp->field` where `gp` is a global struct pointer: load the pointer
+            // value through its global addressing, then load the field at its offset
+            // from that register — `lwz d, gp@…; lwz d, offset(d)`. (A global struct
+            // *value* or *array* base needs an address-of, not a value load, so it
+            // falls through to defer.)
+            if !self.locations.contains_key(name.as_str())
+                && matches!(self.globals.get(name.as_str()), Some(Type::StructPointer))
+            {
+                self.emit_global_load_value(name, destination)?;
+                let pointee = pointee_of_type(member_type)
+                    .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
+                return Ok(());
+            }
         }
         let address = self.member_base_register(base)?;
         let pointee = pointee_of_type(member_type)

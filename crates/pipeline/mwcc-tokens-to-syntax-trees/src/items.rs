@@ -769,6 +769,11 @@ impl Parser {
                 // routes the supported shapes and defers the rest. `parse_type` set
                 // this for the declared type and nothing since has reset it.
                 let is_const = self.last_type_was_const;
+                // A struct-typed global (pointer, value, or array) carries the struct
+                // tag `parse_type` stashed, so `gp->field` / `g.field` / `arr[i].field`
+                // resolve the member layout. Codegen handles the struct-pointer base
+                // and defers the value/array bases (no miscompile).
+                let global_struct_tag = self.last_struct_tag.clone();
                 let mut declarator_name = name;
                 loop {
                     // Array dimensions `[A][B]…`: each `[N]` is an explicit length,
@@ -810,6 +815,9 @@ impl Parser {
                             None => return Err(Diagnostic::error("an array with no length needs an initializer")),
                         }
                     };
+                    if let Some(tag) = &global_struct_tag {
+                        self.variable_structs.insert(declarator_name.clone(), tag.clone());
+                    }
                     globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer });
                     if *self.peek() == Token::Comma {
                         self.advance();
