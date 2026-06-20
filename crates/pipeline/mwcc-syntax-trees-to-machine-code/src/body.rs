@@ -118,6 +118,13 @@ impl Generator {
             if !function.guards.is_empty() {
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
             }
+            // Byte-exact-or-defer: a value (parameter or register local) read after a
+            // call is read from a register the call clobbered. mwcc preserves it in a
+            // callee-saved register (r31…) — that allocator is the next subsystem.
+            // Until then DEFER rather than emit a read of the clobbered register.
+            if reads_value_across_call(function) {
+                return Err(Diagnostic::error("a value live across a call needs the callee-saved register allocator (roadmap)"));
+            }
             self.non_leaf = true;
             self.frame_size = 16;
             self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });

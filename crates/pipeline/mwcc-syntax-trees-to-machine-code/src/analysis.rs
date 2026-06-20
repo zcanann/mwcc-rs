@@ -1,6 +1,164 @@
 //! Pure predicates and shape queries over expressions — no `Generator` state.
 
+use std::collections::HashSet;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
+
+/// Whether the function reads a register-resident value (a parameter or a
+/// register local) at a point where a call has already run — which would read it
+/// from a caller-saved register the call clobbered. mwcc spills such a value to a
+/// callee-saved register (r31…); until that allocator exists, the straight-line
+/// non-leaf path must DEFER these rather than emit a read of the clobbered
+/// register (a silent miscompile). Conservative: it only clears reads that are
+/// guaranteed to happen before every call.
+pub(crate) fn reads_value_across_call(function: &Function) -> bool {
+    let mut registers: HashSet<&str> = HashSet::new();
+    for parameter in &function.parameters {
+        registers.insert(parameter.name.as_str());
+    }
+    for local in &function.locals {
+        registers.insert(local.name.as_str());
+    }
+
+    // Items run in order: local initializers, then body statements, then the
+    // return expression. `prior_call` becomes true once a strictly-earlier item
+    // performed a call — after which any register-resident read is clobbered.
+    let mut prior_call = false;
+    for local in &function.locals {
+        if let Some(initializer) = &local.initializer {
+            if expression_reads_across_call(initializer, prior_call, &registers) {
+                return true;
+            }
+            if expression_has_call(initializer) {
+                prior_call = true;
+            }
+        }
+    }
+    for statement in &function.statements {
+        if statement_reads_across_call(statement, prior_call, &registers) {
+            return true;
+        }
+        if statement_has_call(statement) {
+            prior_call = true;
+        }
+    }
+    if let Some(value) = &function.return_expression {
+        if expression_reads_across_call(value, prior_call, &registers) {
+            return true;
+        }
+    }
+    false
+}
+
+fn statement_reads_across_call(statement: &Statement, prior_call: bool, registers: &HashSet<&str>) -> bool {
+    match statement {
+        Statement::Store { target, value } => {
+            expression_reads_across_call(target, prior_call, registers)
+                || expression_reads_across_call(value, prior_call, registers)
+        }
+        Statement::Assign { value, .. } => expression_reads_across_call(value, prior_call, registers),
+        Statement::Expression(expression) => expression_reads_across_call(expression, prior_call, registers),
+        Statement::Return(value) => value
+            .as_ref()
+            .is_some_and(|value| expression_reads_across_call(value, prior_call, registers)),
+        // Control-flow statements are routed through their own (guarded) paths
+        // before reaching the straight-line emitter; treat any register read in
+        // them conservatively as unsafe when a call is involved.
+        Statement::If { condition, then_body, else_body } => {
+            expression_reads_across_call(condition, prior_call, registers)
+                || then_body.iter().chain(else_body).any(|s| statement_reads_across_call(s, prior_call, registers))
+        }
+        Statement::Switch { scrutinee, .. } => expression_reads_across_call(scrutinee, prior_call, registers),
+    }
+}
+
+/// Whether evaluating `expression` reads a register-resident value after a call.
+/// If a call already ran (`prior_call`), any register read is unsafe. Otherwise
+/// the read is unsafe only if a call *within* this expression can precede it —
+/// arithmetic on a call *result* (`g(a) + 1`) is fine because the register read
+/// `a` lives in the call's argument (evaluated before the call) and nothing is
+/// read afterward, whereas `a + g()` is not (mwcc evaluates the call operand
+/// first, so `a` is read after it).
+fn expression_reads_across_call(expression: &Expression, prior_call: bool, registers: &HashSet<&str>) -> bool {
+    if prior_call {
+        return reads_register(expression, registers);
+    }
+    reads_register_after_call(expression, registers)
+}
+
+/// Whether, evaluating `expression`, a register-resident read can happen after a
+/// call completes. Binary/index operands may be evaluated in either order (mwcc
+/// runs the heavier — a call — first), so a call in one operand beside a register
+/// read in the other is unsafe; a call's arguments run before that call, so reads
+/// confined to them are safe.
+fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>) -> bool {
+    // Two sibling operands evaluated in an order mwcc may pick: a call in one
+    // beside a register read in the other can read the register after the call.
+    let pair = |left: &Expression, right: &Expression| {
+        reads_register_after_call(left, registers)
+            || reads_register_after_call(right, registers)
+            || (expression_has_call(left) && reads_register(right, registers))
+            || (expression_has_call(right) && reads_register(left, registers))
+    };
+    match expression {
+        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => false,
+        Expression::Binary { left, right, .. } => pair(left, right),
+        Expression::Index { base, index } => pair(base, index),
+        Expression::Assign { target, value } => pair(target, value),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => reads_register_after_call(operand, registers),
+        Expression::Dereference { pointer } => reads_register_after_call(pointer, registers),
+        Expression::AddressOf { operand } => reads_register_after_call(operand, registers),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => reads_register_after_call(base, registers),
+        Expression::Conditional { condition, when_true, when_false } => {
+            reads_register_after_call(condition, registers)
+                || reads_register_after_call(when_true, registers)
+                || reads_register_after_call(when_false, registers)
+                || (expression_has_call(condition) && (reads_register(when_true, registers) || reads_register(when_false, registers)))
+                || ((expression_has_call(when_true) || expression_has_call(when_false)) && reads_register(condition, registers))
+        }
+        // A call's arguments run left-to-right before the call; a read is unsafe
+        // only if an earlier argument already made a call.
+        Expression::Call { arguments, .. } => {
+            let mut argument_called = false;
+            for argument in arguments {
+                if argument_called && reads_register(argument, registers) {
+                    return true;
+                }
+                if reads_register_after_call(argument, registers) {
+                    return true;
+                }
+                if expression_has_call(argument) {
+                    argument_called = true;
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Whether `expression` reads any register-resident name.
+fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
+    match expression {
+        Expression::Variable(name) => registers.contains(name.as_str()),
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => false,
+        Expression::Binary { left, right, .. } => {
+            reads_register(left, registers) || reads_register(right, registers)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => reads_register(operand, registers),
+        Expression::Dereference { pointer } => reads_register(pointer, registers),
+        Expression::AddressOf { operand } => reads_register(operand, registers),
+        Expression::Index { base, index } => reads_register(base, registers) || reads_register(index, registers),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => reads_register(base, registers),
+        Expression::Conditional { condition, when_true, when_false } => {
+            reads_register(condition, registers)
+                || reads_register(when_true, registers)
+                || reads_register(when_false, registers)
+        }
+        Expression::Call { arguments, .. } => arguments.iter().any(|argument| reads_register(argument, registers)),
+        Expression::Assign { target, value } => {
+            reads_register(target, registers) || reads_register(value, registers)
+        }
+    }
+}
 
 /// Whether an expression contains a call anywhere.
 pub(crate) fn expression_has_call(expression: &Expression) -> bool {
