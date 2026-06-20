@@ -51,6 +51,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         reuse_scratch_constant: false,
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
+        callee_saved: Vec::new(),
         call_return_types: call_return_types.clone(),
     };
     generator.assign_parameters(function)?;
@@ -82,7 +83,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         let touches_fpu = generator.output.instructions.iter().any(|instruction| instruction.is_floating_point());
         let single_arithmetic = generator.output.instructions.iter().any(|instruction| instruction.is_single_precision_arithmetic());
         generator.output.frame = Some(FrameInfo {
-            saved_gpr_count: 0,
+            saved_gpr_count: generator.callee_saved.len() as u8,
             saved_fpr_count: 0,
             uses_fpu: (generator.non_leaf && touches_fpu) || single_arithmetic,
         });

@@ -49,6 +49,112 @@ pub(crate) fn reads_value_across_call(function: &Function) -> bool {
     false
 }
 
+/// The register-resident values (parameters/locals) read after a call, in order
+/// of first such read — the values mwcc keeps in callee-saved registers across the
+/// call. Returns `None` when a value is read across a call *within* one expression
+/// (a call beside a register read in a binary/index tree); those need the general
+/// allocator and are deferred by the simple callee-saved path.
+pub(crate) fn values_live_across_call(function: &Function) -> Option<Vec<String>> {
+    let mut registers: HashSet<&str> = HashSet::new();
+    for parameter in &function.parameters {
+        registers.insert(parameter.name.as_str());
+    }
+    for local in &function.locals {
+        registers.insert(local.name.as_str());
+    }
+
+    let mut collected: Vec<String> = Vec::new();
+    let mut prior_call = false;
+    let mut take = |expression: &Expression, prior_call: bool, collected: &mut Vec<String>| -> bool {
+        if prior_call {
+            collect_register_reads(expression, &registers, collected);
+            true
+        } else {
+            !reads_register_after_call(expression, &registers)
+        }
+    };
+
+    for local in &function.locals {
+        if let Some(initializer) = &local.initializer {
+            if !take(initializer, prior_call, &mut collected) {
+                return None;
+            }
+            if expression_has_call(initializer) {
+                prior_call = true;
+            }
+        }
+    }
+    for statement in &function.statements {
+        let expressions: Vec<&Expression> = match statement {
+            Statement::Store { target, value } => vec![target, value],
+            Statement::Assign { value, .. } => vec![value],
+            Statement::Expression(expression) => vec![expression],
+            Statement::Return(value) => value.iter().collect(),
+            Statement::If { .. } | Statement::Switch { .. } => return None,
+        };
+        for expression in expressions {
+            if !take(expression, prior_call, &mut collected) {
+                return None;
+            }
+        }
+        if statement_has_call(statement) {
+            prior_call = true;
+        }
+    }
+    if let Some(value) = &function.return_expression {
+        if !take(value, prior_call, &mut collected) {
+            return None;
+        }
+    }
+    Some(collected)
+}
+
+/// Whether `expression` reads the variable `name`.
+pub(crate) fn expression_reads_name(expression: &Expression, name: &str) -> bool {
+    let mut single = HashSet::new();
+    single.insert(name);
+    reads_register(expression, &single)
+}
+
+/// Append (in evaluation order, de-duplicated) every register-resident name read
+/// within `expression`.
+fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, collected: &mut Vec<String>) {
+    match expression {
+        Expression::Variable(name) => {
+            if registers.contains(name.as_str()) && !collected.iter().any(|seen| seen == name) {
+                collected.push(name.clone());
+            }
+        }
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => {}
+        Expression::Binary { left, right, .. } => {
+            collect_register_reads(left, registers, collected);
+            collect_register_reads(right, registers, collected);
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => collect_register_reads(operand, registers, collected),
+        Expression::Dereference { pointer } => collect_register_reads(pointer, registers, collected),
+        Expression::AddressOf { operand } => collect_register_reads(operand, registers, collected),
+        Expression::Index { base, index } => {
+            collect_register_reads(base, registers, collected);
+            collect_register_reads(index, registers, collected);
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => collect_register_reads(base, registers, collected),
+        Expression::Conditional { condition, when_true, when_false } => {
+            collect_register_reads(condition, registers, collected);
+            collect_register_reads(when_true, registers, collected);
+            collect_register_reads(when_false, registers, collected);
+        }
+        Expression::Call { arguments, .. } => {
+            for argument in arguments {
+                collect_register_reads(argument, registers, collected);
+            }
+        }
+        Expression::Assign { target, value } => {
+            collect_register_reads(target, registers, collected);
+            collect_register_reads(value, registers, collected);
+        }
+    }
+}
+
 fn statement_reads_across_call(statement: &Statement, prior_call: bool, registers: &HashSet<&str>) -> bool {
     match statement {
         Statement::Store { target, value } => {

@@ -118,10 +118,15 @@ impl Generator {
             if !function.guards.is_empty() {
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
             }
+            // A single value live across the call goes in a callee-saved register
+            // (r31), saved in the prologue and reloaded in the epilogue.
+            if self.try_callee_saved_single_value(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
-            // callee-saved register (r31…) — that allocator is the next subsystem.
-            // Until then DEFER rather than emit a read of the clobbered register.
+            // callee-saved register (r31…) — multi-value/local cases are the next
+            // step; until then DEFER rather than emit a read of the clobbered register.
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error("a value live across a call needs the callee-saved register allocator (roadmap)"));
             }
@@ -333,7 +338,90 @@ impl Generator {
 
     /// Tear down the stack frame (if one was allocated) and return. A non-leaf
     /// function restores the link register from `frame_size + 4` first.
+    /// A straight-line non-leaf function with exactly one parameter live across a
+    /// call: mwcc copies that parameter into a callee-saved register (r31) at entry,
+    /// saving/reloading r31 around the frame so the value survives the call. The
+    /// body and return then read it from r31. Returns whether this path applied.
+    fn try_callee_saved_single_value(&mut self, function: &Function) -> Compilation<bool> {
+        // Address-taken locals are handled by the frame-resident path before this.
+        if !self.frame_slots.is_empty() {
+            return Ok(false);
+        }
+        // The body must be straight-line calls (control flow / stores route through
+        // their own paths; a store adjacent to the moves would be scheduler-shuffled).
+        if function.statements.iter().any(|statement| !matches!(statement, Statement::Expression(_))) {
+            return Ok(false);
+        }
+        // Exactly one value lives across the call, and it is a (general) parameter —
+        // locals and multi-value cases defer to the general allocator for now.
+        let Some(live) = values_live_across_call(function) else {
+            return Ok(false);
+        };
+        let [name] = live.as_slice() else {
+            return Ok(false);
+        };
+        if !function.parameters.iter().any(|parameter| &parameter.name == name) {
+            return Ok(false);
+        }
+        if matches!(function.return_type, Type::Float | Type::Double) {
+            return Ok(false);
+        }
+        // If the value is passed to a call, its first such use stays in the incoming
+        // register (mwcc keeps it there until a call clobbers it, skipping the move).
+        // That value-location tracking is not modeled here — defer those.
+        let passed_to_call = function.statements.iter().any(|statement| match statement {
+            Statement::Expression(expression) => expression_reads_name(expression, name),
+            _ => false,
+        });
+        if passed_to_call {
+            return Ok(false);
+        }
+        let (class, incoming) = match self.locations.get(name) {
+            Some(location) => (location.class, location.register),
+            None => return Ok(false),
+        };
+        if class != ValueClass::General {
+            return Ok(false);
+        }
+
+        // Promote the parameter to r31, saved at the top of a 16-byte frame.
+        const SAVED: u8 = 31;
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![SAVED];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: SAVED, a: 1, offset: 12 });
+        // `mr r31, <incoming>` (or r31, in, in), then retarget the parameter's home.
+        self.output.instructions.push(Instruction::Or { a: SAVED, s: incoming, b: incoming });
+        if let Some(location) = self.locations.get_mut(name) {
+            location.register = SAVED;
+        }
+
+        for statement in &function.statements {
+            self.emit_statement(statement)?;
+        }
+        if function.return_type != Type::Void {
+            let result = Eabi::general_result().number;
+            let return_expression = function
+                .return_expression
+                .as_ref()
+                .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
+            self.evaluate_tail(return_expression, function.return_type, result)?;
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     pub(crate) fn emit_epilogue_and_return(&mut self) {
+        // Reload callee-saved registers (highest first, from the top of the frame)
+        // before the saved-LR reload, so that reload stays directly before `mtlr`
+        // where the hoist pass finds it and issues it right after the last call.
+        for (index, &register) in self.callee_saved.iter().enumerate() {
+            let offset = self.frame_size - 4 * (index as i16 + 1);
+            self.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+        }
         if self.non_leaf {
             self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
             self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });

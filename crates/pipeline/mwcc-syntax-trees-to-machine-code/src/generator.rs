@@ -102,6 +102,10 @@ pub(crate) struct Generator {
     /// distinct-constant stores, so each store reuses its register rather than
     /// re-materializing (mwcc materializes both values up front, then stores).
     pub(crate) prematerialized_constants: Vec<(i32, u8)>,
+    /// Callee-saved general registers this function uses (r31 first, descending) to
+    /// hold values live across a call. They are saved high-to-low in the prologue
+    /// and reloaded in the epilogue, and drive the unwind table's saved-GPR count.
+    pub(crate) callee_saved: Vec<u8>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
