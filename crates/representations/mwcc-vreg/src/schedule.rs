@@ -100,6 +100,63 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
         .collect()
 }
 
+/// Schedule a non-leaf function's link-register save (`stw r0,20(r1)`) past the
+/// leading argument materializations of its first call. mwcc fills the `mflr`->save
+/// latency gap with up to two ready instructions, so `stwu; mflr r0; li r3,…; stw
+/// r0,20(r1); bl` rather than saving immediately. Returns the index permutation
+/// (old -> new) so relocations can be remapped; identity when nothing moved.
+pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+    let identity: Vec<usize> = (0..instructions.len()).collect();
+    // Reordering shifts instruction indices, which would invalidate branch targets.
+    if has_forward_branch(instructions) {
+        return identity;
+    }
+    // The non-leaf prologue: `mflr r0` immediately followed by `stw r0,20(r1)`. A
+    // callee-saved or already-scheduled prologue does not match (the save is not the
+    // very next instruction), so it is left untouched.
+    let Some(mflr) = instructions.iter().position(|instruction| matches!(instruction, Instruction::MoveFromLinkRegister { d: 0 })) else {
+        return identity;
+    };
+    let save = mflr + 1;
+    if save >= instructions.len() || !matches!(instructions[save], Instruction::StoreWord { s: 0, a: 1, offset: 20 }) {
+        return identity;
+    }
+    // The leading run of argument materializations mwcc hoists into the latency gap:
+    // load-immediate forms only (`li`, `lis`, and an SDA21 string/global address,
+    // which is `addi rD,0,…` + a relocation — all `a == 0`). A frame- or
+    // register-relative `addi rD,r1,…` (e.g. `&local`) is NOT hoisted; it stays after
+    // the save, so the run requires `a == 0`.
+    let mut run = 0;
+    while save + 1 + run < instructions.len()
+        && matches!(instructions[save + 1 + run], Instruction::AddImmediate { a: 0, .. } | Instruction::AddImmediateShifted { a: 0, .. })
+    {
+        run += 1;
+    }
+    let next = save + 1 + run;
+    if run == 0 || next >= instructions.len() || !matches!(instructions[next], Instruction::BranchAndLink { .. }) {
+        return identity;
+    }
+    let moved_count = run.min(2);
+    // The save reads r0 (from `mflr`); it may only pass instructions that leave r0
+    // alone (argument materializations write r3.., never the scratch).
+    if instructions[save + 1..save + 1 + moved_count].iter().any(touches_register_zero) {
+        return identity;
+    }
+    let moved = instructions.remove(save);
+    instructions.insert(save + moved_count, moved);
+    (0..instructions.len())
+        .map(|old| {
+            if old == save {
+                save + moved_count
+            } else if (save + 1..=save + moved_count).contains(&old) {
+                old - 1
+            } else {
+                old
+            }
+        })
+        .collect()
+}
+
 /// Whether an instruction reads or writes general register r0 (the scratch).
 fn touches_register_zero(instruction: &Instruction) -> bool {
     register_operands(instruction).iter().any(|operand| operand.class == Class::General && operand.register == 0)

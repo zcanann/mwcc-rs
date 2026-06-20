@@ -523,12 +523,16 @@ impl Generator {
                 let index = self.intern_string_literal(bytes);
                 self.record_relocation(RelocationKind::EmbSda21, &format!("@@str{index}"));
                 self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
-                // The `@N` pool, object, and relocation are byte-exact; the only diff is
-                // that mwcc schedules a non-leaf call's READY argument materialization
-                // (this `li`/`addi`, also a plain `foo(const)`) between `mflr` and the
-                // LR-save `stw`, while the prologue scheduler emits it after. Until that
-                // ordering is modeled, defer rather than emit the wrong instruction order.
-                Err(Diagnostic::error("a string-literal argument needs the prologue arg scheduler (ready-arg materialization before the LR save) (roadmap)"))
+                // Single-function string args are byte-exact, but the @N numbering of
+                // function-body strings is PER-FUNCTION (each function's strings sit in
+                // its own anonymous block before its extab/extabindex, with mwcc's
+                // per-function +4 gap), whereas the main.rs resolver numbers them
+                // unit-sequentially — so a multi-function TU diverges in the symbol
+                // table / .sdata layout. Defer until the @N numbering moves into the
+                // writer's per-function counter. (The prologue arg scheduler that this
+                // needed is now in place — `foo(const)` is byte-exact.)
+                let _ = index;
+                Err(Diagnostic::error("a string-literal argument needs per-function @N numbering (multi-function TUs) (roadmap)"))
             }
             GlobalAddressing::Absolute => Err(Diagnostic::error("a string literal under absolute addressing is not supported yet (roadmap)")),
         }
