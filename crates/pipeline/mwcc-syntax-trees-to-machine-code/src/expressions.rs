@@ -568,6 +568,14 @@ impl Generator {
     /// `array[index].field` for an array/pointer of structs: scale `index` by the
     /// struct `stride`, add to the array base, and load the member at `offset`.
     fn emit_indexed_member_load(&mut self, array: &Expression, index: &Expression, stride: u16, offset: u16, member_type: Type, destination: u8) -> Compilation<()> {
+        // `arr[i].field` where `arr` is a file-scope struct array: materialize arr's
+        // address with the same interleaved base/scale schedule as a plain global
+        // subscript, then load the member at its offset.
+        if let Expression::Variable(name) = array {
+            if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+                return self.emit_global_indexed_member_load(name, total_size, index, stride, offset, member_type, destination);
+            }
+        }
         let array_register = self.general_register_of_leaf(array)?;
         let index_register = self.general_register_of_leaf(index)?;
         if stride.is_power_of_two() {
@@ -582,6 +590,55 @@ impl Generator {
         } else {
             self.output.instructions.push(Instruction::Add { d: array_register, a: array_register, b: GENERAL_SCRATCH });
             self.output.instructions.push(displacement_load(pointee, destination, array_register, offset as i16));
+        }
+        Ok(())
+    }
+
+    /// `arr[index].field` for a file-scope struct array `arr`: a constant index folds
+    /// `index*stride + offset` into the load displacement; a variable index runs the
+    /// same base/scale interleave as [`Self::emit_global_array_subscript`] (the scale
+    /// goes to the scratch before the base lands in `destination`; a large array's
+    /// high half avoids the index register) and ends in `lwzx` (offset 0) or
+    /// `add; lwz offset`. Power-of-two struct strides only — a non-power stride needs
+    /// `mulli`, whose interleave is a follow-up.
+    fn emit_global_indexed_member_load(&mut self, name: &str, total_size: u32, index: &Expression, stride: u16, offset: u16, member_type: Type, destination: u8) -> Compilation<()> {
+        let pointee = pointee_of_type(member_type)
+            .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+        // The base materializes into `destination` and is then its own load base, so
+        // `destination` cannot be the scratch r0.
+        if destination == GENERAL_SCRATCH {
+            return Err(Diagnostic::error("a global struct-array member into the scratch register is not supported yet (roadmap)"));
+        }
+        // A constant index folds into the load displacement.
+        if let Some(constant) = constant_value(index) {
+            let total = constant * stride as i64 + offset as i64;
+            let total = i16::try_from(total).map_err(|_| Diagnostic::error("struct-array member offset out of range (roadmap)"))?;
+            self.emit_global_array_base(name, total_size, destination)?;
+            self.output.instructions.push(displacement_load(pointee, destination, destination, total));
+            return Ok(());
+        }
+        if !stride.is_power_of_two() {
+            return Err(Diagnostic::error("a global struct-array member with a non-power-of-two stride is not supported yet (roadmap)"));
+        }
+        let index_register = self.general_register_of_leaf(index)?;
+        let shift = stride.trailing_zeros() as u8;
+        let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+        if small {
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::EmbSda21, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+        } else {
+            let high = if destination != index_register { destination } else { self.free_general_excluding(index_register)? };
+            self.emit_address_high(high, name);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: high, immediate: 0 });
+        }
+        if offset == 0 {
+            self.output.instructions.push(indexed_load(pointee, destination, destination, GENERAL_SCRATCH));
+        } else {
+            self.output.instructions.push(Instruction::Add { d: destination, a: destination, b: GENERAL_SCRATCH });
+            self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
         }
         Ok(())
     }

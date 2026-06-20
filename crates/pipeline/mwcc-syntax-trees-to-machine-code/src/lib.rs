@@ -51,8 +51,14 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
             .filter(|global| !global.is_const && !global.is_extern)
             .filter_map(|global| {
                 global.array_length.map(|length| {
-                    let size = (global.declared_type.width() as u32 / 8) * length as u32;
-                    (global.name.clone(), size)
+                    // A struct array's element size is its laid-out struct size, not the
+                    // word-default scalar width — so `struct S arr[N]` measures N*sizeof,
+                    // picking the right address mode (SDA21 vs ADDR16) by true total size.
+                    let element_size = match global.declared_type {
+                        mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
+                        other => other.width() as u32 / 8,
+                    };
+                    (global.name.clone(), element_size * length as u32)
                 })
             })
             .collect(),
