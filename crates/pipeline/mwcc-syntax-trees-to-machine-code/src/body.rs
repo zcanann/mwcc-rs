@@ -118,9 +118,9 @@ impl Generator {
             if !function.guards.is_empty() {
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
             }
-            // A single value live across the call goes in a callee-saved register
-            // (r31), saved in the prologue and reloaded in the epilogue.
-            if self.try_callee_saved_single_value(function)? {
+            // Parameters live across the call go in callee-saved registers (r31
+            // descending), saved in the prologue and reloaded in the epilogue.
+            if self.try_callee_saved(function)? {
                 return Ok(());
             }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
@@ -338,11 +338,13 @@ impl Generator {
 
     /// Tear down the stack frame (if one was allocated) and return. A non-leaf
     /// function restores the link register from `frame_size + 4` first.
-    /// A straight-line non-leaf function with exactly one parameter live across a
-    /// call: mwcc copies that parameter into a callee-saved register (r31) at entry,
-    /// saving/reloading r31 around the frame so the value survives the call. The
-    /// body and return then read it from r31. Returns whether this path applied.
-    fn try_callee_saved_single_value(&mut self, function: &Function) -> Compilation<bool> {
+    /// A straight-line non-leaf function whose parameters live across its call(s):
+    /// mwcc copies each into a callee-saved register at entry (saved/reloaded around
+    /// the frame) so it survives the calls. The registers are assigned by parameter
+    /// order — the LAST live parameter gets r31, the next r30, and so on — and the
+    /// body/return then read the values from those registers. Returns whether it
+    /// applied. (Locals, floats, and values passed to a call still defer.)
+    fn try_callee_saved(&mut self, function: &Function) -> Compilation<bool> {
         // Address-taken locals are handled by the frame-resident path before this.
         if !self.frame_slots.is_empty() {
             return Ok(false);
@@ -352,51 +354,82 @@ impl Generator {
         if function.statements.iter().any(|statement| !matches!(statement, Statement::Expression(_))) {
             return Ok(false);
         }
-        // Exactly one value lives across the call, and it is a (general) parameter —
-        // locals and multi-value cases defer to the general allocator for now.
-        let Some(live) = values_live_across_call(function) else {
-            return Ok(false);
-        };
-        let [name] = live.as_slice() else {
-            return Ok(false);
-        };
-        if !function.parameters.iter().any(|parameter| &parameter.name == name) {
-            return Ok(false);
-        }
         if matches!(function.return_type, Type::Float | Type::Double) {
             return Ok(false);
         }
-        // If the value is passed to a call, its first such use stays in the incoming
-        // register (mwcc keeps it there until a call clobbers it, skipping the move).
-        // That value-location tracking is not modeled here — defer those.
+        let Some(live) = values_live_across_call(function) else {
+            return Ok(false);
+        };
+        if live.is_empty() {
+            return Ok(false);
+        }
+        // Every live value must be a general-class parameter (locals defer), and none
+        // may be passed to a call — the first such argument use stays in the incoming
+        // register (mwcc skips the move until a call clobbers it), which needs
+        // value-location tracking not modeled here.
         let passed_to_call = function.statements.iter().any(|statement| match statement {
-            Statement::Expression(expression) => expression_reads_name(expression, name),
+            Statement::Expression(expression) => live.iter().any(|name| expression_reads_name(expression, name)),
             _ => false,
         });
         if passed_to_call {
             return Ok(false);
         }
-        let (class, incoming) = match self.locations.get(name) {
-            Some(location) => (location.class, location.register),
-            None => return Ok(false),
-        };
-        if class != ValueClass::General {
-            return Ok(false);
+        // (parameter index, name, incoming register) for each promoted value.
+        let mut promoted: Vec<(usize, String, u8)> = Vec::new();
+        for name in &live {
+            let Some(index) = function.parameters.iter().position(|parameter| &parameter.name == name) else {
+                return Ok(false);
+            };
+            let (class, incoming) = match self.locations.get(name) {
+                Some(location) => (location.class, location.register),
+                None => return Ok(false),
+            };
+            if class != ValueClass::General {
+                return Ok(false);
+            }
+            promoted.push((index, name.clone(), incoming));
         }
+        // Highest register (r31) to the last parameter, descending toward the first.
+        promoted.sort_by_key(|(index, _, _)| *index);
 
-        // Promote the parameter to r31, saved at the top of a 16-byte frame.
-        const SAVED: u8 = 31;
+        let count = promoted.len();
+        // With more than one saved value, mwcc's scheduler interleaves the epilogue
+        // restores with the post-call computation by register death — which we don't
+        // model yet. It coincides with "all restores after" only when the values
+        // combine in a single low-latency instruction (`a+b`, `a-b`, `a&b`); two
+        // values through a multiply, or three or more values (multi-step), reschedule
+        // the restores. Restrict count > 1 to that one safe shape.
+        if count >= 2 {
+            let single_op = matches!(
+                function.return_expression.as_ref(),
+                Some(Expression::Binary { operator, left, right })
+                    if count == 2
+                        && matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract
+                            | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor)
+                        && matches!(left.as_ref(), Expression::Variable(_))
+                        && matches!(right.as_ref(), Expression::Variable(_))
+            );
+            if !single_op {
+                return Ok(false);
+            }
+        }
+        let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
-        self.frame_size = 16;
-        self.callee_saved = vec![SAVED];
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.frame_size = frame_size;
+        self.callee_saved = (0..count as u8).map(|rank| 31 - rank).collect();
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: SAVED, a: 1, offset: 12 });
-        // `mr r31, <incoming>` (or r31, in, in), then retarget the parameter's home.
-        self.output.instructions.push(Instruction::Or { a: SAVED, s: incoming, b: incoming });
-        if let Some(location) = self.locations.get_mut(name) {
-            location.register = SAVED;
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
+        // Save and move each, highest register first (r31 ← last parameter), with the
+        // save interleaved before its move, as mwcc emits them.
+        for (rank, (_, name, incoming)) in promoted.iter().rev().enumerate() {
+            let register = 31 - rank as u8;
+            let offset = frame_size - 4 * (rank as i16 + 1);
+            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
+            self.output.instructions.push(Instruction::Or { a: register, s: *incoming, b: *incoming });
+            if let Some(location) = self.locations.get_mut(name) {
+                location.register = register;
+            }
         }
 
         for statement in &function.statements {
