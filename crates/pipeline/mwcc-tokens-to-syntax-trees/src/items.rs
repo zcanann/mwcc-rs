@@ -170,7 +170,13 @@ impl Parser {
         if self.eat_keyword(Token::BraceOpen) {
             let mut values = Vec::new();
             while *self.peek() != Token::BraceClose {
-                values.push(self.parse_scalar_constant(element_type)?);
+                // A nested brace (`{{1,2},{3,4}}` for a multi-dimensional array)
+                // flattens in row-major order into the same flat element list.
+                if *self.peek() == Token::BraceOpen {
+                    values.extend(self.parse_constant_initializer(element_type)?);
+                } else {
+                    values.push(self.parse_scalar_constant(element_type)?);
+                }
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
@@ -689,9 +695,12 @@ impl Parser {
                 let is_const = self.last_type_was_const;
                 let mut declarator_name = name;
                 loop {
-                    // `[N]` (explicit length), `[]` (length inferred from the
-                    // initializer), or no brackets (a scalar).
-                    let brackets = if *self.peek() == Token::BracketOpen {
+                    // Array dimensions `[A][B]…`: each `[N]` is an explicit length,
+                    // `[]` (only the first dimension) is inferred from the
+                    // initializer; no brackets is a scalar. A multi-dimensional array
+                    // flattens row-major to one element list of the dimensions' product.
+                    let mut dimensions: Vec<Option<u16>> = Vec::new();
+                    while *self.peek() == Token::BracketOpen {
                         self.advance();
                         let count = if *self.peek() == Token::BracketClose {
                             None
@@ -702,23 +711,25 @@ impl Parser {
                             })
                         };
                         self.expect(Token::BracketClose)?;
-                        Some(count)
-                    } else {
-                        None
-                    };
-                    // `= <constant>` or `= { <constant>, ... }`.
+                        dimensions.push(count);
+                    }
+                    // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
                     let initializer = if self.eat_keyword(Token::Equals) {
                         Some(self.parse_constant_initializer(return_type)?)
                     } else {
                         None
                     };
-                    let array_length = match brackets {
-                        None => None,
-                        Some(Some(count)) => Some(count),
-                        Some(None) => match &initializer {
+                    let array_length = if dimensions.is_empty() {
+                        None
+                    } else if let Some(explicit) = dimensions.iter().copied().collect::<Option<Vec<u16>>>() {
+                        // Every dimension is explicit: the length is their product.
+                        Some(explicit.iter().map(|&dimension| dimension as u32).product::<u32>() as u16)
+                    } else {
+                        // An inferred dimension takes its length from the flat initializer.
+                        match &initializer {
                             Some(values) => Some(values.len() as u16),
                             None => return Err(Diagnostic::error("an array with no length needs an initializer")),
-                        },
+                        }
                     };
                     globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const });
                     if *self.peek() == Token::Comma {
