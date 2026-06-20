@@ -95,46 +95,49 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, a);
             visit(U, G, s);
         }
-        // Loads: general destination, general base (+ index for the x-forms).
+        // Loads: general destination, general base (+ index for the x-forms). As
+        // with addi, a load/store base rA=0 means the literal address 0, not r0 —
+        // skip it so global accesses (`lwz r3,0(0)`+reloc) carry no phantom r0 dep.
         LoadWord { d, a, .. } | LoadByteZero { d, a, .. } | LoadHalfwordZero { d, a, .. }
         | LoadHalfwordAlgebraic { d, a, .. } => {
             visit(D, G, d);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
         }
         LoadWordIndexed { d, a, b } | LoadByteZeroIndexed { d, a, b } | LoadHalfwordZeroIndexed { d, a, b }
         | LoadHalfwordAlgebraicIndexed { d, a, b } => {
             visit(D, G, d);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
             visit(U, G, b);
         }
         // Float loads: float destination, general base (+ index).
         LoadFloatSingle { d, a, .. } | LoadFloatDouble { d, a, .. } => {
             visit(D, F, d);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
         }
         LoadFloatSingleIndexed { d, a, b } | LoadFloatDoubleIndexed { d, a, b } => {
             visit(D, F, d);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
             visit(U, G, b);
         }
-        // Stores: no destination — the value and base (+ index) are all uses.
+        // Stores: no destination — the value and base (+ index) are all uses. The
+        // store-with-update base is always r1 (≠0), so the guard is a no-op there.
         StoreWord { s, a, .. } | StoreByte { s, a, .. } | StoreHalfword { s, a, .. }
         | StoreWordWithUpdate { s, a, .. } => {
             visit(U, G, s);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
         }
         StoreWordIndexed { s, a, b } | StoreByteIndexed { s, a, b } | StoreHalfwordIndexed { s, a, b } => {
             visit(U, G, s);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
             visit(U, G, b);
         }
         StoreFloatSingle { s, a, .. } | StoreFloatDouble { s, a, .. } => {
             visit(U, F, s);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
         }
         StoreFloatSingleIndexed { s, a, b } | StoreFloatDoubleIndexed { s, a, b } => {
             visit(U, F, s);
-            visit(U, G, a);
+            if *a != 0 { visit(U, G, a); }
             visit(U, G, b);
         }
         // Float arithmetic — all operands float.
