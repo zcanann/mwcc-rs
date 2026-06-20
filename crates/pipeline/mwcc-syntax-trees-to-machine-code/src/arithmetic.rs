@@ -132,16 +132,21 @@ impl Generator {
         if needs_unsigned && self.signedness_of(value)? {
             return Ok(false);
         }
-        // A leaf rotates in place; a full-word memory load (`(p[0] & m) >> n`)
-        // is evaluated into the scratch first, then the rotate-and-mask reads it,
-        // matching mwcc's `lwz r0,…; rlwinm d,r0,…`.
+        // A leaf rotates in place; otherwise place_operand resolves the value to an
+        // existing register without recomputing it — a cast of a leaf (`(unsigned)x`)
+        // keeps that leaf's register, a value-tracked global just stored stays live
+        // in its register — and only a genuinely computed value (`a*b+c`) lands in
+        // the scratch, matching mwcc's `rlwinm d,reg,…` / `<compute> r0; rlwinm d,r0`.
         let register = if let Some(register) = leaf_name(value).and_then(|name| self.lookup_general(name)) {
             register
         } else if self.is_simple_word_load(value) {
             self.evaluate_general(value, GENERAL_SCRATCH)?;
             GENERAL_SCRATCH
         } else {
-            return Ok(false);
+            match self.place_operand(value, GENERAL_SCRATCH, false)? {
+                Some(register) => register,
+                None => return Ok(false),
+            }
         };
         self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: register, shift: rotate, begin, end });
         Ok(true)
@@ -153,16 +158,25 @@ impl Generator {
     /// fusion so `as_constant_shift`/`as_field` stay leaf-only.
     fn constant_shift_placeable<'e>(&self, expression: &'e Expression) -> Option<(&'e Expression, bool, u8)> {
         let Expression::Binary { operator, left, right } = expression else { return None };
-        let is_left = match operator {
-            BinaryOperator::ShiftLeft => true,
-            BinaryOperator::ShiftRight => false,
-            _ => return None,
-        };
-        if leaf_name(left).is_none() && !self.is_simple_word_load(left) {
-            return None;
-        }
-        match constant_value(right) {
-            Some(amount) if (1..=31).contains(&amount) => Some((left, is_left, amount as u8)),
+        // The shifted value may be a leaf, a full-word load, or a computed
+        // expression — `try_emit_rotate_mask` evaluates a non-leaf into the scratch
+        // before the `rlwinm`, matching mwcc's `<compute> r0; rlwinm d,r0,…`.
+        match operator {
+            BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => {
+                let amount = constant_value(right)?;
+                ((1..=31).contains(&amount)).then(|| (left.as_ref(), *operator == BinaryOperator::ShiftLeft, amount as u8))
+            }
+            // `x / 2^n` is a logical right shift by `n` only for an UNSIGNED value
+            // (a signed division rounds toward zero, not a floor) — `unsigned-rand`'s
+            // `… / 65536 & 0x7fff` is the canonical `rlwinm` form.
+            BinaryOperator::Divide => {
+                let divisor = constant_value(right)?;
+                if divisor > 1 && (divisor as u64).is_power_of_two() && self.signedness_of(left).ok() == Some(false) {
+                    let shift = divisor.trailing_zeros();
+                    return ((1..=31).contains(&shift)).then(|| (left.as_ref(), false, shift as u8));
+                }
+                None
+            }
             _ => None,
         }
     }
