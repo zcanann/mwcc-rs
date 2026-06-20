@@ -192,9 +192,12 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             continue;
         }
         use mwcc_syntax_trees::Type;
-        let integer_scalar = matches!(
+        // A scalar/array of an arithmetic type serializes to fixed bytes (an integer
+        // value, or a float/double IEEE-754 pattern already encoded by the parser).
+        // Structs, pointers, and the like are not serializable here.
+        let serializable_scalar = matches!(
             global.declared_type,
-            Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+            Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort | Type::Float | Type::Double
         );
         let element_size = (global.declared_type.width() / 8) as u32;
         let count = global.array_length.unwrap_or(1) as u32;
@@ -206,10 +209,10 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if global.is_const {
             // A const global is always materialized as read-only initialized bytes
             // (even an all-zero one stays in `.sdata2`/`.rodata`, not `.sbss`). Only
-            // an integer scalar/array with a constant initializer is serializable
-            // today; defer floats/doubles, structs/pointers, strings, and
-            // uninitialized const — each a separate piece.
-            if !integer_scalar {
+            // an arithmetic scalar/array with a constant initializer is serializable
+            // today; defer structs/pointers, strings, and uninitialized const — each
+            // a separate piece.
+            if !serializable_scalar {
                 return Err(Diagnostic::error("a const global of this type is not supported yet (roadmap)"));
             }
             let values = global

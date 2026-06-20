@@ -166,11 +166,11 @@ impl Parser {
 
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
     /// an aggregate `{ <const>, ... }` (several, with an optional trailing comma).
-    fn parse_constant_initializer(&mut self) -> Compilation<Vec<i64>> {
+    fn parse_constant_initializer(&mut self, element_type: Type) -> Compilation<Vec<i64>> {
         if self.eat_keyword(Token::BraceOpen) {
             let mut values = Vec::new();
             while *self.peek() != Token::BraceClose {
-                values.push(self.parse_integer_constant()?);
+                values.push(self.parse_scalar_constant(element_type)?);
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
@@ -178,7 +178,35 @@ impl Parser {
             self.expect(Token::BraceClose)?;
             Ok(values)
         } else {
-            Ok(vec![self.parse_integer_constant()?])
+            Ok(vec![self.parse_scalar_constant(element_type)?])
+        }
+    }
+
+    /// One scalar element of a global initializer, encoded to the raw bits the
+    /// object stores for `element_type`: an integer value as-is, a `float`/`double`
+    /// element as its IEEE-754 bit pattern. An integer literal in a float slot is
+    /// converted (`float A[4] = {1,2,3,4}`); a float literal in an integer slot is
+    /// not supported.
+    fn parse_scalar_constant(&mut self, element_type: Type) -> Compilation<i64> {
+        let negative = self.eat_keyword(Token::Minus);
+        match self.advance() {
+            Token::IntegerLiteral(value) => {
+                let value = if negative { -(value as i64) } else { value as i64 };
+                Ok(match element_type {
+                    Type::Float => (value as f32).to_bits() as i64,
+                    Type::Double => (value as f64).to_bits() as i64,
+                    _ => value,
+                })
+            }
+            Token::FloatLiteral(value) => {
+                let value = if negative { -value } else { value };
+                match element_type {
+                    Type::Float => Ok((value as f32).to_bits() as i64),
+                    Type::Double => Ok(value.to_bits() as i64),
+                    _ => Err(Diagnostic::error("a floating-point initializer for a non-float global is not supported yet (roadmap)")),
+                }
+            }
+            other => Err(Diagnostic::error(format!("only integer-constant global initializers are supported, found {other}"))),
         }
     }
 
@@ -664,7 +692,7 @@ impl Parser {
                     };
                     // `= <constant>` or `= { <constant>, ... }`.
                     let initializer = if self.eat_keyword(Token::Equals) {
-                        Some(self.parse_constant_initializer()?)
+                        Some(self.parse_constant_initializer(return_type)?)
                     } else {
                         None
                     };
