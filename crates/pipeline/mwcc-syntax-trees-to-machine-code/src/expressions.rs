@@ -1183,6 +1183,39 @@ impl Generator {
                 }
             }
         }
+        // `gp->field = v` / `g.field = v` for a file-scope struct base: materialize
+        // the base (a struct POINTER's value, or a struct VALUE's address) into a
+        // register chosen to avoid the value's inputs, then a displacement store at
+        // the member offset — `lwz/li base; <value>; stw src,offset(base)`.
+        if let Expression::Member { base, offset, member_type, index_stride: None } = target {
+            if let Expression::Variable(name) = base.as_ref() {
+                if !self.locations.contains_key(name.as_str()) {
+                    let global_type = self.globals.get(name.as_str()).copied();
+                    let struct_value_size = match global_type {
+                        Some(Type::StructPointer) => None,
+                        Some(Type::Struct { size, .. }) => Some(size as u32),
+                        _ => None,
+                    };
+                    let is_global_struct_base = matches!(global_type, Some(Type::StructPointer | Type::Struct { .. }));
+                    if is_global_struct_base {
+                        let pointee = pointee_of_type(*member_type)
+                            .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
+                        let base_reg = self.free_register_avoiding(&[value])?;
+                        let restore = self.reserved.insert(base_reg);
+                        match struct_value_size {
+                            Some(size) => self.emit_global_array_base(name, size, base_reg)?,
+                            None => self.emit_global_load_value(name, base_reg)?,
+                        }
+                        let source = self.place_store_value(value, pointee)?;
+                        if restore {
+                            self.reserved.remove(&base_reg);
+                        }
+                        self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16));
+                        return Ok(());
+                    }
+                }
+            }
+        }
         // `p->field = v;` — a displacement store to the struct member.
         if let Expression::Member { base, offset, member_type, index_stride: None } = target {
             let pointee = pointee_of_type(*member_type)
