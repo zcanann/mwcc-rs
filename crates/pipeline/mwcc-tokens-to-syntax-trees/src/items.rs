@@ -406,6 +406,9 @@ impl Parser {
                 if let Some(name) = self.inline_asm_function_name() {
                     self.inline_asm_symbols.push(name);
                 }
+                // A skipped `typedef` still registers its alias name, so function
+                // bodies that use the type as a pointer (`FILE *fp`) still parse.
+                self.capture_skipped_typedef();
                 self.skip_top_level_declaration();
             }
         }
@@ -761,6 +764,49 @@ impl Parser {
     /// Advance past an unparseable top-level declaration to its end: the `;` at
     /// brace depth zero, or the matching `}` of a struct/enum/union/initializer
     /// followed by an optional `;`.
+    /// When a top-level `typedef` failed to parse (an unsupported struct/enum body,
+    /// a qualified or aggregate base), still register its alias name as an opaque
+    /// struct typedef. The alias is the last identifier at brace/paren/bracket depth
+    /// zero before the terminating `;` — the shape of an aggregate or basic typedef
+    /// (`typedef struct {…} FILE;`, `typedef … OSThread;`). A function-pointer
+    /// typedef's name sits inside parens, so it is left alone. This lets function
+    /// bodies that use the type as a pointer (`FILE *fp`, `OSThread *t`) parse
+    /// instead of failing the whole translation unit on an "unknown type".
+    fn capture_skipped_typedef(&mut self) {
+        if !matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if word == "typedef") {
+            return;
+        }
+        let mut index = self.position + 1;
+        let (mut brace, mut paren, mut bracket) = (0i32, 0i32, 0i32);
+        let mut alias: Option<String> = None;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::BraceOpen => brace += 1,
+                Token::BraceClose => brace -= 1,
+                Token::ParenOpen => paren += 1,
+                Token::ParenClose => paren -= 1,
+                Token::BracketOpen => bracket += 1,
+                Token::BracketClose => bracket -= 1,
+                Token::Semicolon if brace == 0 && paren == 0 => break,
+                Token::Identifier(word) if brace == 0 && paren == 0 && bracket == 0 => alias = Some(word.clone()),
+                Token::EndOfFile => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        if let Some(name) = alias {
+            // `typedef` is itself an identifier here; never register it, and never
+            // shadow a type the parser already knows.
+            if name != "typedef"
+                && !self.struct_typedefs.contains_key(&name)
+                && !self.struct_pointer_typedefs.contains_key(&name)
+                && !self.typedefs.contains_key(&name)
+            {
+                self.struct_typedefs.insert(name.clone(), name);
+            }
+        }
+    }
+
     fn skip_top_level_declaration(&mut self) {
         let mut brace_depth = 0i32;
         loop {
