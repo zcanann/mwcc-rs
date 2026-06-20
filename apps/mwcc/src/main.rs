@@ -186,6 +186,11 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         }
         bytes
     };
+    let small_data = config.flags.global_addressing == mwcc_versions::GlobalAddressing::SmallData;
+    // A large (> 8 byte) writable global shares `.data`/`.bss` with any dense-switch
+    // jump table; the two layouts aren't reconciled yet, so a jump table forces such
+    // globals to keep deferring (be dropped).
+    let has_jump_table = machine_functions.iter().any(|function| function.jump_table.is_some());
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     for global in &unit.globals {
         if global.is_extern || global.is_static || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
@@ -230,12 +235,15 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             continue;
         }
 
-        // Writable global: small data only for now; a large object (> 8 bytes) goes
-        // to `.data`/`.bss` with absolute addressing — a separate piece.
-        if size > 8 {
+        // Writable global. Small (≤ 8 bytes) → `.sdata`/`.sbss`; large (> 8) →
+        // `.data`/`.bss` (the writer routes by size). Large data is only emitted
+        // under small-data addressing and when no jump table shares `.data`;
+        // otherwise it is still dropped (the prior behavior — never a wrong object).
+        if size > 8 && (!small_data || has_jump_table) {
             continue;
         }
-        // A non-zero initializer becomes `.sdata` bytes; zero/absent stays in `.sbss`.
+        // A non-zero initializer becomes initialized `.sdata`/`.data` bytes;
+        // zero/absent stays in `.sbss`/`.bss`.
         let initial_bytes = global
             .initializer
             .as_ref()
@@ -249,7 +257,6 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             is_const: false,
         });
     }
-    let small_data = config.flags.global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
 
     if let Some(directory) = artifacts {

@@ -110,19 +110,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // it is initialized: a writable global to `.sdata` (initialized) or `.sbss`
     // (zero), a const one to `.sdata2` (≤ 8 bytes) or `.rodata` (larger). mwcc lays
     // `.sbss` out in REVERSE declaration order and every other data section FORWARD.
+    // Const objects are read-only (`.sdata2`/`.rodata`); writable ones split by the
+    // 8-byte small-data threshold: small to `.sdata`/`.sbss`, large to `.data`/`.bss`.
     let section_of = |object: &DataObject| -> &'static str {
         if object.is_const {
             if object.size <= 8 { ".sdata2" } else { ".rodata" }
+        } else if object.size <= 8 {
+            if object.initial_bytes.is_some() { ".sdata" } else { ".sbss" }
         } else if object.initial_bytes.is_some() {
-            ".sdata"
+            ".data"
         } else {
-            ".sbss"
+            ".bss"
         }
     };
     let has_sdata = input.data_objects.iter().any(|object| section_of(object) == ".sdata");
     let has_sbss = input.data_objects.iter().any(|object| section_of(object) == ".sbss");
     let has_rodata = input.data_objects.iter().any(|object| section_of(object) == ".rodata");
     let has_const_sdata2 = input.data_objects.iter().any(|object| section_of(object) == ".sdata2");
+    let has_file_data = input.data_objects.iter().any(|object| section_of(object) == ".data");
+    let has_bss = input.data_objects.iter().any(|object| section_of(object) == ".bss");
 
     let mut data_section: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     let mut data_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
@@ -147,6 +153,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".rodata") {
         place(object, ".rodata", &mut rodata_size);
     }
+    // Large writable globals: `.data` (initialized) forward, `.bss` (zero) reverse —
+    // the same forward/reverse split as `.sdata`/`.sbss`.
+    let mut file_data_size = 0u32;
+    for object in input.data_objects.iter().filter(|object| section_of(object) == ".data") {
+        place(object, ".data", &mut file_data_size);
+    }
+    let mut bss_size = 0u32;
+    for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".bss") {
+        place(object, ".bss", &mut bss_size);
+    }
     let mut sdata_size = 0u32;
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".sdata") {
         place(object, ".sdata", &mut sdata_size);
@@ -155,16 +171,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".sbss") {
         place(object, ".sbss", &mut sbss_size);
     }
-    // `.sdata`/`.rodata` file bytes: each initialized object's bytes at its offset.
-    // (`.sdata2` const-global bytes are laid into the pool below, with the floats.)
+    // `.sdata`/`.rodata`/`.data` file bytes: each initialized object's bytes at its
+    // offset. (`.sdata2` const-global bytes are laid into the pool below, with the
+    // floats; `.bss` is zero-initialized so has no file bytes.)
     let mut sdata = vec![0u8; sdata_size as usize];
     let mut rodata = vec![0u8; rodata_size as usize];
+    let mut file_data = vec![0u8; file_data_size as usize];
     for object in &input.data_objects {
         if let Some(bytes) = &object.initial_bytes {
             let offset = data_offsets[object.name] as usize;
             match section_of(object) {
                 ".sdata" => sdata[offset..offset + bytes.len()].copy_from_slice(bytes),
                 ".rodata" => rodata[offset..offset + bytes.len()].copy_from_slice(bytes),
+                ".data" => file_data[offset..offset + bytes.len()].copy_from_slice(bytes),
                 _ => {}
             }
         }
@@ -271,21 +290,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    their `.rela` and everything downstream key off this order, by name. A
     //    data-only unit (no functions) omits `.text` and the `.mwcats` machinery.
     let has_functions = !functions.is_empty();
+    // A jump table and large writable globals share `.data`; the lowering guarantees
+    // they do not co-occur, so one `.data` entry covers both.
+    let has_data = has_jump_table || has_file_data;
     let mut order: Vec<&str> = Vec::new();
     if has_functions {
         order.push(".text");
-    }
-    if has_jump_table {
-        order.push(".data");
     }
     if has_frame {
         order.push("extab");
         order.push("extabindex");
     }
-    // Read-only const data (`.rodata`, the larger const objects) precedes the
-    // writable small-data sections, which in turn precede the `.sdata2` pool.
+    // Read-only const data (`.rodata`) then large writable data (`.data`/`.bss`)
+    // precede the small-data sections, which in turn precede the `.sdata2` pool.
     if has_rodata {
         order.push(".rodata");
+    }
+    if has_data {
+        order.push(".data");
+    }
+    if has_bss {
+        order.push(".bss");
     }
     if has_sdata {
         order.push(".sdata");
@@ -323,7 +348,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [".text", ".data", "extab", "extabindex", ".rodata", ".sdata", ".sbss", ".sdata2", ".mwcats.text"]
+    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".rodata", ".data", ".bss", ".sdata", ".sbss", ".sdata2", ".mwcats.text"]
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
@@ -333,7 +358,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut comment_values: Vec<u32> = Vec::new();
     let section_align = |name: &str| -> u32 {
         match name {
-            ".sdata2" | ".sdata" | ".sbss" | ".data" | ".rodata" => 8,
+            ".sdata2" | ".sdata" | ".sbss" | ".data" | ".bss" | ".rodata" => 8,
             _ => 4,
         }
     };
@@ -399,12 +424,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // reference order, trailing when unused.)
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
     let mut global_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    // The always-present initialized sections (`.sdata`, and the read-only
-    // `.sdata2`/`.rodata`) emit their symbols up front in declaration order; `.sbss`
-    // objects instead follow reference order (handled below).
+    // The always-present initialized sections (`.sdata`/`.data`, and the read-only
+    // `.sdata2`/`.rodata`) emit their symbols up front in declaration order; the
+    // zero `.sbss`/`.bss` objects instead follow reference order (handled below).
     for object in &input.data_objects {
         let section_name = data_section[object.name];
-        if matches!(section_name, ".sdata" | ".sdata2" | ".rodata") {
+        if matches!(section_name, ".sdata" | ".data" | ".sdata2" | ".rodata") {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(section_name) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
@@ -559,17 +584,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_functions {
         push(".text", SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
     }
-    if has_jump_table {
-        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, jump_data, 0);
-    }
     if has_frame {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
         push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex, 0);
     }
-    // `.rodata` (read-only const data) precedes the writable small-data sections,
-    // matching the section-name order above. It is ALLOC-only (no WRITE bit).
+    // `.rodata` (read-only const data) then the large writable `.data`/`.bss`
+    // precede the small-data sections, matching the section-name order above.
     if has_rodata {
         push(".rodata", SHT_PROGBITS, SHF_ALLOC, 0, 0, 8, 0, rodata, 0);
+    }
+    if has_data {
+        // `.data` holds either a function's jump table or the large initialized
+        // globals (the lowering keeps them from co-occurring).
+        let payload = if has_jump_table { jump_data } else { file_data };
+        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, payload, 0);
+    }
+    if has_bss {
+        // `.bss` is NOBITS (large zero-initialized globals): a size, no file bytes.
+        push(".bss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, Vec::new(), bss_size);
     }
     // Defined small data (`.sdata`/`.sbss`) precedes the read-only constant pool
     // (`.sdata2`), matching the section-name order above.
