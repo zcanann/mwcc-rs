@@ -180,7 +180,9 @@ impl Parser {
                     let index = self.expression()?;
                     self.expect(Token::BracketClose)?;
                     expression = Expression::Index { base: Box::new(expression), index: Box::new(index) };
-                    struct_tag = None;
+                    // Indexing a struct pointer/array yields a struct element of the
+                    // same tag (so `a[i].field` resolves); a non-struct base already
+                    // carries no tag, so this leaves it `None`.
                 }
                 Token::Arrow | Token::Dot => {
                     self.advance();
