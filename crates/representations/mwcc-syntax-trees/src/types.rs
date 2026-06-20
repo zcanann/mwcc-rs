@@ -54,6 +54,11 @@ pub enum Type {
     /// bakes member offsets into [`crate::Expression::Member`]), so codegen only
     /// needs to know this is a general 32-bit address.
     StructPointer,
+    /// A struct *value* (passed/declared by value), carrying its byte size and
+    /// alignment (the max member alignment, NOT the size). Used so far for a
+    /// frame-resident struct local — `struct S v;` gets a stack slot of this size,
+    /// aligned to `align`, and `&v` is its address.
+    Struct { size: u16, align: u8 },
 }
 
 impl Type {

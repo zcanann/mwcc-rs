@@ -48,7 +48,7 @@ impl Generator {
             };
             if address_taken.contains(parameter.name.as_str()) {
                 let size = slot_size(parameter.parameter_type);
-                offset = align_to(offset, size);
+                offset = align_to(offset, slot_align(parameter.parameter_type));
                 self.frame_slots.insert(
                     parameter.name.clone(),
                     FrameSlot { offset, class, size, parameter_register: Some(register) },
@@ -65,7 +65,7 @@ impl Generator {
                 }
                 let class = class_of(local.declared_type)?;
                 let size = slot_size(local.declared_type);
-                offset = align_to(offset, size);
+                offset = align_to(offset, slot_align(local.declared_type));
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot { offset, class, size, parameter_register: None },
@@ -184,7 +184,18 @@ impl Generator {
 fn slot_size(declared: Type) -> u8 {
     match declared {
         Type::Double => 8,
+        // A struct value occupies its full byte size on the stack.
+        Type::Struct { size, .. } => size as u8,
         _ => 4,
+    }
+}
+
+/// The stack alignment of a frame slot: a scalar aligns to its size, a struct to
+/// its own (member) alignment rather than its total size.
+fn slot_align(declared: Type) -> u8 {
+    match declared {
+        Type::Struct { align, .. } => align,
+        other => slot_size(other),
     }
 }
 

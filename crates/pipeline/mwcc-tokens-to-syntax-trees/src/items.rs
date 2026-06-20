@@ -182,6 +182,16 @@ impl Parser {
         }
     }
 
+    /// The struct-value [`Type`] for a known struct layout (size + alignment), or
+    /// `None` for an opaque/undeclared struct (whose value cannot be laid out).
+    /// Drives `struct S v;` value support.
+    fn struct_value_type(&self, tag: &str) -> Option<Type> {
+        self.structs
+            .get(tag)
+            .filter(|layout| layout.size > 0)
+            .map(|layout| Type::Struct { size: layout.size, align: layout.align.max(1) })
+    }
+
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
         // Leading qualifiers: `const`/`register` are transparent to codegen (`const`
@@ -206,7 +216,15 @@ impl Parser {
             self.advance();
             let tag = self.parse_identifier()?;
             if *self.peek() != Token::Star {
-                return Err(Diagnostic::error("struct values are not supported yet — use a struct pointer"));
+                // A struct *value*: a known layout becomes a sized struct value
+                // (a frame-resident local); an opaque/unknown struct still defers.
+                return match self.struct_value_type(&tag) {
+                    Some(struct_type) => {
+                        self.last_struct_tag = Some(tag);
+                        Ok(struct_type)
+                    }
+                    None => Err(Diagnostic::error("struct values are not supported yet — use a struct pointer")),
+                };
             }
             self.advance();
             self.last_struct_tag = Some(tag);
@@ -227,7 +245,13 @@ impl Parser {
             if let Some(tag) = self.struct_typedefs.get(name).cloned() {
                 self.advance();
                 if *self.peek() != Token::Star {
-                    return Err(Diagnostic::error("struct values are not supported yet — use a struct pointer"));
+                    return match self.struct_value_type(&tag) {
+                    Some(struct_type) => {
+                        self.last_struct_tag = Some(tag);
+                        Ok(struct_type)
+                    }
+                        None => Err(Diagnostic::error("struct values are not supported yet — use a struct pointer")),
+                    };
                 }
                 self.advance();
                 self.last_struct_tag = Some(tag);
@@ -377,6 +401,7 @@ impl Parser {
         self.expect(Token::BraceClose)?;
         // The struct size includes trailing padding to its own alignment.
         layout.size = offset.div_ceil(alignment_max) * alignment_max;
+        layout.align = alignment_max as u8;
         Ok(layout)
     }
 

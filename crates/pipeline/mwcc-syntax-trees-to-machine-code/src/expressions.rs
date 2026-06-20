@@ -57,7 +57,8 @@ fn pointee_of_type(value_type: Type) -> Option<Pointee> {
         Type::Pointer(_) | Type::StructPointer => Pointee::UnsignedInt,
         // `double` storage (8-byte lfd/stfd) is a later stage.
         Type::Double => Pointee::Double,
-        Type::Void => return None,
+        // A struct value is not a scalar pointee (it has no single load/store).
+        Type::Void | Type::Struct { .. } => return None,
     })
 }
 

@@ -23,6 +23,9 @@ pub(crate) struct StructLayout {
     /// The struct's total size in bytes (members plus trailing padding to the
     /// struct's alignment) — the stride for an array/pointer of this struct.
     pub(crate) size: u16,
+    /// The struct's alignment (the max member alignment) — a struct value's stack
+    /// slot is aligned to this, not to its size.
+    pub(crate) align: u8,
 }
 
 pub(crate) struct Parser {
