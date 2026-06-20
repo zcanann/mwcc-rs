@@ -828,18 +828,19 @@ impl Parser {
             self.expect(Token::ParenOpen)?;
 
             let mut parameters = Vec::new();
+            let mut is_variadic = false;
             // `(void)` is an empty parameter list — but only when the `void` is the
             // whole list; `void *p` / `void (*f)()` are real first parameters.
             if *self.peek() == Token::KeywordVoid && self.tokens.get(self.position + 1) == Some(&Token::ParenClose) {
                 self.advance();
             } else if *self.peek() != Token::ParenClose {
                 loop {
-                    // A `...` varargs marker ends the parameter list. (A function
-                    // that actually reads its varargs defers later in codegen.)
+                    // A `...` varargs marker ends the parameter list.
                     if *self.peek() == Token::Dot {
                         self.advance();
                         self.expect(Token::Dot)?;
                         self.expect(Token::Dot)?;
+                        is_variadic = true;
                         break;
                     }
                     let parameter_type = self.parse_type()?;
@@ -889,6 +890,13 @@ impl Parser {
                 self.advance(); // a prototype — record its return type, keep looking
                 prototypes.push((name, return_type));
                 return Ok(());
+            }
+            // A variadic function DEFINITION needs the variadic-register save
+            // prologue (`stwu; bne cr1; stfd f1-f8; stw r3-r10; …`), which is not
+            // modeled — defer rather than emit an empty body. (A variadic prototype
+            // above is fine; only a definition reaches here.)
+            if is_variadic {
+                return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
             }
             functions.push(self.function_body(return_type, name, parameters)?);
         }
