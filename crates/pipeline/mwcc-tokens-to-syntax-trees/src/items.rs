@@ -124,12 +124,12 @@ impl Parser {
         Ok(if negative { -value } else { value })
     }
 
+    /// A constant integer in statement position — a `switch` case label. Parsed as a
+    /// full constant expression so an enum constant (`case GX_MODULATE:`) or a folded
+    /// expression (`case A | B:`) resolves, not just a bare integer literal.
     fn parse_integer_constant(&mut self) -> Compilation<i64> {
-        let negative = self.eat_keyword(Token::Minus);
-        match self.advance() {
-            Token::IntegerLiteral(value) => Ok(if negative { -(value as i64) } else { value as i64 }),
-            other => Err(Diagnostic::error(format!("only integer-constant global initializers are supported, found {other}"))),
-        }
+        let expression = self.expression()?;
+        crate::expressions::fold_constant_expression(&expression)
     }
 
     /// Parse `switch (scrutinee) { case <int>: return E; ... default: return E; }`.
