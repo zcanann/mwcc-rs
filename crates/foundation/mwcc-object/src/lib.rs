@@ -51,6 +51,9 @@ pub struct DataObject<'a> {
     pub alignment: u32,
     pub initial_bytes: Option<Vec<u8>>,
     pub is_const: bool,
+    /// A `static` global is file-local: same section routing, but its symbol binds
+    /// LOCAL (and is emitted among the local symbols, not the global run).
+    pub is_static: bool,
 }
 
 /// One function's contribution to the object: its name, encoded `.text`, and the

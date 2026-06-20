@@ -377,6 +377,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
         comment_values.push(0);
     }
+    // `static` (file-local) data objects: a LOCAL object symbol each, in declaration
+    // order, after the inline-asm locals and before the functions' `@N` entries.
+    // (Only the common "all static data before any function" shape is produced; the
+    // parser defers a static global that follows a function.) Their indices are kept
+    // so a function relocation that targets one resolves to the local symbol.
+    let mut local_data_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for object in &input.data_objects {
+        if object.is_static {
+            local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+            let section = index_of(data_section[object.name]) as u16;
+            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+            comment_values.push(data_aligns[object.name]);
+        }
+    }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
     // then its hidden unwind entries.
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
@@ -428,6 +442,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // `.sdata2`/`.rodata`) emit their symbols up front in declaration order; the
     // zero `.sbss`/`.bss` objects instead follow reference order (handled below).
     for object in &input.data_objects {
+        // `static` objects already have their LOCAL symbol; only exported globals
+        // appear in this run.
+        if object.is_static {
+            continue;
+        }
         let section_name = data_section[object.name];
         if matches!(section_name, ".sdata" | ".data" | ".sdata2" | ".rodata") {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -465,7 +484,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
         for name in ordered {
-            if global_symbols.contains_key(name) {
+            // A reference to a `static` object resolves to its existing LOCAL symbol;
+            // it is not (re)emitted in the global run.
+            if global_symbols.contains_key(name) || local_data_symbols.contains_key(name) {
                 continue;
             }
             global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -482,10 +503,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
         comment_values.push(4); // a function is 4-aligned
     }
-    // Still-unreferenced (.sbss) defined globals trail the functions, in
-    // declaration order.
+    // Still-unreferenced (.sbss/.bss) defined globals trail the functions, in
+    // declaration order. `static` objects are local and never appear here.
     for object in &input.data_objects {
-        if !global_symbols.contains_key(object.name) {
+        if !object.is_static && !global_symbols.contains_key(object.name) {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
@@ -502,7 +523,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for (index, function) in functions.iter().enumerate() {
         for relocation in &function.relocations {
             let symbol = match &relocation.target {
-                RelocationTarget::External(name) => global_symbols[name.as_str()],
+                // A `static` target is a local data symbol; everything else is a
+                // global/external symbol.
+                RelocationTarget::External(name) => *local_data_symbols
+                    .get(name.as_str())
+                    .unwrap_or_else(|| &global_symbols[name.as_str()]),
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
                 RelocationTarget::JumpTable => jump_table_symbols[index],
             };

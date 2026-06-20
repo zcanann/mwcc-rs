@@ -442,8 +442,15 @@ impl Parser {
         let mut globals = Vec::new();
         let mut functions = Vec::new();
         let mut prototypes = Vec::new();
+        // A `static` (file-local) global's symbol is emitted among the locals, in
+        // source order interleaved with each function's anonymous `@N` entries. Only
+        // the common shape — all such data declared before any function — is modeled,
+        // so defer the unit if an emittable static global follows a function.
+        let mut seen_function = false;
         while *self.peek() != Token::EndOfFile {
             let start = self.position;
+            let functions_before = functions.len();
+            let globals_before = globals.len();
             if let Err(error) = self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes) {
                 // A declaration we can't parse (a typedef/struct/extern prototype or
                 // qualified type from a preprocessed header) is skipped so the
@@ -468,6 +475,15 @@ impl Parser {
                 // bodies that use the type as a pointer (`FILE *fp`) still parse.
                 self.capture_skipped_typedef();
                 self.skip_top_level_declaration();
+            }
+            if functions.len() > functions_before {
+                seen_function = true;
+            }
+            // An emittable (non-`extern`, non-`const`) `static` global declared after
+            // a function would need its local symbol interleaved among the functions'
+            // `@N` entries — not yet modeled, so defer the unit honestly.
+            if seen_function && globals[globals_before..].iter().any(|global| global.is_static && !global.is_const && !global.is_extern) {
+                return Err(Diagnostic::error("a static global declared after a function is not supported yet (local-symbol ordering)"));
             }
         }
         Ok(TranslationUnit { globals, functions, prototypes, inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols) })

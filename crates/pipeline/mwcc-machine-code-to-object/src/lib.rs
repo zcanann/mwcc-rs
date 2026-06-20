@@ -18,6 +18,8 @@ pub struct DefinedGlobal {
     /// A `const` global is read-only: the writer routes it to `.sdata2` (≤ 8
     /// bytes) or `.rodata` (larger) rather than `.sdata`/`.sbss`.
     pub is_const: bool,
+    /// A `static` global binds as a LOCAL symbol (file-scope, not exported).
+    pub is_static: bool,
 }
 
 /// Assemble a relocatable object from one or more lowered functions (in source
@@ -74,7 +76,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const })
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static })
         .collect();
     mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data, inline_asm_symbols })
 }

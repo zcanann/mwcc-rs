@@ -193,7 +193,13 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let has_jump_table = machine_functions.iter().any(|function| function.jump_table.is_some());
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     for global in &unit.globals {
-        if global.is_extern || global.is_static || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
+        if global.is_extern || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
+            continue;
+        }
+        // A `static const` global is elided by mwcc when unused (folded into readers
+        // otherwise), so keep dropping it; a `static` non-const one is emitted with a
+        // LOCAL symbol.
+        if global.is_static && global.is_const {
             continue;
         }
         use mwcc_syntax_trees::Type;
@@ -231,6 +237,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 alignment,
                 initial_bytes: Some(initial_bytes),
                 is_const: true,
+                is_static: false,
             });
             continue;
         }
@@ -255,6 +262,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             alignment,
             initial_bytes,
             is_const: false,
+            is_static: global.is_static,
         });
     }
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
