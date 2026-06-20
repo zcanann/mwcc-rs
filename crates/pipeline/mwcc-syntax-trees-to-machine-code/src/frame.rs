@@ -235,6 +235,14 @@ fn walk_statement(statement: &Statement, names: &mut HashSet<String>) {
                 walk_statement(statement, names);
             }
         }
+        Statement::Loop { initializer, condition, step, body, .. } => {
+            for expression in initializer.iter().chain(condition).chain(step) {
+                walk(expression, names);
+            }
+            for statement in body {
+                walk_statement(statement, names);
+            }
+        }
         Statement::Return(value) => {
             if let Some(value) = value {
                 walk(value, names);

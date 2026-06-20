@@ -90,7 +90,7 @@ pub(crate) fn values_live_across_call(function: &Function) -> Option<Vec<String>
             Statement::Assign { value, .. } => vec![value],
             Statement::Expression(expression) => vec![expression],
             Statement::Return(value) => value.iter().collect(),
-            Statement::If { .. } | Statement::Switch { .. } => return None,
+            Statement::If { .. } | Statement::Switch { .. } | Statement::Loop { .. } => return None,
         };
         for expression in expressions {
             if !take(expression, prior_call, &mut collected) {
@@ -174,6 +174,10 @@ fn statement_reads_across_call(statement: &Statement, prior_call: bool, register
                 || then_body.iter().chain(else_body).any(|s| statement_reads_across_call(s, prior_call, registers))
         }
         Statement::Switch { scrutinee, .. } => expression_reads_across_call(scrutinee, prior_call, registers),
+        Statement::Loop { initializer, condition, step, body, .. } => {
+            initializer.iter().chain(condition).chain(step).any(|e| expression_reads_across_call(e, prior_call, registers))
+                || body.iter().any(|s| statement_reads_across_call(s, prior_call, registers))
+        }
     }
 }
 
@@ -295,6 +299,12 @@ pub(crate) fn statement_has_call(statement: &Statement) -> bool {
         }
         Statement::If { condition, then_body, else_body } => {
             expression_has_call(condition) || block_has_call(then_body) || block_has_call(else_body)
+        }
+        Statement::Loop { initializer, condition, step, body, .. } => {
+            initializer.as_ref().is_some_and(expression_has_call)
+                || condition.as_ref().is_some_and(expression_has_call)
+                || step.as_ref().is_some_and(expression_has_call)
+                || block_has_call(body)
         }
         Statement::Return(value) => value.as_ref().is_some_and(expression_has_call),
     }

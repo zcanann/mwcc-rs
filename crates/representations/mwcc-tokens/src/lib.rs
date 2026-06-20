@@ -55,6 +55,11 @@ pub enum Token {
     GreaterEqual,
     EqualEqual,
     BangEqual,
+    PlusPlus,
+    MinusMinus,
+    KeywordWhile,
+    KeywordDo,
+    KeywordFor,
     EndOfFile,
 }
 

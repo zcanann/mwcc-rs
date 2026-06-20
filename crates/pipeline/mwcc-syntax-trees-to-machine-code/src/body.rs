@@ -486,6 +486,9 @@ impl Generator {
             // a leaf, a forward branch to the shared epilogue otherwise) — the
             // parser now models it, but the codegen is the next piece.
             Statement::Return(_) => Err(Diagnostic::error("early-return codegen is not implemented yet (roadmap)")),
+            // Loops (while/do-while/for) parse but defer until the loop codegen
+            // (backward branch + the callee-saved counter) lands.
+            Statement::Loop { .. } => Err(Diagnostic::error("loop codegen is not implemented yet (roadmap)")),
         }
     }
 

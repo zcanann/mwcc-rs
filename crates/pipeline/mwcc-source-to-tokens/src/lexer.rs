@@ -110,6 +110,9 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
                 "void" => Token::KeywordVoid,
                 "return" => Token::KeywordReturn,
                 "if" => Token::KeywordIf,
+                "while" => Token::KeywordWhile,
+                "do" => Token::KeywordDo,
+                "for" => Token::KeywordFor,
                 "struct" => Token::KeywordStruct,
                 _ => Token::Identifier(word.to_string()),
             });
@@ -165,6 +168,8 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             ('&', Some(b'&')) => Some(Token::AmpersandAmpersand),
             ('|', Some(b'|')) => Some(Token::PipePipe),
             ('-', Some(b'>')) => Some(Token::Arrow),
+            ('+', Some(b'+')) => Some(Token::PlusPlus),
+            ('-', Some(b'-')) => Some(Token::MinusMinus),
             _ => None,
         };
         if let Some(token) = two_char {

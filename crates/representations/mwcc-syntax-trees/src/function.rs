@@ -55,6 +55,26 @@ pub enum Statement {
     /// `switch (scrutinee) { case V: return E; ... default: return D; }` — a
     /// terminal multi-way return (each arm and the default return a value).
     Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<Expression> },
+    /// A loop: `while (c) { body }`, `do { body } while (c);`, or
+    /// `for (init; c; step) { body }`. `initializer`/`step` are the for-clause
+    /// expressions (evaluated for effect); a `None` `condition` is an always-true
+    /// loop (`for (;;)`).
+    Loop {
+        kind: LoopKind,
+        initializer: Option<Expression>,
+        condition: Option<Expression>,
+        step: Option<Expression>,
+        body: Vec<Statement>,
+    },
+}
+
+/// Which loop form a [`Statement::Loop`] is — the condition is tested before the
+/// body (`While`/`For`) or after it (`DoWhile`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopKind {
+    While,
+    DoWhile,
+    For,
 }
 
 /// A file-scope global variable, e.g. `int g;`, `extern int g;`, or `static int

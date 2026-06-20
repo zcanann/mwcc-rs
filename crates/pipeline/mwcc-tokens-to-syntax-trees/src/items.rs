@@ -1,7 +1,7 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -13,11 +13,6 @@ fn store_or_assign(target: Expression, value: Expression, local_names: &std::col
         Expression::Variable(name) if local_names.contains(name.as_str()) => Statement::Assign { name: name.clone(), value },
         _ => Statement::Store { target, value },
     }
-}
-
-/// The `target +/- 1` expression an increment/decrement statement assigns back.
-fn increment_value(operator: BinaryOperator, target: &Expression) -> Expression {
-    Expression::Binary { operator, left: Box::new(target.clone()), right: Box::new(Expression::IntegerLiteral(1)) }
 }
 
 /// The pointee kind for `<scalar>*`. Pointer-to-pointer and pointer-to-aggregate
@@ -914,6 +909,10 @@ impl Parser {
                 }
                 break;
             }
+            if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
+                statements.push(self.parse_loop_statement(&local_names)?);
+                continue;
+            }
             let statement = self.parse_simple_statement(&local_names)?;
             statements.push(statement);
         }
@@ -1009,24 +1008,14 @@ impl Parser {
         if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
             return self.parse_switch();
         }
-        // Prefix `++target;` / `--target;` — a value-free statement.
-        if let Some(operator) = self.peek_increment() {
-            self.advance();
-            self.advance();
-            let target = self.factor()?;
-            self.expect(Token::Semicolon)?;
-            let value = increment_value(operator, &target);
-            return Ok(store_or_assign(target, value, local_names));
-        }
         let first = self.factor()?;
-        if let Some(operator) = self.peek_increment() {
-            // Postfix `target++;` / `target--;`.
-            self.advance();
-            self.advance();
+        // `factor` lowers an `++`/`--` (prefix or postfix) to `target = target ± 1`;
+        // as a value-free statement that routes to a store or local assignment.
+        if let Expression::Assign { target, value } = first {
             self.expect(Token::Semicolon)?;
-            let value = increment_value(operator, &first);
-            Ok(store_or_assign(first, value, local_names))
-        } else if let Some(operator) = self.peek_compound_assignment() {
+            return Ok(store_or_assign(*target, *value, local_names));
+        }
+        if let Some(operator) = self.peek_compound_assignment() {
             self.advance();
             self.advance();
             let rhs = self.expression()?;
@@ -1123,6 +1112,45 @@ impl Parser {
         Ok(Statement::If { condition, then_body, else_body })
     }
 
+    /// A `while`, `do … while`, or `for` loop. The body is a `{ … }` block or a
+    /// single statement; the for-clause `init`/`step` are expressions (an `i = 0`
+    /// assignment, an `i++` increment), any of which may be empty.
+    fn parse_loop_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Statement> {
+        match self.peek() {
+            Token::KeywordWhile => {
+                self.advance();
+                self.expect(Token::ParenOpen)?;
+                let condition = Some(self.expression()?);
+                self.expect(Token::ParenClose)?;
+                let body = self.parse_block_or_statement(local_names)?;
+                Ok(Statement::Loop { kind: LoopKind::While, initializer: None, condition, step: None, body })
+            }
+            Token::KeywordDo => {
+                self.advance();
+                let body = self.parse_block_or_statement(local_names)?;
+                self.expect(Token::KeywordWhile)?;
+                self.expect(Token::ParenOpen)?;
+                let condition = Some(self.expression()?);
+                self.expect(Token::ParenClose)?;
+                self.expect(Token::Semicolon)?;
+                Ok(Statement::Loop { kind: LoopKind::DoWhile, initializer: None, condition, step: None, body })
+            }
+            Token::KeywordFor => {
+                self.advance();
+                self.expect(Token::ParenOpen)?;
+                let initializer = (*self.peek() != Token::Semicolon).then(|| self.expression()).transpose()?;
+                self.expect(Token::Semicolon)?;
+                let condition = (*self.peek() != Token::Semicolon).then(|| self.expression()).transpose()?;
+                self.expect(Token::Semicolon)?;
+                let step = (*self.peek() != Token::ParenClose).then(|| self.expression()).transpose()?;
+                self.expect(Token::ParenClose)?;
+                let body = self.parse_block_or_statement(local_names)?;
+                Ok(Statement::Loop { kind: LoopKind::For, initializer, condition, step, body })
+            }
+            other => Err(Diagnostic::error(format!("expected a loop keyword, found {other}"))),
+        }
+    }
+
     /// A `{ ... }` block, or a single (non-`return`) statement, as a conditional
     /// branch body.
     fn parse_block_or_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Vec<Statement>> {
@@ -1134,6 +1162,9 @@ impl Parser {
         }
         if *self.peek() == Token::KeywordReturn {
             return Ok(vec![self.parse_return_statement()?]);
+        }
+        if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
+            return Ok(vec![self.parse_loop_statement(local_names)?]);
         }
         Ok(vec![self.parse_simple_statement(local_names)?])
     }
@@ -1152,6 +1183,10 @@ impl Parser {
             }
             if *self.peek() == Token::KeywordReturn {
                 statements.push(self.parse_return_statement()?);
+                continue;
+            }
+            if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
+                statements.push(self.parse_loop_statement(local_names)?);
                 continue;
             }
             statements.push(self.parse_simple_statement(local_names)?);

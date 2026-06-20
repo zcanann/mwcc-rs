@@ -95,6 +95,19 @@ impl Parser {
             let operand = self.factor()?;
             return Ok(Expression::Unary { operator, operand: Box::new(operand) });
         }
+        // prefix increment/decrement: `++x` / `--x` desugar to `x = x ± 1`. The
+        // value of the expression is the assigned (new) value, which an assignment
+        // expression already yields — exact for the prefix form.
+        let prefix_step = match self.peek() {
+            Token::PlusPlus => Some(BinaryOperator::Add),
+            Token::MinusMinus => Some(BinaryOperator::Subtract),
+            _ => None,
+        };
+        if let Some(operator) = prefix_step {
+            self.advance();
+            let operand = self.factor()?;
+            return Ok(increment_assignment(operand, operator));
+        }
 
         let mut expression = match self.advance() {
             Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
@@ -192,6 +205,31 @@ impl Parser {
                 _ => break,
             }
         }
+        // postfix increment/decrement: `x++` / `x--`. Desugared to `x = x ± 1` like
+        // the prefix form — the post-value (old value) is not modeled, so a use of
+        // the result is approximate; the common loop-step / statement positions
+        // discard it, where the two forms coincide.
+        let postfix_step = match self.peek() {
+            Token::PlusPlus => Some(BinaryOperator::Add),
+            Token::MinusMinus => Some(BinaryOperator::Subtract),
+            _ => None,
+        };
+        if let Some(operator) = postfix_step {
+            self.advance();
+            return Ok(increment_assignment(expression, operator));
+        }
         Ok(expression)
+    }
+}
+
+/// Build the `target = target ± 1` assignment that an `++`/`--` desugars to.
+fn increment_assignment(target: Expression, operator: BinaryOperator) -> Expression {
+    Expression::Assign {
+        target: Box::new(target.clone()),
+        value: Box::new(Expression::Binary {
+            operator,
+            left: Box::new(target),
+            right: Box::new(Expression::IntegerLiteral(1)),
+        }),
     }
 }
