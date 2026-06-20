@@ -336,6 +336,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_functions {
         order.push(".rela.mwcats.text");
     }
+    let has_sdata_relocs = input.data_objects.iter().any(|object| section_of(object) == ".sdata" && !object.relocations.is_empty());
+    if has_sdata_relocs {
+        order.push(".rela.sdata");
+    }
     order.push(".symtab");
     order.push(".strtab");
     order.push(".shstrtab");
@@ -453,6 +457,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let section = index_of(section_name) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
             comment_values.push(data_aligns[object.name]);
+            // mwcc emits each pointer global's relocation targets immediately after
+            // it (`p, &a; q, &b`), not all targets at the end. A target defined in
+            // this unit resolves to its own data symbol; an external one is undefined.
+            for relocation in &object.relocations {
+                let target = relocation.target.as_str();
+                if global_symbols.contains_key(target) || local_data_symbols.contains_key(target) {
+                    continue;
+                }
+                global_symbols.insert(target, (symtab.len() / SYMBOL_SIZE) as u32);
+                if let Some(&offset) = data_offsets.get(target) {
+                    write_symbol(&mut symtab, strtab.add(target), offset, data_sizes[target], STB_GLOBAL_OBJECT, 0, index_of(data_section[target]) as u16);
+                    comment_values.push(data_aligns[target]);
+                } else {
+                    write_symbol(&mut symtab, strtab.add(target), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+                    comment_values.push(0);
+                }
+            }
         }
     }
     let mut function_symbols: Vec<u32> = Vec::new();
@@ -556,6 +577,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for (index, _) in functions.iter().enumerate() {
         write_rela(&mut rela_mwcats, index as u32 * 8 + 4, function_symbols[index], R_PPC_ADDR32, 0);
     }
+    // `.rela.sdata` — a small pointer global's `ADDR32` to the symbol it points at,
+    // at the object's offset plus the relocation's own offset (plus addend).
+    let mut rela_sdata = Vec::new();
+    for object in &input.data_objects {
+        if data_section[object.name] != ".sdata" {
+            continue;
+        }
+        for relocation in &object.relocations {
+            let symbol = *local_data_symbols
+                .get(relocation.target.as_str())
+                .unwrap_or_else(|| &global_symbols[relocation.target.as_str()]);
+            write_rela(&mut rela_sdata, data_offsets[object.name] + relocation.offset, symbol, R_PPC_ADDR32, relocation.addend as u32);
+        }
+    }
 
     // 4. Content payloads. One `.mwcats` record per function: `(0x02000000 | its
     //    text size, &function)`. The unwind header is a deterministic function of
@@ -655,6 +690,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     if has_functions {
         push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);
+    }
+    if has_sdata_relocs {
+        push(".rela.sdata", SHT_RELA, 0, symtab_section, index_of(".sdata"), 4, 12, rela_sdata, 0);
     }
     push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab, 0);
     // Metrowerks stamps string tables with sh_entsize = 1.

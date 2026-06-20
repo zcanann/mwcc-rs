@@ -207,6 +207,33 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if global.is_static && global.is_const {
             continue;
         }
+        // A pointer global initialized with addresses (`int *p = &g;`): four zero
+        // bytes per element in `.sdata`, each `Some` target an ADDR32 relocation.
+        // (Static/const pointer relocs are a follow-up.)
+        if let Some(targets) = &global.address_initializer {
+            if global.is_static || global.is_const {
+                return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
+            }
+            let size = targets.len() as u32 * 4;
+            let relocations: Vec<_> = targets
+                .iter()
+                .enumerate()
+                .filter_map(|(index, target)| target.as_ref().map(|name| mwcc_machine_code_to_object::DataRelocation { offset: index as u32 * 4, target: name.clone(), addend: 0 }))
+                .collect();
+            // With no relocations the bytes are all zero (a null pointer), which
+            // belongs in `.sbss` like any zero global; relocated bytes go in `.sdata`.
+            let initial_bytes = (!relocations.is_empty()).then(|| vec![0u8; size as usize]);
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
+                name: global.name.clone(),
+                size,
+                alignment: 4,
+                initial_bytes,
+                is_const: false,
+                is_static: false,
+                relocations,
+            });
+            continue;
+        }
         use mwcc_syntax_trees::Type;
         // A scalar/array of an arithmetic type serializes to fixed bytes (an integer
         // value, or a float/double IEEE-754 pattern already encoded by the parser).
@@ -243,6 +270,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 initial_bytes: Some(initial_bytes),
                 is_const: true,
                 is_static: false,
+                relocations: Vec::new(),
             });
             continue;
         }
@@ -268,6 +296,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             initial_bytes,
             is_const: false,
             is_static: global.is_static,
+            relocations: Vec::new(),
         });
     }
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);

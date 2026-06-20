@@ -7,6 +7,10 @@
 use mwcc_machine_code::{MachineFunction, RelocationTarget as MachineTarget};
 use mwcc_object::{DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation};
 
+/// A data-section `ADDR32` relocation (re-exported so callers can build a
+/// `DefinedGlobal`'s relocations without depending on `mwcc-object` directly).
+pub use mwcc_object::DataRelocation;
+
 /// A file-scope variable *defined* in this unit (placed in a data section), in
 /// declaration order. The caller decides which globals qualify (non-`extern`,
 /// laid out); the object writer assigns their section offsets and symbols.
@@ -20,6 +24,8 @@ pub struct DefinedGlobal {
     pub is_const: bool,
     /// A `static` global binds as a LOCAL symbol (file-scope, not exported).
     pub is_static: bool,
+    /// `ADDR32` data relocations the global's bytes carry (a pointer to a symbol).
+    pub relocations: Vec<mwcc_object::DataRelocation>,
 }
 
 /// Assemble a relocatable object from one or more lowered functions (in source
@@ -76,7 +82,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static })
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, relocations: global.relocations.clone() })
         .collect();
     mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data, inline_asm_symbols })
 }

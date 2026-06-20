@@ -99,6 +99,11 @@ pub struct GlobalDeclaration {
     /// lands in a *read-only* section: `.sdata2` (small, ≤ 8 bytes) or `.rodata`
     /// (larger), rather than the writable `.sdata`/`.sbss`.
     pub is_const: bool,
+    /// For a pointer global initialized with addresses (`int *p = &g;`), the target
+    /// symbol of each element — `Some(name)` is `&name` / a function name (an
+    /// `ADDR32` relocation), `None` is a null pointer. `None` overall = not an
+    /// address initializer.
+    pub address_initializer: Option<Vec<Option<String>>>,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved

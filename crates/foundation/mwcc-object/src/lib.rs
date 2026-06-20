@@ -54,6 +54,19 @@ pub struct DataObject<'a> {
     /// A `static` global is file-local: same section routing, but its symbol binds
     /// LOCAL (and is emitted among the local symbols, not the global run).
     pub is_static: bool,
+    /// `R_PPC_ADDR32` relocations this object's bytes carry — a pointer global
+    /// initialized with the address of another symbol (`int *p = &g;`). Each patches
+    /// 4 bytes at `offset` to `target + addend`.
+    pub relocations: Vec<DataRelocation>,
+}
+
+/// An `R_PPC_ADDR32` relocation inside a data object: 4 bytes at `offset` resolve
+/// to `target`'s address plus `addend`.
+#[derive(Clone)]
+pub struct DataRelocation {
+    pub offset: u32,
+    pub target: String,
+    pub addend: i32,
 }
 
 /// One function's contribution to the object: its name, encoded `.text`, and the

@@ -166,6 +166,30 @@ impl Parser {
 
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
     /// an aggregate `{ <const>, ... }` (several, with an optional trailing comma).
+    /// One element of a pointer global's address initializer: `&name` or a bare
+    /// `name` (a function pointer) is that symbol; `0` is a null pointer. `&a[i]`,
+    /// `&s.f`, casts, and arithmetic defer (they need an addend not yet modeled).
+    fn parse_pointer_init_element(&mut self) -> Compilation<Option<String>> {
+        if *self.peek() == Token::Ampersand {
+            self.advance();
+            let name = self.parse_identifier()?;
+            if matches!(self.peek(), Token::BracketOpen | Token::Dot | Token::Arrow) {
+                return Err(Diagnostic::error("a pointer initializer with an offset is not supported yet (roadmap)"));
+            }
+            return Ok(Some(name));
+        }
+        if matches!(self.peek(), Token::IntegerLiteral(0)) {
+            self.advance();
+            return Ok(None);
+        }
+        if let Token::Identifier(name) = self.peek() {
+            let name = name.clone();
+            self.advance();
+            return Ok(Some(name));
+        }
+        Err(Diagnostic::error("a pointer global initializer must be &symbol, a symbol, or 0 (roadmap)"))
+    }
+
     fn parse_constant_initializer(&mut self, element_type: Type) -> Compilation<Vec<i64>> {
         // A string literal initializes a `char` array with its bytes plus a NUL
         // terminator (the store truncates if the array is shorter). A string for a
@@ -692,7 +716,7 @@ impl Parser {
                     }
                 }
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { declared_type: Type::StructPointer, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false });
+                globals.push(GlobalDeclaration { declared_type: Type::StructPointer, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -726,12 +750,20 @@ impl Parser {
                         self.expect(Token::BracketClose)?;
                         dimensions.push(count);
                     }
-                    // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
-                    let initializer = if self.eat_keyword(Token::Equals) {
-                        Some(self.parse_constant_initializer(return_type)?)
-                    } else {
-                        None
-                    };
+                    // A scalar pointer initialized with an address (`int *p = &g;`)
+                    // is a data relocation, not a constant — captured separately.
+                    let mut address_initializer = None;
+                    let mut initializer = None;
+                    if dimensions.is_empty()
+                        && matches!(return_type, Type::Pointer(_) | Type::StructPointer)
+                        && *self.peek() == Token::Equals
+                    {
+                        self.advance();
+                        address_initializer = Some(vec![self.parse_pointer_init_element()?]);
+                    } else if self.eat_keyword(Token::Equals) {
+                        // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
+                        initializer = Some(self.parse_constant_initializer(return_type)?);
+                    }
                     let array_length = if dimensions.is_empty() {
                         None
                     } else if let Some(explicit) = dimensions.iter().copied().collect::<Option<Vec<u16>>>() {
@@ -744,7 +776,7 @@ impl Parser {
                             None => return Err(Diagnostic::error("an array with no length needs an initializer")),
                         }
                     };
-                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const });
+                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         declarator_name = self.parse_identifier()?;
