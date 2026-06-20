@@ -190,6 +190,21 @@ impl Parser {
     /// a null pointer. `&a[i]`, `&s.f`, casts, and arithmetic defer (they need an
     /// addend not yet modeled).
     fn parse_pointer_init_element(&mut self) -> Compilation<PointerElement> {
+        // A cast is transparent for an address: `(SomeType *)&x` is just `&x`. Skip
+        // the parenthesised type and parse the operand after it.
+        if *self.peek() == Token::ParenOpen && self.token_starts_type(self.peek_at(1)) {
+            self.advance();
+            let mut depth = 1;
+            while depth > 0 {
+                match self.advance() {
+                    Token::ParenOpen => depth += 1,
+                    Token::ParenClose => depth -= 1,
+                    Token::EndOfFile => return Err(Diagnostic::error("unterminated cast in a pointer initializer")),
+                    _ => {}
+                }
+            }
+            return self.parse_pointer_init_element();
+        }
         if let Token::StringLiteral(bytes) = self.peek() {
             let bytes = bytes.clone();
             self.advance();
@@ -1115,7 +1130,14 @@ impl Parser {
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {
-        match self.peek() {
+        self.token_starts_type(self.peek())
+    }
+
+    /// Whether `token` can begin a type name (a keyword, a specifier word, a
+    /// qualifier, or a declared typedef) — used for both the current token and a
+    /// one-token lookahead (e.g. the type inside a `(T*)` cast).
+    pub(crate) fn token_starts_type(&self, token: &Token) -> bool {
+        match token {
             Token::KeywordInt
             | Token::KeywordChar
             | Token::KeywordShort
