@@ -7,6 +7,10 @@
 pub enum Instruction {
     /// `addi rD, rA, SIMM` — also spells `li rD, SIMM` when `a == 0`.
     AddImmediate { d: u8, a: u8, immediate: i16 },
+    /// `addic. rD, rA, SIMM` — add immediate carrying, recording the result in CR0
+    /// (so a following `bne`/`beq` tests it). Used by a loop counter decrement
+    /// (`--n` → `addic. rN, rN, -1`).
+    AddImmediateCarryingRecord { d: u8, a: u8, immediate: i16 },
     /// `addis rD, rA, SIMM` — also spells `lis rD, SIMM` when `a == 0`.
     AddImmediateShifted { d: u8, a: u8, immediate: i16 },
     /// `ori rA, rS, UIMM`

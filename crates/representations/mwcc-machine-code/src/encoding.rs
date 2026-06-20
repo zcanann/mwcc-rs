@@ -9,6 +9,7 @@ impl Instruction {
     pub fn encode(&self) -> u32 {
         match *self {
             Instruction::AddImmediate { d, a, immediate } => d_form(14, d, a, immediate as u16),
+            Instruction::AddImmediateCarryingRecord { d, a, immediate } => d_form(13, d, a, immediate as u16),
             Instruction::AddImmediateShifted { d, a, immediate } => d_form(15, d, a, immediate as u16),
             Instruction::OrImmediate { a, s, immediate } => d_form(24, s, a, immediate),
             Instruction::OrImmediateShifted { a, s, immediate } => d_form(25, s, a, immediate),

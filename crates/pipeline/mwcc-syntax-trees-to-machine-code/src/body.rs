@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, Statement, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Statement, Type};
 use mwcc_target::Eabi;
 use crate::analysis::*;
 use crate::generator::*;
@@ -58,6 +58,12 @@ impl Generator {
         if self.try_constant_store_fill(function)? {
             return Ok(());
         }
+        // A `do { …calls… } while (--counter);` loop: the counter goes in r31
+        // (callee-saved), the body branches back, and the decrement-and-test is a
+        // single `addic.`/`bne`.
+        if self.try_do_while_counter(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and
@@ -88,6 +94,8 @@ impl Generator {
             {
                 self.non_leaf = true;
                 self.frame_size = 16;
+                // The if's join label advances mwcc's anonymous-`@N` counter by 2.
+                self.output.anonymous_label_bump = 2;
                 self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
                 self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
@@ -338,6 +346,97 @@ impl Generator {
 
     /// Tear down the stack frame (if one was allocated) and return. A non-leaf
     /// function restores the link register from `frame_size + 4` first.
+    /// A `void` function whose whole body is `do { …calls… } while (--counter);`
+    /// with the counter a parameter: mwcc keeps the counter in a callee-saved
+    /// register (r31), runs the body, then `addic. r31,r31,-1` (decrement, set CR0)
+    /// and `bne` back to the loop top. Returns whether this path applied.
+    fn try_do_while_counter(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || !function.locals.is_empty() || !self.frame_slots.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::DoWhile, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // The condition must be `--counter` (a parameter decrement), which the
+        // parser lowered to `counter = counter - 1`.
+        let counter = match condition {
+            Expression::Assign { target, value } => match (target.as_ref(), value.as_ref()) {
+                (
+                    Expression::Variable(name),
+                    Expression::Binary { operator: BinaryOperator::Subtract, left, right },
+                ) if matches!(left.as_ref(), Expression::Variable(other) if other == name)
+                    && matches!(right.as_ref(), Expression::IntegerLiteral(1)) =>
+                {
+                    name.clone()
+                }
+                _ => return Ok(false),
+            },
+            _ => return Ok(false),
+        };
+        if !function.parameters.iter().any(|parameter| parameter.name == counter) {
+            return Ok(false);
+        }
+        // The body must be straight-line calls that do not pass the counter as an
+        // argument (the first such use would stay in the incoming register — the
+        // value-location nuance the callee-saved path also defers).
+        if body.iter().any(|statement| !matches!(statement, Statement::Expression(_))) {
+            return Ok(false);
+        }
+        if body.iter().any(|statement| matches!(statement, Statement::Expression(e) if expression_reads_name(e, &counter))) {
+            return Ok(false);
+        }
+        if !function_makes_call(function) {
+            return Ok(false);
+        }
+        let (class, incoming) = match self.locations.get(&counter) {
+            Some(location) => (location.class, location.register),
+            None => return Ok(false),
+        };
+        if class != ValueClass::General {
+            return Ok(false);
+        }
+
+        // Prologue: save the link register and r31, move the counter into r31.
+        const SAVED: u8 = 31;
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![SAVED];
+        // The loop's internal labels advance mwcc's anonymous-`@N` counter by 6.
+        self.output.anonymous_label_bump = 6;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: SAVED, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::Or { a: SAVED, s: incoming, b: incoming });
+        if let Some(location) = self.locations.get_mut(&counter) {
+            location.register = SAVED;
+        }
+
+        // The loop body, then the decrement-and-test and the backward branch.
+        let loop_top = self.output.instructions.len();
+        for statement in body {
+            self.emit_statement(statement)?;
+        }
+        self.output.instructions.push(Instruction::AddImmediateCarryingRecord { d: SAVED, a: SAVED, immediate: -1 });
+        // `bne loop_top`: branch when CR0[EQ] is clear (BO=4, BI=2). The branch is
+        // backward, which the encoder resolves from the instruction indices.
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: loop_top });
+
+        // Epilogue, emitted in final order (the loop's branch makes the scheduler and
+        // the LR-reload hoist bail): the LR reload comes before the r31 reload.
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        self.output.instructions.push(Instruction::LoadWord { d: SAVED, a: 1, offset: self.frame_size - 4 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// A straight-line non-leaf function whose parameters live across its call(s):
     /// mwcc copies each into a callee-saved register at entry (saved/reloaded around
     /// the frame) so it survives the calls. The registers are assigned by parameter
@@ -643,6 +742,8 @@ impl Generator {
         let result = Eabi::general_result().number;
         self.non_leaf = true;
         self.frame_size = 16;
+        // The if's branch labels advance mwcc's anonymous-`@N` counter by 2.
+        self.output.anonymous_label_bump = 2;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         let (options, condition_bit) = self.emit_condition_test(condition)?;

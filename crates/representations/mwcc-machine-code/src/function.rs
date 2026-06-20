@@ -41,6 +41,11 @@ pub struct MachineFunction {
     /// Whether the function emits a floating-point conditional branch. mwcc's
     /// anonymous `@N` counter advances by three for such a branch.
     pub has_float_branch: bool,
+    /// Extra `@N`-counter advance from the function's internal control-flow labels:
+    /// mwcc numbers the basic-block labels an `if`/loop introduces before the
+    /// function's unwind `@N` entries. Measured per construct — a non-leaf `if` adds
+    /// 2, a `do … while` loop adds 6.
+    pub anonymous_label_bump: u32,
     /// Frame metadata for the unwind tables; `None` for a leaf with no frame.
     pub frame: Option<FrameInfo>,
     /// A dense `switch`'s jump table; `None` unless the function dispatches through
@@ -62,6 +67,7 @@ impl MachineFunction {
             constants: Vec::new(),
             has_conversion: false,
             has_float_branch: false,
+            anonymous_label_bump: 0,
             frame: None,
             jump_table: None,
             symbol_order: Vec::new(),
