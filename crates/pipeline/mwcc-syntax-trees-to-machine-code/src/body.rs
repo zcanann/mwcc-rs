@@ -47,6 +47,11 @@ impl Generator {
         if self.try_frame_resident(function)? {
             return Ok(());
         }
+        // A counting `for (i = 0; i < bound; i++)` loop owns its single local
+        // counter, so it is checked before the value-tracking path claims it.
+        if self.try_for_counter(function)? {
+            return Ok(());
+        }
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
         // return expression and compiled there; this takes over the whole body when
         // it applies, leaving the straight-line paths below byte-identical.
@@ -357,11 +362,15 @@ impl Generator {
         if function.return_type != Type::Void {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::DoWhile, initializer: None, condition: Some(condition), step: None, body }] =
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
+        let kind = *kind;
+        if !matches!(kind, LoopKind::DoWhile | LoopKind::While) {
+            return Ok(false);
+        }
         // The condition must be `--counter` (a parameter decrement), which the
         // parser lowered to `counter = counter - 1`.
         let counter = match condition {
@@ -406,8 +415,9 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![SAVED];
-        // The loop's internal labels advance mwcc's anonymous-`@N` counter by 6.
-        self.output.anonymous_label_bump = 6;
+        // The loop's internal labels advance mwcc's anonymous-`@N` counter — by 6
+        // for a do-while, by 4 for a while (the extra top branch, fewer labels).
+        self.output.anonymous_label_bump = if matches!(kind, LoopKind::DoWhile) { 6 } else { 4 };
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
@@ -417,15 +427,30 @@ impl Generator {
             location.register = SAVED;
         }
 
+        // A while loop tests the condition first: branch down to the
+        // decrement-and-test, which falls through into the body on re-entry.
+        let skip_to_condition = if matches!(kind, LoopKind::While) {
+            let index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            Some(index)
+        } else {
+            None
+        };
         // The loop body, then the decrement-and-test and the backward branch.
-        let loop_top = self.output.instructions.len();
+        let body_top = self.output.instructions.len();
         for statement in body {
             self.emit_statement(statement)?;
         }
+        if let Some(index) = skip_to_condition {
+            let condition = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[index] {
+                *target = condition;
+            }
+        }
         self.output.instructions.push(Instruction::AddImmediateCarryingRecord { d: SAVED, a: SAVED, immediate: -1 });
-        // `bne loop_top`: branch when CR0[EQ] is clear (BO=4, BI=2). The branch is
-        // backward, which the encoder resolves from the instruction indices.
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: loop_top });
+        // `bne body_top`: branch when CR0[EQ] is clear (BO=4, BI=2). Backward, which
+        // the encoder resolves from the instruction indices.
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: body_top });
 
         // Epilogue, emitted in final order (the loop's branch makes the scheduler and
         // the LR-reload hoist bail): the LR reload comes before the r31 reload.
@@ -433,6 +458,134 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadWord { d: SAVED, a: 1, offset: self.frame_size - 4 });
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// A `void` function whose body is a counting `for (i = 0; i < bound; i++)`
+    /// loop with a parameter bound: mwcc puts the counter in r31 (callee-saved,
+    /// initialised to 0) and the bound in r30, branches to the test, and runs
+    /// `BODY: <body>; addi r31,r31,1; cmpw r31,r30; blt BODY`. The body may use the
+    /// counter (passed as a call argument). Returns whether this path applied.
+    fn try_for_counter(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || !self.frame_slots.is_empty() || function.return_type != Type::Void {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::For, initializer: Some(init), condition: Some(condition), step: Some(step), body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // `i = 0`.
+        let counter = match init {
+            Expression::Assign { target, value } if matches!(value.as_ref(), Expression::IntegerLiteral(0)) => {
+                match target.as_ref() {
+                    Expression::Variable(name) => name.clone(),
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        };
+        // `i < bound`.
+        let bound = match condition {
+            Expression::Binary { operator: BinaryOperator::Less, left, right }
+                if matches!(left.as_ref(), Expression::Variable(name) if *name == counter) =>
+            {
+                match right.as_ref() {
+                    Expression::Variable(name) => name.clone(),
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        };
+        // `i = i + 1`.
+        let step_increments = matches!(step, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if *name == counter)
+            && matches!(value.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left, right }
+                if matches!(left.as_ref(), Expression::Variable(name) if *name == counter)
+                && matches!(right.as_ref(), Expression::IntegerLiteral(1))));
+        if !step_increments {
+            return Ok(false);
+        }
+        // The counter is the function's only local (uninitialised — the for-clause
+        // sets it); the bound is a parameter.
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if local.name != counter || local.initializer.is_some() {
+            return Ok(false);
+        }
+        if !function.parameters.iter().any(|parameter| parameter.name == bound) {
+            return Ok(false);
+        }
+        // The body must be straight-line calls referencing no register value other
+        // than the counter (the bound, and any other parameter, would each need
+        // their own callee-saved register — deferred).
+        if body.iter().any(|statement| !matches!(statement, Statement::Expression(_))) {
+            return Ok(false);
+        }
+        let reads_other_parameter = body.iter().any(|statement| match statement {
+            Statement::Expression(expression) => function
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name != counter && expression_reads_name(expression, &parameter.name)),
+            _ => false,
+        });
+        if reads_other_parameter {
+            return Ok(false);
+        }
+        if !function_makes_call(function) {
+            return Ok(false);
+        }
+        let bound_incoming = match self.locations.get(&bound) {
+            Some(location) if location.class == ValueClass::General => location.register,
+            _ => return Ok(false),
+        };
+
+        // Prologue: r31 = counter (init 0), r30 = bound, saved at the top of a frame.
+        const COUNTER: u8 = 31;
+        const BOUND: u8 = 30;
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![COUNTER, BOUND];
+        self.output.anonymous_label_bump = 5;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: COUNTER, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::AddImmediate { d: COUNTER, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: BOUND, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::Or { a: BOUND, s: bound_incoming, b: bound_incoming });
+        let signed = self.signed_of(local.declared_type);
+        self.locations.insert(
+            counter.clone(),
+            Location { class: ValueClass::General, register: COUNTER, signed, width: 32, pointee: None },
+        );
+        if let Some(location) = self.locations.get_mut(&bound) {
+            location.register = BOUND;
+        }
+
+        // Branch to the test; the body falls into the step, then the compare loops.
+        let skip = self.output.instructions.len();
+        self.output.instructions.push(Instruction::Branch { target: 0 });
+        let body_top = self.output.instructions.len();
+        for statement in body {
+            self.emit_statement(statement)?;
+        }
+        self.output.instructions.push(Instruction::AddImmediate { d: COUNTER, a: COUNTER, immediate: 1 });
+        let condition_index = self.output.instructions.len();
+        if let Instruction::Branch { target } = &mut self.output.instructions[skip] {
+            *target = condition_index;
+        }
+        self.output.instructions.push(Instruction::CompareWord { a: COUNTER, b: BOUND });
+        // `blt body_top` (BO=12 branch-if-true, BI=0 the LT bit).
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 0, target: body_top });
+
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::LoadWord { d: COUNTER, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::LoadWord { d: BOUND, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
