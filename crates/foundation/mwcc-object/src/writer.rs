@@ -330,7 +330,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_frame {
         order.push(".relaextabindex");
     }
-    if has_jump_table {
+    let has_data_relocs = input.data_objects.iter().any(|object| section_of(object) == ".data" && !object.relocations.is_empty());
+    if has_jump_table || has_data_relocs {
         order.push(".rela.data");
     }
     if has_functions {
@@ -458,9 +459,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
             comment_values.push(data_aligns[object.name]);
             // mwcc emits each pointer global's relocation targets immediately after
-            // it (`p, &a; q, &b`), not all targets at the end. A target defined in
-            // this unit resolves to its own data symbol; an external one is undefined.
-            for relocation in &object.relocations {
+            // it (`p, &a; q, &b`), not all targets at the end — and within one object
+            // (a pointer array `{&a, &b}`) in REVERSE element order (`t, &b, &a`). A
+            // target defined in this unit resolves to its own data symbol; an
+            // external one is undefined.
+            for relocation in object.relocations.iter().rev() {
                 let target = relocation.target.as_str();
                 if global_symbols.contains_key(target) || local_data_symbols.contains_key(target) {
                     continue;
@@ -577,18 +580,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for (index, _) in functions.iter().enumerate() {
         write_rela(&mut rela_mwcats, index as u32 * 8 + 4, function_symbols[index], R_PPC_ADDR32, 0);
     }
-    // `.rela.sdata` — a small pointer global's `ADDR32` to the symbol it points at,
-    // at the object's offset plus the relocation's own offset (plus addend).
+    // `.rela.sdata`/`.rela.data` — a pointer global's `ADDR32` to the symbol it
+    // points at, at the object's offset plus the relocation's own offset (plus
+    // addend). Within one object (a pointer array) both the target symbols AND the
+    // relocation entries run in REVERSE element order. `.sdata` for small pointers,
+    // `.data` for large arrays.
     let mut rela_sdata = Vec::new();
+    let resolve_data_target = |name: &str| -> u32 {
+        *local_data_symbols.get(name).unwrap_or_else(|| &global_symbols[name])
+    };
     for object in &input.data_objects {
         if data_section[object.name] != ".sdata" {
             continue;
         }
-        for relocation in &object.relocations {
-            let symbol = *local_data_symbols
-                .get(relocation.target.as_str())
-                .unwrap_or_else(|| &global_symbols[relocation.target.as_str()]);
-            write_rela(&mut rela_sdata, data_offsets[object.name] + relocation.offset, symbol, R_PPC_ADDR32, relocation.addend as u32);
+        for relocation in object.relocations.iter().rev() {
+            write_rela(&mut rela_sdata, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+        }
+    }
+    for object in &input.data_objects {
+        if data_section[object.name] != ".data" {
+            continue;
+        }
+        for relocation in object.relocations.iter().rev() {
+            write_rela(&mut rela_data, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
         }
     }
 
@@ -685,7 +699,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_frame {
         push(".relaextabindex", SHT_RELA, 0, symtab_section, index_of("extabindex"), 4, 12, rela_extabindex, 0);
     }
-    if has_jump_table {
+    if has_jump_table || has_data_relocs {
         push(".rela.data", SHT_RELA, 0, symtab_section, index_of(".data"), 4, 12, rela_data, 0);
     }
     if has_functions {

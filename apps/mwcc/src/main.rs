@@ -214,7 +214,10 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             if global.is_static || global.is_const {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
-            let size = targets.len() as u32 * 4;
+            // The element count comes from the array dimension (a partially listed
+            // array zero-fills the rest); a scalar pointer is one element.
+            let count = global.array_length.map(u32::from).unwrap_or(targets.len() as u32);
+            let size = count * 4;
             let relocations: Vec<_> = targets
                 .iter()
                 .enumerate()

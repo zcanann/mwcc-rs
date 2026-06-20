@@ -166,6 +166,24 @@ impl Parser {
 
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
     /// an aggregate `{ <const>, ... }` (several, with an optional trailing comma).
+    /// A pointer global's initializer: a single address (`int *p = &g;`) or a brace
+    /// list of them (`int *t[] = {&a, &b};`), each element a target symbol or null.
+    fn parse_address_initializer(&mut self) -> Compilation<Vec<Option<String>>> {
+        if self.eat_keyword(Token::BraceOpen) {
+            let mut elements = Vec::new();
+            while *self.peek() != Token::BraceClose {
+                elements.push(self.parse_pointer_init_element()?);
+                if !self.eat_keyword(Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(Token::BraceClose)?;
+            Ok(elements)
+        } else {
+            Ok(vec![self.parse_pointer_init_element()?])
+        }
+    }
+
     /// One element of a pointer global's address initializer: `&name` or a bare
     /// `name` (a function pointer) is that symbol; `0` is a null pointer. `&a[i]`,
     /// `&s.f`, casts, and arithmetic defer (they need an addend not yet modeled).
@@ -750,16 +768,13 @@ impl Parser {
                         self.expect(Token::BracketClose)?;
                         dimensions.push(count);
                     }
-                    // A scalar pointer initialized with an address (`int *p = &g;`)
-                    // is a data relocation, not a constant — captured separately.
+                    // A pointer global initialized with addresses (`int *p = &g;` or
+                    // a `{&a, &b}` array) is a set of data relocations, not constants.
                     let mut address_initializer = None;
                     let mut initializer = None;
-                    if dimensions.is_empty()
-                        && matches!(return_type, Type::Pointer(_) | Type::StructPointer)
-                        && *self.peek() == Token::Equals
-                    {
+                    if matches!(return_type, Type::Pointer(_) | Type::StructPointer) && *self.peek() == Token::Equals {
                         self.advance();
-                        address_initializer = Some(vec![self.parse_pointer_init_element()?]);
+                        address_initializer = Some(self.parse_address_initializer()?);
                     } else if self.eat_keyword(Token::Equals) {
                         // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
                         initializer = Some(self.parse_constant_initializer(return_type)?);
@@ -770,9 +785,10 @@ impl Parser {
                         // Every dimension is explicit: the length is their product.
                         Some(explicit.iter().map(|&dimension| dimension as u32).product::<u32>() as u16)
                     } else {
-                        // An inferred dimension takes its length from the flat initializer.
-                        match &initializer {
-                            Some(values) => Some(values.len() as u16),
+                        // An inferred dimension takes its length from the flat
+                        // initializer (constant values or address elements).
+                        match initializer.as_ref().map(Vec::len).or(address_initializer.as_ref().map(Vec::len)) {
+                            Some(length) => Some(length as u16),
                             None => return Err(Diagnostic::error("an array with no length needs an initializer")),
                         }
                     };
