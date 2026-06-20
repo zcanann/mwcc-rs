@@ -183,30 +183,30 @@ impl Parser {
     }
 
     /// One scalar element of a global initializer, encoded to the raw bits the
-    /// object stores for `element_type`: an integer value as-is, a `float`/`double`
-    /// element as its IEEE-754 bit pattern. An integer literal in a float slot is
-    /// converted (`float A[4] = {1,2,3,4}`); a float literal in an integer slot is
-    /// not supported.
+    /// object stores for `element_type`. An integer element is a full constant
+    /// *expression* (`((dir)+(file))`, `1 << 3`, `(u8)0xFF`), folded to its value;
+    /// the store later truncates to the element width. A `float`/`double` element
+    /// is a single literal (or integer, converted) as its IEEE-754 bit pattern.
     fn parse_scalar_constant(&mut self, element_type: Type) -> Compilation<i64> {
-        let negative = self.eat_keyword(Token::Minus);
-        match self.advance() {
-            Token::IntegerLiteral(value) => {
-                let value = if negative { -(value as i64) } else { value as i64 };
-                Ok(match element_type {
-                    Type::Float => (value as f32).to_bits() as i64,
-                    Type::Double => (value as f64).to_bits() as i64,
-                    _ => value,
-                })
-            }
-            Token::FloatLiteral(value) => {
-                let value = if negative { -value } else { value };
-                match element_type {
-                    Type::Float => Ok((value as f32).to_bits() as i64),
-                    Type::Double => Ok(value.to_bits() as i64),
-                    _ => Err(Diagnostic::error("a floating-point initializer for a non-float global is not supported yet (roadmap)")),
+        match element_type {
+            Type::Float | Type::Double => {
+                let negative = self.eat_keyword(Token::Minus);
+                match self.advance() {
+                    Token::IntegerLiteral(value) => {
+                        let value = if negative { -(value as i64) } else { value as i64 };
+                        Ok(if element_type == Type::Float { (value as f32).to_bits() as i64 } else { (value as f64).to_bits() as i64 })
+                    }
+                    Token::FloatLiteral(value) => {
+                        let value = if negative { -value } else { value };
+                        Ok(if element_type == Type::Float { (value as f32).to_bits() as i64 } else { value.to_bits() as i64 })
+                    }
+                    other => Err(Diagnostic::error(format!("a float global initializer must be a literal, found {other}"))),
                 }
             }
-            other => Err(Diagnostic::error(format!("only integer-constant global initializers are supported, found {other}"))),
+            _ => {
+                let expression = self.expression()?;
+                crate::expressions::fold_constant_expression(&expression)
+            }
         }
     }
 

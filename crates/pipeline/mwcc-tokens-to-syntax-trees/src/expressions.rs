@@ -2,10 +2,92 @@
 //! unary operators, casts, and primary factors.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Type, UnaryOperator};
 use mwcc_tokens::Token;
 
 use crate::parser::Parser;
+
+/// Evaluate a *constant integer expression* (a global initializer element) to its
+/// value. Enum constants are already folded to literals by the parser, so this
+/// handles literals, the arithmetic/bitwise/shift/comparison/logical operators,
+/// unary `-`/`~`/`!`, integer casts, and `?:`. Anything that is not an integer
+/// constant — a symbol reference, an address-of, a float, a call — defers, so an
+/// initializer needing a data relocation is never silently mis-encoded.
+pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i64> {
+    use BinaryOperator::*;
+    Ok(match expression {
+        Expression::IntegerLiteral(value) => *value,
+        Expression::Unary { operator, operand } => {
+            let value = fold_constant_expression(operand)?;
+            match operator {
+                UnaryOperator::Negate => value.wrapping_neg(),
+                UnaryOperator::BitNot => !value,
+                UnaryOperator::LogicalNot => (value == 0) as i64,
+            }
+        }
+        Expression::Binary { operator, left, right } => {
+            let left = fold_constant_expression(left)?;
+            let right = fold_constant_expression(right)?;
+            match operator {
+                Add => left.wrapping_add(right),
+                Subtract => left.wrapping_sub(right),
+                Multiply => left.wrapping_mul(right),
+                Divide if right == 0 => return Err(Diagnostic::error("constant division by zero")),
+                Modulo if right == 0 => return Err(Diagnostic::error("constant modulo by zero")),
+                Divide => left.wrapping_div(right),
+                Modulo => left.wrapping_rem(right),
+                BitAnd => left & right,
+                BitOr => left | right,
+                BitXor => left ^ right,
+                ShiftLeft => left.wrapping_shl(right as u32),
+                ShiftRight => left.wrapping_shr(right as u32),
+                Less => (left < right) as i64,
+                Greater => (left > right) as i64,
+                LessEqual => (left <= right) as i64,
+                GreaterEqual => (left >= right) as i64,
+                Equal => (left == right) as i64,
+                NotEqual => (left != right) as i64,
+                LogicalAnd => (left != 0 && right != 0) as i64,
+                LogicalOr => (left != 0 || right != 0) as i64,
+            }
+        }
+        Expression::Conditional { condition, when_true, when_false } => {
+            if fold_constant_expression(condition)? != 0 {
+                fold_constant_expression(when_true)?
+            } else {
+                fold_constant_expression(when_false)?
+            }
+        }
+        Expression::Cast { target_type, operand } => {
+            let value = fold_constant_expression(operand)?;
+            match target_type {
+                // A pointer cast keeps the (integer) address value; a non-integer
+                // cast cannot be represented here.
+                Type::Pointer(_) | Type::StructPointer => value,
+                Type::Float | Type::Double | Type::Struct { .. } | Type::Void => {
+                    return Err(Diagnostic::error("a non-integer cast in a constant initializer is not supported yet (roadmap)"))
+                }
+                integer => truncate_to_integer(value, *integer),
+            }
+        }
+        _ => return Err(Diagnostic::error("a non-constant global initializer is not supported yet (roadmap)")),
+    })
+}
+
+/// Reduce `value` to `integer_type`'s width, sign-extending a signed type — the
+/// effect of a C integer cast on a constant.
+fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
+    let bits = integer_type.width() as u32;
+    if bits >= 64 {
+        return value;
+    }
+    let masked = value & ((1i64 << bits) - 1);
+    if integer_type.is_signed() && masked & (1i64 << (bits - 1)) != 0 {
+        masked - (1i64 << bits)
+    } else {
+        masked
+    }
+}
 
 impl Parser {
     pub(crate) fn expression(&mut self) -> Compilation<Expression> {
