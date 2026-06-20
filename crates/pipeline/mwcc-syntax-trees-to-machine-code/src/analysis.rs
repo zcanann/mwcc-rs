@@ -125,7 +125,7 @@ fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, co
                 collected.push(name.clone());
             }
         }
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => {}
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => {}
         Expression::Binary { left, right, .. } => {
             collect_register_reads(left, registers, collected);
             collect_register_reads(right, registers, collected);
@@ -232,7 +232,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
             || (expression_has_call(right) && reads_register(left, registers))
     };
     match expression {
-        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => false,
+        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
         Expression::Binary { left, right, .. } => pair(left, right),
         Expression::Index { base, index } => pair(base, index),
         Expression::Assign { target, value } => pair(target, value),
@@ -271,7 +271,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
 fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
     match expression {
         Expression::Variable(name) => registers.contains(name.as_str()),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => false,
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
         Expression::Binary { left, right, .. } => {
             reads_register(left, registers) || reads_register(right, registers)
         }

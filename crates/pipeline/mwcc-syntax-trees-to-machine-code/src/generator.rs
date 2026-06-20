@@ -236,6 +236,8 @@ impl Generator {
         match expression {
             Expression::IntegerLiteral(_) => Ok(true),
             Expression::FloatLiteral(_) => Ok(true),
+            // A string literal is an address — an unsigned pointer value.
+            Expression::StringLiteral(_) => Ok(false),
             Expression::Variable(name) => {
                 if let Some(location) = self.locations.get(name) {
                     Ok(location.signed)

@@ -265,6 +265,8 @@ fn walk_statement(statement: &Statement, names: &mut HashSet<String>) {
 /// Record `&variable` occurrences within `expression`.
 fn walk(expression: &Expression, names: &mut HashSet<String>) {
     match expression {
+        // A string literal takes no `&variable` of its own.
+        Expression::StringLiteral(_) => {}
         Expression::AddressOf { operand } => {
             if let Expression::Variable(name) = operand.as_ref() {
                 names.insert(name.clone());

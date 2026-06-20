@@ -99,14 +99,14 @@ fn guard_no_duplication(expression: &Expression, values: &HashMap<String, Expres
 
 /// Whether an expression is a leaf (free to duplicate): a variable or literal.
 fn is_leaf_value(expression: &Expression) -> bool {
-    matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_))
+    matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_))
 }
 
 /// Count references to the variable `name` within `expression`.
 fn count_references(name: &str, expression: &Expression) -> usize {
     match expression {
         Expression::Variable(variable) => usize::from(variable == name),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => 0,
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => 0,
         Expression::Binary { left, right, .. } => count_references(name, left) + count_references(name, right),
         Expression::Unary { operand, .. } => count_references(name, operand),
         Expression::Conditional { condition, when_true, when_false } => {
@@ -169,6 +169,6 @@ fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> 
             target: Box::new(substitute(target, values)),
             value: Box::new(substitute(value, values)),
         },
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => expression.clone(),
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => expression.clone(),
     }
 }

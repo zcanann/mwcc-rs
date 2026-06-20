@@ -194,6 +194,8 @@ impl Parser {
         let mut expression = match self.advance() {
             Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
+            // A string literal (the raw bytes) — pooled and loaded by address.
+            Token::StringLiteral(bytes) => Expression::StringLiteral(bytes),
             // `name(args)` is a call; a bare `name` is a variable.
             Token::Identifier(name) if *self.peek() == Token::ParenOpen => {
                 self.advance();

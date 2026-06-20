@@ -35,6 +35,10 @@ pub struct MachineFunction {
     /// Read-only constants this function loads from `.sdata2`. Each becomes an
     /// anonymous `@N` object that the function's `R_PPC_EMB_SDA21` loads reference.
     pub constants: Vec<PoolConstant>,
+    /// String literals used in this function's body, by bytes (without the trailing
+    /// NUL), in first-use order. The unit resolver pools these into anonymous `@N`
+    /// `.sdata` objects and rewrites the placeholder `@@strN` relocations.
+    pub string_literals: Vec<Vec<u8>>,
     /// Whether the function performs an int<->float conversion. mwcc's anonymous
     /// `@N` counter starts one higher for such functions.
     pub has_conversion: bool,
@@ -65,6 +69,7 @@ impl MachineFunction {
             instructions: Vec::new(),
             relocations: Vec::new(),
             constants: Vec::new(),
+            string_literals: Vec::new(),
             has_conversion: false,
             has_float_branch: false,
             anonymous_label_bump: 0,

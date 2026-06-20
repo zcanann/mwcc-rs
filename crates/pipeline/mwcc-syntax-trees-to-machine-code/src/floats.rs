@@ -12,6 +12,7 @@ impl Generator {
     /// Evaluate a float expression into float register `destination`.
     pub(crate) fn evaluate_float(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         match expression {
+            Expression::StringLiteral(_) => Err(Diagnostic::error("a string literal is not a float value")),
             Expression::Variable(name) => {
                 // A frame-resident float is reloaded from its stack slot.
                 if let Some(slot) = self.frame_slots.get(name).copied() {

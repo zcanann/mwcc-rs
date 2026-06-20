@@ -8,6 +8,10 @@ use crate::types::{Pointee, Type};
 pub enum Expression {
     IntegerLiteral(i64),
     FloatLiteral(f64),
+    /// A string literal in expression position (the bytes, without the trailing
+    /// NUL) — pooled into an anonymous `@N` `.sdata` object; its use loads the
+    /// object's address.
+    StringLiteral(Vec<u8>),
     Variable(String),
     Binary {
         operator: BinaryOperator,

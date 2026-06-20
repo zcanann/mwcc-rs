@@ -343,6 +343,51 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             relocations: Vec::new(),
         });
     }
+    // Resolve each function's pooled string literals to anonymous `@N` `.sdata`
+    // objects. A function string reuses an identical earlier string (global or
+    // function — mwcc `-str reuse`); a new one is numbered `@(5 + global_strings + j)`
+    // (the function anonymous base of 5, raised past the global string pool), emitted
+    // after the file-scope data, and its placeholder `@@strN` relocations are rewritten.
+    let mut function_string_number = 5 + string_counter;
+    let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    for machine_function in &mut machine_functions {
+        let resolved: Vec<String> = machine_function
+            .string_literals
+            .iter()
+            .map(|bytes| {
+                if let Some(name) = string_pool.get(bytes) {
+                    return name.clone();
+                }
+                let name = format!("@{function_string_number}");
+                function_string_number += 1;
+                string_pool.insert(bytes.clone(), name.clone());
+                let mut object_bytes = bytes.clone();
+                object_bytes.push(0);
+                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal {
+                    name: name.clone(),
+                    size: object_bytes.len() as u32,
+                    alignment: 4,
+                    initial_bytes: Some(object_bytes),
+                    is_const: false,
+                    is_static: true,
+                    relocations: Vec::new(),
+                });
+                name
+            })
+            .collect();
+        for relocation in &mut machine_function.relocations {
+            let resolved_target = if let mwcc_machine_code::RelocationTarget::External(name) = &relocation.target {
+                name.strip_prefix("@@str").and_then(|rest| rest.parse::<usize>().ok()).map(|index| resolved[index].clone())
+            } else {
+                None
+            };
+            if let Some(name) = resolved_target {
+                relocation.target = mwcc_machine_code::RelocationTarget::External(name);
+            }
+        }
+    }
+    defined_globals.extend(function_string_objects);
+
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
 
     if let Some(directory) = artifacts {

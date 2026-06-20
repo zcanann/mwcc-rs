@@ -97,7 +97,7 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
 fn collect(expression: &Expression, names: &mut Names) {
     match expression {
         Expression::Variable(name) => names.data.push(name.clone()),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => {}
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => {}
         Expression::Binary { left, right, .. } => {
             if is_leaf(right) && !is_leaf(left) {
                 collect(right, names);

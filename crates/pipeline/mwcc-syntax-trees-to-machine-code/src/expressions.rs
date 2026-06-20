@@ -103,6 +103,7 @@ impl Generator {
                 self.load_integer_constant(destination, *value);
                 Ok(())
             }
+            Expression::StringLiteral(bytes) => self.emit_string_literal(bytes, destination),
             // `&x` for a frame-resident variable is its address: `addi d, r1, slot`.
             Expression::AddressOf { operand } => self.emit_address_of(operand, destination),
             Expression::Variable(name) => {
@@ -509,6 +510,38 @@ impl Generator {
         let (pointee, address) = self.resolve_pointer(pointer)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, 0));
         Ok(())
+    }
+
+    /// A string literal in expression position: intern it into the function's pooled
+    /// `@N` strings (deduplicated by bytes), then load that object's address. Under
+    /// small-data addressing this is `addi d,0,0` + an `R_PPC_EMB_SDA21` relocation to
+    /// a placeholder `@@strN` name, which the unit's string resolver rewrites to the
+    /// real `@N`.
+    fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
+        match self.behavior.global_addressing {
+            GlobalAddressing::SmallData => {
+                let index = self.intern_string_literal(bytes);
+                self.record_relocation(RelocationKind::EmbSda21, &format!("@@str{index}"));
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+                // The `@N` pool, object, and relocation are byte-exact; the only diff is
+                // that mwcc schedules a non-leaf call's READY argument materialization
+                // (this `li`/`addi`, also a plain `foo(const)`) between `mflr` and the
+                // LR-save `stw`, while the prologue scheduler emits it after. Until that
+                // ordering is modeled, defer rather than emit the wrong instruction order.
+                Err(Diagnostic::error("a string-literal argument needs the prologue arg scheduler (ready-arg materialization before the LR save) (roadmap)"))
+            }
+            GlobalAddressing::Absolute => Err(Diagnostic::error("a string literal under absolute addressing is not supported yet (roadmap)")),
+        }
+    }
+
+    /// Intern a string literal into the function's pooled list (by bytes), returning
+    /// its index. The unit-wide resolver assigns the `@N` names after lowering.
+    fn intern_string_literal(&mut self, bytes: &[u8]) -> usize {
+        if let Some(index) = self.output.string_literals.iter().position(|existing| existing.as_slice() == bytes) {
+            return index;
+        }
+        self.output.string_literals.push(bytes.to_vec());
+        self.output.string_literals.len() - 1
     }
 
     /// Emit `base->field` — a displacement load from the struct pointer's register
