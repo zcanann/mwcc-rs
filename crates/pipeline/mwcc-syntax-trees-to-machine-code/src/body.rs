@@ -122,6 +122,49 @@ impl Generator {
                 return Ok(());
             }
         }
+        // A non-leaf `if (c) { then } else { else }` with straight-line bodies: the
+        // condition test schedules into the prologue, `beq` jumps to the else body,
+        // the then body falls through to an unconditional `b` over the else body to
+        // the shared epilogue.
+        if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
+            if function_makes_call(function)
+                && function.return_type == Type::Void
+                && function.guards.is_empty()
+                && !then_body.is_empty()
+                && !else_body.is_empty()
+                && then_body.iter().chain(else_body).all(|statement| matches!(statement, Statement::Store { .. } | Statement::Expression(_) | Statement::Assign { .. }))
+                && !reads_value_across_call(function)
+            {
+                self.non_leaf = true;
+                self.frame_size = 16;
+                // The else branch and join label advance mwcc's anonymous-`@N` counter.
+                self.output.anonymous_label_bump = 3;
+                self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+                self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                let branch_to_else = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                for statement in then_body {
+                    self.emit_statement(statement)?;
+                }
+                let branch_to_join = self.output.instructions.len();
+                self.output.instructions.push(Instruction::Branch { target: 0 });
+                let else_label = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
+                    *target = else_label;
+                }
+                for statement in else_body {
+                    self.emit_statement(statement)?;
+                }
+                let join_label = self.output.instructions.len();
+                if let Instruction::Branch { target } = &mut self.output.instructions[branch_to_join] {
+                    *target = join_label;
+                }
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+        }
         // A non-leaf function led by `if (c) { …calls…; return X; }` with a
         // continuation that supplies the other exit: mwcc schedules the condition
         // test into the prologue, the early return materializes X and branches to a

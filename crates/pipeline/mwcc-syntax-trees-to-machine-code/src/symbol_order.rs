@@ -4,16 +4,26 @@
 //! references by an AST traversal — NOT by `.text` reference (offset) order. The
 //! traversal is left-to-right except that a binary node visits its RIGHT operand
 //! first when the right is a leaf and the left is compound (so `g*2 + h` registers
-//! `h` before `g`), and a call registers its arguments before the callee. The
-//! object writer assigns this function's external/global symbols in this order.
+//! `h` before `g`). Crucially mwcc groups by KIND: every DATA reference (a global
+//! operand) is registered first, in traversal order, then every CALL target — so
+//! `g(A); B = 1;` registers `A, B, g`, not `A, g, B`. The object writer assigns
+//! this function's external/global symbols in this order.
 
 use mwcc_syntax_trees::{Expression, Function, Statement};
 
+/// The data and call references collected during the traversal, kept apart so the
+/// data group can be emitted ahead of the call group.
+#[derive(Default)]
+struct Names {
+    data: Vec<String>,
+    calls: Vec<String>,
+}
+
 /// The referenced names (globals, callees, and locals — the writer filters to the
-/// ones that become symbols) in mwcc's symbol-table order, deduplicated to first
-/// occurrence.
+/// ones that become symbols) in mwcc's symbol-table order: all data references,
+/// then all call targets, deduplicated to first occurrence.
 pub(crate) fn referenced_names(function: &Function) -> Vec<String> {
-    let mut names = Vec::new();
+    let mut names = Names::default();
     for statement in &function.statements {
         collect_statement(statement, &mut names);
     }
@@ -24,9 +34,11 @@ pub(crate) fn referenced_names(function: &Function) -> Vec<String> {
     if let Some(expression) = &function.return_expression {
         collect(expression, &mut names);
     }
+    let mut ordered = names.data;
+    ordered.extend(names.calls);
     let mut seen = std::collections::HashSet::new();
-    names.retain(|name| seen.insert(name.clone()));
-    names
+    ordered.retain(|name| seen.insert(name.clone()));
+    ordered
 }
 
 /// A leaf operand — a name or a literal — needs no computation; everything else is
@@ -36,7 +48,7 @@ fn is_leaf(expression: &Expression) -> bool {
 }
 
 /// `target = value`, visited as a binary node.
-fn collect_assignment(target: &Expression, value: &Expression, names: &mut Vec<String>) {
+fn collect_assignment(target: &Expression, value: &Expression, names: &mut Names) {
     if is_leaf(value) && !is_leaf(target) {
         collect(value, names);
         collect(target, names);
@@ -46,7 +58,7 @@ fn collect_assignment(target: &Expression, value: &Expression, names: &mut Vec<S
     }
 }
 
-fn collect_statement(statement: &Statement, names: &mut Vec<String>) {
+fn collect_statement(statement: &Statement, names: &mut Names) {
     match statement {
         Statement::Store { target, value } => collect_assignment(target, value, names),
         Statement::Assign { value, .. } => collect(value, names),
@@ -82,9 +94,9 @@ fn collect_statement(statement: &Statement, names: &mut Vec<String>) {
     }
 }
 
-fn collect(expression: &Expression, names: &mut Vec<String>) {
+fn collect(expression: &Expression, names: &mut Names) {
     match expression {
-        Expression::Variable(name) => names.push(name.clone()),
+        Expression::Variable(name) => names.data.push(name.clone()),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => {}
         Expression::Binary { left, right, .. } => {
             if is_leaf(right) && !is_leaf(left) {
@@ -109,12 +121,13 @@ fn collect(expression: &Expression, names: &mut Vec<String>) {
             collect(when_true, names);
             collect(when_false, names);
         }
-        // A call registers its arguments (left to right), then the callee.
+        // A call registers its arguments (left to right) as data references, then
+        // the callee into the call group (emitted after all data references).
         Expression::Call { name, arguments } => {
             for argument in arguments {
                 collect(argument, names);
             }
-            names.push(name.clone());
+            names.calls.push(name.clone());
         }
         Expression::Assign { target, value } => collect_assignment(target, value, names),
     }
