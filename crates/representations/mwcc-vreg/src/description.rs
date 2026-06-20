@@ -55,8 +55,17 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, a);
             visit(U, G, b);
         }
-        AddImmediate { d, a, .. } | AddImmediateShifted { d, a, .. } | SubtractFromImmediate { d, a, .. }
-        | MultiplyImmediate { d, a, .. } | AddToZeroExtended { d, a } => {
+        // addi/addis use rA=0 to mean the literal value 0 — that encoding IS `li`/`lis`,
+        // and PowerPC never reads r0 here — so a zero base is NOT a use of r0. Reporting
+        // it as one adds phantom r0 dependencies that block scheduling (e.g. the LR-reload
+        // hoist refuses to move past a `li`). subfic/mulli/addze have no such convention.
+        AddImmediate { d, a, .. } | AddImmediateShifted { d, a, .. } => {
+            visit(D, G, d);
+            if *a != 0 {
+                visit(U, G, a);
+            }
+        }
+        SubtractFromImmediate { d, a, .. } | MultiplyImmediate { d, a, .. } | AddToZeroExtended { d, a } => {
             visit(D, G, d);
             visit(U, G, a);
         }

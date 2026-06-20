@@ -55,6 +55,15 @@ fn is_barrier(instruction: &Instruction) -> bool {
 /// nothing moves) so the caller can remap relocation indices.
 pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     let identity: Vec<usize> = (0..instructions.len()).collect();
+    // Intra-function control flow makes the saved-LR reload a join point — it
+    // commonly sits at a SHARED epilogue reached by several edges (early returns),
+    // so hoisting it above a branch would skip it on some path. Branch targets are
+    // also instruction indices that this reordering would invalidate. mwcc only
+    // issues the reload early in straight-line functions, so bail when the function
+    // has any forward/unconditional branch.
+    if has_forward_branch(instructions) {
+        return identity;
+    }
     let Some(mtlr) = instructions.iter().position(|instruction| matches!(instruction, Instruction::MoveToLinkRegister { .. })) else {
         return identity;
     };
