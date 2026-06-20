@@ -95,7 +95,11 @@ impl Generator {
                 && function.return_type == Type::Void
                 && function.guards.is_empty()
                 && else_body.is_empty()
-                && then_body.len() == 1
+                && !then_body.is_empty()
+                // A straight-line body (calls/stores, no nested control flow); a value
+                // read across one of its calls would need callee-saving, so defer it.
+                && then_body.iter().all(|statement| matches!(statement, Statement::Store { .. } | Statement::Expression(_) | Statement::Assign { .. }))
+                && !reads_value_across_call(function)
             {
                 self.non_leaf = true;
                 self.frame_size = 16;

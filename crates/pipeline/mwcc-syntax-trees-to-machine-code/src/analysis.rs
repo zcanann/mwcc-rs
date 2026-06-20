@@ -166,19 +166,41 @@ fn statement_reads_across_call(statement: &Statement, prior_call: bool, register
         Statement::Return(value) => value
             .as_ref()
             .is_some_and(|value| expression_reads_across_call(value, prior_call, registers)),
-        // Control-flow statements are routed through their own (guarded) paths
-        // before reaching the straight-line emitter; treat any register read in
-        // them conservatively as unsafe when a call is involved.
+        // A branch body is a statement *sequence*: a call in an earlier body
+        // statement clobbers a register read by a later one, so it must be sequenced
+        // (the condition runs first).
         Statement::If { condition, then_body, else_body } => {
-            expression_reads_across_call(condition, prior_call, registers)
-                || then_body.iter().chain(else_body).any(|s| statement_reads_across_call(s, prior_call, registers))
+            if expression_reads_across_call(condition, prior_call, registers) {
+                return true;
+            }
+            let body_prior = prior_call || expression_has_call(condition);
+            sequence_reads_across_call(then_body, body_prior, registers)
+                || sequence_reads_across_call(else_body, body_prior, registers)
         }
         Statement::Switch { scrutinee, .. } => expression_reads_across_call(scrutinee, prior_call, registers),
+        // A loop body re-runs, so a call anywhere in it can clobber a register read
+        // on any iteration — treat the whole construct as post-call when it calls.
         Statement::Loop { initializer, condition, step, body, .. } => {
-            initializer.iter().chain(condition).chain(step).any(|e| expression_reads_across_call(e, prior_call, registers))
-                || body.iter().any(|s| statement_reads_across_call(s, prior_call, registers))
+            let body_prior = prior_call || body.iter().any(statement_has_call);
+            initializer.iter().chain(condition).chain(step).any(|e| expression_reads_across_call(e, body_prior, registers))
+                || sequence_reads_across_call(body, body_prior, registers)
         }
     }
+}
+
+/// Whether a statement *sequence* reads a register value after one of its own
+/// calls, propagating `prior_call` across the statements as the top-level driver
+/// does for the function body.
+fn sequence_reads_across_call(statements: &[Statement], mut prior_call: bool, registers: &HashSet<&str>) -> bool {
+    for statement in statements {
+        if statement_reads_across_call(statement, prior_call, registers) {
+            return true;
+        }
+        if statement_has_call(statement) {
+            prior_call = true;
+        }
+    }
+    false
 }
 
 /// Whether evaluating `expression` reads a register-resident value after a call.
