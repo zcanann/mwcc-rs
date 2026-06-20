@@ -972,6 +972,11 @@ impl Parser {
         let local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
         let mut statements = Vec::new();
         while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
+            // An empty statement (a lone `;`) produces no code — skip it.
+            if *self.peek() == Token::Semicolon {
+                self.advance();
+                continue;
+            }
             // `if (c) { ... }` is a conditional block statement; a trailing
             // `if (c) return ...` is a guard, handled after the statement list.
             if *self.peek() == Token::KeywordIf {
@@ -1230,6 +1235,11 @@ impl Parser {
         if *self.peek() == Token::BraceOpen {
             return self.parse_block(local_names);
         }
+        // An empty body — `while (c) ;` / `if (c) ;` — is no statements.
+        if *self.peek() == Token::Semicolon {
+            self.advance();
+            return Ok(Vec::new());
+        }
         if *self.peek() == Token::KeywordIf {
             return Ok(vec![self.parse_if_statement(local_names)?]);
         }
@@ -1250,6 +1260,11 @@ impl Parser {
         self.expect(Token::BraceOpen)?;
         let mut statements = Vec::new();
         while *self.peek() != Token::BraceClose {
+            // An empty statement (a lone `;`) produces no code — skip it.
+            if *self.peek() == Token::Semicolon {
+                self.advance();
+                continue;
+            }
             if *self.peek() == Token::KeywordIf {
                 statements.push(self.parse_if_statement(local_names)?);
                 continue;
