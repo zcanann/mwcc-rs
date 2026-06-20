@@ -109,7 +109,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Each defined object is routed to a section by const-ness, size, and whether
     // it is initialized: a writable global to `.sdata` (initialized) or `.sbss`
     // (zero), a const one to `.sdata2` (≤ 8 bytes) or `.rodata` (larger). mwcc lays
-    // `.sbss` out in REVERSE declaration order and every other data section FORWARD.
+    // `.sbss` (small zero) out in REVERSE declaration order; every other data
+    // section — including `.bss` (large zero) — is FORWARD. (Verified against the
+    // real compiler: two small uninitialized scalars reverse, two large ones don't.)
     // Const objects are read-only (`.sdata2`/`.rodata`); writable ones split by the
     // 8-byte small-data threshold: small to `.sdata`/`.sbss`, large to `.data`/`.bss`.
     let section_of = |object: &DataObject| -> &'static str {
@@ -153,14 +155,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".rodata") {
         place(object, ".rodata", &mut rodata_size);
     }
-    // Large writable globals: `.data` (initialized) forward, `.bss` (zero) reverse —
-    // the same forward/reverse split as `.sdata`/`.sbss`.
+    // Large writable globals: both `.data` (initialized) and `.bss` (zero) are laid
+    // out FORWARD. Only the small-data `.sbss` reverses (below) — `.bss` does not.
     let mut file_data_size = 0u32;
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".data") {
         place(object, ".data", &mut file_data_size);
     }
     let mut bss_size = 0u32;
-    for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".bss") {
+    for object in input.data_objects.iter().filter(|object| section_of(object) == ".bss") {
         place(object, ".bss", &mut bss_size);
     }
     let mut sdata_size = 0u32;
