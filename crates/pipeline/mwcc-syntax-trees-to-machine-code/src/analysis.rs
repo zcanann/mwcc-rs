@@ -65,7 +65,7 @@ pub(crate) fn values_live_across_call(function: &Function) -> Option<Vec<String>
 
     let mut collected: Vec<String> = Vec::new();
     let mut prior_call = false;
-    let mut take = |expression: &Expression, prior_call: bool, collected: &mut Vec<String>| -> bool {
+    let take = |expression: &Expression, prior_call: bool, collected: &mut Vec<String>| -> bool {
         if prior_call {
             collect_register_reads(expression, &registers, collected);
             true

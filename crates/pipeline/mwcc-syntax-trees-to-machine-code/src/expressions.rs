@@ -521,6 +521,16 @@ impl Generator {
         if let (Expression::Index { base: array, index }, Some(stride)) = (base, index_stride) {
             return self.emit_indexed_member_load(array, index, stride, offset, member_type, destination);
         }
+        // `v.field` where `v` is a frame-resident struct local: a plain r1-relative
+        // load at the slot offset plus the member offset.
+        if let Expression::Variable(name) = base {
+            if let Some(slot) = self.frame_slots.get(name) {
+                let pointee = pointee_of_type(member_type)
+                    .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                self.output.instructions.push(displacement_load(pointee, destination, 1, slot.offset + offset as i16));
+                return Ok(());
+            }
+        }
         let address = self.member_base_register(base)?;
         let pointee = pointee_of_type(member_type)
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
@@ -921,6 +931,21 @@ impl Generator {
                     self.output.instructions.push(displacement_store(pointee, source, array_register, *offset as i16));
                 }
                 return Ok(());
+            }
+        }
+        // `v.field = x;` where `v` is a frame-resident struct local. A field store
+        // is only observable when `&v` is later passed to a call (otherwise mwcc
+        // dead-store-eliminates it); but before that call mwcc's scheduler
+        // materializes the call-argument address (`addi r3,r1,&v`) as early as the
+        // registers free up, interleaving it among the field stores. The
+        // frame-resident path emits in source order with no scheduler, so it cannot
+        // reproduce that interleave yet — defer until the call-argument scheduler
+        // lands. (The matching field LOAD elsewhere has no such ordering hazard.)
+        if let Expression::Member { base, index_stride: None, .. } = target {
+            if let Expression::Variable(name) = base.as_ref() {
+                if self.frame_slots.contains_key(name) {
+                    return Err(Diagnostic::error("a frame-struct member store before a call is not supported yet (needs the call-argument scheduler)"));
+                }
             }
         }
         // `p->field = v;` — a displacement store to the struct member.

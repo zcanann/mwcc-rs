@@ -1,7 +1,7 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
