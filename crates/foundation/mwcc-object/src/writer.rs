@@ -250,7 +250,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut jump_table_numbers: Vec<Option<u32>> = Vec::new();
     let mut extab_payload_offset = 0u32;
     let mut extabindex_payload_offset = 0u32;
-    let mut counter = 5u32;
+    // The functions' anonymous `@N` numbering starts at 5, raised by one per pooled
+    // string literal (an anonymous `@N` `.sdata` object): a string is `@1..`, so a
+    // function's first constant moves from `@5` to `@(5 + strings)`.
+    let pooled_string_count = input.data_objects.iter().filter(|object| object.is_static && object.name.starts_with('@')).count() as u32;
+    let mut counter = 5u32 + pooled_string_count;
     for function in functions {
         let mut number = counter + function.anonymous_bump;
         let mut numbers = Vec::new();
@@ -330,16 +334,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_frame {
         order.push(".relaextabindex");
     }
+    // The `.rela.*` sections follow their target sections' order, so `.rela.sdata`
+    // (→ `.sdata`) precedes `.rela.mwcats.text` (→ `.mwcats.text`, last).
     let has_data_relocs = input.data_objects.iter().any(|object| section_of(object) == ".data" && !object.relocations.is_empty());
     if has_jump_table || has_data_relocs {
         order.push(".rela.data");
     }
-    if has_functions {
-        order.push(".rela.mwcats.text");
-    }
     let has_sdata_relocs = input.data_objects.iter().any(|object| section_of(object) == ".sdata" && !object.relocations.is_empty());
     if has_sdata_relocs {
         order.push(".rela.sdata");
+    }
+    if has_functions {
+        order.push(".rela.mwcats.text");
     }
     order.push(".symtab");
     order.push(".strtab");
@@ -702,11 +708,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_jump_table || has_data_relocs {
         push(".rela.data", SHT_RELA, 0, symtab_section, index_of(".data"), 4, 12, rela_data, 0);
     }
-    if has_functions {
-        push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);
-    }
     if has_sdata_relocs {
         push(".rela.sdata", SHT_RELA, 0, symtab_section, index_of(".sdata"), 4, 12, rela_sdata, 0);
+    }
+    if has_functions {
+        push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);
     }
     push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab, 0);
     // Metrowerks stamps string tables with sh_entsize = 1.

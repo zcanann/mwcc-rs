@@ -230,12 +230,6 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                     PointerElement::Null => continue,
                     PointerElement::Symbol(name) => name.clone(),
                     PointerElement::Str(bytes) => {
-                        // The string-pool `@N` numbering is bumped by a function's
-                        // anonymous symbols, which is not modeled — so a string pointer
-                        // is only supported in a function-free unit for now.
-                        if !unit.functions.is_empty() {
-                            return Err(Diagnostic::error("a string-pointer global alongside functions is not supported yet (@N numbering)"));
-                        }
                         string_pool.get(bytes.as_slice()).cloned().unwrap_or_else(|| {
                             string_counter += 1;
                             let name = format!("@{string_counter}");
