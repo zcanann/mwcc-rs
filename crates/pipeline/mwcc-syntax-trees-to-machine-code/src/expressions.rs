@@ -643,6 +643,71 @@ impl Generator {
         Ok(())
     }
 
+    /// `arr[index].field = value` for a file-scope struct array `arr`. A constant
+    /// index folds `index*stride + offset` into the store displacement, the base in a
+    /// register avoiding the value. A variable index runs the interleaved schedule:
+    /// `@ha` into a register avoiding the index (and, for a register value, the value);
+    /// the base `addi`s into the index register; a constant value then reuses `@ha`'s
+    /// register (free once the base lands), matching mwcc's `lis; slwi; addi; li; …`.
+    /// Ends in `stwx` (offset 0) or `add; stw offset`. Power-of-two strides, large
+    /// (ADDR16) arrays, register/constant values.
+    fn emit_global_indexed_member_store(&mut self, name: &str, total_size: u32, index: &Expression, stride: u16, offset: u16, pointee: Pointee, value: &Expression) -> Compilation<()> {
+        if let Some(constant) = constant_value(index) {
+            // A constant store value interleaves its `li` between the base's `lis` and
+            // `addi` (`lis; li; addi; stw`) — that schedule is not modeled, so defer;
+            // a register value (the base materializes whole, then `stw`) is byte-exact.
+            if !matches!(value, Expression::Variable(_)) {
+                return Err(Diagnostic::error("a global struct-array member store at a constant index needs a register value (roadmap)"));
+            }
+            let total = i16::try_from(constant * stride as i64 + offset as i64)
+                .map_err(|_| Diagnostic::error("struct-array member store offset out of range (roadmap)"))?;
+            let base = self.free_register_avoiding(&[value])?;
+            let restore = self.reserved.insert(base);
+            self.emit_global_array_base(name, total_size, base)?;
+            let source = self.place_store_value(value, pointee)?;
+            if restore {
+                self.reserved.remove(&base);
+            }
+            self.output.instructions.push(displacement_store(pointee, source, base, total));
+            return Ok(());
+        }
+        if !stride.is_power_of_two() {
+            return Err(Diagnostic::error("a global struct-array member store with a non-power-of-two stride is not supported yet (roadmap)"));
+        }
+        if !matches!(value, Expression::Variable(_)) && constant_value(value).is_none() {
+            return Err(Diagnostic::error("a global struct-array member store of a computed value is not supported yet (roadmap)"));
+        }
+        if self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8 {
+            return Err(Diagnostic::error("a small global struct-array member store is not supported yet (roadmap)"));
+        }
+        let index_register = self.general_register_of_leaf(index)?;
+        let shift = stride.trailing_zeros() as u8;
+        // `@ha` avoids the index (and the value when it is in a register); the base
+        // reuses the index register; a constant value reuses `@ha`'s now-free register.
+        let high = if constant_value(value).is_some() {
+            self.free_register_avoiding(&[index])?
+        } else {
+            self.free_register_avoiding(&[index, value])?
+        };
+        self.emit_address_high(high, name);
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+        let source = if let Some(constant) = constant_value(value) {
+            self.load_integer_constant(high, constant);
+            high
+        } else {
+            self.general_register_of_leaf(value)?
+        };
+        if offset == 0 {
+            self.output.instructions.push(indexed_store(pointee, source, index_register, GENERAL_SCRATCH));
+        } else {
+            self.output.instructions.push(Instruction::Add { d: index_register, a: index_register, b: GENERAL_SCRATCH });
+            self.output.instructions.push(displacement_store(pointee, source, index_register, offset as i16));
+        }
+        Ok(())
+    }
+
     /// The pointee size of a leaf pointer variable, when greater than one byte
     /// (so its arithmetic needs scaling). A byte pointer returns `None` — its
     /// arithmetic is a plain add.
@@ -1140,6 +1205,13 @@ impl Generator {
             if let Expression::Index { base: array, index } = base.as_ref() {
                 let pointee = pointee_of_type(*member_type)
                     .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
+                // A file-scope struct array `arr[i].field = v`: materialize the base
+                // with the interleaved schedule, then store at the member offset.
+                if let Expression::Variable(name) = array.as_ref() {
+                    if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+                        return self.emit_global_indexed_member_store(name, total_size, index, *stride, *offset, pointee, value);
+                    }
+                }
                 let array_register = self.general_register_of_leaf(array)?;
                 let index_register = self.general_register_of_leaf(index)?;
                 if stride.is_power_of_two() {
