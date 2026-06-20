@@ -95,6 +95,10 @@ pub struct GlobalDeclaration {
     /// value places the global in `.sdata` (initialized data); `None` or all-zero
     /// leaves it in `.sbss` (zero-initialized).
     pub initializer: Option<Vec<i64>>,
+    /// Whether the declaration carried a leading `const`. A const file-scope global
+    /// lands in a *read-only* section: `.sdata2` (small, ≤ 8 bytes) or `.rodata`
+    /// (larger), rather than the writable `.sdata`/`.sbss`.
+    pub is_const: bool,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved

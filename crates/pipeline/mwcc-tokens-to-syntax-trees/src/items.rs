@@ -629,7 +629,7 @@ impl Parser {
                     }
                 }
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { declared_type: Type::StructPointer, name: pointer_name, is_extern, is_static, array_length: None, initializer: None });
+                globals.push(GlobalDeclaration { declared_type: Type::StructPointer, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -638,11 +638,11 @@ impl Parser {
             // initialized global `type name = …;` is not in the subset yet and
             // falls through to the function path, which reports it.)
             if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals) {
-                // A `const` file-scope global lands in a read-only section (and may
-                // be folded into its readers), which isn't modeled — defer it.
-                if self.last_type_was_const {
-                    return Err(Diagnostic::error("const file-scope global (read-only section) is not supported yet (roadmap)"));
-                }
+                // A `const` file-scope global lands in a *read-only* section
+                // (`.sdata2` if small, `.rodata` if large). Record it; the lowering
+                // routes the supported shapes and defers the rest. `parse_type` set
+                // this for the declared type and nothing since has reset it.
+                let is_const = self.last_type_was_const;
                 let mut declarator_name = name;
                 loop {
                     // `[N]` (explicit length), `[]` (length inferred from the
@@ -676,7 +676,7 @@ impl Parser {
                             None => return Err(Diagnostic::error("an array with no length needs an initializer")),
                         },
                     };
-                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer });
+                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         declarator_name = self.parse_identifier()?;

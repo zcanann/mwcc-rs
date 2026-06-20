@@ -42,11 +42,15 @@ pub struct ObjectInput<'a> {
 /// initializer) places it in `.sdata` with those bytes; `None` leaves it in
 /// `.sbss` (NOBITS, zero-initialized). `.sdata` lays out in forward declaration
 /// order, `.sbss` in reverse — matching mwcc.
+///
+/// A `const` object is read-only: it lands in `.sdata2` (≤ 8 bytes) or `.rodata`
+/// (larger) instead, both in forward declaration order.
 pub struct DataObject<'a> {
     pub name: &'a str,
     pub size: u32,
     pub alignment: u32,
     pub initial_bytes: Option<Vec<u8>>,
+    pub is_const: bool,
 }
 
 /// One function's contribution to the object: its name, encoded `.text`, and the

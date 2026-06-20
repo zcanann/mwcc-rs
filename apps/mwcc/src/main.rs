@@ -5,7 +5,7 @@
 //! do not yet model are ignored. `--emit-artifacts <dir>` writes a per-phase
 //! report for inspecting how a translation unit becomes bytes.
 
-use mwcc_core::Compilation;
+use mwcc_core::{Compilation, Diagnostic};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -173,36 +173,79 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     if config.flags.inline_deferred {
         machine_functions.reverse();
     }
-    // File-scope variables defined here (not `extern`/`static`, scalar, no array)
-    // are placed in `.sbss` as defined symbols; their declaration order is kept so
-    // the writer can lay them out (in reverse) the way mwcc does.
-    let defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = unit
-        .globals
-        .iter()
-        .filter(|global| !global.is_extern && !global.is_static && !matches!(global.declared_type, mwcc_syntax_trees::Type::Void))
-        .filter_map(|global| {
-            let element_size = (global.declared_type.width() / 8) as u32;
-            let count = global.array_length.unwrap_or(1) as u32;
-            let size = element_size * count;
-            // Small data only for now; a large object (>8 bytes) goes to .data/.bss
-            // with absolute addressing — a separate piece.
-            if size > 8 {
-                return None;
+    // File-scope variables defined here (not `extern`/`static`). A writable global
+    // lands in `.sdata` (initialized) or `.sbss` (zero); a `const` one is read-only
+    // and lands in `.sdata2` (≤ 8 bytes) or `.rodata` (larger). Declaration order is
+    // kept so the writer can lay each section out the way mwcc does.
+    let serialize = |values: &[i64], element_size: u32, size: u32| -> Vec<u8> {
+        let mut bytes = vec![0u8; size as usize];
+        for (index, &value) in values.iter().enumerate() {
+            let start = index * element_size as usize;
+            let encoded = (value as u64).to_be_bytes();
+            bytes[start..start + element_size as usize].copy_from_slice(&encoded[8 - element_size as usize..]);
+        }
+        bytes
+    };
+    let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    for global in &unit.globals {
+        if global.is_extern || global.is_static || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
+            continue;
+        }
+        use mwcc_syntax_trees::Type;
+        let integer_scalar = matches!(
+            global.declared_type,
+            Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+        );
+        let element_size = (global.declared_type.width() / 8) as u32;
+        let count = global.array_length.unwrap_or(1) as u32;
+        let size = element_size * count;
+        // mwcc aligns a scalar to its element alignment but any *array* object to at
+        // least a word (4), so a `char[4]`/`short[2]` is 4-aligned, not 1/2-aligned.
+        let alignment = if global.array_length.is_some() { element_size.max(4) } else { element_size };
+
+        if global.is_const {
+            // A const global is always materialized as read-only initialized bytes
+            // (even an all-zero one stays in `.sdata2`/`.rodata`, not `.sbss`). Only
+            // an integer scalar/array with a constant initializer is serializable
+            // today; defer floats/doubles, structs/pointers, strings, and
+            // uninitialized const — each a separate piece.
+            if !integer_scalar {
+                return Err(Diagnostic::error("a const global of this type is not supported yet (roadmap)"));
             }
-            // Serialize a non-zero initializer to big-endian bytes (zero or absent
-            // initializers leave the object in .sbss).
-            let initial_bytes = global.initializer.as_ref().filter(|values| values.iter().any(|&value| value != 0)).map(|values| {
-                let mut bytes = vec![0u8; size as usize];
-                for (index, &value) in values.iter().enumerate() {
-                    let start = index * element_size as usize;
-                    let encoded = (value as u64).to_be_bytes();
-                    bytes[start..start + element_size as usize].copy_from_slice(&encoded[8 - element_size as usize..]);
-                }
-                bytes
+            let values = global
+                .initializer
+                .as_ref()
+                .ok_or_else(|| Diagnostic::error("an uninitialized const global is not supported yet (roadmap)"))?;
+            let initial_bytes = serialize(values, element_size, size);
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
+                name: global.name.clone(),
+                size,
+                alignment,
+                initial_bytes: Some(initial_bytes),
+                is_const: true,
             });
-            Some(mwcc_machine_code_to_object::DefinedGlobal { name: global.name.clone(), size, alignment: element_size, initial_bytes })
-        })
-        .collect();
+            continue;
+        }
+
+        // Writable global: small data only for now; a large object (> 8 bytes) goes
+        // to `.data`/`.bss` with absolute addressing — a separate piece.
+        if size > 8 {
+            continue;
+        }
+        // A non-zero initializer becomes `.sdata` bytes; zero/absent stays in `.sbss`.
+        let initial_bytes = global
+            .initializer
+            .as_ref()
+            .filter(|values| values.iter().any(|&value| value != 0))
+            .map(|values| serialize(values, element_size, size));
+        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
+            name: global.name.clone(),
+            size,
+            alignment,
+            initial_bytes,
+            is_const: false,
+        });
+    }
     let small_data = config.flags.global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
 

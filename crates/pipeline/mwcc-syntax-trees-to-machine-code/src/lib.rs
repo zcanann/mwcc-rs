@@ -38,7 +38,12 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     let mut generator = Generator {
         output: MachineFunction::new(function.name.clone()),
         locations: HashMap::new(),
-        globals: globals.iter().map(|global| (global.name.clone(), global.declared_type)).collect(),
+        // A `const` global is read-only and mwcc *folds* its value into each reader
+        // (`return K;` becomes `li r3, <value>`, not a load). That folding is not
+        // modeled yet, so const globals are withheld from the operand map: any
+        // reference then defers ("unknown variable") rather than emitting a wrong
+        // memory load. The const global is still emitted as read-only data.
+        globals: globals.iter().filter(|global| !global.is_const).map(|global| (global.name.clone(), global.declared_type)).collect(),
         reserved: HashSet::new(),
         frame_size: 0,
         behavior: Behavior::resolve(&config),
