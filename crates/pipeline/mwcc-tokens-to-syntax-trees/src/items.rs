@@ -489,10 +489,9 @@ impl Parser {
                 let element_size = size;
                 if *self.peek() == Token::BracketOpen {
                     self.advance();
-                    let count = match self.advance() {
-                        Token::IntegerLiteral(value) => value as u16,
-                        other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
-                    };
+                    // A length is a constant expression — an enum constant or a folded
+                    // expression (`field[MAX_PLAYERS]`, `field[A + 1]`), not just a literal.
+                    let count = self.parse_integer_constant()? as u16;
                     self.expect(Token::BracketClose)?;
                     array_element = Some(pointee_of(field_type)?);
                     size = count * element_size;
@@ -782,10 +781,7 @@ impl Parser {
                         let count = if *self.peek() == Token::BracketClose {
                             None
                         } else {
-                            Some(match self.advance() {
-                                Token::IntegerLiteral(value) => value as u16,
-                                other => return Err(Diagnostic::error(format!("expected an array length, found {other}"))),
-                            })
+                            Some(self.parse_integer_constant()? as u16)
                         };
                         self.expect(Token::BracketClose)?;
                         dimensions.push(count);
