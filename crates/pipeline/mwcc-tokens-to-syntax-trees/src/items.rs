@@ -167,6 +167,19 @@ impl Parser {
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
     /// an aggregate `{ <const>, ... }` (several, with an optional trailing comma).
     fn parse_constant_initializer(&mut self, element_type: Type) -> Compilation<Vec<i64>> {
+        // A string literal initializes a `char` array with its bytes plus a NUL
+        // terminator (the store truncates if the array is shorter). A string for a
+        // non-char type is a char-pointer initializer that needs a data relocation —
+        // deferred. (A bare string, no braces; an array of strings would brace it.)
+        if let Token::StringLiteral(bytes) = self.peek() {
+            if !matches!(element_type, Type::Char | Type::UnsignedChar) {
+                return Err(Diagnostic::error("a string initializer is only supported for a char array yet (roadmap)"));
+            }
+            let mut values: Vec<i64> = bytes.iter().map(|&byte| byte as i64).collect();
+            self.advance();
+            values.push(0);
+            return Ok(values);
+        }
         if self.eat_keyword(Token::BraceOpen) {
             let mut values = Vec::new();
             while *self.peek() != Token::BraceClose {

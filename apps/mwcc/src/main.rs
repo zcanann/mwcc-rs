@@ -181,6 +181,11 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         let mut bytes = vec![0u8; size as usize];
         for (index, &value) in values.iter().enumerate() {
             let start = index * element_size as usize;
+            // An initializer may overrun the object (a char array shorter than its
+            // string literal, e.g. `char s[2] = "hi"` keeps "hi", drops the NUL).
+            if start + element_size as usize > bytes.len() {
+                break;
+            }
             let encoded = (value as u64).to_be_bytes();
             bytes[start..start + element_size as usize].copy_from_slice(&encoded[8 - element_size as usize..]);
         }
