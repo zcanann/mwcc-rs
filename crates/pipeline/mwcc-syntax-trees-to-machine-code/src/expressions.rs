@@ -887,8 +887,42 @@ impl Generator {
         if self.try_emit_indexed_rmw(target, value)? {
             return Ok(());
         }
-        // `p->field = v;` — a displacement store to the struct member. (An
-        // `a[i].field = v` store, with `index_stride` set, defers for now.)
+        // `a[i].field = v;` — scale the index by the struct size, then store at the
+        // field offset (`stwx` for a zero offset, else `add; stw`). The value is
+        // placed after the scale, before the address add — mwcc's order.
+        if let Expression::Member { base, offset, member_type, index_stride: Some(stride) } = target {
+            if let Expression::Index { base: array, index } = base.as_ref() {
+                let pointee = pointee_of_type(*member_type)
+                    .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
+                let array_register = self.general_register_of_leaf(array)?;
+                let index_register = self.general_register_of_leaf(index)?;
+                if stride.is_power_of_two() {
+                    self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: stride.trailing_zeros() as u8 });
+                } else {
+                    self.output.instructions.push(Instruction::MultiplyImmediate { d: GENERAL_SCRATCH, a: index_register, immediate: *stride as i16 });
+                }
+                // The scaled index occupies the scratch (r0), so the value cannot use
+                // it: a constant goes in a fresh virtual (the allocator reuses the now
+                // free index register, as mwcc does); a variable uses its own register.
+                let source = if let Some(constant) = constant_value(value) {
+                    let register = self.fresh_virtual_general();
+                    self.load_integer_constant(register, constant as i64);
+                    register
+                } else if matches!(value, Expression::Variable(_)) {
+                    self.general_register_of_leaf(value)?
+                } else {
+                    return Err(Diagnostic::error("indexed-member store of a computed value is not supported yet (roadmap)"));
+                };
+                if *offset == 0 {
+                    self.output.instructions.push(indexed_store(pointee, source, array_register, GENERAL_SCRATCH));
+                } else {
+                    self.output.instructions.push(Instruction::Add { d: array_register, a: array_register, b: GENERAL_SCRATCH });
+                    self.output.instructions.push(displacement_store(pointee, source, array_register, *offset as i16));
+                }
+                return Ok(());
+            }
+        }
+        // `p->field = v;` — a displacement store to the struct member.
         if let Expression::Member { base, offset, member_type, index_stride: None } = target {
             let pointee = pointee_of_type(*member_type)
                 .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
