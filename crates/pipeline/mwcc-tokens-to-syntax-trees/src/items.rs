@@ -401,6 +401,12 @@ impl Parser {
                 if self.item_is_function_definition() {
                     return Err(error);
                 }
+                // An initialized data definition we cannot parse emits `.data` we
+                // would otherwise drop — defer the unit rather than leave a partial
+                // object (a silent DIFF).
+                if self.item_is_initialized_definition() {
+                    return Err(error);
+                }
                 // A skipped `static inline` function with an inline `asm {}` body
                 // still contributes a local undefined symbol (mwcc cannot inline it).
                 if let Some(name) = self.inline_asm_function_name() {
@@ -725,6 +731,41 @@ impl Parser {
             functions.push(self.function_body(return_type, name, parameters)?);
         }
         Ok(())
+    }
+
+    /// Whether the item at the cursor is an initialized data *definition* — a
+    /// top-level `= …` initializer before the `;` (e.g. `OvlInfo list[] = {…};`).
+    /// Such a definition emits `.data`/`.sdata` bytes; if its initializer is outside
+    /// the subset, skipping it would leave an incomplete object (a silent
+    /// whole-object DIFF), so it must instead DEFER the unit like a function we
+    /// cannot compile. Pure lookahead — consumes nothing.
+    fn item_is_initialized_definition(&self) -> bool {
+        let mut index = self.position;
+        let (mut brace, mut paren, mut bracket) = (0i32, 0i32, 0i32);
+        while let Some(token) = self.tokens.get(index) {
+            let top_level = brace == 0 && paren == 0 && bracket == 0;
+            match token {
+                // A typedef never defines data, even with an `=` (none occur).
+                Token::Identifier(word) if index == self.position && word == "typedef" => return false,
+                // A top-level `=` before any body brace is an initializer: data.
+                Token::Equals if top_level => return true,
+                // A top-level `{` reached first is a function or aggregate body (no
+                // preceding `= …`), not an initialized data definition — stop here so
+                // the scan never runs past this item into the next one's initializer.
+                Token::BraceOpen if top_level => return false,
+                Token::BraceOpen => brace += 1,
+                Token::BraceClose => brace -= 1,
+                Token::ParenOpen => paren += 1,
+                Token::ParenClose => paren -= 1,
+                Token::BracketOpen => bracket += 1,
+                Token::BracketClose => bracket -= 1,
+                Token::Semicolon if brace == 0 && paren == 0 => return false,
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     /// Whether the item starting at the cursor is a function *definition* (a
