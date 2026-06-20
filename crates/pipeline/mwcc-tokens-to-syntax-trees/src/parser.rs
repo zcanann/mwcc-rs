@@ -20,6 +20,9 @@ pub(crate) struct StructField {
 #[derive(Default)]
 pub(crate) struct StructLayout {
     pub(crate) fields: HashMap<String, StructField>,
+    /// The struct's total size in bytes (members plus trailing padding to the
+    /// struct's alignment) — the stride for an array/pointer of this struct.
+    pub(crate) size: u16,
 }
 
 pub(crate) struct Parser {

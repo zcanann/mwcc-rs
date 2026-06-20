@@ -644,7 +644,7 @@ impl Generator {
     /// register; a struct member loads into the scratch (mwcc compares `r0`).
     pub(crate) fn condition_operand_register(&mut self, operand: &Expression) -> Compilation<u8> {
         if let Some((base, offset, member_type)) = as_member(operand) {
-            self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+            self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);
         }
         // A full-word memory load (`*p`, `a[i]`) goes into the scratch; the caller

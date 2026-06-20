@@ -339,6 +339,7 @@ impl Parser {
         self.expect(Token::BraceOpen)?;
         let mut layout = StructLayout::default();
         let mut offset: u16 = 0;
+        let mut alignment_max: u16 = 1;
         while *self.peek() != Token::BraceClose {
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
@@ -363,6 +364,7 @@ impl Parser {
                 }
                 // Natural alignment: to the element size (for an array, that element).
                 let alignment = element_size.max(1);
+                alignment_max = alignment_max.max(alignment);
                 offset = offset.div_ceil(alignment) * alignment;
                 layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element });
                 offset += size;
@@ -373,6 +375,8 @@ impl Parser {
             self.expect(Token::Semicolon)?;
         }
         self.expect(Token::BraceClose)?;
+        // The struct size includes trailing padding to its own alignment.
+        layout.size = offset.div_ceil(alignment_max) * alignment_max;
         Ok(layout)
     }
 

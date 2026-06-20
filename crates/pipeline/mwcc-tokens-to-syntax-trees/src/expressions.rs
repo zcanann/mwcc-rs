@@ -191,16 +191,20 @@ impl Parser {
                         .take()
                         .ok_or_else(|| Diagnostic::error(format!("member '{field}' on a non-struct-pointer base")))?;
                     let layout = self.structs.get(&tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
+                    let struct_size = layout.size;
                     let member = layout
                         .fields
                         .get(&field)
                         .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
                     let (offset, member_type, next_tag, array_element) =
                         (member.offset, member.member_type, member.struct_tag.clone(), member.array_element);
+                    // `a[i].field`: the index scales by the struct size — recorded so
+                    // codegen can emit `a + i*size + offset`.
+                    let index_stride = matches!(expression, Expression::Index { .. }).then_some(struct_size);
                     expression = match array_element {
                         // An array member decays to the address of its first element.
                         Some(element) => Expression::MemberAddress { base: Box::new(expression), offset, element },
-                        None => Expression::Member { base: Box::new(expression), offset, member_type },
+                        None => Expression::Member { base: Box::new(expression), offset, member_type, index_stride },
                     };
                     struct_tag = next_tag;
                 }

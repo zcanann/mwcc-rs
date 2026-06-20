@@ -34,7 +34,7 @@ impl Generator {
                 }
             }
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
-            Expression::Member { base, offset, member_type } => self.emit_member_load(base, *offset, *member_type, destination),
+            Expression::Member { base, offset, member_type, index_stride } => self.emit_member_load(base, *offset, *member_type, *index_stride, destination),
             Expression::MemberAddress { .. } => Err(Diagnostic::error("an array address is not a float value")),
             Expression::Assign { .. } => Err(Diagnostic::error("float assignment as an expression is not supported yet (roadmap)")),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),

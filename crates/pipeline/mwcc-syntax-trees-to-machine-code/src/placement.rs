@@ -176,23 +176,23 @@ impl Generator {
                 // lowers instead of deferring.
                 let temp = self.fresh_virtual_general();
                 if subtract {
-                    self.emit_member_load(right_base, right_offset, right_type, temp)?;
-                    self.emit_member_load(left_base, left_offset, left_type, GENERAL_SCRATCH)?;
+                    self.emit_member_load(right_base, right_offset, right_type, None, temp)?;
+                    self.emit_member_load(left_base, left_offset, left_type, None, GENERAL_SCRATCH)?;
                     Operands::ordered(GENERAL_SCRATCH, temp)
                 } else {
-                    self.emit_member_load(left_base, left_offset, left_type, temp)?;
-                    self.emit_member_load(right_base, right_offset, right_type, GENERAL_SCRATCH)?;
+                    self.emit_member_load(left_base, left_offset, left_type, None, temp)?;
+                    self.emit_member_load(right_base, right_offset, right_type, None, GENERAL_SCRATCH)?;
                     Operands::ordered(temp, GENERAL_SCRATCH)
                 }
             }
             (Some((base, offset, member_type)), None) => {
                 let right_register = self.wide_leaf_register(right)?;
-                self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+                self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
                 Operands::ordered(GENERAL_SCRATCH, right_register)
             }
             (None, Some((base, offset, member_type))) => {
                 let left_register = self.wide_leaf_register(left)?;
-                self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+                self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (None, None) => unreachable!("caller checked one side is a member"),
@@ -295,7 +295,7 @@ impl Generator {
     /// given register.
     pub(crate) fn emit_located_operand(&mut self, operand: &Expression, destination: u8) -> Compilation<()> {
         if let Some((base, offset, member_type)) = as_member(operand) {
-            self.emit_member_load(base, offset, member_type, destination)
+            self.emit_member_load(base, offset, member_type, None, destination)
         } else if let Some(pointer) = as_dereference(operand) {
             self.emit_load_from_pointer(pointer, destination)
         } else if let Expression::Variable(name) = operand {
@@ -359,7 +359,7 @@ impl Generator {
         let (anchor_register, other_register) = if let Some((base, offset, member_type)) = as_member(anchor) {
             // The member anchor loads into its base register; the global -> scratch.
             let base_register = self.member_base_register(base)?;
-            self.emit_member_load(base, offset, member_type, base_register)?;
+            self.emit_member_load(base, offset, member_type, None, base_register)?;
             self.emit_global_load(leaf_name(other).unwrap(), GENERAL_SCRATCH)?;
             (base_register, GENERAL_SCRATCH)
         } else {
@@ -367,7 +367,7 @@ impl Generator {
             let (base, offset, member_type) = as_member(other).unwrap();
             let global_register = self.free_register_avoiding(&[base])?;
             self.emit_global_load(leaf_name(anchor).unwrap(), global_register)?;
-            self.emit_member_load(base, offset, member_type, GENERAL_SCRATCH)?;
+            self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
             (global_register, GENERAL_SCRATCH)
         };
         // For subtraction the anchor is the right operand (`left - right`).

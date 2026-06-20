@@ -127,7 +127,7 @@ impl Generator {
             }
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
-            Expression::Member { base, offset, member_type } => self.emit_member_load(base, *offset, *member_type, destination),
+            Expression::Member { base, offset, member_type, index_stride } => self.emit_member_load(base, *offset, *member_type, *index_stride, destination),
             Expression::MemberAddress { base, offset, .. } => {
                 // The array's address: `base + offset` (a `mr` when the array is at
                 // the start of the struct).
@@ -513,11 +513,38 @@ impl Generator {
     /// Emit `base->field` — a displacement load from the struct pointer's register
     /// at the member's offset, choosing the load by the member type. The base must
     /// be a struct-pointer leaf variable (chained/complex bases are roadmap).
-    pub(crate) fn emit_member_load(&mut self, base: &Expression, offset: u16, member_type: Type, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_member_load(&mut self, base: &Expression, offset: u16, member_type: Type, index_stride: Option<u16>, destination: u8) -> Compilation<()> {
+        // `a[i].field`: scale the index by the struct size, then load at the field
+        // offset — `slwi/mulli r0,i,stride; add a,a,r0; lwz d,offset(a)` (or `lwzx`
+        // for a zero offset).
+        if let (Expression::Index { base: array, index }, Some(stride)) = (base, index_stride) {
+            return self.emit_indexed_member_load(array, index, stride, offset, member_type, destination);
+        }
         let address = self.member_base_register(base)?;
         let pointee = pointee_of_type(member_type)
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
         self.output.instructions.push(displacement_load(pointee, destination, address, offset as i16));
+        Ok(())
+    }
+
+    /// `array[index].field` for an array/pointer of structs: scale `index` by the
+    /// struct `stride`, add to the array base, and load the member at `offset`.
+    fn emit_indexed_member_load(&mut self, array: &Expression, index: &Expression, stride: u16, offset: u16, member_type: Type, destination: u8) -> Compilation<()> {
+        let array_register = self.general_register_of_leaf(array)?;
+        let index_register = self.general_register_of_leaf(index)?;
+        if stride.is_power_of_two() {
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: stride.trailing_zeros() as u8 });
+        } else {
+            self.output.instructions.push(Instruction::MultiplyImmediate { d: GENERAL_SCRATCH, a: index_register, immediate: stride as i16 });
+        }
+        let pointee = pointee_of_type(member_type)
+            .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+        if offset == 0 {
+            self.output.instructions.push(indexed_load(pointee, destination, array_register, GENERAL_SCRATCH));
+        } else {
+            self.output.instructions.push(Instruction::Add { d: array_register, a: array_register, b: GENERAL_SCRATCH });
+            self.output.instructions.push(displacement_load(pointee, destination, array_register, offset as i16));
+        }
         Ok(())
     }
 
@@ -860,8 +887,9 @@ impl Generator {
         if self.try_emit_indexed_rmw(target, value)? {
             return Ok(());
         }
-        // `p->field = v;` — a displacement store to the struct member.
-        if let Expression::Member { base, offset, member_type } = target {
+        // `p->field = v;` — a displacement store to the struct member. (An
+        // `a[i].field = v` store, with `index_stride` set, defers for now.)
+        if let Expression::Member { base, offset, member_type, index_stride: None } = target {
             let pointee = pointee_of_type(*member_type)
                 .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
             let address = self.member_base_register(base)?;

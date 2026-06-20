@@ -150,10 +150,11 @@ fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> 
             base: Box::new(substitute(base, values)),
             index: Box::new(substitute(index, values)),
         },
-        Expression::Member { base, offset, member_type } => Expression::Member {
+        Expression::Member { base, offset, member_type, index_stride } => Expression::Member {
             base: Box::new(substitute(base, values)),
             offset: *offset,
             member_type: *member_type,
+            index_stride: *index_stride,
         },
         Expression::MemberAddress { base, offset, element } => Expression::MemberAddress {
             base: Box::new(substitute(base, values)),

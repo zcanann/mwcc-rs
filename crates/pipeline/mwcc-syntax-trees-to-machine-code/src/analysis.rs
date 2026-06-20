@@ -370,7 +370,9 @@ pub(crate) fn as_dereference(expression: &Expression) -> Option<&Expression> {
 /// If `expression` is `base->field`, its base, byte offset, and member type.
 pub(crate) fn as_member(expression: &Expression) -> Option<(&Expression, u16, mwcc_syntax_trees::Type)> {
     match expression {
-        Expression::Member { base, offset, member_type } => Some((base, *offset, *member_type)),
+        // Only a plain (non-indexed) member is a simple displacement access; an
+        // `a[i].field` (index_stride set) routes through the indexed-load path.
+        Expression::Member { base, offset, member_type, index_stride: None } => Some((base, *offset, *member_type)),
         _ => None,
     }
 }

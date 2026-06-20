@@ -44,10 +44,14 @@ pub enum Expression {
     /// `base->field` (or `base.field`) — load the member at `offset` from the
     /// struct pointer `base`. The parser resolves the field to its byte offset and
     /// type from the struct layout, so codegen is a plain displacement access.
+    /// `index_stride` is the struct size when `base` is an array/pointer index
+    /// (`a[i].field`): codegen scales the index by it (`a + i*stride + offset`);
+    /// `None` for a plain pointer base.
     Member {
         base: Box<Expression>,
         offset: u16,
         member_type: Type,
+        index_stride: Option<u16>,
     },
     /// `base->arr` where `arr` is an array member — the *address* of the array
     /// (`base + offset`), an `element`-typed pointer that decays for subscripting.
