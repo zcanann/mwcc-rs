@@ -544,6 +544,19 @@ impl Generator {
                 self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
                 return Ok(());
             }
+            // `g.field` where `g` is a global struct VALUE: materialize g's address
+            // (SDA21 `li d,g@sda21` small / `lis;addi` large), then load the field at
+            // its offset — `li d,g; lwz d,offset(d)`. The base register cannot be the
+            // scratch r0 (it is then its own load base).
+            if !self.locations.contains_key(name.as_str()) && destination != GENERAL_SCRATCH {
+                if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()).copied() {
+                    self.emit_global_array_base(name, size as u32, destination)?;
+                    let pointee = pointee_of_type(member_type)
+                        .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                    self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
+                    return Ok(());
+                }
+            }
         }
         let address = self.member_base_register(base)?;
         let pointee = pointee_of_type(member_type)

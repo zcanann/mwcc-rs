@@ -273,12 +273,25 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             global.declared_type,
             Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort | Type::Float | Type::Double
         );
-        let element_size = (global.declared_type.width() / 8) as u32;
+        // A struct object's element size and alignment come from its laid-out layout,
+        // not the (word-default) scalar width — a struct value `g` or array `arr[N]`
+        // occupies `struct_size * count` bytes at the struct's alignment.
+        let (element_size, struct_alignment) = match global.declared_type {
+            Type::Struct { size, align } => (size as u32, Some(align as u32)),
+            _ => ((global.declared_type.width() / 8) as u32, None),
+        };
         let count = global.array_length.unwrap_or(1) as u32;
         let size = element_size * count;
         // mwcc aligns a scalar to its element alignment but any *array* object to at
-        // least a word (4), so a `char[4]`/`short[2]` is 4-aligned, not 1/2-aligned.
-        let alignment = if global.array_length.is_some() { element_size.max(4) } else { element_size };
+        // least a word (4), so a `char[4]`/`short[2]` is 4-aligned, not 1/2-aligned. A
+        // struct takes its own alignment (already the max of its members').
+        let alignment = match struct_alignment {
+            // A struct global is word-aligned at minimum (mwcc records 4 even for an
+            // all-`char` struct whose natural alignment is 1), like an array object.
+            Some(align) => align.max(4),
+            None if global.array_length.is_some() => element_size.max(4),
+            None => element_size,
+        };
 
         if global.is_const {
             // A const global is always materialized as read-only initialized bytes
