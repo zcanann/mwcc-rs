@@ -44,6 +44,18 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         // reference then defers ("unknown variable") rather than emitting a wrong
         // memory load. The const global is still emitted as read-only data.
         globals: globals.iter().filter(|global| !global.is_const).map(|global| (global.name.clone(), global.declared_type)).collect(),
+        // Subscriptable array globals (non-const, non-extern) with their total byte
+        // size, so a `g[i]` picks the right address mode (SDA21 vs ADDR16) by size.
+        global_array_sizes: globals
+            .iter()
+            .filter(|global| !global.is_const && !global.is_extern)
+            .filter_map(|global| {
+                global.array_length.map(|length| {
+                    let size = (global.declared_type.width() as u32 / 8) * length as u32;
+                    (global.name.clone(), size)
+                })
+            })
+            .collect(),
         reserved: HashSet::new(),
         frame_size: 0,
         behavior: Behavior::resolve(&config),

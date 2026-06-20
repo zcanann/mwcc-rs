@@ -704,6 +704,13 @@ impl Generator {
     /// displacement (`lwz r3,8(r3)`); a variable index is scaled by the element
     /// size and uses an indexed load (`slwi r0,rI,2; lwzx r3,rBase,r0`).
     pub(crate) fn emit_subscript(&mut self, base: &Expression, index: &Expression, destination: u8) -> Compilation<()> {
+        // `g[index]` where `g` is a file-scope array global: its address is
+        // materialized by size (SDA21 small / ADDR16 large), then the element load.
+        if let Expression::Variable(name) = base {
+            if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+                return self.emit_global_array_subscript(name, total_size, index, destination);
+            }
+        }
         // `base->arr[index]` — the array address (`base + offset`) folds into the
         // subscript: the array offset rides in the load displacement.
         if let Expression::MemberAddress { base: struct_base, offset, element } = base {
@@ -750,6 +757,78 @@ impl Generator {
             GENERAL_SCRATCH
         };
         self.output.instructions.push(indexed_load(pointee, destination, address, scaled));
+        Ok(())
+    }
+
+    /// `g[index]` for a file-scope array global `g`: materialize `g`'s base address
+    /// into `destination` (SDA21 for a small `.sdata` array, ADDR16 `lis`/`addi` for
+    /// a large `.data` one — by total size), then load the element. A constant index
+    /// folds into the load displacement; a variable index needs mwcc's scale/base
+    /// scheduling interleave, which is not modeled yet, so it defers.
+    fn emit_global_array_subscript(&mut self, name: &str, total_size: u32, index: &Expression, destination: u8) -> Compilation<()> {
+        let element_type = self.globals[name];
+        let pointee = pointee_of_type(element_type)
+            .ok_or_else(|| Diagnostic::error("a global array of this element type is not supported yet (roadmap)"))?;
+        // The base materializes into `destination` and is then its own load base, so
+        // `destination` cannot be the scratch r0 (an `addi`/load based on r0 reads
+        // literal zero, not the register).
+        if destination == GENERAL_SCRATCH {
+            return Err(Diagnostic::error("a global-array subscript into the scratch register is not supported yet (roadmap)"));
+        }
+        // A constant index folds into the load displacement.
+        if let Some(constant) = constant_value(index) {
+            let offset = constant * pointee.size() as i64;
+            let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
+            self.emit_global_array_base(name, total_size, destination)?;
+            self.output.instructions.push(displacement_load(pointee, destination, destination, offset));
+            return Ok(());
+        }
+        // A variable index: scale it, materialize the base, and `lwzx`. mwcc orders
+        // these so the scale runs before the base lands in `destination` (the index
+        // register often IS `destination`); for a large array the base's high half
+        // goes to a register the scale won't clobber. Integer elements only — a
+        // float/double element loads to an FPR (a separate base GPR), and an
+        // unscaled `char` element risks clobbering the index, so both defer.
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            return Err(Diagnostic::error("a variable subscript of a float/double global array is not supported yet (roadmap)"));
+        }
+        let size = pointee.size();
+        if size == 1 {
+            return Err(Diagnostic::error("a variable subscript of a byte global array is not supported yet (roadmap)"));
+        }
+        let index_register = self.general_register_of_leaf(index)?;
+        let shift = size.trailing_zeros() as u8;
+        let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+        if small {
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::EmbSda21, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+        } else {
+            // The high half goes to `destination` when it does not hold the index;
+            // otherwise to a free register the scale will read before it is reused.
+            let high = if destination != index_register { destination } else { self.free_general_excluding(index_register)? };
+            self.emit_address_high(high, name);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: high, immediate: 0 });
+        }
+        self.output.instructions.push(indexed_load(pointee, destination, destination, GENERAL_SCRATCH));
+        Ok(())
+    }
+
+    /// Materialize a file-scope array global's base address into `dest` (never r0):
+    /// a small (`.sdata`) array via a single SDA21 `addi`; a large (`.data`/`.bss`)
+    /// one via `lis dest, name@ha` then `addi dest, dest, name@l`.
+    fn emit_global_array_base(&mut self, name: &str, total_size: u32, dest: u8) -> Compilation<()> {
+        let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+        if small {
+            self.record_relocation(RelocationKind::EmbSda21, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: dest, a: 0, immediate: 0 });
+        } else {
+            self.emit_address_high(dest, name);
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: dest, a: dest, immediate: 0 });
+        }
         Ok(())
     }
 
