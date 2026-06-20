@@ -832,6 +832,70 @@ impl Generator {
         Ok(())
     }
 
+    /// `g[index] = value;` for a file-scope array global `g`. A constant index
+    /// materializes the base into a free register (avoiding the value's inputs) and
+    /// stores at the element offset. A variable index scales into the scratch, lands
+    /// the base in the (now-free) index register, and `stwx`es the value; the large
+    /// array's base high half goes to a register that avoids both the index and the
+    /// value. Integer, register-valued stores only — float/double elements, byte
+    /// arrays, and computed/constant values are follow-ups.
+    fn emit_global_array_store(&mut self, name: &str, total_size: u32, index: &Expression, value: &Expression) -> Compilation<()> {
+        let element_type = self.globals[name];
+        let pointee = pointee_of_type(element_type)
+            .ok_or_else(|| Diagnostic::error("a global array of this element type is not supported yet (roadmap)"))?;
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            return Err(Diagnostic::error("a store to a float/double global array is not supported yet (roadmap)"));
+        }
+        // A non-register (constant/computed) value is materialized with its own
+        // instruction, which mwcc's scheduler interleaves into the base
+        // materialization (`lis; li value; addi; stw`) — an ordering not modeled
+        // here, so only a register-valued store is byte-exact.
+        if !matches!(value, Expression::Variable(_)) {
+            return Err(Diagnostic::error("a global-array store of a non-register value is not supported yet (needs the value/base scheduler)"));
+        }
+        // Constant index: base into a free register (avoiding the value), then a
+        // displacement store at the element offset.
+        if let Some(constant) = constant_value(index) {
+            let offset = constant * pointee.size() as i64;
+            let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
+            let base = self.free_register_avoiding(&[value])?;
+            let restore = self.reserved.insert(base);
+            self.emit_global_array_base(name, total_size, base)?;
+            let source = self.place_store_value(value, pointee)?;
+            if restore {
+                self.reserved.remove(&base);
+            }
+            self.output.instructions.push(displacement_store(pointee, source, base, offset));
+            return Ok(());
+        }
+        // Variable index: integer element only (an unscaled byte index can alias the
+        // base register, so it defers).
+        let size = pointee.size();
+        if size == 1 {
+            return Err(Diagnostic::error("a variable store to a byte global array is not supported yet (roadmap)"));
+        }
+        let value_register = self.general_register_of_leaf(value)?;
+        let index_register = self.general_register_of_leaf(index)?;
+        let shift = size.trailing_zeros() as u8;
+        let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+        if small {
+            // scale → r0; base (SDA21) → the freed index register; `stwx`.
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::EmbSda21, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: 0, immediate: 0 });
+        } else {
+            // base high → a register avoiding the index and value; scale; base low
+            // into the freed index register; `stwx`.
+            let high = self.free_register_avoiding(&[index, value])?;
+            self.emit_address_high(high, name);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+        }
+        self.output.instructions.push(indexed_store(pointee, value_register, index_register, GENERAL_SCRATCH));
+        Ok(())
+    }
+
     /// Emit a store: `*p = v;` or `p[i] = v;`. The value goes to memory at the
     /// place addressed by the pointer (with a folded displacement for a constant
     /// index, or a scaled indexed store for a variable one).
@@ -970,6 +1034,14 @@ impl Generator {
                     }
                 }
                 return Ok(());
+            }
+        }
+        // `g[index] = value;` where `g` is a file-scope array global.
+        if let Expression::Index { base, index } = target {
+            if let Expression::Variable(name) = base.as_ref() {
+                if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+                    return self.emit_global_array_store(name, total_size, index, value);
+                }
             }
         }
         // `a[i] op= rhs` (variable index, leaf rhs) — scale the index once and
