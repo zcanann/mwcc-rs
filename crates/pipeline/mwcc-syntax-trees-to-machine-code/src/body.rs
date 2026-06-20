@@ -105,6 +105,13 @@ impl Generator {
                 return Ok(());
             }
         }
+        // A non-leaf function led by `if (c) { …calls…; return X; }` with a
+        // continuation that supplies the other exit: mwcc schedules the condition
+        // test into the prologue, the early return materializes X and branches to a
+        // SHARED epilogue, and the continuation falls into that same epilogue.
+        if self.try_non_leaf_if_first_early_return(function)? {
+            return Ok(());
+        }
         // A function that calls is non-leaf: save the link register around a 16-byte
         // frame before doing anything else.
         if function_makes_call(function) {
@@ -432,6 +439,128 @@ impl Generator {
             *target = label;
         }
         Ok(())
+    }
+
+    /// A non-leaf function whose body begins with `if (c) { …calls…; return X; }`
+    /// (the if is the first statement) followed by a straight-line continuation
+    /// that supplies the other return. mwcc schedules the condition test into the
+    /// prologue (between `mflr` and the LR store), the early return materializes X
+    /// and branches to a SHARED epilogue, and the continuation falls into that same
+    /// epilogue. Returns whether this path took over the whole body.
+    fn try_non_leaf_if_first_early_return(&mut self, function: &Function) -> Compilation<bool> {
+        // Shape: `if (c) { body…; return; } continuation…`, the if first, non-leaf,
+        // no guards/locals, no else. The general/void return type only (a float
+        // early return adds the FP result register — deferred).
+        let [Statement::If { condition, then_body, else_body }, rest @ ..] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !function_makes_call(function)
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || !else_body.is_empty()
+            || matches!(function.return_type, Type::Float | Type::Double)
+        {
+            return Ok(false);
+        }
+        // The then-body must be straight-line calls/stores ending in the early
+        // return; the continuation must likewise be straight-line (no nested
+        // control flow, which would need its own branches).
+        let Some((early_return, leading)) = then_body.split_last() else {
+            return Ok(false);
+        };
+        let early_value = match early_return {
+            Statement::Return(value) => value,
+            _ => return Ok(false),
+        };
+        // Only calls may sit in the then-body or continuation: a call is a
+        // scheduling barrier, so the value materialization that follows stays put.
+        // A store would let mwcc's scheduler interleave the value into the store
+        // sequence (`li r0,5; li r3,2; stw` rather than `li r0,5; stw; li r3,2`),
+        // which this straight-line emission cannot reproduce — defer those.
+        let call_only = |statement: &Statement| matches!(statement, Statement::Expression(_));
+        if !leading.iter().all(call_only) || !rest.iter().all(call_only) {
+            return Ok(false);
+        }
+        // A void function ends after its statements; a value-returning one supplies
+        // the other exit through the trailing `return` expression. The early
+        // return's value-ness must match (both void or both a value).
+        let returns_value = function.return_type != Type::Void;
+        if returns_value != early_value.is_some() || returns_value != function.return_expression.is_some() {
+            return Ok(false);
+        }
+        // The condition test must be schedulable into the prologue: it cannot itself
+        // make a call (that would need its own frame-aware sequencing).
+        if expression_has_call(condition) {
+            return Ok(false);
+        }
+        // A value computed AFTER a call on its path cannot be read from a
+        // caller-saved register (the call clobbers it); mwcc would spill the source
+        // to a callee-saved register (r31) and restructure the whole frame — that
+        // is the next subsystem and is deferred. So a return value that follows a
+        // call on its own path must be a compile-time constant (no register read).
+        // The early return follows the then-body's calls; the continuation value
+        // follows the continuation's calls (the false path skipped the then-body).
+        let then_calls = leading.iter().any(statement_has_call);
+        let rest_calls = rest.iter().any(statement_has_call);
+        if then_calls && early_value.as_ref().is_some_and(|value| constant_value(value).is_none()) {
+            return Ok(false);
+        }
+        if rest_calls && function.return_expression.as_ref().is_some_and(|value| constant_value(value).is_none()) {
+            return Ok(false);
+        }
+
+        let result = Eabi::general_result().number;
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        // False path skips the then-body to the continuation.
+        let continuation_branch = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        // The then-body: the leading calls/stores, then the early return's value.
+        for statement in leading {
+            self.emit_statement(statement)?;
+        }
+        if let Some(value) = early_value {
+            self.evaluate_tail(value, function.return_type, result)?;
+        }
+        // The early return branches to the shared epilogue. Reserve the slot — if
+        // the continuation turns out to emit nothing (e.g. `return a` with `a`
+        // already in the result register), mwcc lets the early return fall through
+        // to the epilogue rather than branch, so the slot is dropped below.
+        let branch_slot = self.output.instructions.len();
+        self.output.instructions.push(Instruction::Branch { target: 0 });
+        let continuation_label = self.output.instructions.len();
+        for statement in rest {
+            self.emit_statement(statement)?;
+        }
+        if let Some(return_expression) = &function.return_expression {
+            self.evaluate_tail(return_expression, function.return_type, result)?;
+        }
+        if self.output.instructions.len() == continuation_label {
+            // The continuation produced no instructions: the early return falls
+            // straight through to the epilogue, and the false path targets the
+            // epilogue directly. Drop the unnecessary branch.
+            self.output.instructions.remove(branch_slot);
+            let epilogue_label = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[continuation_branch] {
+                *target = epilogue_label;
+            }
+        } else {
+            // A non-empty continuation: the false path lands on it, and the early
+            // return branches over it to the shared epilogue.
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[continuation_branch] {
+                *target = continuation_label;
+            }
+            let epilogue_label = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[branch_slot] {
+                *target = epilogue_label;
+            }
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
     }
 
     /// Emit a sequence of `if (c) return v;` guards followed by the final return.
