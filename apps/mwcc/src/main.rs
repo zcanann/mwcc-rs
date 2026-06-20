@@ -197,6 +197,10 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // globals to keep deferring (be dropped).
     let has_jump_table = machine_functions.iter().any(|function| function.jump_table.is_some());
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    // Distinct pooled string literals, by bytes, to their anonymous `@N` name, and
+    // the running `@N` counter — deduplicated across the unit (mwcc `-str reuse`).
+    let mut string_pool: std::collections::HashMap<Vec<u8>, String> = std::collections::HashMap::new();
+    let mut string_counter: u32 = 0;
     for global in &unit.globals {
         if global.is_extern || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
             continue;
@@ -207,22 +211,52 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if global.is_static && global.is_const {
             continue;
         }
-        // A pointer global initialized with addresses (`int *p = &g;`): four zero
-        // bytes per element in `.sdata`, each `Some` target an ADDR32 relocation.
-        // (Static/const pointer relocs are a follow-up.)
-        if let Some(targets) = &global.address_initializer {
+        // A pointer global initialized with addresses (`int *p = &g;`, a string
+        // `char *s = "…"`, or a `{…}` table): four zero bytes per element in
+        // `.sdata`, each non-null element an ADDR32 relocation. A string element is
+        // pooled — its bytes (plus NUL) become an anonymous local `@N` object, emitted
+        // just before the pointer that first uses it, deduplicated across the unit.
+        if let Some(elements) = &global.address_initializer {
+            use mwcc_syntax_trees::PointerElement;
             if global.is_static || global.is_const {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
-            // The element count comes from the array dimension (a partially listed
-            // array zero-fills the rest); a scalar pointer is one element.
-            let count = global.array_length.map(u32::from).unwrap_or(targets.len() as u32);
+            let count = global.array_length.map(u32::from).unwrap_or(elements.len() as u32);
             let size = count * 4;
-            let relocations: Vec<_> = targets
-                .iter()
-                .enumerate()
-                .filter_map(|(index, target)| target.as_ref().map(|name| mwcc_machine_code_to_object::DataRelocation { offset: index as u32 * 4, target: name.clone(), addend: 0 }))
-                .collect();
+            let mut relocations = Vec::new();
+            for (index, element) in elements.iter().enumerate() {
+                let offset = index as u32 * 4;
+                let target = match element {
+                    PointerElement::Null => continue,
+                    PointerElement::Symbol(name) => name.clone(),
+                    PointerElement::Str(bytes) => {
+                        // The string-pool `@N` numbering is bumped by a function's
+                        // anonymous symbols, which is not modeled — so a string pointer
+                        // is only supported in a function-free unit for now.
+                        if !unit.functions.is_empty() {
+                            return Err(Diagnostic::error("a string-pointer global alongside functions is not supported yet (@N numbering)"));
+                        }
+                        string_pool.get(bytes.as_slice()).cloned().unwrap_or_else(|| {
+                            string_counter += 1;
+                            let name = format!("@{string_counter}");
+                            string_pool.insert(bytes.clone(), name.clone());
+                            let mut string_bytes = bytes.clone();
+                            string_bytes.push(0);
+                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
+                                name: name.clone(),
+                                size: string_bytes.len() as u32,
+                                alignment: 4,
+                                initial_bytes: Some(string_bytes),
+                                is_const: false,
+                                is_static: true,
+                                relocations: Vec::new(),
+                            });
+                            name
+                        })
+                    }
+                };
+                relocations.push(mwcc_machine_code_to_object::DataRelocation { offset, target, addend: 0 });
+            }
             // With no relocations the bytes are all zero (a null pointer), which
             // belongs in `.sbss` like any zero global; relocated bytes go in `.sdata`.
             let initial_bytes = (!relocations.is_empty()).then(|| vec![0u8; size as usize]);

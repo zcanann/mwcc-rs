@@ -99,11 +99,22 @@ pub struct GlobalDeclaration {
     /// lands in a *read-only* section: `.sdata2` (small, ≤ 8 bytes) or `.rodata`
     /// (larger), rather than the writable `.sdata`/`.sbss`.
     pub is_const: bool,
-    /// For a pointer global initialized with addresses (`int *p = &g;`), the target
-    /// symbol of each element — `Some(name)` is `&name` / a function name (an
-    /// `ADDR32` relocation), `None` is a null pointer. `None` overall = not an
-    /// address initializer.
-    pub address_initializer: Option<Vec<Option<String>>>,
+    /// For a pointer global initialized with addresses (`int *p = &g;`, a string
+    /// `char *s = "…"`, or a `{…}` table of them), each element's target. `None`
+    /// overall = not a pointer/address initializer.
+    pub address_initializer: Option<Vec<PointerElement>>,
+}
+
+/// One element of a pointer global's initializer.
+#[derive(Debug, Clone)]
+pub enum PointerElement {
+    /// `&name` or a bare function name — an `ADDR32` relocation to that symbol.
+    Symbol(String),
+    /// A string literal — its bytes (plus a NUL) are pooled as an anonymous
+    /// read-only object and the pointer relocates to it.
+    Str(Vec<u8>),
+    /// A null pointer (`0`).
+    Null,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved

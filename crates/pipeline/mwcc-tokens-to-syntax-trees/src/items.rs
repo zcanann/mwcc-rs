@@ -1,7 +1,7 @@
 //! Parsing of types, functions, parameters, locals, and guarded returns.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -167,8 +167,9 @@ impl Parser {
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
     /// an aggregate `{ <const>, ... }` (several, with an optional trailing comma).
     /// A pointer global's initializer: a single address (`int *p = &g;`) or a brace
-    /// list of them (`int *t[] = {&a, &b};`), each element a target symbol or null.
-    fn parse_address_initializer(&mut self) -> Compilation<Vec<Option<String>>> {
+    /// list of them (`int *t[] = {&a, &b};`), each element a target symbol, string,
+    /// or null.
+    fn parse_address_initializer(&mut self) -> Compilation<Vec<PointerElement>> {
         if self.eat_keyword(Token::BraceOpen) {
             let mut elements = Vec::new();
             while *self.peek() != Token::BraceClose {
@@ -184,28 +185,34 @@ impl Parser {
         }
     }
 
-    /// One element of a pointer global's address initializer: `&name` or a bare
-    /// `name` (a function pointer) is that symbol; `0` is a null pointer. `&a[i]`,
-    /// `&s.f`, casts, and arithmetic defer (they need an addend not yet modeled).
-    fn parse_pointer_init_element(&mut self) -> Compilation<Option<String>> {
+    /// One element of a pointer global's address initializer: a string literal
+    /// (pooled), `&name` or a bare `name` (a function pointer) is that symbol; `0` is
+    /// a null pointer. `&a[i]`, `&s.f`, casts, and arithmetic defer (they need an
+    /// addend not yet modeled).
+    fn parse_pointer_init_element(&mut self) -> Compilation<PointerElement> {
+        if let Token::StringLiteral(bytes) = self.peek() {
+            let bytes = bytes.clone();
+            self.advance();
+            return Ok(PointerElement::Str(bytes));
+        }
         if *self.peek() == Token::Ampersand {
             self.advance();
             let name = self.parse_identifier()?;
             if matches!(self.peek(), Token::BracketOpen | Token::Dot | Token::Arrow) {
                 return Err(Diagnostic::error("a pointer initializer with an offset is not supported yet (roadmap)"));
             }
-            return Ok(Some(name));
+            return Ok(PointerElement::Symbol(name));
         }
         if matches!(self.peek(), Token::IntegerLiteral(0)) {
             self.advance();
-            return Ok(None);
+            return Ok(PointerElement::Null);
         }
         if let Token::Identifier(name) = self.peek() {
             let name = name.clone();
             self.advance();
-            return Ok(Some(name));
+            return Ok(PointerElement::Symbol(name));
         }
-        Err(Diagnostic::error("a pointer global initializer must be &symbol, a symbol, or 0 (roadmap)"))
+        Err(Diagnostic::error("a pointer global initializer must be a string, &symbol, a symbol, or 0 (roadmap)"))
     }
 
     fn parse_constant_initializer(&mut self, element_type: Type) -> Compilation<Vec<i64>> {
