@@ -205,10 +205,11 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if global.is_extern || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
             continue;
         }
-        // A `static const` global is elided by mwcc when unused (folded into readers
-        // otherwise), so keep dropping it; a `static` non-const one is emitted with a
-        // LOCAL symbol.
-        if global.is_static && global.is_const {
+        // A `static const` SCALAR is folded into its readers (or elided when unused),
+        // so keep dropping it. A `static const` ARRAY can't be folded into a register —
+        // mwcc emits it to `.rodata` with a LOCAL symbol — so let it fall through to the
+        // const-data path (which now binds it LOCAL via `global.is_static`).
+        if global.is_static && global.is_const && global.array_length.is_none() {
             continue;
         }
         // A pointer global initialized with addresses (`int *p = &g;`, a string
@@ -331,7 +332,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 alignment,
                 initial_bytes: Some(initial_bytes),
                 is_const: true,
-                is_static: false,
+                is_static: global.is_static,
                 relocations: Vec::new(),
             });
             continue;
