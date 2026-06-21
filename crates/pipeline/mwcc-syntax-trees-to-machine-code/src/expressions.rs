@@ -1643,6 +1643,12 @@ impl Generator {
                 // clobber a register a later argument still needs. mwcc handles
                 // that (e.g. two members of one struct) by pre-copying the shared
                 // base; that choreography is not modeled yet.
+                //
+                // A passthrough reuse like `f(x, x)` (x already in r3) writes
+                // nothing for arg0, so the instructions are right — but mwcc then
+                // schedules the arg-setup `mr r4,r3` *into* the non-leaf prologue
+                // gap (between `mflr` and the LR store), which we don't reproduce.
+                // Emitting the unscheduled form would differ, so this still defers.
                 if arguments[index + 1..].iter().any(|later| self.registers_used_by(later).contains(&next_general)) {
                     return Err(Diagnostic::error("argument would clobber a register a later argument needs (roadmap)"));
                 }
