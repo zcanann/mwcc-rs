@@ -272,6 +272,7 @@ impl Generator {
         }
         // A function that calls is non-leaf: save the link register around a 16-byte
         // frame before doing anything else.
+        let mut lr_store_index: Option<usize> = None;
         if function_makes_call(function) {
             if !function.guards.is_empty() {
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
@@ -299,6 +300,7 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
             self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            lr_store_index = Some(self.output.instructions.len() - 1);
         }
 
         // Body statements (stores, calls) run first.
@@ -359,6 +361,19 @@ impl Generator {
                 }
             }
             self.emit_statement(statement)?;
+        }
+
+        // mwcc fills the `mflr`->LR-store latency slot with a leading register move
+        // (a parameter copy ready at function entry): `stwu; mflr r0; mr rD,rS; stw
+        // r0,20(r1)`. Hoist such a move ahead of the LR store to match. Only a move
+        // qualifies (constant/memory loads are not scheduled into the slot), and
+        // never one touching r0 (which the LR store still needs).
+        if let Some(store) = lr_store_index {
+            if let Some(&Instruction::Or { a, s, b }) = self.output.instructions.get(store + 1) {
+                if s == b && a != 0 && s != 0 {
+                    self.output.instructions.swap(store, store + 1);
+                }
+            }
         }
 
         // A `void` function ends after its statements.
