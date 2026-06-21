@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type};
 use mwcc_target::Eabi;
 use crate::analysis::function_makes_call;
 use crate::generator::*;
@@ -86,6 +86,15 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
         guard_no_duplication(return_expression, &values)?;
         let inlined = substitute(return_expression, &values);
+        // Inlining a computed local into an additive chain (`t = a + b; … t + c` ->
+        // `(a+b)+c`) makes us lower it like a *direct* multi-term sum, which mwcc
+        // reassociates (`mr r0,r3; add r3,r4,r5; add r3,r0,r3`). But mwcc keeps the
+        // assigned local in a register and mutates it in place (`add r3,r3,r4; add
+        // r3,r3,r5`), so the two disagree. Defer rather than emit the reassociated
+        // form; the register allocator will materialize the local and make it exact.
+        if has_additive_chain(&inlined) {
+            return Err(Diagnostic::error("a value-tracked local folded into a multi-term sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
+        }
         let result = match function.return_type {
             Type::Float => Eabi::float_result().number,
             _ => Eabi::general_result().number,
@@ -105,6 +114,34 @@ fn guard_no_duplication(expression: &Expression, values: &HashMap<String, Expres
         }
     }
     Ok(())
+}
+
+/// Whether `expression` contains an additive node (`+`/`-`) one of whose operands
+/// is itself additive — a multi-term sum/difference. Our direct-expression codegen
+/// reassociates such a chain to match mwcc, but a value-tracked local folded into
+/// the chain is one mwcc instead materializes and mutates in place, so the two
+/// forms disagree.
+fn has_additive_chain(expression: &Expression) -> bool {
+    fn additive(expression: &Expression) -> bool {
+        matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, .. })
+    }
+    match expression {
+        Expression::Binary { operator, left, right } => {
+            (matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) && (additive(left) || additive(right)))
+                || has_additive_chain(left)
+                || has_additive_chain(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } | Expression::AddressOf { operand } => has_additive_chain(operand),
+        Expression::Conditional { condition, when_true, when_false } => {
+            has_additive_chain(condition) || has_additive_chain(when_true) || has_additive_chain(when_false)
+        }
+        Expression::Dereference { pointer } => has_additive_chain(pointer),
+        Expression::Index { base, index } => has_additive_chain(base) || has_additive_chain(index),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => has_additive_chain(base),
+        Expression::Assign { target, value } => has_additive_chain(target) || has_additive_chain(value),
+        Expression::Call { arguments, .. } => arguments.iter().any(has_additive_chain),
+        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+    }
 }
 
 /// Whether an expression is a leaf (free to duplicate): a variable or literal.
