@@ -10,6 +10,19 @@ impl Generator {
 
     /// If one operand is `~leaf` and the other is a leaf, emit `andc`/`orc`.
     pub(crate) fn try_emit_complement_logical(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> bool {
+        // Both operands complemented — De Morgan folds to a single op: `~a & ~b` is
+        // `nor(a,b)` and `~a | ~b` is `nand(a,b)`.
+        if matches!(operator, BinaryOperator::BitAnd | BinaryOperator::BitOr) {
+            if let (Some(left_name), Some(right_name)) = (complemented_leaf_name(left), complemented_leaf_name(right)) {
+                if let (Some(left_register), Some(right_register)) = (self.lookup_general(left_name), self.lookup_general(right_name)) {
+                    self.output.instructions.push(match operator {
+                        BinaryOperator::BitAnd => Instruction::Nor { a: destination, s: left_register, b: right_register },
+                        _ => Instruction::Nand { a: destination, s: left_register, b: right_register },
+                    });
+                    return true;
+                }
+            }
+        }
         let (kept_expression, complemented_name) = if let Some(name) = complemented_leaf_name(right) {
             (left, name)
         } else if let Some(name) = complemented_leaf_name(left) {
