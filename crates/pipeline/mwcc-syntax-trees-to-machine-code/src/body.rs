@@ -1435,6 +1435,38 @@ impl Generator {
             return self.evaluate(initializer, local.declared_type, result);
         }
 
+        // An additively-defined local used as an operand of an addition
+        // (`int t = a + b; return t + c;`) is one mwcc keeps in a register and
+        // mutates in place (`add r3,r3,r4; add r3,r3,r5`); our leaf-in-scratch
+        // lowering would instead reassociate it like a direct sum. Defer that exact
+        // shape (a `+`-init local feeding a `+`); the allocator will later make it
+        // byte-exact. Other shapes (`*` init, or a `*`/`-` use) already match.
+        fn feeds_an_addition(name: &str, expression: &Expression) -> bool {
+            let is_local = |operand: &Expression| matches!(operand, Expression::Variable(variable) if variable == name);
+            match expression {
+                Expression::Binary { operator, left, right } => {
+                    (*operator == BinaryOperator::Add && (is_local(left) || is_local(right)))
+                        || feeds_an_addition(name, left)
+                        || feeds_an_addition(name, right)
+                }
+                Expression::Unary { operand, .. } | Expression::Cast { operand, .. } | Expression::AddressOf { operand } => feeds_an_addition(name, operand),
+                Expression::Conditional { condition, when_true, when_false } => {
+                    feeds_an_addition(name, condition) || feeds_an_addition(name, when_true) || feeds_an_addition(name, when_false)
+                }
+                Expression::Dereference { pointer } => feeds_an_addition(name, pointer),
+                Expression::Index { base, index } => feeds_an_addition(name, base) || feeds_an_addition(name, index),
+                Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => feeds_an_addition(name, base),
+                Expression::Assign { target, value } => feeds_an_addition(name, target) || feeds_an_addition(name, value),
+                Expression::Call { arguments, .. } => arguments.iter().any(|argument| feeds_an_addition(name, argument)),
+                Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+            }
+        }
+        if matches!(initializer, Expression::Binary { operator: BinaryOperator::Add, .. })
+            && feeds_an_addition(&local.name, return_expression)
+        {
+            return Err(Diagnostic::error("an additively-defined local used in a sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
+        }
+
         // Otherwise the local lives in the scratch register and is used as a leaf.
         // That only works if the result expression does not itself need the scratch.
         if needs_scratch(return_expression) {
