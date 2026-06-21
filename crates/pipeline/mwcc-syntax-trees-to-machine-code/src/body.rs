@@ -237,6 +237,9 @@ impl Generator {
             if self.try_callee_saved_call_result(function)? {
                 return Ok(());
             }
+            if self.try_callee_saved_computed_local(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -928,6 +931,84 @@ impl Generator {
 
         // The later calls, then the return. The LR-reload hoist places the saved-LR
         // reload right after the last call, matching mwcc's epilogue order.
+        for statement in &function.statements {
+            self.emit_statement(statement)?;
+        }
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(return_expr, function.return_type, result)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// A single local COMPUTED from parameters (no call in its initializer) that is live
+    /// across a call — passed to it and/or post-processed in the return:
+    /// `int z = x + 1; g(z); return z;`. z is computed into r31 before the call, used
+    /// from r31 (as a call argument and/or the return), then reloaded. Argument calls may
+    /// pass only z and constants (a parameter would be call-clobbered).
+    fn try_callee_saved_computed_local(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        if function.locals.len() != 1 {
+            return Ok(false);
+        }
+        let local = &function.locals[0];
+        if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(initializer) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        // A genuinely computed initializer: not a bare variable (that keeps its source
+        // register), not a call (the call-result path), reading no global.
+        if matches!(initializer, Expression::Variable(_)) || expression_has_call(initializer) {
+            return Ok(false);
+        }
+        if self.globals.keys().any(|name| expression_reads_name(initializer, name)) {
+            return Ok(false);
+        }
+        // One or more argument calls whose arguments read only z (preserved in r31) and
+        // constants; the return reads z and no parameter/global. (A parameter in either
+        // would be read from a call-clobbered register.)
+        if function.statements.is_empty() {
+            return Ok(false);
+        }
+        let reads_param_or_global = |this: &Self, expression: &Expression| {
+            function.parameters.iter().any(|parameter| expression_reads_name(expression, &parameter.name))
+                || this.globals.keys().any(|name| expression_reads_name(expression, name))
+        };
+        for statement in &function.statements {
+            let Statement::Expression(Expression::Call { arguments, .. }) = statement else {
+                return Ok(false);
+            };
+            if arguments.iter().any(|argument| reads_param_or_global(self, argument)) {
+                return Ok(false);
+            }
+        }
+        let Some(return_expr) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if !expression_reads_name(return_expr, &local.name) || reads_param_or_global(self, return_expr) {
+            return Ok(false);
+        }
+
+        // Prologue, then compute z into r31, then the argument calls, then the return.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![31];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        self.evaluate_general(initializer, 31)?;
+        let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            local.name.clone(),
+            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None },
+        );
         for statement in &function.statements {
             self.emit_statement(statement)?;
         }
