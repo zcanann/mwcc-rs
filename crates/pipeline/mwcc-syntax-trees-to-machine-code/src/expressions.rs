@@ -1637,6 +1637,33 @@ impl Generator {
     /// evaluated into its positional register; passthrough parameters are already
     /// in place, so this is a no-op for them.
     fn emit_arguments(&mut self, arguments: &[Expression]) -> Compilation<()> {
+        // Two word members of one pointer base, where loading the first clobbers the
+        // base register (`g(p->a, p->b)` with `p` in r3): mwcc pre-copies the base to
+        // the second argument register, then loads each member —
+        // `mr r4,r3; lwz r3,off0(r3); lwz r4,off1(r4)`. The pre-copy `mr` is hoisted
+        // into the non-leaf prologue slot by the body emitter. (The general N-member
+        // / mixed-width choreography is the allocator's; this handles the 2-word case.)
+        if let [Expression::Member { base: base0, offset: offset0, member_type: type0, index_stride: None },
+                Expression::Member { base: base1, offset: offset1, member_type: type1, index_stride: None }] = arguments
+        {
+            if let (Expression::Variable(pointer0), Expression::Variable(pointer1)) = (base0.as_ref(), base1.as_ref()) {
+                let base_register = Eabi::FIRST_GENERAL_ARGUMENT;
+                let copy_register = base_register + 1;
+                let is_word = |member: Type| matches!(member, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. });
+                if pointer0 == pointer1
+                    && is_word(*type0)
+                    && is_word(*type1)
+                    && self.locations.get(pointer0.as_str()).map(|location| location.register) == Some(base_register)
+                {
+                    if let (Some(pointee0), Some(pointee1)) = (pointee_of_type(*type0), pointee_of_type(*type1)) {
+                        self.output.instructions.push(Instruction::move_register(copy_register, base_register));
+                        self.output.instructions.push(displacement_load(pointee0, base_register, base_register, *offset0 as i16));
+                        self.output.instructions.push(displacement_load(pointee1, copy_register, copy_register, *offset1 as i16));
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         for (index, argument) in arguments.iter().enumerate() {

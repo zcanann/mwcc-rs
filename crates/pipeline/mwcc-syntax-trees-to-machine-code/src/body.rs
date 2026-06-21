@@ -368,33 +368,9 @@ impl Generator {
             self.emit_statement(statement)?;
         }
 
-        // mwcc fills the `mflr`->LR-store latency with the leading run of
-        // register-ALU argument setup — parameter copies and derivations ready at
-        // entry: `stwu; mflr r0; mr r4,r3; mr r5,r3; stw r0,20(r1)`. A register move
-        // (`mr`/logical) or a register `addi` qualifies; an immediate load (`li`,
-        // `addi rD,0,imm`) and memory loads do not, and nothing touching r0 (which
-        // the LR store still needs). Hoist that whole run ahead of the LR store.
-        if let Some(store) = lr_store_index {
-            // The `mflr`->LR-store latency holds at most two instructions, so mwcc
-            // fills it with up to two hoistable ops and leaves the rest after the
-            // store (`g(b,c,d)`: two moves, store, then the third move).
-            let mut run = 0;
-            while run < 2 {
-                let Some(instruction) = self.output.instructions.get(store + 1 + run) else { break };
-                let hoistable = match *instruction {
-                    Instruction::Or { a, s, b } => a != 0 && s != 0 && b != 0,
-                    Instruction::AddImmediate { d, a, .. } => d != 0 && a != 0,
-                    _ => false,
-                };
-                if !hoistable {
-                    break;
-                }
-                run += 1;
-            }
-            if run > 0 {
-                self.output.instructions[store..=store + run].rotate_left(1);
-            }
-        }
+        // Hoist a leading register move from the body's statements (a call's argument
+        // setup) into the prologue's mflr->LR-store slot.
+        self.hoist_leading_arg_moves(lr_store_index);
 
         // A `void` function ends after its statements.
         if function.return_type == Type::Void {
@@ -435,6 +411,9 @@ impl Generator {
             [local] => self.evaluate_single_local(local, return_expression, function.return_type, result)?,
             _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
         }
+        // A return value that is itself a call (`return h(p->a, p->b);`) emits its
+        // argument setup here, after the body loop's hoist ran — so hoist again now.
+        self.hoist_leading_arg_moves(lr_store_index);
         // A `float` function returning a double-precision value rounds to single
         // (`frsp`) before returning, as mwcc does.
         if function.return_type == Type::Float && self.is_double_value(return_expression) {
@@ -442,6 +421,34 @@ impl Generator {
         }
         self.emit_epilogue_and_return();
         Ok(())
+    }
+
+    /// mwcc fills the non-leaf prologue's `mflr`->LR-store latency with the leading
+    /// run of register-ALU argument setup — parameter copies / derivations ready at
+    /// entry: `stwu; mflr r0; mr r4,r3; mr r5,r3; stw r0,20(r1)`. A register move
+    /// (`mr`/logical) or a register `addi` qualifies; an immediate load (`li`,
+    /// `addi rD,0,imm`) and memory loads do not, and nothing touching r0 (which the
+    /// LR store needs). The slot holds at most two, so the rest stay after the store.
+    /// `lr_store_index` is the LR-store's position (only the general non-leaf path
+    /// sets it; other paths pass `None` and this is a no-op).
+    fn hoist_leading_arg_moves(&mut self, lr_store_index: Option<usize>) {
+        let Some(store) = lr_store_index else { return };
+        let mut run = 0;
+        while run < 2 {
+            let Some(instruction) = self.output.instructions.get(store + 1 + run) else { break };
+            let hoistable = match *instruction {
+                Instruction::Or { a, s, b } => a != 0 && s != 0 && b != 0,
+                Instruction::AddImmediate { d, a, .. } => d != 0 && a != 0,
+                _ => false,
+            };
+            if !hoistable {
+                break;
+            }
+            run += 1;
+        }
+        if run > 0 {
+            self.output.instructions[store..=store + run].rotate_left(1);
+        }
     }
 
     /// A leaf `void` body that is purely constant stores: mwcc materializes a
