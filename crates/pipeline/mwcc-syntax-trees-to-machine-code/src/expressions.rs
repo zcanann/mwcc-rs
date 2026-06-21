@@ -562,6 +562,13 @@ impl Generator {
         if let (Expression::Index { base: array, index }, Some(stride)) = (base, index_stride) {
             return self.emit_indexed_member_load(array, index, stride, offset, member_type, destination);
         }
+        // A nested member through an EMBEDDED struct value (`p->s.b`, `a.b.c`): the
+        // intermediate sub-struct sits inline, not behind a pointer, so its member is
+        // `base + inner_offset + offset` — fold the offsets and recurse rather than
+        // load the sub-struct as if it were a pointer to dereference.
+        if let Expression::Member { base: inner, offset: inner_offset, member_type: Type::Struct { .. }, index_stride: None } = base {
+            return self.emit_member_load(inner, inner_offset + offset, member_type, index_stride, destination);
+        }
         // `v.field` where `v` is a frame-resident struct local: a plain r1-relative
         // load at the slot offset plus the member offset.
         if let Expression::Variable(name) = base {
@@ -591,9 +598,21 @@ impl Generator {
             // scratch r0 (it is then its own load base).
             if !self.locations.contains_key(name.as_str()) && destination != GENERAL_SCRATCH {
                 if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()).copied() {
-                    self.emit_global_array_base(name, size as u32, destination)?;
                     let pointee = pointee_of_type(member_type)
                         .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                    // An offset-0 member of a *small* (SDA-addressed, <= 8 byte) global
+                    // struct folds to a single SDA21 load — `lwz d, g@sda21` — exactly
+                    // like a scalar global of the member's type (`displacement_load`
+                    // already carries any signed-`char` `extsb`). A larger struct is
+                    // ADDR16-addressed, and a non-zero offset materializes g's SDA base
+                    // and loads at the displacement (the EMB_SDA21 relocation has no
+                    // addend) — both fall through.
+                    if offset == 0 && size <= 8 && matches!(self.behavior.global_addressing, GlobalAddressing::SmallData) {
+                        self.record_relocation(RelocationKind::EmbSda21, name);
+                        self.output.instructions.push(displacement_load(pointee, destination, 0, 0));
+                        return Ok(());
+                    }
+                    self.emit_global_array_base(name, size as u32, destination)?;
                     self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
                     return Ok(());
                 }
