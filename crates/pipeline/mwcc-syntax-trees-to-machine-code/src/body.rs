@@ -363,16 +363,31 @@ impl Generator {
             self.emit_statement(statement)?;
         }
 
-        // mwcc fills the `mflr`->LR-store latency slot with a leading register move
-        // (a parameter copy ready at function entry): `stwu; mflr r0; mr rD,rS; stw
-        // r0,20(r1)`. Hoist such a move ahead of the LR store to match. Only a move
-        // qualifies (constant/memory loads are not scheduled into the slot), and
-        // never one touching r0 (which the LR store still needs).
+        // mwcc fills the `mflr`->LR-store latency with the leading run of
+        // register-ALU argument setup — parameter copies and derivations ready at
+        // entry: `stwu; mflr r0; mr r4,r3; mr r5,r3; stw r0,20(r1)`. A register move
+        // (`mr`/logical) or a register `addi` qualifies; an immediate load (`li`,
+        // `addi rD,0,imm`) and memory loads do not, and nothing touching r0 (which
+        // the LR store still needs). Hoist that whole run ahead of the LR store.
         if let Some(store) = lr_store_index {
-            if let Some(&Instruction::Or { a, s, b }) = self.output.instructions.get(store + 1) {
-                if s == b && a != 0 && s != 0 {
-                    self.output.instructions.swap(store, store + 1);
+            // The `mflr`->LR-store latency holds at most two instructions, so mwcc
+            // fills it with up to two hoistable ops and leaves the rest after the
+            // store (`g(b,c,d)`: two moves, store, then the third move).
+            let mut run = 0;
+            while run < 2 {
+                let Some(instruction) = self.output.instructions.get(store + 1 + run) else { break };
+                let hoistable = match *instruction {
+                    Instruction::Or { a, s, b } => a != 0 && s != 0 && b != 0,
+                    Instruction::AddImmediate { d, a, .. } => d != 0 && a != 0,
+                    _ => false,
+                };
+                if !hoistable {
+                    break;
                 }
+                run += 1;
+            }
+            if run > 0 {
+                self.output.instructions[store..=store + run].rotate_left(1);
             }
         }
 
