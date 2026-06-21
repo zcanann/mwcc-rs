@@ -27,7 +27,17 @@ impl Generator {
         // local, or more than one local. A single never-reassigned local keeps the
         // existing handling (which computes it once in a register).
         let has_assignment = function.statements.iter().any(|statement| matches!(statement, Statement::Assign { .. }));
-        if function.locals.is_empty() || (function.locals.len() == 1 && !has_assignment) {
+        // A single never-reassigned local normally stays with the straight-line path —
+        // EXCEPT one whose initializer is a conditional (a branchless idiom like abs):
+        // the straight-line path computes it into a register and then mis-reads it in a
+        // surrounding expression (`int y = x<0?-x:x; return y + 1;`). Inlining it folds
+        // the idiom into the use, matching the direct `(x<0?-x:x) + 1` form.
+        let single_conditional_local = function.locals.len() == 1
+            && matches!(
+                function.locals.first().and_then(|local| local.initializer.as_ref()),
+                Some(Expression::Conditional { .. })
+            );
+        if function.locals.is_empty() || (function.locals.len() == 1 && !has_assignment && !single_conditional_local) {
             return Ok(false);
         }
         // Leaf functions only for now: a non-leaf needs the prologue/frame, which
