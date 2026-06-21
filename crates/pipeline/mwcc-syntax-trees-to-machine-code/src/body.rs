@@ -144,6 +144,11 @@ impl Generator {
         if self.try_for_counter(function)? {
             return Ok(());
         }
+        // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
+        // local, so the whole body is the select `return (c) ? A : B`.
+        if self.try_conditional_assign(function)? {
+            return Ok(());
+        }
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
         // return expression and compiled there; this takes over the whole body when
         // it applies, leaving the straight-line paths below byte-identical.
@@ -446,6 +451,47 @@ impl Generator {
     /// emit the unscheduled form. Returns `false` (use the normal path) for bodies
     /// outside this shape, e.g. stores of register-resident values, which already
     /// match.
+    /// `T y; if (c) y = A; else y = B; return y;` — both arms assign the same local,
+    /// which is then returned, so the body is the select `return (c) ? A : B`. mwcc
+    /// compiles it identically to `if (c) return A; return B`. A call in the body
+    /// (value live across a branch) is the keystone's and defers.
+    pub(crate) fn try_conditional_assign(&mut self, function: &Function) -> Compilation<bool> {
+        let [local] = function.locals.as_slice() else { return Ok(false) };
+        if local.initializer.is_some() || local.array_length.is_some() || !function.guards.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        let returned = match &function.return_expression {
+            Some(Expression::Variable(name)) => name,
+            _ => return Ok(false),
+        };
+        if returned != &local.name {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        // Each arm must be exactly `y = <value>` for the returned local `y`.
+        let arm_value = |body: &[Statement]| match body {
+            [Statement::Assign { name, value }] if name == &local.name => Some(value.clone()),
+            _ => None,
+        };
+        let (Some(when_true), Some(when_false)) = (arm_value(then_body), arm_value(else_body)) else {
+            return Ok(false);
+        };
+        let result = match function.return_type {
+            Type::Float | Type::Double => Eabi::float_result().number,
+            _ => Eabi::general_result().number,
+        };
+        let select = Expression::Conditional {
+            condition: Box::new(condition.clone()),
+            when_true: Box::new(when_true),
+            when_false: Box::new(when_false),
+        };
+        self.evaluate_tail(&select, function.return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     pub(crate) fn try_constant_store_fill(&mut self, function: &Function) -> Compilation<bool> {
         if function_makes_call(function)
             || function.return_type != Type::Void
