@@ -379,24 +379,45 @@ impl Generator {
             }
         }
 
-        // `(x < 0) ? -x : x` is the branchless abs idiom: a sign mask via srawi,
-        // then `(x ^ mask) - mask`. mwcc emits `srawi t,x,31; xor r0,t,x; subf d,t,r0`.
-        if let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition {
-            if is_zero_literal(right) && self.signedness_of(left)? {
-                if let Expression::Unary { operator: UnaryOperator::Negate, operand } = when_true {
-                    if let (Some(condition_name), Some(negated_name), Some(false_name)) =
-                        (leaf_name(left), leaf_name(operand), leaf_name(when_false))
+        // The branchless abs idiom: a sign mask via srawi, then `(x ^ mask) - mask`.
+        // mwcc emits `srawi t,x,31; xor r0,t,x; subf d,t,r0` for either shape —
+        // `(x < 0) ? -x : x` (negate in the true arm) or its mirror `(x > 0) ? x : -x`
+        // / `(x >= 0) ? x : -x` (negate in the false arm).
+        let abs_target = match condition {
+            Expression::Binary { operator: BinaryOperator::Less, left, right } if is_zero_literal(right) => {
+                match when_true {
+                    Expression::Unary { operator: UnaryOperator::Negate, operand }
+                        if leaf_name(left).is_some()
+                            && leaf_name(left) == leaf_name(operand)
+                            && leaf_name(left) == leaf_name(when_false) =>
                     {
-                        if condition_name == negated_name && condition_name == false_name {
-                            let x = self.general_register_of_leaf(left)?;
-                            let mask = self.fresh_virtual_general();
-                            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: x, shift: 31 });
-                            self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: mask, b: x });
-                            self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: mask, b: GENERAL_SCRATCH });
-                            return Ok(());
-                        }
+                        Some(left.as_ref())
                     }
+                    _ => None,
                 }
+            }
+            Expression::Binary { operator: BinaryOperator::Greater | BinaryOperator::GreaterEqual, left, right } if is_zero_literal(right) => {
+                match when_false {
+                    Expression::Unary { operator: UnaryOperator::Negate, operand }
+                        if leaf_name(left).is_some()
+                            && leaf_name(left) == leaf_name(operand)
+                            && leaf_name(left) == leaf_name(when_true) =>
+                    {
+                        Some(left.as_ref())
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(value) = abs_target {
+            if self.signedness_of(value)? {
+                let x = self.general_register_of_leaf(value)?;
+                let mask = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: x, shift: 31 });
+                self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: mask, b: x });
+                self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: mask, b: GENERAL_SCRATCH });
+                return Ok(());
             }
         }
 
