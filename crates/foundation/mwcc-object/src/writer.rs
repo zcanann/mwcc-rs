@@ -556,8 +556,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     // Still-unreferenced (.sbss/.bss) defined globals trail the functions, in
-    // declaration order. `static` objects are local and never appear here.
-    for object in &input.data_objects {
+    // REVERSE declaration order (verified: `int a;b;c;d;e;` -> `e d c b a`, and a
+    // mixed .bss/.sbss set reverses too, independent of section). `static` objects
+    // are local and never appear here.
+    for object in input.data_objects.iter().rev() {
         if !object.is_static && !global_symbols.contains_key(object.name) {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
