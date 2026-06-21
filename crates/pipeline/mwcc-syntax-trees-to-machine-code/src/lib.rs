@@ -85,6 +85,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // The names this function references, in mwcc's symbol-table order (an AST
     // traversal); the writer assigns its external/global symbols in this order.
     generator.output.symbol_order = symbol_order::referenced_names(function);
+    generator.output.is_static = function.is_static;
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled

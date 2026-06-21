@@ -144,6 +144,8 @@ pub struct TranslationUnit {
 pub struct Function {
     pub return_type: Type,
     pub name: String,
+    /// A `static` (file-local) function — emitted with a LOCAL symbol.
+    pub is_static: bool,
     pub parameters: Vec<Parameter>,
     pub locals: Vec<LocalDeclaration>,
     pub statements: Vec<Statement>,

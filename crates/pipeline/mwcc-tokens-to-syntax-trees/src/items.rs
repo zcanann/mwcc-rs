@@ -974,7 +974,7 @@ impl Parser {
             if is_variadic {
                 return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
             }
-            functions.push(self.function_body(return_type, name, parameters)?);
+            functions.push(self.function_body(return_type, name, is_static, parameters)?);
         }
         Ok(())
     }
@@ -1118,7 +1118,7 @@ impl Parser {
     /// Parse a function definition's body, given its already-parsed signature.
     /// `{` then zero or more local declarations, statements, `if (...) return ...;`
     /// guards, and an optional final `return <expression>;`.
-    fn function_body(&mut self, return_type: Type, name: String, parameters: Vec<Parameter>) -> Compilation<Function> {
+    fn function_body(&mut self, return_type: Type, name: String, is_static: bool, parameters: Vec<Parameter>) -> Compilation<Function> {
         self.expect(Token::BraceOpen)?;
 
         // Zero or more local declarations precede the return statement. A
@@ -1210,7 +1210,7 @@ impl Parser {
         };
         self.expect(Token::BraceClose)?;
 
-        Ok(Function { return_type, name, parameters, locals, statements, guards, return_expression })
+        Ok(Function { return_type, name, is_static, parameters, locals, statements, guards, return_expression })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

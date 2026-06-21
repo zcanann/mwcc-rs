@@ -43,6 +43,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .zip(&texts)
         .map(|(function, text)| FunctionObject {
             name: &function.name,
+            is_static: function.is_static,
             text,
             // Each codegen relocation patches one instruction; its byte offset
             // (relative to the function) is four times the instruction index plus

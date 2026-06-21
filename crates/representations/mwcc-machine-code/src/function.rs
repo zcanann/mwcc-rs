@@ -39,6 +39,9 @@ pub struct MachineFunction {
     /// NUL), in first-use order. The unit resolver pools these into anonymous `@N`
     /// `.sdata` objects and rewrites the placeholder `@@strN` relocations.
     pub string_literals: Vec<Vec<u8>>,
+    /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol
+    /// rather than a global one.
+    pub is_static: bool,
     /// Whether the function performs an int<->float conversion. mwcc's anonymous
     /// `@N` counter starts one higher for such functions.
     pub has_conversion: bool,
@@ -70,6 +73,7 @@ impl MachineFunction {
             relocations: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),
+            is_static: false,
             has_conversion: false,
             has_float_branch: false,
             anonymous_label_bump: 0,

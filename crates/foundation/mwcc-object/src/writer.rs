@@ -31,6 +31,7 @@ const STT_FILE: u8 = 4; // STB_LOCAL (0<<4) | STT_FILE
 const STT_SECTION: u8 = 3; // STB_LOCAL | STT_SECTION
 const STB_LOCAL_OBJECT: u8 = 1; // STB_LOCAL | STT_OBJECT (the @N unwind entries)
 const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
+const STB_LOCAL_FUNC: u8 = 2; // STB_LOCAL | STT_FUNC (a `static` function)
 const STB_GLOBAL_OBJECT: u8 = (1 << 4) | 1; // STB_GLOBAL | STT_OBJECT (a defined global)
 const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
 const STV_HIDDEN: u8 = 2; // st_other visibility for the @N unwind entries
@@ -404,6 +405,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push(data_aligns[object.name]);
         }
     }
+    // `static` functions are file-local: a LOCAL `STT_FUNC` symbol each, in
+    // declaration order, after the static data and before the functions' `@N`
+    // entries (mwcc emits `static int f(){…}` here, ahead of any unwind `@N`). Their
+    // symbol indices are recorded by function index so a call relocation resolves to
+    // the local symbol; the global run below skips them.
+    let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
+    let mut local_function_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for (index, function) in functions.iter().enumerate() {
+        if function.is_static {
+            let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+            function_symbols[index] = symbol;
+            local_function_symbols.insert(function.name, symbol);
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(".text") as u16);
+            comment_values.push(4); // a function is 4-aligned
+        }
+    }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
     // then its hidden unwind entries.
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
@@ -487,7 +504,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
-    let mut function_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         // Assign this function's referenced externals in mwcc's symbol-table order
         // (its AST `symbol_order`) for the names it lists, then any remaining in
@@ -516,9 +532,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
         for name in ordered {
-            // A reference to a `static` object resolves to its existing LOCAL symbol;
-            // it is not (re)emitted in the global run.
-            if global_symbols.contains_key(name) || local_data_symbols.contains_key(name) {
+            // A reference to a `static` object or function resolves to its existing
+            // LOCAL symbol; it is not (re)emitted in the global run.
+            if global_symbols.contains_key(name) || local_data_symbols.contains_key(name) || local_function_symbols.contains_key(name) {
                 continue;
             }
             global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -531,9 +547,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 comment_values.push(0); // an undefined external has no alignment
             }
         }
-        function_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
-        write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
-        comment_values.push(4); // a function is 4-aligned
+        // A `static` function already has its LOCAL symbol (emitted above); only its
+        // newly-referenced externals appear in this run, not the function symbol.
+        if !function.is_static {
+            function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
+            comment_values.push(4); // a function is 4-aligned
+        }
     }
     // Still-unreferenced (.sbss/.bss) defined globals trail the functions, in
     // declaration order. `static` objects are local and never appear here.
@@ -555,10 +575,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for (index, function) in functions.iter().enumerate() {
         for relocation in &function.relocations {
             let symbol = match &relocation.target {
-                // A `static` target is a local data symbol; everything else is a
-                // global/external symbol.
+                // A `static` target is a local data or function symbol; everything
+                // else is a global/external symbol.
                 RelocationTarget::External(name) => *local_data_symbols
                     .get(name.as_str())
+                    .or_else(|| local_function_symbols.get(name.as_str()))
                     .unwrap_or_else(|| &global_symbols[name.as_str()]),
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
                 RelocationTarget::JumpTable => jump_table_symbols[index],

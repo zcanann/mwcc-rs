@@ -74,6 +74,8 @@ pub struct DataRelocation {
 /// function's start*; the writer rebases them by the function's `.text` offset.
 pub struct FunctionObject<'a> {
     pub name: &'a str,
+    /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol.
+    pub is_static: bool,
     pub text: &'a [u8],
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.
