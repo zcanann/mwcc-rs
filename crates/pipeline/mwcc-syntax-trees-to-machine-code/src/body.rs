@@ -749,11 +749,13 @@ impl Generator {
         Ok(true)
     }
 
-    /// A single local that is a CALL RESULT, live across later calls, then returned:
-    /// `int z = g(); h(); return z;`. mwcc preserves z in r31 across the later calls —
-    /// `bl g; mr r31,r3; bl h; mr r3,r31` plus the r31 save/restore. (Parameters live
-    /// across calls go through [`Self::try_callee_saved`].) Narrowly shaped so it can
-    /// only fire for exactly this pattern.
+    /// One or two locals that are CALL RESULTS, live across later calls, then returned:
+    /// `int z = g(); h(); return z;` or `int a = g1(); int b = g2(); h(); return a+b;`.
+    /// mwcc preserves them in r31 (and r30) across the later calls — each producing call
+    /// is followed by a move into its callee-saved register, all saved up front. The
+    /// single-local return may post-process z (`z + 1`); the two-local return must be a
+    /// single low-latency op of both (`a + b`), as in [`Self::try_callee_saved`].
+    /// (Parameters live across calls go through that path.) Narrowly shaped.
     fn try_callee_saved_call_result(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() {
             return Ok(false);
@@ -761,40 +763,54 @@ impl Generator {
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
-        // Exactly one general-int local, initialized by a call.
-        if function.locals.len() != 1 {
+        // One or two general-int locals, each initialized by an argument-free call.
+        let count = function.locals.len();
+        if count == 0 || count > 2 {
             return Ok(false);
         }
-        let local = &function.locals[0];
-        if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
-            return Ok(false);
+        let mut init_calls = Vec::new();
+        for local in &function.locals {
+            if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+                return Ok(false);
+            }
+            let Some(Expression::Call { name, arguments }) = local.initializer.as_ref() else {
+                return Ok(false);
+            };
+            if !arguments.is_empty() {
+                return Ok(false);
+            }
+            init_calls.push(name.clone());
         }
-        let Some(Expression::Call { name: init_name, arguments: init_args }) = local.initializer.as_ref() else {
-            return Ok(false);
-        };
-        // The returned value is z, optionally post-processed (`return z + 1`, `z * 2`).
-        // It must reference z and no parameter — a parameter in it would be read from a
-        // register the calls clobbered. (z lives in r31, which survives the calls.)
+        // The return reads no parameter (it would be a call-clobbered register) and no
+        // global (its load reschedules against the epilogue). A single local may be
+        // post-processed (`z + 1`); two locals must combine in one low-latency op
+        // (`a + b`), the only shape whose restores aren't rescheduled.
         let Some(return_expr) = function.return_expression.as_ref() else {
             return Ok(false);
         };
-        if !expression_reads_name(return_expr, &local.name) {
-            return Ok(false);
-        }
         if function.parameters.iter().any(|parameter| expression_reads_name(return_expr, &parameter.name)) {
             return Ok(false);
         }
-        // A global in the return (`z + gv`) reschedules the load against the epilogue —
-        // not modeled here; keep the return to z and constants only.
         if self.globals.keys().any(|name| expression_reads_name(return_expr, name)) {
             return Ok(false);
         }
-        // The body is one or more straight-line NO-ARGUMENT calls (so z is genuinely
-        // live across a call). Arguments are restricted out for now: a later call's
-        // argument could reference a parameter that the producing call clobbered — that
-        // second live value needs its own callee-saved register (a follow-up). The
-        // producing call is likewise kept argument-free to stay within this shape.
-        if function.statements.is_empty() || !init_args.is_empty() {
+        if count == 1 {
+            if !expression_reads_name(return_expr, &function.locals[0].name) {
+                return Ok(false);
+            }
+        } else {
+            let single_op = matches!(return_expr, Expression::Binary { operator, left, right }
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract
+                    | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor)
+                    && matches!(left.as_ref(), Expression::Variable(_))
+                    && matches!(right.as_ref(), Expression::Variable(_)));
+            if !single_op || !function.locals.iter().all(|local| expression_reads_name(return_expr, &local.name)) {
+                return Ok(false);
+            }
+        }
+        // The body is one or more straight-line argument-free calls (so the locals are
+        // genuinely live across a call).
+        if function.statements.is_empty() {
             return Ok(false);
         }
         for statement in &function.statements {
@@ -806,31 +822,42 @@ impl Generator {
             }
         }
 
-        // Prologue: a 16-byte frame saving the link register and r31.
+        // Prologue: a frame saving the link register and the callee-saved registers
+        // (r31, then r30), all up front, highest at the top of the frame.
+        let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
-        self.frame_size = 16;
-        self.callee_saved = vec![31];
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.frame_size = frame_size;
+        self.callee_saved = (0..count as u8).map(|rank| 31 - rank).collect();
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
+        for rank in 0..count {
+            let register = 31 - rank as u8;
+            let offset = frame_size - 4 * (rank as i16 + 1);
+            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
+        }
 
-        // z = call(): the producing call, then move its r3 result into r31.
-        self.emit_call(init_name, init_args, None, false)?;
-        self.output.instructions.push(Instruction::Or { a: 31, s: 3, b: 3 });
-        let signed = !matches!(local.declared_type, Type::UnsignedInt);
-        self.locations.insert(
-            local.name.clone(),
-            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None },
-        );
+        // Each local: its producing call, then move r3 into the local's callee-saved
+        // register — the first local takes the lowest (r30 when there are two), the last
+        // takes r31, matching mwcc's `bl g1; mr r30,r3; bl g2; mr r31,r3`.
+        for (index, local) in function.locals.iter().enumerate() {
+            self.emit_call(&init_calls[index], &[], None, false)?;
+            let register = (32 - count + index) as u8;
+            self.output.instructions.push(Instruction::Or { a: register, s: 3, b: 3 });
+            let signed = !matches!(local.declared_type, Type::UnsignedInt);
+            self.locations.insert(
+                local.name.clone(),
+                Location { class: ValueClass::General, register, signed, width: 32, pointee: None },
+            );
+        }
 
-        // The later calls, then return z (now in r31). The LR-reload hoist places the
-        // saved-LR reload right after the last call, matching mwcc's epilogue order.
+        // The later calls, then the return. The LR-reload hoist places the saved-LR
+        // reload right after the last call, matching mwcc's epilogue order.
         for statement in &function.statements {
             self.emit_statement(statement)?;
         }
         let result = Eabi::general_result().number;
-        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
+        self.evaluate_tail(return_expr, function.return_type, result)?;
         self.emit_epilogue_and_return();
         Ok(true)
     }

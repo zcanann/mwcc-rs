@@ -10,3 +10,9 @@ int csr_one(void)    { int z = csr_make(); csr_step(); return z; }
 int csr_two(void)    { int z = csr_make(); csr_step(); csr_more(); return z; }
 int csr_plus(void)   { int z = csr_make(); csr_step(); return z + 1; }
 int csr_scale(void)  { int z = csr_make(); csr_step(); return z * 2; }
+// Two call-result locals: each preserved in its own callee-saved register
+// (a->r30 first, b->r31 second), combined in a single low-latency op in the
+// return (`a + b`); `a * b` and three-plus locals still defer.
+extern int csr_g1(void);
+extern int csr_g2(void);
+int csr_pair(void) { int a = csr_g1(); int b = csr_g2(); csr_step(); return a + b; }
