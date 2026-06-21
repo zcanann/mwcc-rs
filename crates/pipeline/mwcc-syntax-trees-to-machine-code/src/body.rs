@@ -183,6 +183,9 @@ impl Generator {
             if self.try_callee_saved(function)? {
                 return Ok(());
             }
+            if self.try_callee_saved_call_result(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -742,6 +745,79 @@ impl Generator {
                 .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
             self.evaluate_tail(return_expression, function.return_type, result)?;
         }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// A single local that is a CALL RESULT, live across later calls, then returned:
+    /// `int z = g(); h(); return z;`. mwcc preserves z in r31 across the later calls —
+    /// `bl g; mr r31,r3; bl h; mr r3,r31` plus the r31 save/restore. (Parameters live
+    /// across calls go through [`Self::try_callee_saved`].) Narrowly shaped so it can
+    /// only fire for exactly this pattern.
+    fn try_callee_saved_call_result(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // Exactly one general-int local, initialized by a call.
+        if function.locals.len() != 1 {
+            return Ok(false);
+        }
+        let local = &function.locals[0];
+        if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(Expression::Call { name: init_name, arguments: init_args }) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        // The returned value is exactly that local.
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+            return Ok(false);
+        }
+        // The body is one or more straight-line NO-ARGUMENT calls (so z is genuinely
+        // live across a call). Arguments are restricted out for now: a later call's
+        // argument could reference a parameter that the producing call clobbered — that
+        // second live value needs its own callee-saved register (a follow-up). The
+        // producing call is likewise kept argument-free to stay within this shape.
+        if function.statements.is_empty() || !init_args.is_empty() {
+            return Ok(false);
+        }
+        for statement in &function.statements {
+            let Statement::Expression(Expression::Call { arguments, .. }) = statement else {
+                return Ok(false);
+            };
+            if !arguments.is_empty() {
+                return Ok(false);
+            }
+        }
+
+        // Prologue: a 16-byte frame saving the link register and r31.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![31];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+
+        // z = call(): the producing call, then move its r3 result into r31.
+        self.emit_call(init_name, init_args, None, false)?;
+        self.output.instructions.push(Instruction::Or { a: 31, s: 3, b: 3 });
+        let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            local.name.clone(),
+            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None },
+        );
+
+        // The later calls, then return z (now in r31). The LR-reload hoist places the
+        // saved-LR reload right after the last call, matching mwcc's epilogue order.
+        for statement in &function.statements {
+            self.emit_statement(statement)?;
+        }
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
         self.emit_epilogue_and_return();
         Ok(true)
     }

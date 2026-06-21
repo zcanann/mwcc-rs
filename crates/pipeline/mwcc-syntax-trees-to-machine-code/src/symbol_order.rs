@@ -24,6 +24,13 @@ struct Names {
 /// then all call targets, deduplicated to first occurrence.
 pub(crate) fn referenced_names(function: &Function) -> Vec<String> {
     let mut names = Names::default();
+    // A local's initializer is evaluated first (in source order), so a call/global it
+    // references is numbered ahead of the body's — `int z = g(); h();` lists g before h.
+    for local in &function.locals {
+        if let Some(initializer) = &local.initializer {
+            collect(initializer, &mut names);
+        }
+    }
     for statement in &function.statements {
         collect_statement(statement, &mut names);
     }
