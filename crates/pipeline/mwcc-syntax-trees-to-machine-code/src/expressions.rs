@@ -1896,6 +1896,26 @@ impl Generator {
                 if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = operand {
                     return self.evaluate_general(inner, d);
                 }
+                // -(x < 0) / -(x > 0): the sign-bit comparison idioms end in a logical
+                // shift (`srwi 31`, giving 0/1); negating the boolean is just the
+                // arithmetic shift (`srawi 31`, giving 0/-1) instead — no separate
+                // `neg`, and (for `>`) the operand stays live for the `andc`.
+                if let Expression::Binary { operator: comparison @ (BinaryOperator::Less | BinaryOperator::Greater), left, right } = operand {
+                    if is_zero_literal(right) && self.signedness_of(left)? {
+                        if *comparison == BinaryOperator::Less {
+                            // -(x < 0) = srawi d, x, 31
+                            let source = self.place_operand_or_scratch(left, d)?;
+                            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift: 31 });
+                        } else {
+                            // -(x > 0) = neg r0,x; andc r0,r0,x; srawi d,r0,31
+                            self.evaluate_general(left, d)?;
+                            self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: d });
+                            self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: d });
+                            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                        }
+                        return Ok(());
+                    }
+                }
                 let source = self.place_operand_or_scratch(operand, d)?;
                 self.output.instructions.push(Instruction::Negate { d, a: source });
             }
