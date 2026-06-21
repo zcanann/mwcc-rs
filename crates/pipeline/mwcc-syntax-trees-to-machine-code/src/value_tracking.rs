@@ -37,7 +37,20 @@ impl Generator {
                 function.locals.first().and_then(|local| local.initializer.as_ref()),
                 Some(Expression::Conditional { .. })
             );
-        if function.locals.is_empty() || (function.locals.len() == 1 && !has_assignment && !single_conditional_local) {
+        // A single local that is a pure alias of another variable (`T* q = p;`) must
+        // inline too: the straight-line path materializes the alias in a register and
+        // then dereferences it, which for a pointer picks r0 and emits an invalid
+        // `lwz rD,off(0)` (r0 in a base position means literal 0). Substituting the
+        // alias away (`q->a` -> `p->a`) matches mwcc's plain `lwz rD,off(rP)`.
+        let single_alias_local = function.locals.len() == 1
+            && function.return_type != Type::Void
+            && matches!(
+                function.locals.first().and_then(|local| local.initializer.as_ref()),
+                Some(Expression::Variable(_))
+            );
+        if function.locals.is_empty()
+            || (function.locals.len() == 1 && !has_assignment && !single_conditional_local && !single_alias_local)
+        {
             return Ok(false);
         }
         // Leaf functions only for now: a non-leaf needs the prologue/frame, which
