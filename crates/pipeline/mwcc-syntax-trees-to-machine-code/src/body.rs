@@ -7,6 +7,46 @@ use mwcc_target::Eabi;
 use crate::analysis::*;
 use crate::generator::*;
 
+/// Whether a statement references (reads, writes, or takes the address of) `name`.
+/// Control-flow statements are treated conservatively as referencing everything.
+fn statement_references_name(statement: &Statement, name: &str) -> bool {
+    match statement {
+        Statement::Store { target, value } => expression_reads_name(target, name) || expression_reads_name(value, name),
+        Statement::Assign { name: target, value } => target == name || expression_reads_name(value, name),
+        Statement::Expression(expression) => expression_reads_name(expression, name),
+        Statement::If { .. } | Statement::Switch { .. } | Statement::Loop { .. } | Statement::Return(_) => true,
+    }
+}
+
+/// Drop locals that are never referenced anywhere and whose initializer has no side
+/// effect (no call) — mwcc eliminates an unused `int s = 0;`, emitting no `li`. A
+/// referenced local (read, written, or address-taken — any use of its name), or a
+/// call-initialized one (whose call must still run), is kept.
+fn remove_dead_locals(function: &Function) -> Option<Function> {
+    if function.locals.is_empty() {
+        return None;
+    }
+    let referenced = |name: &str| -> bool {
+        function.locals.iter().any(|local| {
+            local.name != name && local.initializer.as_ref().map_or(false, |init| expression_reads_name(init, name))
+        }) || function.statements.iter().any(|statement| statement_references_name(statement, name))
+            || function.guards.iter().any(|guard| {
+                expression_reads_name(&guard.condition, name) || expression_reads_name(&guard.value, name)
+            })
+            || function.return_expression.as_ref().map_or(false, |ret| expression_reads_name(ret, name))
+    };
+    let kept: Vec<LocalDeclaration> = function
+        .locals
+        .iter()
+        .filter(|local| referenced(&local.name) || local.initializer.as_ref().map_or(false, |init| expression_has_call(init)))
+        .cloned()
+        .collect();
+    if kept.len() == function.locals.len() {
+        return None;
+    }
+    Some(Function { locals: kept, ..function.clone() })
+}
+
 /// Fold single-assignment, return-only locals (whose initializers make no call) into
 /// the return expression, dropping them — so `int z = x + 1; g(); return z;` becomes
 /// the equivalent `g(); return x + 1;`, which the parameter-preservation path compiles.
@@ -86,6 +126,11 @@ impl Generator {
 
     /// Emit the whole function body, including its `blr`(s).
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
+        // emits nothing for them — then recompile the cleaned function.
+        if let Some(cleaned) = remove_dead_locals(function) {
+            return self.evaluate_body(&cleaned);
+        }
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,
         // since an address-taken variable cannot be value-tracked in a register.
