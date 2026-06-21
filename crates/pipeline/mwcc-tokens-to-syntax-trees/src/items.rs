@@ -671,8 +671,18 @@ impl Parser {
                         // A named struct type registered inside this one (no member).
                         self.structs.insert(tag, inner);
                     }
-                    (None, Some(_)) => {
-                        return Err(Diagnostic::error("an anonymous inline struct with a member name is not supported yet (roadmap)"));
+                    (None, Some(name)) => {
+                        // An anonymous inline struct *named* as a member (`struct {…}
+                        // mesh;`). Register its layout under a synthetic tag (unique —
+                        // generated after the inner parse, so nested anon structs don't
+                        // collide) so `parent.mesh.field` chains, then add it as an
+                        // ordinary struct-value member.
+                        let synthetic = format!("@anon{}", self.structs.len());
+                        self.structs.insert(synthetic.clone(), inner);
+                        alignment_max = alignment_max.max(inner_align);
+                        offset = offset.div_ceil(inner_align) * inner_align;
+                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(synthetic), array_element: None, bit_field: None });
+                        offset += inner_size;
                     }
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
@@ -832,6 +842,30 @@ impl Parser {
         let mut max_size: u16 = 0;
         let mut max_align: u16 = 1;
         while *self.peek() != Token::BraceClose {
+            // An inline struct *variant* of the union (`struct [Tag] { … } name;`),
+            // e.g. HsfObjectData's `mesh`. Register its layout under a tag so
+            // `u.name.field` chains, then add it as a struct-value variant at offset 0.
+            if *self.peek() == Token::KeywordStruct
+                && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
+                    || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
+            {
+                self.advance(); // `struct`
+                let tag = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                let inner = self.parse_struct_body()?;
+                let inner_size = inner.size;
+                let inner_align = (inner.align as u16).max(1);
+                if !matches!(self.peek(), Token::Identifier(_)) {
+                    return Err(Diagnostic::error("an anonymous inline struct variant in a union is not supported yet (roadmap)"));
+                }
+                let name = self.parse_identifier()?;
+                let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+                self.structs.insert(variant_tag.clone(), inner);
+                layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset: 0, struct_tag: Some(variant_tag), array_element: None, bit_field: None });
+                max_size = max_size.max(inner_size);
+                max_align = max_align.max(inner_align);
+                self.expect(Token::Semicolon)?;
+                continue;
+            }
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
             let attr_align = self.skip_attributes()?;
