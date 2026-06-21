@@ -134,18 +134,35 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
         if character.is_ascii_digit() {
             let start = position;
             let mut is_float = false;
-            while position < bytes.len() && (bytes[position].is_ascii_digit() || bytes[position] == b'.' || bytes[position] == b'f') {
-                if bytes[position] == b'.' {
+            while position < bytes.len() {
+                let byte = bytes[position];
+                if byte.is_ascii_digit() || byte == b'.' {
+                    if byte == b'.' {
+                        is_float = true;
+                    }
+                    position += 1;
+                } else if (byte == b'e' || byte == b'E')
+                    && matches!(peek(bytes, position + 1), Some(b'0'..=b'9') | Some(b'+') | Some(b'-'))
+                {
+                    // Scientific-notation exponent `e[+-]?digits` (`1.0e300`, `2.5e-10`,
+                    // `1e10`) — always a float, even without a fractional dot.
                     is_float = true;
-                }
-                if bytes[position] == b'f' {
+                    position += 1; // the `e`/`E`
+                    if matches!(peek(bytes, position), Some(b'+') | Some(b'-')) {
+                        position += 1;
+                    }
+                    while position < bytes.len() && bytes[position].is_ascii_digit() {
+                        position += 1;
+                    }
+                } else if byte == b'f' || byte == b'F' {
                     is_float = true;
                     position += 1;
                     break;
+                } else {
+                    break;
                 }
-                position += 1;
             }
-            let text = source[start..position].trim_end_matches('f');
+            let text = source[start..position].trim_end_matches(['f', 'F']);
             if is_float {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed float literal"))?;
                 tokens.push(Token::FloatLiteral(value));
