@@ -5,6 +5,7 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Statement, Type};
 use mwcc_target::Eabi;
 use crate::analysis::*;
+use crate::expressions::pointer_stride;
 use crate::generator::*;
 
 /// Whether a statement references (reads, writes, or takes the address of) `name`.
@@ -116,9 +117,10 @@ impl Generator {
                 Type::Pointer(pointee) => Some(pointee),
                 _ => None,
             };
+            let stride = pointer_stride(parameter.parameter_type);
             self.locations.insert(
                 parameter.name.clone(),
-                Location { class, register, signed, width: parameter.parameter_type.width(), pointee },
+                Location { class, register, signed, width: parameter.parameter_type.width(), pointee, stride },
             );
         }
         Ok(())
@@ -708,7 +710,7 @@ impl Generator {
         let signed = self.signed_of(local.declared_type);
         self.locations.insert(
             counter.clone(),
-            Location { class: ValueClass::General, register: COUNTER, signed, width: 32, pointee: None },
+            Location { class: ValueClass::General, register: COUNTER, signed, width: 32, pointee: None, stride: None },
         );
         if let Some(location) = self.locations.get_mut(&bound) {
             location.register = BOUND;
@@ -970,7 +972,7 @@ impl Generator {
             let signed = !matches!(local.declared_type, Type::UnsignedInt);
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register, signed, width: 32, pointee: None },
+                Location { class: ValueClass::General, register, signed, width: 32, pointee: None, stride: None },
             );
         }
 
@@ -1052,7 +1054,7 @@ impl Generator {
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None },
+            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
         );
         for statement in &function.statements {
             self.emit_statement(statement)?;
@@ -1418,7 +1420,8 @@ impl Generator {
             Type::Pointer(pointee) => Some(pointee),
             _ => None,
         };
-        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed, width: local.declared_type.width(), pointee });
+        let stride = pointer_stride(local.declared_type);
+        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed, width: local.declared_type.width(), pointee, stride });
         self.evaluate(return_expression, return_type, result)
     }
 

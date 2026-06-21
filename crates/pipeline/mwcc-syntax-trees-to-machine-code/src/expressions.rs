@@ -54,12 +54,23 @@ fn pointee_of_type(value_type: Type) -> Option<Pointee> {
         Type::UnsignedShort => Pointee::UnsignedShort,
         Type::Float => Pointee::Float,
         // A pointer value is a 4-byte address (stored/loaded with `stw`/`lwz`).
-        Type::Pointer(_) | Type::StructPointer => Pointee::UnsignedInt,
+        Type::Pointer(_) | Type::StructPointer { .. } => Pointee::UnsignedInt,
         // `double` storage (8-byte lfd/stfd) is a later stage.
         Type::Double => Pointee::Double,
         // A struct value is not a scalar pointee (it has no single load/store).
         Type::Void | Type::Struct { .. } => return None,
     })
+}
+
+/// The scaled-arithmetic stride for a pointer type: a struct pointer's element size
+/// (so `p + n` advances by whole structs), or `None` for a scalar pointer (which
+/// scales by its `pointee` size) and a non-pointer. A zero element size — an opaque
+/// struct or a function pointer — yields `None` so arithmetic stays unscaled.
+pub(crate) fn pointer_stride(value_type: Type) -> Option<u16> {
+    match value_type {
+        Type::StructPointer { element_size } if element_size > 1 => Some(element_size),
+        _ => None,
+    }
 }
 
 /// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
@@ -584,7 +595,7 @@ impl Generator {
             // *value* or *array* base needs an address-of, not a value load, so it
             // falls through to defer.)
             if !self.locations.contains_key(name.as_str())
-                && matches!(self.globals.get(name.as_str()), Some(Type::StructPointer))
+                && matches!(self.globals.get(name.as_str()), Some(Type::StructPointer { .. }))
             {
                 self.emit_global_load_value(name, destination)?;
                 let pointee = pointee_of_type(member_type)
@@ -771,12 +782,17 @@ impl Generator {
     /// The pointee size of a leaf pointer variable, when greater than one byte
     /// (so its arithmetic needs scaling). A byte pointer returns `None` — its
     /// arithmetic is a plain add.
-    fn scaled_pointer(&self, operand: &Expression) -> Option<u8> {
+    fn scaled_pointer(&self, operand: &Expression) -> Option<u16> {
         if let Expression::Variable(name) = operand {
             if let Some(location) = self.locations.get(name) {
+                // A struct pointer scales by the struct's byte size; a scalar pointer
+                // by its pointee size (a byte element needs no scaling, so > 1).
+                if let Some(stride) = location.stride {
+                    return Some(stride);
+                }
                 let size = location.pointee?.size();
                 if size > 1 {
-                    return Some(size);
+                    return Some(size as u16);
                 }
             }
         }
@@ -788,10 +804,10 @@ impl Generator {
     /// pointer in its base register). A byte leaf pointer returns `None` (its
     /// arithmetic is a plain add handled elsewhere); a byte *array* member is
     /// handled here, since it is not a plain leaf.
-    fn pointer_arithmetic_base(&mut self, operand: &Expression) -> Compilation<Option<(u8, u8)>> {
+    fn pointer_arithmetic_base(&mut self, operand: &Expression) -> Compilation<Option<(u8, u16)>> {
         if let Expression::MemberAddress { base, offset: 0, element } = operand {
             let register = self.member_base_register(base)?;
-            return Ok(Some((register, element.size())));
+            return Ok(Some((register, u16::from(element.size()))));
         }
         if let Some(size) = self.scaled_pointer(operand) {
             return Ok(Some((self.general_register_of_leaf(operand)?, size)));
@@ -801,10 +817,13 @@ impl Generator {
 
     /// The register and pointee size of a leaf pointer variable, with no side
     /// effects (just the home register). Used to recognize `ptr - ptr`.
-    fn pointer_leaf_register_size(&self, operand: &Expression) -> Option<(u8, u8)> {
+    fn pointer_leaf_register_size(&self, operand: &Expression) -> Option<(u8, u16)> {
         if let Expression::Variable(name) = operand {
             let location = self.locations.get(name)?;
-            return Some((location.register, location.pointee?.size()));
+            if let Some(stride) = location.stride {
+                return Some((location.register, stride));
+            }
+            return Some((location.register, location.pointee?.size() as u16));
         }
         None
     }
@@ -820,7 +839,12 @@ impl Generator {
             if let (Some((left_register, size)), Some((right_register, right_size))) =
                 (self.pointer_leaf_register_size(left), self.pointer_leaf_register_size(right))
             {
-                if size == right_size && size.is_power_of_two() {
+                if size == right_size {
+                    if !size.is_power_of_two() {
+                        // A difference by a non-power-of-two struct stride needs the
+                        // magic-number divide mwcc emits; defer rather than mis-scale.
+                        return Ok(false);
+                    }
                     match size.trailing_zeros() {
                         // byte element: the difference is the element count.
                         0 => self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: right_register, b: left_register }),
@@ -862,9 +886,16 @@ impl Generator {
             return Ok(true);
         }
         let integer_register = self.general_register_of_leaf(integer)?;
-        // Scale the index by the element size (a byte element needs no shift).
+        // Scale the index by the element size: a power-of-two element shifts (`slwi`),
+        // any other size (a struct stride like 12) multiplies (`mulli`); a byte element
+        // needs neither.
         let scaled_register = if size > 1 {
-            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: integer_register, shift: size.trailing_zeros() as u8 });
+            if size.is_power_of_two() {
+                self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: integer_register, shift: size.trailing_zeros() as u8 });
+            } else {
+                let immediate = i16::try_from(size).map_err(|_| Diagnostic::error("pointer stride out of range (roadmap)"))?;
+                self.output.instructions.push(Instruction::MultiplyImmediate { d: GENERAL_SCRATCH, a: integer_register, immediate });
+            }
             GENERAL_SCRATCH
         } else {
             integer_register
@@ -1327,11 +1358,11 @@ impl Generator {
                 if !self.locations.contains_key(name.as_str()) {
                     let global_type = self.globals.get(name.as_str()).copied();
                     let struct_value_size = match global_type {
-                        Some(Type::StructPointer) => None,
+                        Some(Type::StructPointer { .. }) => None,
                         Some(Type::Struct { size, .. }) => Some(size as u32),
                         _ => None,
                     };
-                    let is_global_struct_base = matches!(global_type, Some(Type::StructPointer | Type::Struct { .. }));
+                    let is_global_struct_base = matches!(global_type, Some(Type::StructPointer { .. } | Type::Struct { .. }));
                     if is_global_struct_base {
                         let pointee = pointee_of_type(*member_type)
                             .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
@@ -1671,7 +1702,7 @@ impl Generator {
             Type::Float => Instruction::LoadFloatSingle { d, a, offset: 0 },
             Type::Double => Instruction::LoadFloatDouble { d, a, offset: 0 },
             // A pointer global is a 32-bit address word.
-            Type::Pointer(_) | Type::StructPointer => Instruction::LoadWord { d, a, offset: 0 },
+            Type::Pointer(_) | Type::StructPointer { .. } => Instruction::LoadWord { d, a, offset: 0 },
             other => return Err(Diagnostic::error(format!("global of type {other:?} is not supported yet"))),
         })
     }

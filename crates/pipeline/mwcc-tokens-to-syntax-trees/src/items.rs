@@ -38,7 +38,7 @@ fn pointee_of(base: Type) -> Compilation<Pointee> {
 /// Size in bytes of a scalar or pointer type, for laying out struct members.
 fn type_size(declared: Type) -> u16 {
     match declared {
-        Type::Pointer(_) | Type::StructPointer => 4,
+        Type::Pointer(_) | Type::StructPointer { .. } => 4,
         other => (other.width() / 8) as u16,
     }
 }
@@ -196,7 +196,7 @@ impl Parser {
         fields.sort_by_key(|field| field.offset);
         let types: Vec<Type> = fields.iter().map(|field| field.member_type).collect();
         let all_word = types.iter().all(|field_type| field_type.width() == 32);
-        let any_pointer = types.iter().any(|field_type| matches!(field_type, Type::Pointer(_) | Type::StructPointer));
+        let any_pointer = types.iter().any(|field_type| matches!(field_type, Type::Pointer(_) | Type::StructPointer { .. }));
         (all_word && any_pointer).then_some(types)
     }
 
@@ -210,7 +210,7 @@ impl Parser {
         while *self.peek() != Token::BraceClose {
             self.expect(Token::BraceOpen)?;
             for (index, field_type) in field_types.iter().enumerate() {
-                if matches!(field_type, Type::Pointer(_) | Type::StructPointer) {
+                if matches!(field_type, Type::Pointer(_) | Type::StructPointer { .. }) {
                     let element = self.parse_pointer_init_element()?;
                     // A string element pools an anonymous `@N` object, whose NUMBER in a
                     // real translation unit is offset by phantom `@N` mwcc consumes while
@@ -399,16 +399,18 @@ impl Parser {
                 };
             }
             self.advance();
+            let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
             self.last_struct_tag = Some(tag);
-            return Ok(Type::StructPointer);
+            return Ok(Type::StructPointer { element_size });
         }
         // A struct-pointer typedef (`VecPtr`) is itself a pointer to the struct —
         // no trailing `*` — carrying the layout's tag.
         if let Token::Identifier(name) = self.peek() {
             if let Some(tag) = self.struct_pointer_typedefs.get(name).cloned() {
                 self.advance();
+                let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
                 self.last_struct_tag = Some(tag);
-                return Ok(Type::StructPointer);
+                return Ok(Type::StructPointer { element_size });
             }
         }
         // A struct typedef (`FILE`) behaves like its `struct Tag`: `FILE *` is a
@@ -426,8 +428,9 @@ impl Parser {
                     };
                 }
                 self.advance();
+                let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
                 self.last_struct_tag = Some(tag);
-                return Ok(Type::StructPointer);
+                return Ok(Type::StructPointer { element_size });
             }
         }
         // A `typedef`-declared alias resolves to its underlying type.
@@ -822,7 +825,7 @@ impl Parser {
                     }
                 }
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { declared_type: Type::StructPointer, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None });
+                globals.push(GlobalDeclaration { declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -870,7 +873,7 @@ impl Parser {
                     };
                     let mut address_initializer = None;
                     let mut initializer = None;
-                    if matches!(return_type, Type::Pointer(_) | Type::StructPointer) && *self.peek() == Token::Equals {
+                    if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) && *self.peek() == Token::Equals {
                         self.advance();
                         address_initializer = Some(self.parse_address_initializer()?);
                     } else if table_fields.is_some() && *self.peek() == Token::Equals {
@@ -944,7 +947,7 @@ impl Parser {
                                 _ => {}
                             }
                         }
-                        parameters.push(Parameter { parameter_type: Type::StructPointer, name });
+                        parameters.push(Parameter { parameter_type: Type::StructPointer { element_size: 0 }, name });
                     } else {
                         // The name is optional (a prototype may write just the type).
                         let name = if matches!(self.peek(), Token::Identifier(_)) {

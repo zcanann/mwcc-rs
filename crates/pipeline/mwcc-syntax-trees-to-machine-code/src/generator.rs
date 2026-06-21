@@ -27,6 +27,10 @@ pub(crate) struct Location {
     pub(crate) width: u8,
     /// For a pointer value, what it points to (so `*p` picks the right load).
     pub(crate) pointee: Option<Pointee>,
+    /// For a struct pointer, the struct's byte size — the stride for scaled pointer
+    /// arithmetic (`p + n`, `p++`). `None` for scalar pointers (which scale by the
+    /// `pointee` size) and non-pointers.
+    pub(crate) stride: Option<u16>,
 }
 
 /// A variable whose address is taken: it lives in a stack-frame slot rather than

@@ -63,7 +63,7 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
             match target_type {
                 // A pointer cast keeps the (integer) address value; a non-integer
                 // cast cannot be represented here.
-                Type::Pointer(_) | Type::StructPointer => value,
+                Type::Pointer(_) | Type::StructPointer { .. } => value,
                 Type::Float | Type::Double | Type::Struct { .. } | Type::Void => {
                     return Err(Diagnostic::error("a non-integer cast in a constant initializer is not supported yet (roadmap)"))
                 }
@@ -245,7 +245,7 @@ impl Parser {
                     self.expect(Token::ParenClose)?;
                     // Capture the cast's struct tag before parsing the operand (which may
                     // itself run `parse_type` and overwrite `last_struct_tag`).
-                    if target_type == mwcc_syntax_trees::Type::StructPointer {
+                    if matches!(target_type, mwcc_syntax_trees::Type::StructPointer { .. }) {
                         cast_struct_tag = self.last_struct_tag.take();
                     }
                     let operand = self.factor()?;
