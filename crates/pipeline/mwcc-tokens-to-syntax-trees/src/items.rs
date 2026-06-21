@@ -609,6 +609,9 @@ impl Parser {
         let mut layout = StructLayout::default();
         let mut offset: u16 = 0;
         let mut alignment_max: u16 = 1;
+        // The open bit-field allocation unit (its type, byte offset, bits used so
+        // far); an ordinary member or a different-typed bit-field closes it.
+        let mut bit_unit: Option<(Type, u16, u8)> = None;
         while *self.peek() != Token::BraceClose {
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
@@ -616,6 +619,41 @@ impl Parser {
             // `f32 x, y, z;`. Each gets its own naturally-aligned offset.
             loop {
                 let field_name = self.parse_identifier()?;
+                // A bit-field `type name : width` packs `width` bits (MSB-first) into a
+                // `sizeof(type)` storage unit shared by adjacent same-typed bit-fields;
+                // it overflows into a fresh unit. (Mixed-type adjacent bit-fields follow
+                // CodeWarrior's irregular packing and defer; member access defers too.)
+                if self.eat_keyword(Token::Colon) {
+                    let width = self.parse_integer_constant()? as u8;
+                    let unit_bits = (type_size(field_type) * 8) as u8;
+                    if width == 0 || width > unit_bits {
+                        return Err(Diagnostic::error("an unsupported bit-field width (roadmap)"));
+                    }
+                    let (unit_offset, bit_offset) = match bit_unit {
+                        Some((unit_type, unit_offset, bits_used)) if unit_type == field_type && bits_used + width <= unit_bits => {
+                            bit_unit = Some((field_type, unit_offset, bits_used + width));
+                            (unit_offset, bits_used)
+                        }
+                        Some((unit_type, ..)) if unit_type != field_type => {
+                            return Err(Diagnostic::error("a struct mixing adjacent bit-field types is not supported yet (roadmap)"));
+                        }
+                        _ => {
+                            let alignment = type_alignment(field_type).max(1);
+                            let unit_offset = offset.div_ceil(alignment) * alignment;
+                            offset = unit_offset + type_size(field_type);
+                            alignment_max = alignment_max.max(alignment);
+                            bit_unit = Some((field_type, unit_offset, width));
+                            (unit_offset, 0)
+                        }
+                    };
+                    layout.fields.insert(field_name, StructField { member_type: field_type, offset: unit_offset, struct_tag: None, array_element: None, bit_field: Some((bit_offset, width)) });
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
+                // An ordinary member closes any open bit-field unit.
+                bit_unit = None;
                 // An array member `type name[N]` occupies `N` elements; its access
                 // yields the array address rather than a loaded value.
                 let mut array_element = None;
@@ -642,7 +680,7 @@ impl Parser {
                 let alignment = type_alignment(field_type).max(1);
                 alignment_max = alignment_max.max(alignment);
                 offset = offset.div_ceil(alignment) * alignment;
-                layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element });
+                layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element, bit_field: None });
                 offset += size;
                 if !self.eat_keyword(Token::Comma) {
                     break;

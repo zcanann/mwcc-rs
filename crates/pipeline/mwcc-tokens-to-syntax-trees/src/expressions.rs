@@ -292,6 +292,11 @@ impl Parser {
                         .fields
                         .get(&field)
                         .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
+                    if member.bit_field.is_some() {
+                        // The struct's layout is registered (so other members resolve),
+                        // but a bit-field needs extract/insert codegen — defer.
+                        return Err(Diagnostic::error(format!("bit-field member '{field}' access is not supported yet (roadmap)")));
+                    }
                     let (offset, member_type, next_tag, array_element) =
                         (member.offset, member.member_type, member.struct_tag.clone(), member.array_element);
                     // `a[i].field`: the index scales by the struct size — recorded so

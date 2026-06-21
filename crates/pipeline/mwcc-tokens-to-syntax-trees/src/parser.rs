@@ -13,6 +13,11 @@ pub(crate) struct StructField {
     pub(crate) offset: u16,
     pub(crate) struct_tag: Option<String>,
     pub(crate) array_element: Option<Pointee>,
+    /// For a bit-field member, `(bit_offset, width)` — the field occupies `width` bits
+    /// starting `bit_offset` bits from the most-significant end of its storage unit
+    /// (which begins at byte `offset`). `None` for an ordinary member. Member access
+    /// of a bit-field defers until the extract/insert codegen lands.
+    pub(crate) bit_field: Option<(u8, u8)>,
 }
 
 /// A struct's layout: members by name, plus the total size (for `sizeof`/arrays,
