@@ -1332,12 +1332,48 @@ impl Generator {
                     if is_global_struct_base {
                         let pointee = pointee_of_type(*member_type)
                             .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
+                        // A small (<= 8 byte, SDA-addressed) global struct VALUE:
+                        // mwcc materializes the stored VALUE first, then the base. An
+                        // offset-0 store folds the SDA21 into the store itself
+                        // (`stw src, g@sda21`, no base register), mirroring the offset-0
+                        // member load; a non-zero offset materializes g's SDA base and
+                        // stores at the displacement.
+                        if let Some(size) = struct_value_size {
+                            if size <= 8 && matches!(self.behavior.global_addressing, GlobalAddressing::SmallData) {
+                                let source = self.place_store_value(value, pointee)?;
+                                if *offset == 0 {
+                                    self.record_relocation(RelocationKind::EmbSda21, name);
+                                    self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                                } else {
+                                    let restore = self.reserved.insert(source);
+                                    let base_reg = self.free_register_avoiding(&[value])?;
+                                    self.emit_global_array_base(name, size, base_reg)?;
+                                    if restore {
+                                        self.reserved.remove(&source);
+                                    }
+                                    self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16));
+                                }
+                                return Ok(());
+                            }
+                            // A large (ADDR16) global struct VALUE materializes the
+                            // base address, then the value, then stores at the offset. A
+                            // register value matches mwcc; a *constant* value is a known
+                            // latent diff — mwcc folds `@l` into the store and interleaves
+                            // the `li` between `lis` and the store (a follow-up).
+                            let base_reg = self.free_register_avoiding(&[value])?;
+                            let restore = self.reserved.insert(base_reg);
+                            self.emit_global_array_base(name, size, base_reg)?;
+                            let source = self.place_store_value(value, pointee)?;
+                            if restore {
+                                self.reserved.remove(&base_reg);
+                            }
+                            self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16));
+                            return Ok(());
+                        }
+                        // struct POINTER base: load the pointer, then the value, then store.
                         let base_reg = self.free_register_avoiding(&[value])?;
                         let restore = self.reserved.insert(base_reg);
-                        match struct_value_size {
-                            Some(size) => self.emit_global_array_base(name, size, base_reg)?,
-                            None => self.emit_global_load_value(name, base_reg)?,
-                        }
+                        self.emit_global_load_value(name, base_reg)?;
                         let source = self.place_store_value(value, pointee)?;
                         if restore {
                             self.reserved.remove(&base_reg);
