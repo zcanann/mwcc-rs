@@ -391,14 +391,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
         comment_values.push(0);
     }
-    // `static` (file-local) data objects: a LOCAL object symbol each, in declaration
-    // order, after the inline-asm locals and before the functions' `@N` entries.
-    // (Only the common "all static data before any function" shape is produced; the
-    // parser defers a static global that follows a function.) Their indices are kept
-    // so a function relocation that targets one resolves to the local symbol.
+    // `static` (file-local) data objects: a LOCAL object symbol each, after the
+    // inline-asm locals and before the functions' `@N` entries. The INITIALIZED ones
+    // (`.sdata`/`.data`) come first in FORWARD declaration order, then the ZERO ones
+    // (`.sbss`/`.bss`) in REVERSE — the same split (and same order) the uninitialized
+    // globals follow. (Only the common "all static data before any function" shape is
+    // produced; the parser defers a static global that follows a function.) Their
+    // indices are kept so a function relocation that targets one resolves locally.
     let mut local_data_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let is_zero_section = |name: &str| matches!(data_section[name], ".sbss" | ".bss");
+    // Initialized statics first, FORWARD declaration order.
     for object in &input.data_objects {
-        if object.is_static {
+        if object.is_static && !is_zero_section(object.name) {
+            local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+            let section = index_of(data_section[object.name]) as u16;
+            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+            comment_values.push(data_aligns[object.name]);
+        }
+    }
+    // Then zero statics, REVERSE declaration order.
+    for object in input.data_objects.iter().rev() {
+        if object.is_static && is_zero_section(object.name) {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
