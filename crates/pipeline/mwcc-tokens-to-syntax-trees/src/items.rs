@@ -1554,17 +1554,13 @@ impl Parser {
                     guards.push(GuardedReturn { condition, value });
                     continue;
                 }
+                // `if (c) return v; else return d;` is the guard `if (c) return v;`
+                // with fall-through `d` — routed through the guard codegen (which
+                // normalizes a negated `!c` to keep `v` as the in-place default, as
+                // mwcc does) rather than emitted as a bare `(c) ? v : d` ternary.
                 let otherwise = self.parse_guard_return()?;
-                if guards.is_empty() {
-                    conditional_return = Some(Expression::Conditional {
-                        condition: Box::new(condition),
-                        when_true: Box::new(value),
-                        when_false: Box::new(otherwise),
-                    });
-                } else {
-                    guards.push(GuardedReturn { condition, value });
-                    conditional_return = Some(otherwise);
-                }
+                guards.push(GuardedReturn { condition, value });
+                conditional_return = Some(otherwise);
                 break;
             }
             guards.push(GuardedReturn { condition, value });

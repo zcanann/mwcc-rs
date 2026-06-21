@@ -2,7 +2,28 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Statement, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Statement, Type, UnaryOperator};
+
+/// The branchless select for a guard `if (cond) return value;` with fall-through
+/// `default`. mwcc keeps the *guard value* as the in-place default, so a negated
+/// guard `if (!c) ...` is compiled by stripping the `!` and swapping the arms —
+/// `(c) ? default : value` — not as the bare `(!c) ? value : default` a ternary
+/// would (mwcc normalizes only on the guard path, not a written ternary).
+fn guard_select(condition: &Expression, value: &Expression, default: &Expression) -> Expression {
+    if let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition {
+        Expression::Conditional {
+            condition: Box::new((**operand).clone()),
+            when_true: Box::new(default.clone()),
+            when_false: Box::new(value.clone()),
+        }
+    } else {
+        Expression::Conditional {
+            condition: Box::new(condition.clone()),
+            when_true: Box::new(value.clone()),
+            when_false: Box::new(default.clone()),
+        }
+    }
+}
 use mwcc_target::Eabi;
 use crate::analysis::*;
 use crate::expressions::pointer_stride;
@@ -394,11 +415,7 @@ impl Generator {
             // mwcc lowers a single guard as a select (working-register form) but a
             // chain of guards as separate return blocks.
             if let [guard] = function.guards.as_slice() {
-                let select = Expression::Conditional {
-                    condition: Box::new(guard.condition.clone()),
-                    when_true: Box::new(guard.value.clone()),
-                    when_false: Box::new(return_expression.clone()),
-                };
+                let select = guard_select(&guard.condition, &guard.value, return_expression);
                 self.evaluate_tail(&select, function.return_type, result)?;
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
                 return Ok(());
@@ -1421,11 +1438,7 @@ impl Generator {
             // lone guard — not a third early-return branch. Earlier guards stay as
             // forward-branching early returns.
             if is_last && !final_in_result {
-                let select = Expression::Conditional {
-                    condition: Box::new(guard.condition.clone()),
-                    when_true: Box::new(guard.value.clone()),
-                    when_false: Box::new(final_return.clone()),
-                };
+                let select = guard_select(&guard.condition, &guard.value, final_return);
                 self.evaluate_tail(&select, return_type, result)?;
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
                 return Ok(());
