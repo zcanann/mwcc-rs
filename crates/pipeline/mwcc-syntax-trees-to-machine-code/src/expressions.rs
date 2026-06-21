@@ -1545,6 +1545,27 @@ impl Generator {
             }
             return Ok(());
         }
+        // An indirect call through a GLOBAL function pointer: the pointer lives in
+        // memory, so loading it into r12 doesn't clobber the argument registers — set up
+        // the arguments, load the pointer, then `mtctr r12; bctrl`. (The saved-LR store
+        // stays in the prologue here, since no `mr r12` setup precedes it.)
+        if self.globals.contains_key(name) {
+            self.emit_arguments(arguments)?;
+            self.emit_global_load_value(name, 12)?;
+            self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
+            self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+            if let Some(destination) = destination {
+                let result = if float_result { Eabi::float_result().number } else { Eabi::general_result().number };
+                if destination != result {
+                    self.output.instructions.push(if float_result {
+                        Instruction::FloatMove { d: destination, b: result }
+                    } else {
+                        Instruction::move_register(destination, result)
+                    });
+                }
+            }
+            return Ok(());
+        }
         self.emit_arguments(arguments)?;
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
