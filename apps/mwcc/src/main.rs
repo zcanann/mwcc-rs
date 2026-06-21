@@ -305,6 +305,11 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             None if global.array_length.is_some() => element_size.max(4),
             None => element_size,
         };
+        // A struct's constant initializer lists its individual fields, each at its own
+        // offset, so it serializes with a 4-byte field stride even though the object is
+        // `struct_size`. (Only all-word-field structs are supported; a sub-word field
+        // would need its own stride — guarded at the use site.)
+        let serialize_stride = if struct_alignment.is_some() { 4 } else { element_size };
 
         if global.is_const {
             // A const global is always materialized as read-only initialized bytes
@@ -339,13 +344,23 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if size > 8 && (!small_data || has_jump_table) {
             continue;
         }
+        // A struct initializer serializes its fields at a 4-byte stride; this is only
+        // exact when every field is a word (so `struct_size == fields * 4`). A sub-word
+        // field (`char`/`short` packed) needs per-field strides — defer it.
+        if struct_alignment.is_some() {
+            if let Some(values) = global.initializer.as_ref().filter(|v| v.iter().any(|&value| value != 0)) {
+                if size as usize != values.len() * 4 {
+                    return Err(Diagnostic::error("a struct global initializer with sub-word fields is not supported yet (roadmap)"));
+                }
+            }
+        }
         // A non-zero initializer becomes initialized `.sdata`/`.data` bytes;
         // zero/absent stays in `.sbss`/`.bss`.
         let initial_bytes = global
             .initializer
             .as_ref()
             .filter(|values| values.iter().any(|&value| value != 0))
-            .map(|values| serialize(values, element_size, size));
+            .map(|values| serialize(values, serialize_stride, size));
         defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
             name: global.name.clone(),
             size,
