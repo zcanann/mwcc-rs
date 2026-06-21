@@ -191,6 +191,9 @@ impl Parser {
             return Ok(increment_assignment(operand, operator));
         }
 
+        // A `(struct S *)x` cast carries the struct tag (stashed by `parse_type` in
+        // `last_struct_tag`) so a member access on the cast result resolves its layout.
+        let mut cast_struct_tag: Option<String> = None;
         let mut expression = match self.advance() {
             Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
@@ -240,6 +243,11 @@ impl Parser {
                         target_type = mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Int);
                     }
                     self.expect(Token::ParenClose)?;
+                    // Capture the cast's struct tag before parsing the operand (which may
+                    // itself run `parse_type` and overwrite `last_struct_tag`).
+                    if target_type == mwcc_syntax_trees::Type::StructPointer {
+                        cast_struct_tag = self.last_struct_tag.take();
+                    }
                     let operand = self.factor()?;
                     Expression::Cast { target_type, operand: Box::new(operand) }
                 } else {
@@ -255,6 +263,10 @@ impl Parser {
         // chain so `a->b->c` resolves each `->` in the right struct layout.
         let mut struct_tag = match &expression {
             Expression::Variable(name) => self.variable_structs.get(name).cloned(),
+            // `((struct S *)x)->field`: the tag came from the cast's target type — from
+            // this factor's own cast, or (via the parens) the inner factor's recorded
+            // `expression_struct_tag`.
+            Expression::Cast { .. } => cast_struct_tag.take().or_else(|| self.expression_struct_tag.take()),
             _ => None,
         };
         loop {
@@ -295,6 +307,9 @@ impl Parser {
                 _ => break,
             }
         }
+        // Record the resolved struct tag so a wrapping `(...)` can recover it (the
+        // base of `((struct S *)x)->field` is parsed in a nested `factor`).
+        self.expression_struct_tag = struct_tag.clone();
         // postfix increment/decrement: `x++` / `x--`. Desugared to `x = x ± 1` like
         // the prefix form — the post-value (old value) is not modeled, so a use of
         // the result is approximate; the common loop-step / statement positions

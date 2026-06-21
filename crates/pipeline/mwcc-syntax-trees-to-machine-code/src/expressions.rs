@@ -905,6 +905,9 @@ impl Generator {
                 self.output.instructions.push(Instruction::LoadWord { d: register, a: register, offset: *offset as i16 });
                 Ok(register)
             }
+            // `((struct S *)x)->field`: a pointer cast is transparent — the base is
+            // just the operand's pointer value.
+            Expression::Cast { operand, .. } => self.member_base_register(operand),
             _ => Err(Diagnostic::error("struct member base must be a pointer variable (roadmap)")),
         }
     }
