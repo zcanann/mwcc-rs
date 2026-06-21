@@ -342,11 +342,22 @@ impl Generator {
         } else {
             let low = (value as u32 & 0xffff) as i16;
             let high_adjusted = ((value - low as i32) >> 16) as i16;
-            self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
-            // A constant whose low half is zero (`0x10000`, `0x80000000`) is a
-            // single `lis`; mwcc omits the redundant `addi d,d,0`.
-            if low != 0 {
-                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: low });
+            // The `addi` that folds in the low half reads `destination` as a base, but
+            // `addi rA=r0` denotes the literal 0, not r0 — so materializing into r0
+            // (the scratch) needs the `lis` in a separate register: `lis t,hi; addi
+            // r0,t,lo` (mwcc colors `t` the lowest free GPR). Any other destination
+            // folds in place.
+            if destination == GENERAL_SCRATCH && low != 0 {
+                let temp = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::load_immediate_shifted(temp, high_adjusted));
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: temp, immediate: low });
+            } else {
+                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
+                // A constant whose low half is zero (`0x10000`, `0x80000000`) is a
+                // single `lis`; mwcc omits the redundant `addi d,d,0`.
+                if low != 0 {
+                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: low });
+                }
             }
         }
     }
