@@ -1361,9 +1361,25 @@ impl Generator {
         };
 
         for (index, guard) in guards.iter().enumerate() {
+            let is_last = index + 1 == guards.len();
+
+            // mwcc compiles the final guard together with the fall-through return as
+            // one branchless select `(cond) ? value : final` — the same form as a
+            // lone guard — not a third early-return branch. Earlier guards stay as
+            // forward-branching early returns.
+            if is_last && !final_in_result {
+                let select = Expression::Conditional {
+                    condition: Box::new(guard.condition.clone()),
+                    when_true: Box::new(guard.value.clone()),
+                    when_false: Box::new(final_return.clone()),
+                };
+                self.evaluate_tail(&select, return_type, result)?;
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                return Ok(());
+            }
+
             let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
             let value_register = self.general_register_of_leaf(&guard.value)?;
-            let is_last = index + 1 == guards.len();
 
             if is_last && final_in_result {
                 // false path returns the final value already in the result register
