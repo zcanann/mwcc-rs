@@ -506,11 +506,11 @@ impl Generator {
             Type::Float | Type::Double => Eabi::float_result().number,
             _ => Eabi::general_result().number,
         };
-        let select = Expression::Conditional {
-            condition: Box::new(condition.clone()),
-            when_true: Box::new(when_true),
-            when_false: Box::new(when_false),
-        };
+        // `if (c) y = A; else y = B;` is the guard `if (c) y = A` with fall-through B
+        // — mwcc normalizes a negated `if (!c)` the same way it does a guard return
+        // (keep A as the in-place default, strip the `!`), so route through
+        // guard_select rather than a bare `(c) ? A : B` select.
+        let select = guard_select(condition, &when_true, &when_false);
         self.evaluate_tail(&select, function.return_type, result)?;
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
