@@ -1545,12 +1545,26 @@ impl Parser {
             self.expect(Token::ParenClose)?;
             let value = self.parse_guard_return()?;
             if self.eat_word("else") {
+                // `else if (…)` chains another guard — since each branch returns, the
+                // `else` is implied, so the loop's next turn parses it as the next
+                // guard. A plain `else return w;` is the chain's default: a lone
+                // if/else is the ternary select; an else ending an else-if chain
+                // supplies the trailing return after the collected guards.
+                if *self.peek() == Token::KeywordIf {
+                    guards.push(GuardedReturn { condition, value });
+                    continue;
+                }
                 let otherwise = self.parse_guard_return()?;
-                conditional_return = Some(Expression::Conditional {
-                    condition: Box::new(condition),
-                    when_true: Box::new(value),
-                    when_false: Box::new(otherwise),
-                });
+                if guards.is_empty() {
+                    conditional_return = Some(Expression::Conditional {
+                        condition: Box::new(condition),
+                        when_true: Box::new(value),
+                        when_false: Box::new(otherwise),
+                    });
+                } else {
+                    guards.push(GuardedReturn { condition, value });
+                    conditional_return = Some(otherwise);
+                }
                 break;
             }
             guards.push(GuardedReturn { condition, value });
