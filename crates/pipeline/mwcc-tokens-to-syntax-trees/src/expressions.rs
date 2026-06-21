@@ -292,16 +292,45 @@ impl Parser {
                         .fields
                         .get(&field)
                         .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
-                    if member.bit_field.is_some() {
-                        // The struct's layout is registered (so other members resolve),
-                        // but a bit-field needs extract/insert codegen — defer.
-                        return Err(Diagnostic::error(format!("bit-field member '{field}' access is not supported yet (roadmap)")));
-                    }
+                    let bit_field = member.bit_field;
+                    let signed = member.member_type.is_signed();
                     let (offset, member_type, next_tag, array_element) =
                         (member.offset, member.member_type, member.struct_tag.clone(), member.array_element);
                     // `a[i].field`: the index scales by the struct size — recorded so
                     // codegen can emit `a + i*size + offset`.
                     let index_stride = matches!(expression, Expression::Index { .. }).then_some(struct_size);
+                    if let Some((bit_offset, width)) = bit_field {
+                        // A bit-field read is the containing unit load shifted+masked to
+                        // the field's bits: `(load >> shift) & mask`, which lowers to
+                        // mwcc's `lbz/lhz; rlwinm`. The unit load is the smallest byte /
+                        // halfword / word span covering the field. Signed bit-fields
+                        // (sign-extended) defer until that variant is added.
+                        if signed {
+                            return Err(Diagnostic::error(format!("a signed bit-field member '{field}' is not supported yet (roadmap)")));
+                        }
+                        let byte_start = (bit_offset / 8) as u16;
+                        let byte_end = ((bit_offset + width - 1) / 8) as u16;
+                        let (load_type, load_bits) = match byte_end - byte_start {
+                            0 => (Type::UnsignedChar, 8u32),
+                            1 => (Type::UnsignedShort, 16),
+                            _ => (Type::UnsignedInt, 32),
+                        };
+                        let shift = load_bits - (bit_offset as u32 - byte_start as u32 * 8) - width as u32;
+                        let load = Expression::Member { base: Box::new(expression), offset: offset + byte_start, member_type: load_type, index_stride };
+                        let value = if shift > 0 {
+                            Expression::Binary { operator: mwcc_syntax_trees::BinaryOperator::ShiftRight, left: Box::new(load), right: Box::new(Expression::IntegerLiteral(shift as i64)) }
+                        } else {
+                            load
+                        };
+                        expression = if width as u32 == load_bits {
+                            value
+                        } else {
+                            let mask = (1i64 << width) - 1;
+                            Expression::Binary { operator: mwcc_syntax_trees::BinaryOperator::BitAnd, left: Box::new(value), right: Box::new(Expression::IntegerLiteral(mask)) }
+                        };
+                        struct_tag = None;
+                        continue;
+                    }
                     expression = match array_element {
                         // An array member decays to the address of its first element.
                         Some(element) => Expression::MemberAddress { base: Box::new(expression), offset, element },
