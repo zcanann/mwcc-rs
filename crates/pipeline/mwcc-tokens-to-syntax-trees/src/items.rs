@@ -39,7 +39,17 @@ fn pointee_of(base: Type) -> Compilation<Pointee> {
 fn type_size(declared: Type) -> u16 {
     match declared {
         Type::Pointer(_) | Type::StructPointer { .. } => 4,
+        Type::Struct { size, .. } => size,
         other => (other.width() / 8) as u16,
+    }
+}
+
+/// A type's alignment for laying out a struct member: a struct value aligns to its
+/// own alignment (not its size), every other type to its size.
+fn type_alignment(declared: Type) -> u16 {
+    match declared {
+        Type::Struct { align, .. } => align as u16,
+        other => type_size(other),
     }
 }
 
@@ -620,8 +630,10 @@ impl Parser {
                     }
                     size = total * element_size;
                 }
-                // Natural alignment: to the element size (for an array, that element).
-                let alignment = element_size.max(1);
+                // Natural alignment: to the element's alignment (a struct value to its
+                // own alignment, every other type to its size — for an array, that
+                // element's).
+                let alignment = type_alignment(field_type).max(1);
                 alignment_max = alignment_max.max(alignment);
                 offset = offset.div_ceil(alignment) * alignment;
                 layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element });
