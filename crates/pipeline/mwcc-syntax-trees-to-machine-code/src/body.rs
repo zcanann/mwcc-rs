@@ -772,8 +772,21 @@ impl Generator {
         let Some(Expression::Call { name: init_name, arguments: init_args }) = local.initializer.as_ref() else {
             return Ok(false);
         };
-        // The returned value is exactly that local.
-        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+        // The returned value is z, optionally post-processed (`return z + 1`, `z * 2`).
+        // It must reference z and no parameter — a parameter in it would be read from a
+        // register the calls clobbered. (z lives in r31, which survives the calls.)
+        let Some(return_expr) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if !expression_reads_name(return_expr, &local.name) {
+            return Ok(false);
+        }
+        if function.parameters.iter().any(|parameter| expression_reads_name(return_expr, &parameter.name)) {
+            return Ok(false);
+        }
+        // A global in the return (`z + gv`) reschedules the load against the epilogue —
+        // not modeled here; keep the return to z and constants only.
+        if self.globals.keys().any(|name| expression_reads_name(return_expr, name)) {
             return Ok(false);
         }
         // The body is one or more straight-line NO-ARGUMENT calls (so z is genuinely
