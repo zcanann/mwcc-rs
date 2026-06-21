@@ -604,6 +604,37 @@ impl Parser {
     /// Parse a struct body `{ field; … }` (the cursor is at the `{`), returning its
     /// layout. Does not consume any trailing `;` — the caller (a definition or a
     /// typedef) does.
+    /// Skip any `__attribute__((...))` specifiers at the cursor — GCC/CodeWarrior
+    /// attributes that survive preprocessing (e.g. `ATTRIBUTE_ALIGN(n)` expands to
+    /// `__attribute__((aligned(n)))`). Returns the largest `aligned(n)` requested,
+    /// if any, so the declarator that follows is laid out with that alignment.
+    pub(crate) fn skip_attributes(&mut self) -> Compilation<Option<u16>> {
+        let mut align: Option<u16> = None;
+        while matches!(self.peek(), Token::Identifier(name) if name == "__attribute__") {
+            self.advance();
+            self.expect(Token::ParenOpen)?;
+            self.expect(Token::ParenOpen)?;
+            let mut depth = 2;
+            while depth > 0 {
+                match self.advance() {
+                    Token::ParenOpen => depth += 1,
+                    Token::ParenClose => depth -= 1,
+                    Token::Identifier(name) if name == "aligned" => {
+                        if *self.peek() == Token::ParenOpen {
+                            self.advance();
+                            depth += 1;
+                            let requested = self.parse_integer_constant()? as u16;
+                            align = Some(align.unwrap_or(1).max(requested));
+                        }
+                    }
+                    Token::EndOfFile => return Err(Diagnostic::error("unterminated __attribute__")),
+                    _ => {}
+                }
+            }
+        }
+        Ok(align)
+    }
+
     pub(crate) fn parse_struct_body(&mut self) -> Compilation<StructLayout> {
         self.expect(Token::BraceOpen)?;
         let mut layout = StructLayout::default();
@@ -664,6 +695,10 @@ impl Parser {
             }
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
+            // A declarator may carry `__attribute__((aligned(n)))` between the type
+            // and the name (e.g. `u8 ATTRIBUTE_ALIGN(4) board_data[32];`); skip it,
+            // honouring any requested alignment so subsequent offsets stay exact.
+            let attr_align = self.skip_attributes()?;
             // One or more comma-separated declarators share the field type, e.g.
             // `f32 x, y, z;`. Each gets its own naturally-aligned offset.
             loop {
@@ -687,7 +722,7 @@ impl Parser {
                             return Err(Diagnostic::error("a struct mixing adjacent bit-field types is not supported yet (roadmap)"));
                         }
                         _ => {
-                            let alignment = type_alignment(field_type).max(1);
+                            let alignment = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
                             let unit_offset = offset.div_ceil(alignment) * alignment;
                             offset = unit_offset + type_size(field_type);
                             alignment_max = alignment_max.max(alignment);
@@ -726,7 +761,7 @@ impl Parser {
                 // Natural alignment: to the element's alignment (a struct value to its
                 // own alignment, every other type to its size — for an array, that
                 // element's).
-                let alignment = type_alignment(field_type).max(1);
+                let alignment = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
                 alignment_max = alignment_max.max(alignment);
                 offset = offset.div_ceil(alignment) * alignment;
                 layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element, bit_field: None });
