@@ -1103,6 +1103,21 @@ impl Generator {
             let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
             let base = self.free_register_avoiding(&[value])?;
             let restore = self.reserved.insert(base);
+            let large = !(self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8);
+            if offset == 0 && large {
+                // At a zero offset mwcc folds `@l` into the store rather than
+                // materializing the whole base: `lis base,a@ha; stw v,a@l(base)`. (A
+                // non-zero offset keeps the `addi` so the literal element offset can
+                // ride the store's displacement field instead.)
+                self.emit_address_high(base, name);
+                let source = self.place_store_value(value, pointee)?;
+                if restore {
+                    self.reserved.remove(&base);
+                }
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(displacement_store(pointee, source, base, 0));
+                return Ok(());
+            }
             self.emit_global_array_base(name, total_size, base)?;
             let source = self.place_store_value(value, pointee)?;
             if restore {
