@@ -127,6 +127,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             }
             let value = i64::from_str_radix(&source[start..position], 16)
                 .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))?;
+            position = consume_integer_suffix(bytes, position);
             tokens.push(Token::IntegerLiteral(value));
             continue;
         }
@@ -163,6 +164,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
                 }
             }
             let text = source[start..position].trim_end_matches(['f', 'F']);
+            position = consume_integer_suffix(bytes, position);
             if is_float {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed float literal"))?;
                 tokens.push(Token::FloatLiteral(value));
@@ -234,4 +236,15 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
 
 fn peek(bytes: &[u8], index: usize) -> Option<u8> {
     bytes.get(index).copied()
+}
+
+/// Advance past an integer literal's type-suffix letters (`u`/`U`/`l`/`L` and
+/// combinations like `UL`, `LL`, `ULL`). On this 32-bit target these are hints
+/// only — they don't change the literal's value — so they are consumed and dropped
+/// (otherwise `0x10U` would leave a stray `U` identifier behind).
+fn consume_integer_suffix(bytes: &[u8], mut position: usize) -> usize {
+    while matches!(peek(bytes, position), Some(b'u' | b'U' | b'l' | b'L')) {
+        position += 1;
+    }
+    position
 }
