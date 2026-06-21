@@ -90,6 +90,12 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(D, G, a);
             visit(U, G, s);
         }
+        // rlwnm reads the rotate amount from register `b` as well.
+        RotateAndMaskVariable { a, s, b, .. } => {
+            visit(D, G, a);
+            visit(U, G, s);
+            visit(U, G, b);
+        }
         // rlwimi inserts into the existing bits of `a`, so it both uses and defines it.
         RotateAndMaskInsert { a, s, .. } => {
             visit(D, G, a);

@@ -76,6 +76,9 @@ impl Instruction {
             Instruction::RotateAndMask { a, s, shift, begin, end } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
             }
+            Instruction::RotateAndMaskVariable { a, s, b, begin, end } => {
+                (23 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
+            }
             Instruction::RotateAndMaskInsert { a, s, shift, begin, end } => {
                 (20 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | ((begin as u32) << 6) | ((end as u32) << 1)
             }

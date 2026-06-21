@@ -137,6 +137,23 @@ impl Generator {
                 self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
                 Ok(())
             }
+            // signed x <= 0 : `cntlzw(x)` is 0 (x<0) or 32 (x==0) but 1..31 (x>0), so
+            // rotating a `1` left by that count lands in the low bit only for x <= 0.
+            // When `x` already occupies the destination (a leaf), the `cntlzw` must
+            // read it before `li d,1` overwrites it; otherwise mwcc schedules `li d,1`
+            // first, ahead of the `cntlzw` of the scratch-resident operand.
+            BinaryOperator::LessEqual if is_zero_literal(right) && signed_left => {
+                let source = self.place_operand_or_scratch(left, d)?;
+                if source == d {
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
+                    self.load_integer_constant(d, 1);
+                } else {
+                    self.load_integer_constant(d, 1);
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
+                }
+                self.output.instructions.push(Instruction::RotateAndMaskVariable { a: d, s: d, b: GENERAL_SCRATCH, begin: 31, end: 31 });
+                Ok(())
+            }
             // general signed branchless comparisons. Both leaves (any operator), or
             // a one-non-leaf shape whose idiom uses that operand twice, so mwcc keeps
             // it in a register: the `>` idiom keeps its LEFT operand, the `<` idiom

@@ -112,6 +112,11 @@ pub enum Instruction {
     /// `[begin, end]`. The general form; mwcc fuses a narrow unsigned shift and
     /// its width mask into one of these.
     RotateAndMask { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
+    /// `rlwnm rA, rS, rB, begin, end` — like `rlwinm` but the rotate amount is the
+    /// low five bits of `rB` (a register) rather than an immediate. mwcc uses it for
+    /// the `x <= 0` idiom: rotating a `1` left by `cntlzw(x)` lands in the low bit
+    /// only when the leading-zero count is 0 or 32 (i.e. `x < 0` or `x == 0`).
+    RotateAndMaskVariable { a: u8, s: u8, b: u8, begin: u8, end: u8 },
     /// `rlwimi rA, rS, shift, begin, end` — rotate `rS` left by `shift` and insert
     /// bits `[begin, end]` into `rA`, leaving `rA`'s other bits intact. mwcc uses
     /// it to merge two disjoint bit fields (e.g. an OR of two shifts, or a masked
