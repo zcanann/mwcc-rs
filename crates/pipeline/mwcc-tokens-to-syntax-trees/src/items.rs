@@ -354,6 +354,60 @@ impl Parser {
         }
     }
 
+    /// Parse one struct value `{ f0, f1, ... }` for the layout `tag`, folding each
+    /// field with its own type (the flat `parse_constant_initializer` cannot, since a
+    /// struct mixes field types — notably `float`). Fields are taken in offset order;
+    /// a nested struct field recurses. Every field must be word-width (4 bytes) so the
+    /// flat value list lays out contiguously with no padding — a sub-word/`double`
+    /// field, or an array field, defers (those need a width-aware data emitter).
+    fn parse_one_struct(&mut self, tag: &str) -> Compilation<Vec<i64>> {
+        let fields: Vec<(Type, Option<String>, Option<Pointee>)> = {
+            let layout = self.structs.get(tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
+            let mut ordered: Vec<(u16, Type, Option<String>, Option<Pointee>)> =
+                layout.fields.values().map(|field| (field.offset, field.member_type, field.struct_tag.clone(), field.array_element)).collect();
+            ordered.sort_by_key(|(offset, ..)| *offset);
+            ordered.into_iter().map(|(_, member_type, struct_tag, array_element)| (member_type, struct_tag, array_element)).collect()
+        };
+        for (member_type, struct_tag, array_element) in &fields {
+            if array_element.is_some() {
+                return Err(Diagnostic::error("a struct initializer with an array field is not supported yet (roadmap)"));
+            }
+            if struct_tag.is_none() && member_type.width() != 32 {
+                return Err(Diagnostic::error("a struct global initializer with sub-word fields is not supported yet (roadmap)"));
+            }
+        }
+        self.expect(Token::BraceOpen)?;
+        let mut values = Vec::new();
+        for (index, (member_type, struct_tag, _)) in fields.iter().enumerate() {
+            if let Some(nested) = struct_tag {
+                values.extend(self.parse_one_struct(nested)?);
+            } else {
+                values.push(self.parse_scalar_constant(*member_type)?);
+            }
+            if index + 1 < fields.len() && !self.eat_keyword(Token::Comma) {
+                break;
+            }
+        }
+        self.eat_keyword(Token::Comma);
+        self.expect(Token::BraceClose)?;
+        Ok(values)
+    }
+
+    /// Parse a `{ s0, s1, ... }` array of struct values for the layout `tag`, each
+    /// element parsed by [`Self::parse_one_struct`] and flattened into one value list.
+    fn parse_struct_array_initializer(&mut self, tag: &str) -> Compilation<Vec<i64>> {
+        self.expect(Token::BraceOpen)?;
+        let mut values = Vec::new();
+        while *self.peek() != Token::BraceClose {
+            values.extend(self.parse_one_struct(tag)?);
+            if !self.eat_keyword(Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(values)
+    }
+
     /// The struct-value [`Type`] for a known struct layout (size + alignment), or
     /// `None` for an opaque/undeclared struct (whose value cannot be laid out).
     /// Drives `struct S v;` value support.
@@ -879,6 +933,17 @@ impl Parser {
                     } else if table_fields.is_some() && *self.peek() == Token::Equals {
                         self.advance();
                         address_initializer = Some(self.parse_struct_pointer_table(table_fields.as_ref().unwrap())?);
+                    } else if matches!(return_type, Type::Struct { .. }) && global_struct_tag.is_some() && *self.peek() == Token::Equals {
+                        // A struct value/array initializer folds each field with its own
+                        // type (from the layout), so `float` and nested-struct fields
+                        // work where the flat element-typed parser cannot.
+                        self.advance();
+                        let tag = global_struct_tag.clone().unwrap();
+                        initializer = Some(if dimensions.is_empty() {
+                            self.parse_one_struct(&tag)?
+                        } else {
+                            self.parse_struct_array_initializer(&tag)?
+                        });
                     } else if self.eat_keyword(Token::Equals) {
                         // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
                         initializer = Some(self.parse_constant_initializer(return_type)?);
