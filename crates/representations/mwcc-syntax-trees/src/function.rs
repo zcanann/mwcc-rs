@@ -18,6 +18,10 @@ pub struct LocalDeclaration {
     pub declared_type: Type,
     pub name: String,
     pub initializer: Option<Expression>,
+    /// Declared array length `[N]` for a local array (`int buf[N];`), whose storage
+    /// is a frame slot of `N * sizeof(element)` bytes; `None` for a scalar. The
+    /// `declared_type` is the element type.
+    pub array_length: Option<u16>,
 }
 
 /// A guarded early return: `if (condition) return value;`.

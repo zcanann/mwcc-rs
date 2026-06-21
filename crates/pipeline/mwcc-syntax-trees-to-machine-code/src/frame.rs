@@ -18,7 +18,10 @@ impl Generator {
     /// whether this path took over the whole body.
     pub(crate) fn try_frame_resident(&mut self, function: &Function) -> Compilation<bool> {
         let address_taken = collect_address_taken(function);
-        if address_taken.is_empty() {
+        // A local array is frame-resident even without an explicit `&`: its name
+        // decays to the slot address. Trigger this path for those too.
+        let has_array_local = function.locals.iter().any(|local| local.array_length.is_some());
+        if address_taken.is_empty() && !has_array_local {
             return Ok(false);
         }
         // This path handles a straight-line body (stores/calls) plus an optional
@@ -51,26 +54,36 @@ impl Generator {
                 offset = align_to(offset, slot_align(parameter.parameter_type));
                 self.frame_slots.insert(
                     parameter.name.clone(),
-                    FrameSlot { offset, class, size, parameter_register: Some(register) },
+                    FrameSlot { offset, class, size, parameter_register: Some(register), is_array: false },
                 );
                 offset += size as i16;
             }
         }
         for local in &function.locals {
-            if address_taken.contains(local.name.as_str()) {
-                // Only an uninitialized address-taken local is modeled here (its
-                // value comes from a store through the taken address).
+            let is_array = local.array_length.is_some();
+            if address_taken.contains(local.name.as_str()) || is_array {
+                // Only an uninitialized local is modeled here (its value comes from a
+                // store through the taken address, or — for an array — element stores).
                 if local.initializer.is_some() {
                     return Ok(false);
                 }
                 let class = class_of(local.declared_type)?;
-                let size = slot_size(local.declared_type);
+                // An array occupies `N * sizeof(element)` bytes — the element's true
+                // width (1 for `char`), not the 4-byte spill slot a scalar uses. The
+                // slot size field is a byte, so a larger array defers.
+                let bytes = match local.array_length {
+                    Some(length) => (local.declared_type.width() as u16 / 8) * length,
+                    None => slot_size(local.declared_type) as u16,
+                };
+                if bytes > u8::MAX as u16 {
+                    return Ok(false);
+                }
                 offset = align_to(offset, slot_align(local.declared_type));
                 self.frame_slots.insert(
                     local.name.clone(),
-                    FrameSlot { offset, class, size, parameter_register: None },
+                    FrameSlot { offset, class, size: bytes as u8, parameter_register: None, is_array },
                 );
-                offset += size as i16;
+                offset += bytes as i16;
             }
         }
 

@@ -118,9 +118,14 @@ impl Generator {
             // `&x` for a frame-resident variable is its address: `addi d, r1, slot`.
             Expression::AddressOf { operand } => self.emit_address_of(operand, destination),
             Expression::Variable(name) => {
-                // A frame-resident variable is reloaded from its stack slot.
+                // A frame-resident variable is reloaded from its stack slot; a local
+                // array decays to the slot's address instead (`addi d,r1,offset`).
                 if let Some(slot) = self.frame_slots.get(name).copied() {
-                    self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: slot.offset });
+                    if slot.is_array {
+                        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 1, immediate: slot.offset });
+                    } else {
+                        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: slot.offset });
+                    }
                     return Ok(());
                 }
                 if let Some(location) = self.locations.get(name) {

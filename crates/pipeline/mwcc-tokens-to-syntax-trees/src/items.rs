@@ -1478,8 +1478,24 @@ impl Parser {
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                 }
-                let initializer = if self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
-                locals.push(LocalDeclaration { declared_type, name, initializer });
+                // A local array `type buf[N];` — a frame slot of `N` elements. (A
+                // multi-dimensional or initialized local array defers for now.)
+                let array_length = if *self.peek() == Token::BracketOpen {
+                    self.advance();
+                    let length = self.parse_integer_constant()? as u16;
+                    self.expect(Token::BracketClose)?;
+                    if *self.peek() == Token::BracketOpen {
+                        return Err(Diagnostic::error("a multi-dimensional local array is not supported yet (roadmap)"));
+                    }
+                    if *self.peek() == Token::Equals {
+                        return Err(Diagnostic::error("an initialized local array is not supported yet (roadmap)"));
+                    }
+                    Some(length)
+                } else {
+                    None
+                };
+                let initializer = if array_length.is_none() && self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
+                locals.push(LocalDeclaration { declared_type, name, initializer, array_length });
                 if *self.peek() == Token::Comma {
                     self.advance();
                 } else {

@@ -46,6 +46,9 @@ pub(crate) struct FrameSlot {
     pub(crate) size: u8,
     /// The incoming argument register, if this is a spilled parameter.
     pub(crate) parameter_register: Option<u8>,
+    /// Whether this slot is a local array (`int buf[N];`): in value position the
+    /// name decays to the slot's *address* (`addi d,r1,offset`) rather than a load.
+    pub(crate) is_array: bool,
 }
 
 pub(crate) struct Generator {
