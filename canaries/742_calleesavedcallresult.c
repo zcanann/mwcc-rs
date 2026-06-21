@@ -16,3 +16,11 @@ int csr_scale(void)  { int z = csr_make(); csr_step(); return z * 2; }
 extern int csr_g1(void);
 extern int csr_g2(void);
 int csr_pair(void) { int a = csr_g1(); int b = csr_g2(); csr_step(); return a + b; }
+// A single producing call may forward the function's parameters in their natural
+// register positions (`g1(x)`, `g1(x, y)`) — they are already in place, so the
+// sequence matches the argument-free shape. A constant/reordered argument, or a
+// two-local producing call with arguments, still defers.
+extern int csr_use1(int);
+extern int csr_use2(int, int);
+int csr_fwd1(int x)        { int z = csr_use1(x); csr_step(); return z; }
+int csr_fwd2(int x, int y) { int z = csr_use2(x, y); csr_step(); return z + 1; }

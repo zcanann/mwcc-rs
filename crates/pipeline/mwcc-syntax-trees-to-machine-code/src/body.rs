@@ -768,7 +768,7 @@ impl Generator {
         if count == 0 || count > 2 {
             return Ok(false);
         }
-        let mut init_calls = Vec::new();
+        let mut init_calls: Vec<(String, Vec<Expression>)> = Vec::new();
         for local in &function.locals {
             if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
                 return Ok(false);
@@ -776,10 +776,33 @@ impl Generator {
             let Some(Expression::Call { name, arguments }) = local.initializer.as_ref() else {
                 return Ok(false);
             };
-            if !arguments.is_empty() {
+            init_calls.push((name.clone(), arguments.clone()));
+        }
+        // A producing call's arguments are allowed only in the single-local case, and
+        // only when they forward parameters in their natural register positions (arg i
+        // is parameter i, all parameters general) — then the parameters are already in
+        // place, no moves are emitted, and the sequence matches the argument-free shape.
+        // A constant/reordered argument would schedule its materialization differently,
+        // and a second producing call's parameter would be call-clobbered; both defer.
+        let params_all_general = !function
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double));
+        for (index, (_, arguments)) in init_calls.iter().enumerate() {
+            if arguments.is_empty() {
+                continue;
+            }
+            let forwards_parameters = count == 1
+                && index == 0
+                && params_all_general
+                && arguments.len() <= function.parameters.len()
+                && arguments
+                    .iter()
+                    .enumerate()
+                    .all(|(position, argument)| matches!(argument, Expression::Variable(name) if name == &function.parameters[position].name));
+            if !forwards_parameters {
                 return Ok(false);
             }
-            init_calls.push(name.clone());
         }
         // The return reads no parameter (it would be a call-clobbered register) and no
         // global (its load reschedules against the epilogue). A single local may be
@@ -841,7 +864,8 @@ impl Generator {
         // register — the first local takes the lowest (r30 when there are two), the last
         // takes r31, matching mwcc's `bl g1; mr r30,r3; bl g2; mr r31,r3`.
         for (index, local) in function.locals.iter().enumerate() {
-            self.emit_call(&init_calls[index], &[], None, false)?;
+            let (init_name, init_arguments) = &init_calls[index];
+            self.emit_call(init_name, init_arguments, None, false)?;
             let register = (32 - count + index) as u8;
             self.output.instructions.push(Instruction::Or { a: register, s: 3, b: 3 });
             let signed = !matches!(local.declared_type, Type::UnsignedInt);
