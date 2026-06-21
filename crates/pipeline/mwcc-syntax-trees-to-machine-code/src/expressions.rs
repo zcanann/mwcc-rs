@@ -1644,11 +1644,12 @@ impl Generator {
                 // that (e.g. two members of one struct) by pre-copying the shared
                 // base; that choreography is not modeled yet.
                 //
-                // A passthrough reuse like `f(x, x)` (x already in r3) writes
-                // nothing for arg0, so the instructions are right — but mwcc then
-                // schedules the arg-setup `mr r4,r3` *into* the non-leaf prologue
-                // gap (between `mflr` and the LR store), which we don't reproduce.
-                // Emitting the unscheduled form would differ, so this still defers.
+                // A passthrough reuse like `f(x, x)` writes nothing for arg0, and
+                // the single trailing `mr r4,r3` it produces is now hoisted into the
+                // prologue slot — so the two-argument case is byte-exact. But three+
+                // arguments (multiple trailing moves) or a computed trailing argument
+                // need the full argument scheduler, so this still defers for now to
+                // avoid emitting their unscheduled form.
                 if arguments[index + 1..].iter().any(|later| self.registers_used_by(later).contains(&next_general)) {
                     return Err(Diagnostic::error("argument would clobber a register a later argument needs (roadmap)"));
                 }
