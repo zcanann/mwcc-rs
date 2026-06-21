@@ -7,6 +7,51 @@ use mwcc_target::Eabi;
 use crate::analysis::*;
 use crate::generator::*;
 
+/// Fold single-assignment, return-only locals (whose initializers make no call) into
+/// the return expression, dropping them — so `int z = x + 1; g(); return z;` becomes
+/// the equivalent `g(); return x + 1;`, which the parameter-preservation path compiles.
+/// Only a call-making body whose locals are pure return aliases qualifies; a local
+/// initialized by a call (preserved as a call result), reassigned, read by a statement,
+/// or feeding control flow leaves the function unchanged (`None`).
+fn inline_return_only_locals(function: &Function) -> Option<Function> {
+    if function.locals.is_empty() || !function_makes_call(function) || !function.guards.is_empty() {
+        return None;
+    }
+    let return_expression = function.return_expression.as_ref()?;
+    // Each local's value, with earlier locals already folded in. A call-bearing
+    // initializer is a call result (preserved, not inlined), so bail.
+    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    for local in &function.locals {
+        let initializer = local.initializer.as_ref()?;
+        if expression_has_call(initializer) {
+            return None;
+        }
+        let resolved = crate::value_tracking::substitute(initializer, &values);
+        values.insert(local.name.clone(), resolved);
+    }
+    // The locals exist only to feed the return: every statement must be a bare
+    // expression that reads none of them (a store/assign/control-flow statement is a
+    // different shape).
+    for statement in &function.statements {
+        let Statement::Expression(expression) = statement else {
+            return None;
+        };
+        if function.locals.iter().any(|local| expression_reads_name(expression, &local.name)) {
+            return None;
+        }
+    }
+    Some(Function {
+        return_type: function.return_type,
+        name: function.name.clone(),
+        is_static: function.is_static,
+        parameters: function.parameters.clone(),
+        locals: Vec::new(),
+        statements: function.statements.clone(),
+        guards: function.guards.clone(),
+        return_expression: Some(crate::value_tracking::substitute(return_expression, &values)),
+    })
+}
+
 impl Generator {
 
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
@@ -57,6 +102,12 @@ impl Generator {
         // it applies, leaving the straight-line paths below byte-identical.
         if self.try_value_tracking(function)? {
             return Ok(());
+        }
+        // Fold single-assignment, return-only locals (no call in their initializers)
+        // into the return, then recompile — `int z = x + 1; g(); return z;` becomes the
+        // equivalent `g(); return x + 1;`, which the parameter-preservation path emits.
+        if let Some(inlined) = inline_return_only_locals(function) {
+            return self.evaluate_body(&inlined);
         }
         // A leaf void body that is purely constant stores of one repeated value
         // (struct/array zeroing) materializes the value once and reuses it.

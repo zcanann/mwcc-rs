@@ -125,7 +125,7 @@ fn count_references(name: &str, expression: &Expression) -> usize {
 
 /// Replace every value-tracked local in `expression` with its current value,
 /// recursively. Names not in `values` (parameters, globals) are left untouched.
-fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> Expression {
+pub(crate) fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> Expression {
     match expression {
         Expression::Variable(name) => values.get(name).cloned().unwrap_or_else(|| expression.clone()),
         Expression::Binary { operator, left, right } => Expression::Binary {
