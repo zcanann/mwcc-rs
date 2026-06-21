@@ -370,29 +370,34 @@ impl Parser {
     /// a nested struct field recurses. Every field must be word-width (4 bytes) so the
     /// flat value list lays out contiguously with no padding — a sub-word/`double`
     /// field, or an array field, defers (those need a width-aware data emitter).
-    fn parse_one_struct(&mut self, tag: &str) -> Compilation<Vec<i64>> {
-        let fields: Vec<(Type, Option<String>, Option<Pointee>)> = {
+    fn parse_one_struct(&mut self, tag: &str) -> Compilation<Vec<u8>> {
+        let (struct_size, fields) = {
             let layout = self.structs.get(tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
             let mut ordered: Vec<(u16, Type, Option<String>, Option<Pointee>)> =
                 layout.fields.values().map(|field| (field.offset, field.member_type, field.struct_tag.clone(), field.array_element)).collect();
             ordered.sort_by_key(|(offset, ..)| *offset);
-            ordered.into_iter().map(|(_, member_type, struct_tag, array_element)| (member_type, struct_tag, array_element)).collect()
+            (layout.size, ordered)
         };
-        for (member_type, struct_tag, array_element) in &fields {
+        for (_, _, _, array_element) in &fields {
             if array_element.is_some() {
                 return Err(Diagnostic::error("a struct initializer with an array field is not supported yet (roadmap)"));
             }
-            if struct_tag.is_none() && member_type.width() != 32 {
-                return Err(Diagnostic::error("a struct global initializer with sub-word fields is not supported yet (roadmap)"));
-            }
         }
         self.expect(Token::BraceOpen)?;
-        let mut values = Vec::new();
-        for (index, (member_type, struct_tag, _)) in fields.iter().enumerate() {
+        // Each field is written into the struct's byte image at its own offset and
+        // width (big-endian); gaps and trailing padding stay zero. A nested struct
+        // field copies its own image in.
+        let mut bytes = vec![0u8; struct_size as usize];
+        for (index, (offset, member_type, struct_tag, _)) in fields.iter().enumerate() {
+            let offset = *offset as usize;
             if let Some(nested) = struct_tag {
-                values.extend(self.parse_one_struct(nested)?);
+                let nested_bytes = self.parse_one_struct(nested)?;
+                bytes[offset..offset + nested_bytes.len()].copy_from_slice(&nested_bytes);
             } else {
-                values.push(self.parse_scalar_constant(*member_type)?);
+                let value = self.parse_scalar_constant(*member_type)?;
+                let width = type_size(*member_type) as usize;
+                let encoded = (value as u64).to_be_bytes();
+                bytes[offset..offset + width].copy_from_slice(&encoded[8 - width..]);
             }
             if index + 1 < fields.len() && !self.eat_keyword(Token::Comma) {
                 break;
@@ -400,22 +405,23 @@ impl Parser {
         }
         self.eat_keyword(Token::Comma);
         self.expect(Token::BraceClose)?;
-        Ok(values)
+        Ok(bytes)
     }
 
     /// Parse a `{ s0, s1, ... }` array of struct values for the layout `tag`, each
-    /// element parsed by [`Self::parse_one_struct`] and flattened into one value list.
-    fn parse_struct_array_initializer(&mut self, tag: &str) -> Compilation<Vec<i64>> {
+    /// element parsed by [`Self::parse_one_struct`] and concatenated (the array stride
+    /// is the struct size, which each element's image already fills).
+    fn parse_struct_array_initializer(&mut self, tag: &str) -> Compilation<Vec<u8>> {
         self.expect(Token::BraceOpen)?;
-        let mut values = Vec::new();
+        let mut bytes = Vec::new();
         while *self.peek() != Token::BraceClose {
-            values.extend(self.parse_one_struct(tag)?);
+            bytes.extend(self.parse_one_struct(tag)?);
             if !self.eat_keyword(Token::Comma) {
                 break;
             }
         }
         self.expect(Token::BraceClose)?;
-        Ok(values)
+        Ok(bytes)
     }
 
     /// The struct-value [`Type`] for a known struct layout (size + alignment), or
@@ -891,7 +897,7 @@ impl Parser {
                     }
                 }
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None });
+                globals.push(GlobalDeclaration { declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -939,6 +945,7 @@ impl Parser {
                     };
                     let mut address_initializer = None;
                     let mut initializer = None;
+                    let mut data_bytes: Option<Vec<u8>> = None;
                     if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) && *self.peek() == Token::Equals {
                         self.advance();
                         address_initializer = Some(self.parse_address_initializer()?);
@@ -946,12 +953,12 @@ impl Parser {
                         self.advance();
                         address_initializer = Some(self.parse_struct_pointer_table(table_fields.as_ref().unwrap())?);
                     } else if matches!(return_type, Type::Struct { .. }) && global_struct_tag.is_some() && *self.peek() == Token::Equals {
-                        // A struct value/array initializer folds each field with its own
-                        // type (from the layout), so `float` and nested-struct fields
-                        // work where the flat element-typed parser cannot.
+                        // A struct value/array initializer serializes each field at its
+                        // own offset/width into the object's byte image — float, sub-word,
+                        // and nested-struct fields all land correctly.
                         self.advance();
                         let tag = global_struct_tag.clone().unwrap();
-                        initializer = Some(if dimensions.is_empty() {
+                        data_bytes = Some(if dimensions.is_empty() {
                             self.parse_one_struct(&tag)?
                         } else {
                             self.parse_struct_array_initializer(&tag)?
@@ -965,6 +972,14 @@ impl Parser {
                     } else if let Some(explicit) = dimensions.iter().copied().collect::<Option<Vec<u16>>>() {
                         // Every dimension is explicit: the length is their product.
                         Some(explicit.iter().map(|&dimension| dimension as u32).product::<u32>() as u16)
+                    } else if let Some(bytes) = &data_bytes {
+                        // A struct array's inferred length is its byte image divided by
+                        // the element (struct) size.
+                        let struct_size = match return_type {
+                            Type::Struct { size, .. } => size.max(1) as usize,
+                            _ => 1,
+                        };
+                        Some((bytes.len() / struct_size) as u16)
                     } else {
                         // An inferred dimension takes its length from the flat
                         // initializer (constant values or address elements).
@@ -976,7 +991,7 @@ impl Parser {
                     if let Some(tag) = &global_struct_tag {
                         self.variable_structs.insert(declarator_name.clone(), tag.clone());
                     }
-                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer });
+                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         declarator_name = self.parse_identifier()?;

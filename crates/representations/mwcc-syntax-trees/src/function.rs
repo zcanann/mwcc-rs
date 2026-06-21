@@ -103,6 +103,12 @@ pub struct GlobalDeclaration {
     /// `char *s = "…"`, or a `{…}` table of them), each element's target. `None`
     /// overall = not a pointer/address initializer.
     pub address_initializer: Option<Vec<PointerElement>>,
+    /// A struct value/array initializer pre-serialized to its raw object bytes — each
+    /// field written at its own offset and width (so `char`/`short`/`double` and
+    /// nested-struct fields, and inter-field padding, are exact). The driver emits
+    /// these directly, bypassing the word-stride `initializer` path. `None` for a
+    /// non-struct global.
+    pub data_bytes: Option<Vec<u8>>,
 }
 
 /// One element of a pointer global's initializer.

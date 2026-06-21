@@ -313,6 +313,20 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         let serialize_stride = if struct_alignment.is_some() { 4 } else { element_size };
 
         if global.is_const {
+            // A const struct value/array carries its pre-serialized field bytes
+            // directly into the read-only section.
+            if let Some(bytes) = &global.data_bytes {
+                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
+                    name: global.name.clone(),
+                    size,
+                    alignment,
+                    initial_bytes: Some(bytes.clone()),
+                    is_const: true,
+                    is_static: global.is_static,
+                    relocations: Vec::new(),
+                });
+                continue;
+            }
             // A const global is always materialized as read-only initialized bytes
             // (even an all-zero one stays in `.sdata2`/`.rodata`, not `.sbss`). Only
             // an arithmetic scalar/array with a constant initializer is serializable
@@ -345,23 +359,19 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if size > 8 && (!small_data || has_jump_table) {
             continue;
         }
-        // A struct initializer serializes its fields at a 4-byte stride; this is only
-        // exact when every field is a word (so `struct_size == fields * 4`). A sub-word
-        // field (`char`/`short` packed) needs per-field strides — defer it.
-        if struct_alignment.is_some() {
-            if let Some(values) = global.initializer.as_ref().filter(|v| v.iter().any(|&value| value != 0)) {
-                if size as usize != values.len() * 4 {
-                    return Err(Diagnostic::error("a struct global initializer with sub-word fields is not supported yet (roadmap)"));
-                }
-            }
-        }
         // A non-zero initializer becomes initialized `.sdata`/`.data` bytes;
-        // zero/absent stays in `.sbss`/`.bss`.
-        let initial_bytes = global
-            .initializer
-            .as_ref()
-            .filter(|values| values.iter().any(|&value| value != 0))
-            .map(|values| serialize(values, serialize_stride, size));
+        // zero/absent stays in `.sbss`/`.bss`. A struct value/array uses the parser's
+        // pre-serialized field bytes (exact for sub-word/nested/padded fields); a
+        // scalar/array serializes its word-stride values.
+        let initial_bytes = if let Some(bytes) = &global.data_bytes {
+            bytes.iter().any(|&value| value != 0).then(|| bytes.clone())
+        } else {
+            global
+                .initializer
+                .as_ref()
+                .filter(|values| values.iter().any(|&value| value != 0))
+                .map(|values| serialize(values, serialize_stride, size))
+        };
         defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
             name: global.name.clone(),
             size,
