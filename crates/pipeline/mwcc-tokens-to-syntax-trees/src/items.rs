@@ -592,15 +592,6 @@ impl Parser {
 
     /// Parse `struct Name { type field; ... };`, laying members out with natural
     /// alignment (the `-align powerpc` default) and registering the layout.
-    pub(crate) fn parse_struct_definition(&mut self) -> Compilation<()> {
-        self.expect(Token::KeywordStruct)?;
-        let tag = self.parse_identifier()?;
-        let layout = self.parse_struct_body()?;
-        self.expect(Token::Semicolon)?;
-        self.structs.insert(tag, layout);
-        Ok(())
-    }
-
     /// Parse a struct body `{ field; … }` (the cursor is at the `{`), returning its
     /// layout. Does not consume any trailing `;` — the caller (a definition or a
     /// typedef) does.
@@ -1108,10 +1099,39 @@ impl Parser {
                 self.typedefs.insert(name, aliased);
                 return Ok(());
             }
-            // A `struct Name { ... };` definition registers a layout. A `struct
-            // Name*` use (function return or parameter) falls through to parse_type.
+            // A `struct Name { ... }` definition registers a layout. A bare `;` ends
+            // it; trailing declarators (`} var, var2;`) are struct-valued globals that
+            // carry the tag so `var.field` resolves — the `static struct OSAlarmQueue
+            // { ... } AlarmQueue;` shape. A `struct Name*` use (function return or
+            // parameter) falls through to parse_type.
             if *self.peek() == Token::KeywordStruct && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
-                self.parse_struct_definition()?;
+                self.expect(Token::KeywordStruct)?;
+                let tag = self.parse_identifier()?;
+                let layout = self.parse_struct_body()?;
+                self.structs.insert(tag.clone(), layout);
+                if *self.peek() == Token::Semicolon {
+                    self.advance();
+                    return Ok(());
+                }
+                let struct_type = self
+                    .struct_value_type(&tag)
+                    .ok_or_else(|| Diagnostic::error("struct values are not supported yet — use a struct pointer"))?;
+                loop {
+                    let name = self.parse_identifier()?;
+                    // Only a scalar, uninitialized struct global is in the subset; an
+                    // array or initializer defers honestly (no miscompile).
+                    if !matches!(self.peek(), Token::Semicolon | Token::Comma) {
+                        return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
+                    }
+                    self.variable_structs.insert(name.clone(), tag.clone());
+                    globals.push(GlobalDeclaration { declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None });
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(Token::Semicolon)?;
                 return Ok(());
             }
             let return_type = self.parse_type()?;
