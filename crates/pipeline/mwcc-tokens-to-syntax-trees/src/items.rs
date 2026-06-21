@@ -693,6 +693,47 @@ impl Parser {
                 bit_unit = None;
                 continue;
             }
+            // An inline union member `union [Tag] { … } [name];`. An ANONYMOUS one
+            // with no member name flattens its members into this struct — every
+            // union member shares the union's offset (overlapping storage), and the
+            // union occupies its largest member. This is how the game's model
+            // structs overlay variant payloads (e.g. HsfObject's data/camera/light).
+            if matches!(self.peek(), Token::Identifier(word) if word == "union")
+                && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
+                    || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
+            {
+                self.advance(); // `union`
+                let tag = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                let inner = self.parse_union_body()?;
+                let inner_size = inner.size;
+                let inner_align = (inner.align as u16).max(1);
+                let member_name = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                self.expect(Token::Semicolon)?;
+                bit_unit = None;
+                match (tag, member_name) {
+                    // A named union *value* member (`union {…} u;`) needs union-value
+                    // access — defer rather than mis-place it.
+                    (_, Some(_)) => return Err(Diagnostic::error("a named union member is not supported yet (roadmap)")),
+                    // `union Tag { … };` — register the tag, no member contributed.
+                    (Some(tag), None) => { self.structs.insert(tag, inner); }
+                    // `union { … };` — flatten every member at the union's offset.
+                    (None, None) => {
+                        alignment_max = alignment_max.max(inner_align);
+                        offset = offset.div_ceil(inner_align) * inner_align;
+                        for (field_name, field) in &inner.fields {
+                            layout.fields.insert(field_name.clone(), StructField {
+                                member_type: field.member_type,
+                                offset: offset + field.offset,
+                                struct_tag: field.struct_tag.clone(),
+                                array_element: field.array_element,
+                                bit_field: field.bit_field,
+                            });
+                        }
+                        offset += inner_size;
+                    }
+                }
+                continue;
+            }
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
             // A declarator may carry `__attribute__((aligned(n)))` between the type
@@ -776,6 +817,52 @@ impl Parser {
         // The struct size includes trailing padding to its own alignment.
         layout.size = offset.div_ceil(alignment_max) * alignment_max;
         layout.align = alignment_max as u8;
+        Ok(layout)
+    }
+
+    /// Parse a `union { … }` body: every member starts at offset 0, so the union's
+    /// size is its largest member and its alignment the strictest. Supports the
+    /// common shape — a scalar, pointer, or struct-value member per line (each
+    /// keeps its `struct_tag` so `u.member.field` still chains). The irregular
+    /// cases — bit-fields, arrays, multiple declarators, nested inline aggregates —
+    /// defer rather than risk a wrong offset.
+    pub(crate) fn parse_union_body(&mut self) -> Compilation<StructLayout> {
+        self.expect(Token::BraceOpen)?;
+        let mut layout = StructLayout::default();
+        let mut max_size: u16 = 0;
+        let mut max_align: u16 = 1;
+        while *self.peek() != Token::BraceClose {
+            let field_type = self.parse_type()?;
+            let struct_tag = self.last_struct_tag.take();
+            let attr_align = self.skip_attributes()?;
+            let name = self.parse_identifier()?;
+            // Bit-fields and multiple declarators in a union are uncommon and defer.
+            if matches!(self.peek(), Token::Colon | Token::Comma) {
+                return Err(Diagnostic::error("an irregular union member shape is not supported yet (roadmap)"));
+            }
+            // An array member occupies the product of its dimensions; it still
+            // starts at offset 0, so it only widens the union.
+            let mut array_element = None;
+            let mut size = type_size(field_type);
+            if *self.peek() == Token::BracketOpen {
+                array_element = Some(pointee_of(field_type)?);
+                let mut total: u16 = 1;
+                while *self.peek() == Token::BracketOpen {
+                    self.advance();
+                    total = total.saturating_mul(self.parse_integer_constant()? as u16);
+                    self.expect(Token::BracketClose)?;
+                }
+                size = total * type_size(field_type);
+            }
+            let align = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
+            layout.fields.insert(name, StructField { member_type: field_type, offset: 0, struct_tag, array_element, bit_field: None });
+            max_size = max_size.max(size);
+            max_align = max_align.max(align);
+            self.expect(Token::Semicolon)?;
+        }
+        self.expect(Token::BraceClose)?;
+        layout.size = max_size.div_ceil(max_align) * max_align;
+        layout.align = max_align as u8;
         Ok(layout)
     }
 
