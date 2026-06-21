@@ -41,7 +41,7 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | FloatCompareOrdered { .. } | CompareWord { .. } | CompareWordImmediate { .. }
             | CompareLogicalWord { .. } | CompareLogicalWordImmediate { .. }
             | BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | Branch { .. }
-            | BranchToLinkRegister | BranchToCountRegister | BranchAndLink { .. }
+            | BranchToLinkRegister | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. }
             | MoveFromLinkRegister { .. } | MoveToLinkRegister { .. } | MoveToCountRegister { .. }
     )
 }
@@ -121,22 +121,45 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
     if save >= instructions.len() || !matches!(instructions[save], Instruction::StoreWord { s: 0, a: 1, offset: 20 }) {
         return identity;
     }
-    // The leading run of argument materializations mwcc hoists into the latency gap:
-    // load-immediate forms only (`li`, `lis`, and an SDA21 string/global address,
-    // which is `addi rD,0,…` + a relocation — all `a == 0`). A frame- or
-    // register-relative `addi rD,r1,…` (e.g. `&local`) is NOT hoisted; it stays after
-    // the save, so the run requires `a == 0`.
-    let mut run = 0;
-    while save + 1 + run < instructions.len()
-        && matches!(instructions[save + 1 + run], Instruction::AddImmediate { a: 0, .. } | Instruction::AddImmediateShifted { a: 0, .. })
-    {
-        run += 1;
-    }
-    let next = save + 1 + run;
-    if run == 0 || next >= instructions.len() || !matches!(instructions[next], Instruction::BranchAndLink { .. }) {
+    // An INDIRECT call delays the save past the same gap: `mr r12, fp` then the
+    // argument moves, ending in `mtctr r12; bctrl`. The leading run here is the setup
+    // moves (`mr`, i.e. `or rD,rS,rS`) and any `li`-form argument.
+    let moved_count = if save + 1 < instructions.len() && matches!(instructions[save + 1], Instruction::Or { a: 12, .. }) {
+        let mut run = 0;
+        while save + 1 + run < instructions.len()
+            && matches!(instructions[save + 1 + run], Instruction::Or { .. } | Instruction::AddImmediate { a: 0, .. } | Instruction::AddImmediateShifted { a: 0, .. })
+        {
+            run += 1;
+        }
+        let dispatch = save + 1 + run;
+        if dispatch + 1 >= instructions.len()
+            || !matches!(instructions[dispatch], Instruction::MoveToCountRegister { .. })
+            || !matches!(instructions[dispatch + 1], Instruction::BranchToCountRegisterAndLink)
+        {
+            return identity;
+        }
+        run.min(2)
+    } else {
+        // The leading run of argument materializations mwcc hoists into the latency
+        // gap: load-immediate forms only (`li`, `lis`, and an SDA21 string/global
+        // address, which is `addi rD,0,…` + a relocation — all `a == 0`). A frame- or
+        // register-relative `addi rD,r1,…` (e.g. `&local`) is NOT hoisted; it stays
+        // after the save, so the run requires `a == 0`.
+        let mut run = 0;
+        while save + 1 + run < instructions.len()
+            && matches!(instructions[save + 1 + run], Instruction::AddImmediate { a: 0, .. } | Instruction::AddImmediateShifted { a: 0, .. })
+        {
+            run += 1;
+        }
+        let next = save + 1 + run;
+        if run == 0 || next >= instructions.len() || !matches!(instructions[next], Instruction::BranchAndLink { .. }) {
+            return identity;
+        }
+        run.min(2)
+    };
+    if moved_count == 0 {
         return identity;
     }
-    let moved_count = run.min(2);
     // The save reads r0 (from `mflr`); it may only pass instructions that leave r0
     // alone (argument materializations write r3.., never the scratch).
     if instructions[save + 1..save + 1 + moved_count].iter().any(touches_register_zero) {

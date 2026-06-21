@@ -220,6 +220,8 @@ pub enum Instruction {
     MoveToCountRegister { s: u8 },
     /// `bctr` — branch unconditionally to the count register (`bcctr 20,0`).
     BranchToCountRegister,
+    /// `bctrl` — branch to the count register and link (`bcctrl 20,0`), an indirect call.
+    BranchToCountRegisterAndLink,
 }
 
 impl Instruction {

@@ -1525,6 +1525,26 @@ impl Generator {
     /// then `bl name`; the result (in r3 / f1) is moved to `destination` when one
     /// is wanted (a discarded call statement passes `None`).
     pub(crate) fn emit_call(&mut self, name: &str, arguments: &[Expression], destination: Option<u8>, float_result: bool) -> Compilation<()> {
+        // An indirect call through a function-pointer variable (a parameter/local held in
+        // a register): copy it to r12 before the arguments (which would overwrite its
+        // register), then `mtctr r12; bctrl`. A named function is the direct `bl` below.
+        if let Some(pointer_register) = self.locations.get(name).map(|location| location.register) {
+            self.output.instructions.push(Instruction::Or { a: 12, s: pointer_register, b: pointer_register });
+            self.emit_arguments(arguments)?;
+            self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
+            self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+            if let Some(destination) = destination {
+                let result = if float_result { Eabi::float_result().number } else { Eabi::general_result().number };
+                if destination != result {
+                    self.output.instructions.push(if float_result {
+                        Instruction::FloatMove { d: destination, b: result }
+                    } else {
+                        Instruction::move_register(destination, result)
+                    });
+                }
+            }
+            return Ok(());
+        }
         self.emit_arguments(arguments)?;
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
