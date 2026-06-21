@@ -221,26 +221,39 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             if global.is_static || global.is_const {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
-            let count = global.array_length.map(u32::from).unwrap_or(elements.len() as u32);
+            // A struct-table initializer (declared type is a struct) has one element
+            // per FIELD, so its slot count is the flattened length; a plain pointer
+            // array's length is the (possibly partially initialized) array length.
+            let count = if matches!(global.declared_type, mwcc_syntax_trees::Type::Struct { .. }) {
+                elements.len() as u32
+            } else {
+                global.array_length.map(u32::from).unwrap_or(elements.len() as u32)
+            };
             let size = count * 4;
+            let mut bytes = vec![0u8; size as usize];
             let mut relocations = Vec::new();
             for (index, element) in elements.iter().enumerate() {
                 let offset = index as u32 * 4;
                 let target = match element {
                     PointerElement::Null => continue,
+                    // A scalar field is literal bytes, not a relocation.
+                    PointerElement::Scalar(value) => {
+                        bytes[offset as usize..offset as usize + 4].copy_from_slice(&(*value as u32).to_be_bytes());
+                        continue;
+                    }
                     PointerElement::Symbol(name) => name.clone(),
-                    PointerElement::Str(bytes) => {
-                        string_pool.get(bytes.as_slice()).cloned().unwrap_or_else(|| {
+                    PointerElement::Str(string_bytes) => {
+                        string_pool.get(string_bytes.as_slice()).cloned().unwrap_or_else(|| {
                             string_counter += 1;
                             let name = format!("@{string_counter}");
-                            string_pool.insert(bytes.clone(), name.clone());
-                            let mut string_bytes = bytes.clone();
-                            string_bytes.push(0);
+                            string_pool.insert(string_bytes.clone(), name.clone());
+                            let mut object_bytes = string_bytes.clone();
+                            object_bytes.push(0);
                             defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
                                 name: name.clone(),
-                                size: string_bytes.len() as u32,
+                                size: object_bytes.len() as u32,
                                 alignment: 4,
-                                initial_bytes: Some(string_bytes),
+                                initial_bytes: Some(object_bytes),
                                 is_const: false,
                                 is_static: true,
                                 relocations: Vec::new(),
@@ -251,9 +264,9 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 };
                 relocations.push(mwcc_machine_code_to_object::DataRelocation { offset, target, addend: 0 });
             }
-            // With no relocations the bytes are all zero (a null pointer), which
-            // belongs in `.sbss` like any zero global; relocated bytes go in `.sdata`.
-            let initial_bytes = (!relocations.is_empty()).then(|| vec![0u8; size as usize]);
+            // Relocated or non-zero bytes are initialized data (`.sdata`/`.data`); an
+            // all-zero, unrelocated object (only null pointers) belongs in `.sbss`/`.bss`.
+            let initial_bytes = (!relocations.is_empty() || bytes.iter().any(|&byte| byte != 0)).then_some(bytes);
             defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
                 name: global.name.clone(),
                 size,

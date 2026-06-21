@@ -185,6 +185,59 @@ impl Parser {
         }
     }
 
+    /// A struct `tag`'s fields in layout (offset) order, but only when every field is
+    /// exactly 4 bytes (a pointer, int, or float) and at least one is a pointer — the
+    /// shape of a `{ "name", id }` string-table entry. Returns `None` otherwise, so
+    /// the caller falls through to the scalar/defer paths (sub-word or 8-byte fields
+    /// break the flat 4-byte-slot model).
+    fn struct_pointer_table_fields(&self, tag: &str) -> Option<Vec<Type>> {
+        let layout = self.structs.get(tag)?;
+        let mut fields: Vec<&crate::parser::StructField> = layout.fields.values().collect();
+        fields.sort_by_key(|field| field.offset);
+        let types: Vec<Type> = fields.iter().map(|field| field.member_type).collect();
+        let all_word = types.iter().all(|field_type| field_type.width() == 32);
+        let any_pointer = types.iter().any(|field_type| matches!(field_type, Type::Pointer(_) | Type::StructPointer));
+        (all_word && any_pointer).then_some(types)
+    }
+
+    /// Parse `{ { field0, field1, … }, … }` for an array of word-field structs: each
+    /// element's fields are flattened, in order, to a `PointerElement` sequence — a
+    /// pointer field to `Str`/`Symbol`/`Null`, a scalar field to `Scalar`. The shape
+    /// of a `{ "path", id }` overlay/string table.
+    fn parse_struct_pointer_table(&mut self, field_types: &[Type]) -> Compilation<Vec<PointerElement>> {
+        self.expect(Token::BraceOpen)?;
+        let mut elements = Vec::new();
+        while *self.peek() != Token::BraceClose {
+            self.expect(Token::BraceOpen)?;
+            for (index, field_type) in field_types.iter().enumerate() {
+                if matches!(field_type, Type::Pointer(_) | Type::StructPointer) {
+                    let element = self.parse_pointer_init_element()?;
+                    // A string element pools an anonymous `@N` object, whose NUMBER in a
+                    // real translation unit is offset by phantom `@N` mwcc consumes while
+                    // processing preceding (header inline) functions — not modeled yet, so
+                    // defer string tables. `&symbol`/`&global`/`0`/scalar tables have no
+                    // `@N` and stay byte-exact.
+                    if matches!(element, PointerElement::Str(_)) {
+                        return Err(Diagnostic::error("a struct-table with string literals needs the anonymous @N base (roadmap)"));
+                    }
+                    elements.push(element);
+                } else {
+                    elements.push(PointerElement::Scalar(self.parse_integer_constant()?));
+                }
+                if index + 1 < field_types.len() {
+                    self.expect(Token::Comma)?;
+                }
+            }
+            self.eat_keyword(Token::Comma); // optional trailing comma inside the element
+            self.expect(Token::BraceClose)?;
+            if !self.eat_keyword(Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(elements)
+    }
+
     /// One element of a pointer global's address initializer: a string literal
     /// (pooled), `&name` or a bare `name` (a function pointer) is that symbol; `0` is
     /// a null pointer. `&a[i]`, `&s.f`, casts, and arithmetic defer (they need an
@@ -204,6 +257,14 @@ impl Parser {
                 }
             }
             return self.parse_pointer_init_element();
+        }
+        // A grouping paren that is not a cast: `((void *)0)` (the common `NULL` macro
+        // expansion) or `(&x)`. Parse the inner element and consume the closing paren.
+        if *self.peek() == Token::ParenOpen {
+            self.advance();
+            let element = self.parse_pointer_init_element()?;
+            self.expect(Token::ParenClose)?;
+            return Ok(element);
         }
         if let Token::StringLiteral(bytes) = self.peek() {
             let bytes = bytes.clone();
@@ -793,11 +854,22 @@ impl Parser {
                     }
                     // A pointer global initialized with addresses (`int *p = &g;` or
                     // a `{&a, &b}` array) is a set of data relocations, not constants.
+                    // An array of word-field structs with a pointer field (a
+                    // `{ "name", id }` table) flattens to the same address-initializer
+                    // (pointer slots relocate, scalar slots are literal bytes).
+                    let table_fields = if !dimensions.is_empty() && matches!(return_type, Type::Struct { .. }) {
+                        global_struct_tag.as_deref().and_then(|tag| self.struct_pointer_table_fields(tag))
+                    } else {
+                        None
+                    };
                     let mut address_initializer = None;
                     let mut initializer = None;
                     if matches!(return_type, Type::Pointer(_) | Type::StructPointer) && *self.peek() == Token::Equals {
                         self.advance();
                         address_initializer = Some(self.parse_address_initializer()?);
+                    } else if table_fields.is_some() && *self.peek() == Token::Equals {
+                        self.advance();
+                        address_initializer = Some(self.parse_struct_pointer_table(table_fields.as_ref().unwrap())?);
                     } else if self.eat_keyword(Token::Equals) {
                         // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
                         initializer = Some(self.parse_constant_initializer(return_type)?);

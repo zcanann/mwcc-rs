@@ -115,6 +115,9 @@ pub enum PointerElement {
     Str(Vec<u8>),
     /// A null pointer (`0`).
     Null,
+    /// A 4-byte scalar slot — an integer field of a struct-array element (e.g. the
+    /// `id` in `{ "name", id }`). Written as literal bytes, no relocation.
+    Scalar(i64),
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved
