@@ -156,15 +156,31 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".rodata") {
         place(object, ".rodata", &mut rodata_size);
     }
-    // Large writable globals: both `.data` (initialized) and `.bss` (zero) are laid
-    // out FORWARD. Only the small-data `.sbss` reverses (below) — `.bss` does not.
+    // Large initialized `.data` is laid out FORWARD (declaration order).
     let mut file_data_size = 0u32;
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".data") {
         place(object, ".data", &mut file_data_size);
     }
+    // Large zero `.bss` lays out in SYMBOL-EMISSION order, not declaration order:
+    // referenced objects first (in the order functions reference them — their
+    // `symbol_order`, across functions in source order), then any unreferenced ones
+    // in REVERSE declaration order. (This matches both mwcc's `.bss` offsets and the
+    // symbol table. The small-data `.sbss` instead reverses unconditionally, below.)
     let mut bss_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".bss") {
-        place(object, ".bss", &mut bss_size);
+    let mut placed_bss: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
+    for function in &input.functions {
+        for name in &function.symbol_order {
+            if let Some(object) = input.data_objects.iter().find(|object| object.name == name.as_str() && section_of(object) == ".bss") {
+                if placed_bss.insert(object.name) {
+                    place(object, ".bss", &mut bss_size);
+                }
+            }
+        }
+    }
+    for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".bss") {
+        if placed_bss.insert(object.name) {
+            place(object, ".bss", &mut bss_size);
+        }
     }
     let mut sdata_size = 0u32;
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".sdata") {
