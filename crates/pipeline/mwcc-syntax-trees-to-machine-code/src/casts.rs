@@ -93,14 +93,16 @@ impl Generator {
             }
             return Ok(());
         }
-        // A float operand that is NOT a leaf — a global (`(int)gf`), a load, or a
-        // member — needs the same fctiwz + frame-bounce, but loaded first and with
-        // mwcc's distinct prologue order (the `stwu` precedes the `lfs` for a global,
-        // unlike the leaf's fctiwz-first schedule). Until that is modeled, defer:
-        // falling through to the integer path below would evaluate the float operand
-        // into a general register and store garbage.
-        if self.is_float_value(operand) || self.is_float_operand(operand) {
-            return Err(mwcc_core::Diagnostic::error("float-to-int of a non-leaf operand needs the load+convert path (roadmap)"));
+        // A float operand that is NOT a leaf — a global (`(int)gf`), a load, a member,
+        // or a float-returning CALL (`(int)hf()`) — needs the same fctiwz + frame-bounce
+        // but with the value loaded/called first (mwcc's `bl hf; fctiwz f0,f1; ...`).
+        // Until that is modeled, defer: falling through to the integer path below would
+        // evaluate the float operand into a general register and store garbage. (A call
+        // would call with `float_result=false` and store the untouched r3.)
+        let is_float_call = matches!(operand, Expression::Call { name, .. }
+            if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)));
+        if self.is_float_value(operand) || self.is_float_operand(operand) || is_float_call {
+            return Err(mwcc_core::Diagnostic::error("float-to-int of a non-leaf operand needs the load/call + convert path (roadmap)"));
         }
         // int -> int narrowing: place the operand (sub-expression -> scratch),
         // then extend/truncate to the target width into the destination.
