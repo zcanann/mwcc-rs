@@ -1443,7 +1443,12 @@ impl Generator {
             let pointee = pointee_of_type(*member_type)
                 .ok_or_else(|| Diagnostic::error("struct member store of this type is not supported yet"))?;
             let address = self.member_base_register(base)?;
+            // The base register is live for the store, so reserve it while the value is
+            // placed — otherwise a value that needs a temporary (a magic-number divide)
+            // could pick it and clobber the store address.
+            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
             let source = self.place_store_value(value, pointee)?;
+            if restore { self.reserved.remove(&address); }
             self.output.instructions.push(displacement_store(pointee, source, address, *offset as i16));
             return Ok(());
         }
@@ -1486,20 +1491,28 @@ impl Generator {
             _ => return Err(Diagnostic::error("store target must be `*p`, `p[i]`, a member, or a global")),
         };
         let (pointee, address) = self.resolve_pointer(base)?;
+        // The address register is live for the store; reserve it while the value is
+        // placed so a value needing a temporary (e.g. a magic-number divide) can't pick
+        // it and clobber the store address.
+        let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
         match index {
             None => {
                 let source = self.place_store_value(value, pointee)?;
+                if restore { self.reserved.remove(&address); }
                 self.output.instructions.push(displacement_store(pointee, source, address, 0));
             }
             Some(index) if constant_value(index).is_some() => {
                 let offset = i16::try_from(constant_value(index).unwrap() * pointee.size() as i64)
                     .map_err(|_| Diagnostic::error("store offset out of range (roadmap)"))?;
                 let source = self.place_store_value(value, pointee)?;
+                if restore { self.reserved.remove(&address); }
                 self.output.instructions.push(displacement_store(pointee, source, address, offset));
             }
             Some(index) => {
                 // A variable index uses the scratch for scaling, so the value must
-                // be a leaf (it stays in its own register).
+                // be a leaf (it stays in its own register) — no temporary, so release
+                // the address reservation up front.
+                if restore { self.reserved.remove(&address); }
                 if !matches!(value, Expression::Variable(_)) {
                     return Err(Diagnostic::error("store with a variable index needs a simple value (roadmap)"));
                 }
