@@ -744,6 +744,35 @@ impl Parser {
             // One or more comma-separated declarators share the field type, e.g.
             // `f32 x, y, z;`. Each gets its own naturally-aligned offset.
             loop {
+                // A function-pointer member `RET (*name)(params)` is a 4-byte pointer
+                // (the `field_type` parsed above is just the return type). Consume the
+                // declarator and record a pointer-typed member so `p->name` resolves.
+                if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                    self.advance(); // `(`
+                    self.advance(); // `*`
+                    let pointer_name = self.parse_identifier()?;
+                    self.expect(Token::ParenClose)?;
+                    self.expect(Token::ParenOpen)?;
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match self.advance() {
+                            Token::ParenOpen => depth += 1,
+                            Token::ParenClose => depth -= 1,
+                            Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer member")),
+                            _ => {}
+                        }
+                    }
+                    bit_unit = None;
+                    let alignment = 4u16;
+                    alignment_max = alignment_max.max(alignment);
+                    offset = offset.div_ceil(alignment) * alignment;
+                    layout.fields.insert(pointer_name, StructField { member_type: Type::StructPointer { element_size: 0 }, offset, struct_tag: None, array_element: None, bit_field: None });
+                    offset += 4;
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 let field_name = self.parse_identifier()?;
                 // A bit-field `type name : width` packs `width` bits (MSB-first) into a
                 // `sizeof(type)` storage unit shared by adjacent same-typed bit-fields;
