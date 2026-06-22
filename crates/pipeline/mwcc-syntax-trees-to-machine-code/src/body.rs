@@ -244,20 +244,32 @@ impl Generator {
                 // `lfs f0; stw r0,20; fcmpo`). An integer load / rlwinm. / extsb. into r0
                 // would clobber the saved LR, so the store precedes the whole condition.
                 let first_writes_r0 = self.output.instructions.get(condition_start).map_or(false, |instruction| {
-                    !matches!(
-                        instruction,
+                    match instruction {
+                        // Compares and float/cr ops write cr0/an FPR, not a GPR.
                         Instruction::CompareWord { .. }
-                            | Instruction::CompareWordImmediate { .. }
-                            | Instruction::CompareLogicalWord { .. }
-                            | Instruction::CompareLogicalWordImmediate { .. }
-                            | Instruction::FloatCompareOrdered { .. }
-                            | Instruction::FloatCompareUnordered { .. }
-                            | Instruction::LoadFloatSingle { .. }
-                            | Instruction::LoadFloatSingleIndexed { .. }
-                            | Instruction::LoadFloatDouble { .. }
-                            | Instruction::LoadFloatDoubleIndexed { .. }
-                            | Instruction::ConditionRegisterOr { .. }
-                    )
+                        | Instruction::CompareWordImmediate { .. }
+                        | Instruction::CompareLogicalWord { .. }
+                        | Instruction::CompareLogicalWordImmediate { .. }
+                        | Instruction::FloatCompareOrdered { .. }
+                        | Instruction::FloatCompareUnordered { .. }
+                        | Instruction::LoadFloatSingle { .. }
+                        | Instruction::LoadFloatSingleIndexed { .. }
+                        | Instruction::LoadFloatDouble { .. }
+                        | Instruction::LoadFloatDoubleIndexed { .. }
+                        | Instruction::ConditionRegisterOr { .. } => false,
+                        // A narrow extension into a non-r0 GPR — `extsh r3,r3`, the first
+                        // operand of a two-operand narrow compare — leaves the saved LR in r0
+                        // intact, so the store still fills the slot after it. Extending into
+                        // r0 (a narrow leaf against a constant) clobbers it: store first.
+                        Instruction::ExtendSignByte { a, .. }
+                        | Instruction::ExtendSignByteRecord { a, .. }
+                        | Instruction::ExtendSignHalfword { a, .. }
+                        | Instruction::ExtendSignHalfwordRecord { a, .. }
+                        | Instruction::ClearLeftImmediate { a, .. }
+                        | Instruction::ClearLeftImmediateRecord { a, .. } => *a == 0,
+                        // Any other first instruction writes a GPR (a load into r0, rlwinm.).
+                        _ => true,
+                    }
                 });
                 let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
                 self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });
@@ -313,20 +325,32 @@ impl Generator {
                 // `lfs f0; stw r0,20; fcmpo`). An integer load / rlwinm. / extsb. into r0
                 // would clobber the saved LR, so the store precedes the whole condition.
                 let first_writes_r0 = self.output.instructions.get(condition_start).map_or(false, |instruction| {
-                    !matches!(
-                        instruction,
+                    match instruction {
+                        // Compares and float/cr ops write cr0/an FPR, not a GPR.
                         Instruction::CompareWord { .. }
-                            | Instruction::CompareWordImmediate { .. }
-                            | Instruction::CompareLogicalWord { .. }
-                            | Instruction::CompareLogicalWordImmediate { .. }
-                            | Instruction::FloatCompareOrdered { .. }
-                            | Instruction::FloatCompareUnordered { .. }
-                            | Instruction::LoadFloatSingle { .. }
-                            | Instruction::LoadFloatSingleIndexed { .. }
-                            | Instruction::LoadFloatDouble { .. }
-                            | Instruction::LoadFloatDoubleIndexed { .. }
-                            | Instruction::ConditionRegisterOr { .. }
-                    )
+                        | Instruction::CompareWordImmediate { .. }
+                        | Instruction::CompareLogicalWord { .. }
+                        | Instruction::CompareLogicalWordImmediate { .. }
+                        | Instruction::FloatCompareOrdered { .. }
+                        | Instruction::FloatCompareUnordered { .. }
+                        | Instruction::LoadFloatSingle { .. }
+                        | Instruction::LoadFloatSingleIndexed { .. }
+                        | Instruction::LoadFloatDouble { .. }
+                        | Instruction::LoadFloatDoubleIndexed { .. }
+                        | Instruction::ConditionRegisterOr { .. } => false,
+                        // A narrow extension into a non-r0 GPR — `extsh r3,r3`, the first
+                        // operand of a two-operand narrow compare — leaves the saved LR in r0
+                        // intact, so the store still fills the slot after it. Extending into
+                        // r0 (a narrow leaf against a constant) clobbers it: store first.
+                        Instruction::ExtendSignByte { a, .. }
+                        | Instruction::ExtendSignByteRecord { a, .. }
+                        | Instruction::ExtendSignHalfword { a, .. }
+                        | Instruction::ExtendSignHalfwordRecord { a, .. }
+                        | Instruction::ClearLeftImmediate { a, .. }
+                        | Instruction::ClearLeftImmediateRecord { a, .. } => *a == 0,
+                        // Any other first instruction writes a GPR (a load into r0, rlwinm.).
+                        _ => true,
+                    }
                 });
                 let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
                 self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });

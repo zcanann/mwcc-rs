@@ -696,20 +696,38 @@ impl Generator {
                         }
                     }
                     (None, false) => {
-                        // A two-operand narrow comparison extends both operands (mwcc keeps
-                        // the first in place, the second in the scratch — and the LR store
-                        // lands between them); not modeled — defer.
-                        if left_extend.is_some()
-                            || self.is_narrow_leaf(right)
-                            || matches!(as_member(right), Some((_, _, mwcc_syntax_trees::Type::Char)))
-                        {
-                            return Err(Diagnostic::error("a two-operand narrow comparison needs both operands extended (roadmap)"));
-                        }
-                        let right_register = self.condition_operand_register(right)?;
-                        if signed {
-                            self.output.instructions.push(Instruction::CompareWord { a: left_register, b: right_register });
-                        } else {
-                            self.output.instructions.push(Instruction::CompareLogicalWord { a: left_register, b: right_register });
+                        let left_leaf = self.leaf_info(left).ok().filter(|&(register, width, _)| register == left_register && width < 32);
+                        let right_leaf = self.leaf_info(right).ok().filter(|&(_, width, _)| width < 32);
+                        match (left_leaf, right_leaf) {
+                            (Some((_, left_width, left_signed)), Some((right_register, right_width, right_signed))) => {
+                                // Two narrow leaves: mwcc extends the first in place and the
+                                // second into the scratch, then compares — `extsh r3,r3; extsh
+                                // r0,r4; cmpw r3,r0` (the LR store lands after the first extend,
+                                // which writes a non-r0 GPR). clrlwi/cmplw for unsigned.
+                                self.emit_widen(left_register, left_register, left_width, left_signed);
+                                self.emit_widen(GENERAL_SCRATCH, right_register, right_width, right_signed);
+                                if signed {
+                                    self.output.instructions.push(Instruction::CompareWord { a: left_register, b: GENERAL_SCRATCH });
+                                } else {
+                                    self.output.instructions.push(Instruction::CompareLogicalWord { a: left_register, b: GENERAL_SCRATCH });
+                                }
+                            }
+                            _ => {
+                                // Only one side narrow, or a narrow value mixed with a member/
+                                // load — not modeled; defer rather than miscompile.
+                                if left_extend.is_some()
+                                    || self.is_narrow_leaf(right)
+                                    || matches!(as_member(right), Some((_, _, mwcc_syntax_trees::Type::Char)))
+                                {
+                                    return Err(Diagnostic::error("a mixed narrow comparison needs both operands extended (roadmap)"));
+                                }
+                                let right_register = self.condition_operand_register(right)?;
+                                if signed {
+                                    self.output.instructions.push(Instruction::CompareWord { a: left_register, b: right_register });
+                                } else {
+                                    self.output.instructions.push(Instruction::CompareLogicalWord { a: left_register, b: right_register });
+                                }
+                            }
                         }
                     }
                 }

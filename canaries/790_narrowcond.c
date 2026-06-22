@@ -16,3 +16,8 @@ void uh(unsigned short u) { if (u > 100)   sink(); }   // clrlwi(16) + cmplwi
 struct Pak { int flags; signed char level; };
 void ml(struct Pak* p)    { if (p->level < 0) sink(); }   // lbz; extsb. (record)
 void mg(struct Pak* p)    { if (p->level > 5) sink(); }   // lbz; extsb; cmpwi
+// Two narrow leaves: extend the first in place, the second into the scratch, then
+// compare (`extsh r3,r3; extsh r0,r4; cmpw` — the LR store lands after the first
+// extend, which writes a non-r0 GPR). A mixed narrow/wide pair stays deferred.
+void tw(short a, short b)                  { if (a > b) sink(); }   // extsh r3,r3; extsh r0,r4; cmpw
+void tu(unsigned char a, unsigned char b)  { if (a < b) sink(); }   // clrlwi; clrlwi; cmplw
