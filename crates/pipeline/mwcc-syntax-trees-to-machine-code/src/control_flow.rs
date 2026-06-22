@@ -659,18 +659,22 @@ impl Generator {
                 }
                 let signed = self.signedness_of(left)? && self.signedness_of(right)?;
                 let left_register = self.condition_operand_register(left)?;
-                // A narrow leaf operand (a `short`/`char` parameter living in a register)
-                // must be sign/zero-extended before the compare — mwcc emits extsh/extsb/
-                // clrlwi, and against zero the record form folds the extension and the
-                // compare. (Members and memory loads come back width-correct from
-                // condition_operand_register, so only a same-register narrow leaf needs this.)
-                let left_narrow = self
+                // An operand whose register isn't already the right width must be
+                // extended before the compare: a `short`/`char` leaf in its home register
+                // (mwcc emits extsh/extsb/clrlwi, record form against zero), or a *signed*
+                // `char` member — loaded with `lbz`, which zero-extends, so mwcc re-extends
+                // in place with `extsb`. (A `short`/`ushort`/`uchar` member comes back
+                // width-correct from its lha/lhz/lbz load.) `emit_widen` sources from
+                // `left_register`, which is the leaf's home register or the member's scratch.
+                let left_extend: Option<(u8, bool)> = self
                     .leaf_info(left)
                     .ok()
-                    .filter(|&(register, width, _)| register == left_register && width < 32);
+                    .filter(|&(register, width, _)| register == left_register && width < 32)
+                    .map(|(_, width, narrow_signed)| (width, narrow_signed))
+                    .or_else(|| matches!(as_member(left), Some((_, _, mwcc_syntax_trees::Type::Char))).then_some((8, true)));
                 match (as_small_integer(right), is_zero_literal(right)) {
                     (Some(constant), _) => {
-                        let register = if let Some((_, width, narrow_signed)) = left_narrow {
+                        let register = if let Some((width, narrow_signed)) = left_extend {
                             self.emit_widen(GENERAL_SCRATCH, left_register, width, narrow_signed);
                             GENERAL_SCRATCH
                         } else {
@@ -683,7 +687,7 @@ impl Generator {
                         }
                     }
                     (None, true) => {
-                        if let Some((_, width, narrow_signed)) = left_narrow {
+                        if let Some((width, narrow_signed)) = left_extend {
                             self.emit_widen_record(GENERAL_SCRATCH, left_register, width, narrow_signed);
                         } else if signed {
                             self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
@@ -693,8 +697,12 @@ impl Generator {
                     }
                     (None, false) => {
                         // A two-operand narrow comparison extends both operands (mwcc keeps
-                        // the first in place, the second in the scratch); not modeled — defer.
-                        if left_narrow.is_some() || self.is_narrow_leaf(right) {
+                        // the first in place, the second in the scratch — and the LR store
+                        // lands between them); not modeled — defer.
+                        if left_extend.is_some()
+                            || self.is_narrow_leaf(right)
+                            || matches!(as_member(right), Some((_, _, mwcc_syntax_trees::Type::Char)))
+                        {
                             return Err(Diagnostic::error("a two-operand narrow comparison needs both operands extended (roadmap)"));
                         }
                         let right_register = self.condition_operand_register(right)?;
