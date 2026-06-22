@@ -633,7 +633,13 @@ impl Generator {
                 }
             }
             let register = self.condition_operand_register(operand)?;
-            self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+            // A pointer/unsigned operand tests against 0 with cmplwi (mwcc), a signed
+            // one with cmpwi; both `beq`/`bne` the same since 0 is 0 either way.
+            if self.signedness_of(operand)? {
+                self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+            } else {
+                self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: register, immediate: 0 });
+            }
             return Ok((4, 2)); // bne — skip when x != 0
         }
         if let Expression::Binary { operator, left, right } = condition {
@@ -690,9 +696,14 @@ impl Generator {
                 }
             }
         }
-        // Plain truth test: compare against zero, skip when equal.
+        // Plain truth test: compare against zero, skip when equal. A pointer/unsigned
+        // operand uses cmplwi (mwcc), a signed one cmpwi.
         let register = self.condition_operand_register(condition)?;
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+        if self.signedness_of(condition)? {
+            self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+        } else {
+            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: register, immediate: 0 });
+        }
         Ok((12, 2)) // beq — skip when condition == 0
     }
 
