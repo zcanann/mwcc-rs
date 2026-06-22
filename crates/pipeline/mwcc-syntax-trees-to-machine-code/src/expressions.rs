@@ -1632,12 +1632,18 @@ impl Generator {
         // to the cast's own path (still a redundant extension, but never a miscompile).
         if let Expression::Cast { target_type, operand } = value {
             if target_type.width() < 32 && pointee.element().width() <= target_type.width() {
-                if self.is_float_leaf(operand) {
-                    self.emit_cast_to_integer(Type::Int, operand, GENERAL_SCRATCH)?;
-                    return Ok(GENERAL_SCRATCH);
-                }
+                // An integer leaf stores straight from its own register (no scratch move).
                 if matches!(operand.as_ref(), Expression::Variable(name) if self.lookup_general(name).is_some()) {
                     return self.place_store_value(operand, pointee);
+                }
+                // Otherwise convert to int width (32, so emit_widen is skipped) into the
+                // scratch and let the store truncate: a float leaf does fctiwz, an integer
+                // arithmetic expression evaluates, a float-arithmetic or non-leaf-float
+                // operand defers. A call is left to the normal path — distinguishing an
+                // int- from a float-returning call needs the return-type plumbing.
+                if !matches!(operand.as_ref(), Expression::Call { .. }) {
+                    self.emit_cast_to_integer(Type::Int, operand, GENERAL_SCRATCH)?;
+                    return Ok(GENERAL_SCRATCH);
                 }
             }
         }
