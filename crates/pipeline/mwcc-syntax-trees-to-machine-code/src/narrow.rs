@@ -143,6 +143,19 @@ impl Generator {
         }
     }
 
+    /// Like emit_widen but with the record form (`extsh.`/`extsb.`/`clrlwi.`), so the
+    /// extension also sets cr0 — mwcc's one-instruction test of a narrow value against
+    /// zero (`if (s < 0)` -> `extsh. r0,rS; bge`).
+    pub(crate) fn emit_widen_record(&mut self, destination: u8, source: u8, width: u8, signed: bool) {
+        let instruction = match (width, signed) {
+            (8, true) => Instruction::ExtendSignByteRecord { a: destination, s: source },
+            (16, true) => Instruction::ExtendSignHalfwordRecord { a: destination, s: source },
+            (8, false) => Instruction::ClearLeftImmediateRecord { a: destination, s: source, clear: 24 },
+            _ => Instruction::ClearLeftImmediateRecord { a: destination, s: source, clear: 16 },
+        };
+        self.output.instructions.push(instruction);
+    }
+
     /// Emit mwcc's fused `rlwinm` for an unsigned narrow value shifted by a
     /// constant. A `width`-bit value occupies the low `width` bits, starting at
     /// big-endian bit `32-width`. `<< n` rotates left n and keeps the shifted

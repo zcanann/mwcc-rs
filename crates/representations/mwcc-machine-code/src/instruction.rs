@@ -38,6 +38,9 @@ pub enum Instruction {
     ExtendSignByteRecord { a: u8, s: u8 },
     /// `extsh rA, rS` — sign-extend halfword.
     ExtendSignHalfword { a: u8, s: u8 },
+    /// `extsh. rA, rS` — sign-extend halfword, record form (sets cr0). mwcc uses this
+    /// to test a signed `short` against 0 in one instruction.
+    ExtendSignHalfwordRecord { a: u8, s: u8 },
     /// `andc rA, rS, rB` => rA = rS & ~rB.
     AndComplement { a: u8, s: u8, b: u8 },
     /// `orc rA, rS, rB` => rA = rS | ~rB.
@@ -109,6 +112,10 @@ pub enum Instruction {
     StoreFloatDoubleIndexed { s: u8, a: u8, b: u8 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
     ClearLeftImmediate { a: u8, s: u8, clear: u8 },
+    /// `clrlwi. rA, rS, n` — record form (`rlwinm.`): zero-extend a narrow unsigned
+    /// value and set cr0, mwcc's one-instruction test of an unsigned `char`/`short`
+    /// against 0.
+    ClearLeftImmediateRecord { a: u8, s: u8, clear: u8 },
     /// `rlwinm rA, rS, 0, begin, end` — keep the contiguous bit run `[begin, end]`.
     AndContiguousMask { a: u8, s: u8, begin: u8, end: u8 },
     /// `rlwinm rA, rS, shift, begin, end` — rotate left by `shift`, keep bits

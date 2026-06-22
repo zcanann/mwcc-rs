@@ -659,20 +659,44 @@ impl Generator {
                 }
                 let signed = self.signedness_of(left)? && self.signedness_of(right)?;
                 let left_register = self.condition_operand_register(left)?;
+                // A narrow leaf operand (a `short`/`char` parameter living in a register)
+                // must be sign/zero-extended before the compare — mwcc emits extsh/extsb/
+                // clrlwi, and against zero the record form folds the extension and the
+                // compare. (Members and memory loads come back width-correct from
+                // condition_operand_register, so only a same-register narrow leaf needs this.)
+                let left_narrow = self
+                    .leaf_info(left)
+                    .ok()
+                    .filter(|&(register, width, _)| register == left_register && width < 32);
                 match (as_small_integer(right), is_zero_literal(right)) {
-                    (Some(constant), _) if signed => {
-                        self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: constant });
-                    }
                     (Some(constant), _) => {
-                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: left_register, immediate: constant as u16 });
-                    }
-                    (None, true) if signed => {
-                        self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
+                        let register = if let Some((_, width, narrow_signed)) = left_narrow {
+                            self.emit_widen(GENERAL_SCRATCH, left_register, width, narrow_signed);
+                            GENERAL_SCRATCH
+                        } else {
+                            left_register
+                        };
+                        if signed {
+                            self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: constant });
+                        } else {
+                            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: register, immediate: constant as u16 });
+                        }
                     }
                     (None, true) => {
-                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: left_register, immediate: 0 });
+                        if let Some((_, width, narrow_signed)) = left_narrow {
+                            self.emit_widen_record(GENERAL_SCRATCH, left_register, width, narrow_signed);
+                        } else if signed {
+                            self.output.instructions.push(Instruction::CompareWordImmediate { a: left_register, immediate: 0 });
+                        } else {
+                            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: left_register, immediate: 0 });
+                        }
                     }
                     (None, false) => {
+                        // A two-operand narrow comparison extends both operands (mwcc keeps
+                        // the first in place, the second in the scratch); not modeled — defer.
+                        if left_narrow.is_some() || self.is_narrow_leaf(right) {
+                            return Err(Diagnostic::error("a two-operand narrow comparison needs both operands extended (roadmap)"));
+                        }
                         let right_register = self.condition_operand_register(right)?;
                         if signed {
                             self.output.instructions.push(Instruction::CompareWord { a: left_register, b: right_register });
@@ -708,7 +732,17 @@ impl Generator {
         // Plain truth test: compare against zero, skip when equal. A pointer/unsigned
         // operand uses cmplwi (mwcc), a signed one cmpwi.
         let register = self.condition_operand_register(condition)?;
-        if matches!(as_member(condition), Some((_, _, mwcc_syntax_trees::Type::Char))) {
+        // A narrow leaf (`short`/`char` parameter) tests against zero with the record-form
+        // extension into the scratch (`extsh. r0,rS` / `clrlwi. r0,rS,24`), the same one the
+        // `!= 0` comparison uses. (A `char` member already arrives loaded; mwcc re-extends
+        // it in place with `extsb.`.)
+        let narrow = self
+            .leaf_info(condition)
+            .ok()
+            .filter(|&(leaf_register, width, _)| leaf_register == register && width < 32);
+        if let Some((_, width, narrow_signed)) = narrow {
+            self.emit_widen_record(GENERAL_SCRATCH, register, width, narrow_signed);
+        } else if matches!(as_member(condition), Some((_, _, mwcc_syntax_trees::Type::Char))) {
             self.output.instructions.push(Instruction::ExtendSignByteRecord { a: register, s: register });
         } else if self.signedness_of(condition)? {
             self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });

@@ -23,6 +23,7 @@ impl Instruction {
             Instruction::ExtendSignByte { a, s } => logical_form(s, a, 0, 954),
             Instruction::ExtendSignByteRecord { a, s } => logical_form(s, a, 0, 954) | 1,
             Instruction::ExtendSignHalfword { a, s } => logical_form(s, a, 0, 922),
+            Instruction::ExtendSignHalfwordRecord { a, s } => logical_form(s, a, 0, 922) | 1,
             Instruction::AndComplement { a, s, b } => logical_form(s, a, b, 60),
             Instruction::OrComplement { a, s, b } => logical_form(s, a, b, 412),
             Instruction::SubtractFromImmediate { d, a, immediate } => d_form(8, d, a, immediate as u16),
@@ -70,6 +71,9 @@ impl Instruction {
             // clrlwi rA,rS,n == rlwinm rA,rS,0,n,31
             Instruction::ClearLeftImmediate { a, s, clear } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1)
+            }
+            Instruction::ClearLeftImmediateRecord { a, s, clear } => {
+                (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((clear as u32) << 6) | (31 << 1) | 1
             }
             Instruction::AndContiguousMask { a, s, begin, end } => {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((begin as u32) << 6) | ((end as u32) << 1)
