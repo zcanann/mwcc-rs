@@ -98,6 +98,35 @@ fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
 impl Generator {
 
     /// Evaluate an integer expression into general register `destination`.
+    /// mwcc collapses the bitwise distributive laws `(x&y)|(x&z) -> x&(y|z)`,
+    /// `(x|y)&(x|z) -> x|(y&z)`, and `(x&y)^(x&z) -> x&(y^z)` to one inner op plus the
+    /// outer, sharing the common factor `x`. When `x` is the first operand of the left
+    /// inner node, rewrite to that form and evaluate it. A common factor in the second
+    /// position (`(y&x)|(z&x)`) needs mwcc's value-first operand order, not yet modeled,
+    /// so it defers rather than emit the longer un-distributed sequence.
+    fn try_emit_distributive_bitwise(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        use BinaryOperator::*;
+        let (Expression::Binary { operator: inner, left: la, right: lb }, Expression::Binary { operator: inner_right, left: ra, right: rb }) = (left, right) else {
+            return Ok(false);
+        };
+        if inner != inner_right || !matches!((operator, *inner), (BitOr, BitAnd) | (BitXor, BitAnd) | (BitAnd, BitOr)) {
+            return Ok(false);
+        }
+        let other = if same_operand(la, ra) {
+            rb
+        } else if same_operand(la, rb) {
+            ra
+        } else if same_operand(lb, ra) || same_operand(lb, rb) {
+            return Err(Diagnostic::error("a distributive bitwise factor in the second operand position needs mwcc's value-first order (roadmap)"));
+        } else {
+            return Ok(false);
+        };
+        let combined = Expression::Binary { operator, left: lb.clone(), right: other.clone() };
+        let rewritten = Expression::Binary { operator: *inner, left: la.clone(), right: Box::new(combined) };
+        self.evaluate_general(&rewritten, destination)?;
+        Ok(true)
+    }
+
     pub(crate) fn evaluate_general(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         // A compile-time-constant expression — folded constant arithmetic
         // (`2 + 3`, `FLAG_A | FLAG_B`, `1 << 3`) or a side-effect-free identity
@@ -269,6 +298,11 @@ impl Generator {
                 // A constant-index subscript load paired with a wide-int leaf
                 // (`a[k] op x`) — the load goes to the scratch like a dereference.
                 if self.try_emit_subscript_leaf_binary(*operator, left, right, destination)? {
+                    return Ok(());
+                }
+                // `(x & y) | (x & z)` and the other bitwise distributive laws collapse to
+                // `x & (y | z)` (one fewer instruction), as mwcc does.
+                if self.try_emit_distributive_bitwise(*operator, left, right, destination)? {
                     return Ok(());
                 }
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
