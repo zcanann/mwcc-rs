@@ -8,6 +8,19 @@ use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
 
+/// Whether `expr` is a division by a constant — power-of-two (`srawi`/`addze`) or the
+/// non-power-of-two magic-number lowering. Either consumes a temporary register, and in
+/// a binary op mwcc orders its result first (`add quotient,b`) rather than the leaf — an
+/// operand-order quirk not yet modeled — so such a node alongside another operand is
+/// deferred rather than emitted with the wrong order.
+fn is_constant_divide(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::Binary { operator: BinaryOperator::Divide, right, .. }
+            if constant_value(right).is_some_and(|divisor| divisor >= 2)
+    )
+}
+
 impl Generator {
 
     /// Place two leaf operands when at least one is narrow, emitting the width
@@ -69,15 +82,28 @@ impl Generator {
                 Operands::ordered(self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?)
             }
             (true, false) => {
-                self.evaluate_general(left, GENERAL_SCRATCH)?;
-                // left computed into scratch, right is a leaf: mwcc puts the leaf first.
+                // A constant-divide left in a commutative op wants its result ordered first
+                // (`add quotient,b`), not the leaf — not modeled, so defer (`a/3 - b` is
+                // non-commutative and unaffected).
+                if is_commutative(operator) && is_constant_divide(left) {
+                    return Err(Diagnostic::error("a constant-divide operand in a commutative binary op needs mwcc's result-first order (roadmap)"));
+                }
+                // Keep the leaf right reserved while the left is computed, so a left that
+                // needs a temporary (a magic-number divide) can't pick the leaf's register
+                // and clobber it. left into scratch, right is a leaf: mwcc puts the leaf first.
+                self.with_reserved_inputs(right, |generator| generator.evaluate_general(left, GENERAL_SCRATCH))?;
                 Operands::reversed(GENERAL_SCRATCH, self.general_register_of_leaf(right)?)
             }
             (false, true) => {
-                self.evaluate_general(right, GENERAL_SCRATCH)?;
+                self.with_reserved_inputs(left, |generator| generator.evaluate_general(right, GENERAL_SCRATCH))?;
                 Operands::ordered(self.general_register_of_leaf(left)?, GENERAL_SCRATCH)
             }
             (true, true) => {
+                // A constant-divide alongside another complex operand needs liveness-aware
+                // temp allocation and result-first ordering that isn't modeled; defer.
+                if is_constant_divide(left) || is_constant_divide(right) {
+                    return Err(Diagnostic::error("a constant-divide operand alongside another complex operand needs the register allocator (roadmap)"));
+                }
                 // Sethi-Ullman for a commutative node with operands of different
                 // register need: mwcc evaluates the heavier operand first and keeps
                 // its result in the scratch, while the lighter goes to a fresh
