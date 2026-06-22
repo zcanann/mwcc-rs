@@ -11,3 +11,12 @@ int g1, g2;
 void one(void)        { g1 = h(); }            // bl h; stw r3,g1; lwz r0,20(r1)
 void witharg(int a)   { g1 = h2(a); }
 void two(void)        { g1 = h(); g2 = h(); }  // two calls, two result-stores
+// A float call result stores from f1 too (`bl hf; stfs f1,gf`), and storing it is not
+// "using the FPU": a bare single-precision store sets no extab uses_fpu flag, just as a
+// double store doesn't. (`gf = a + b`, with an fadds, still sets it.)
+float hf(void);
+double hd(void);
+float gf;
+double gd;
+void onef(void)       { gf = hf(); }           // bl hf; stfs f1,gf — extab uses_fpu clear
+void oned(void)       { gd = hd(); }           // bl hd; stfd f1,gd

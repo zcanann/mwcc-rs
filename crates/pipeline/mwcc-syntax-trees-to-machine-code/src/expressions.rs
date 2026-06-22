@@ -1598,6 +1598,14 @@ impl Generator {
             if matches!(value, Expression::Variable(_)) {
                 return self.float_register_of_leaf(value);
             }
+            // A call result lands in the float return register (f1); store from there
+            // directly rather than moving it to f0 first (mwcc emits no `fmr f0,f1`).
+            // The store-only LR-reload-hoist barrier keeps the reload after the stfs.
+            if let Expression::Call { name, arguments } = value {
+                let result = Eabi::float_result().number;
+                self.emit_call(name, arguments, Some(result), true)?;
+                return Ok(result);
+            }
             self.evaluate_float(value, FLOAT_SCRATCH)?;
             return Ok(FLOAT_SCRATCH);
         }

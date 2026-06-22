@@ -312,7 +312,10 @@ impl Instruction {
     /// (or leaf-with-frame) doing only double-precision work — `lfd`/`stfd`, a
     /// double `fadd`, a `fctiwz` convert-to-int, or a bare `fcmpo` — leaves the flag
     /// clear, so `if (d > 0.0)` against a double constant carries no FPU flag while
-    /// the single-precision `if (f > 0.0f)` (an `lfs`) does.
+    /// the single-precision `if (f > 0.0f)` (an `lfs`) does. A bare single *store*
+    /// does NOT count either: a non-leaf that only stores a call's float result
+    /// (`gf = hf();` -> `stfs f1`) with no single load or arithmetic leaves the flag
+    /// clear, matching the double-store case.
     pub fn is_single_precision_floating_point(&self) -> bool {
         use Instruction::*;
         self.is_single_precision_arithmetic()
@@ -320,8 +323,6 @@ impl Instruction {
                 self,
                 LoadFloatSingle { .. }
                     | LoadFloatSingleIndexed { .. }
-                    | StoreFloatSingle { .. }
-                    | StoreFloatSingleIndexed { .. }
                     | RoundToSingle { .. }
             )
     }
