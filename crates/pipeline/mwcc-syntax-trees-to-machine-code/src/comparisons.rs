@@ -516,8 +516,37 @@ impl Generator {
         const GT: u8 = 1;
         const EQ: u8 = 2;
         let double = self.is_double_value(left) || self.is_double_value(right);
-        let a = self.place_float_compare_operand(left, double)?;
-        let b = self.place_float_compare_operand(right, double)?;
+        // For `==`/`!=` with a member/global value (not a register leaf), mwcc swaps the
+        // register assignment versus the ordered form — the constant lands in f1 and the
+        // loaded value in f0 (`lfs f1,k; lfs f0,(value); fcmpu f1,f0`), unlike the ordered
+        // `lfs f0,k; lfs f1,(value)`. That swap isn't modeled; defer (a register leaf
+        // `a == 0.0f` is unaffected and stays byte-exact).
+        if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+            let left_load = self.is_float_operand(left) && !self.is_float_leaf(left);
+            let right_load = self.is_float_operand(right) && !self.is_float_leaf(right);
+            if left_load || right_load {
+                return Err(Diagnostic::error("a float member/global == comparison needs mwcc's swapped-register form (roadmap)"));
+            }
+        }
+        // When one operand is a pool literal and the other a value that must be loaded
+        // (a float member or global), mwcc loads the constant into f0 *first*, then the
+        // value into f1 — `lfs f0,k; lfs f1,(value); fcmpo f1,f0`. Place the literal
+        // side first so the loads emit in that order; the fcmpo keeps source order.
+        let left_literal = matches!(left, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_));
+        let right_literal = matches!(right, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_));
+        let (a, b) = if right_literal && !left_literal {
+            let b = self.place_float_compare_operand(right, double)?;
+            let a = self.place_float_compare_value(left)?;
+            (a, b)
+        } else if left_literal && !right_literal {
+            let a = self.place_float_compare_operand(left, double)?;
+            let b = self.place_float_compare_value(right)?;
+            (a, b)
+        } else {
+            let a = self.place_float_compare_operand(left, double)?;
+            let b = self.place_float_compare_operand(right, double)?;
+            (a, b)
+        };
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
             let (first, second) = if matches!(right, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)) { (b, a) } else { (a, b) };
             self.output.instructions.push(Instruction::FloatCompareUnordered { a: first, b: second });
@@ -562,6 +591,23 @@ impl Generator {
             return Ok(FLOAT_SCRATCH);
         }
         self.float_register_of_leaf(operand)
+    }
+
+    /// Place a float comparison operand that is a *value* (not a pool literal): a
+    /// register leaf stays put; a float member/global/dereference is loaded into `f1`
+    /// via evaluate_float (`lfs f1,(addr)`), the register mwcc uses for the compared
+    /// value. Deferred when `f1` already holds a float argument — mwcc would pick a
+    /// higher FPR there, which needs the register allocator.
+    fn place_float_compare_value(&mut self, operand: &Expression) -> Compilation<u8> {
+        const FLOAT_FIRST: u8 = 1;
+        if self.is_float_leaf(operand) {
+            return self.float_register_of_leaf(operand);
+        }
+        if self.locations.values().any(|location| location.class == ValueClass::Float && location.register == FLOAT_FIRST) {
+            return Err(Diagnostic::error("a float member/global compare with a float argument in f1 needs the FP register allocator (roadmap)"));
+        }
+        self.evaluate_float(operand, FLOAT_FIRST)?;
+        Ok(FLOAT_FIRST)
     }
 
     /// Whether `value` is a full-word (32-bit) memory load — a dereference,

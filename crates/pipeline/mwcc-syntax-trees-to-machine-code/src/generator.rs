@@ -178,6 +178,21 @@ impl Generator {
         matches!(expression, Expression::Variable(name) if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::Float))
     }
 
+    /// Whether this expression yields a floating-point value — a float-register leaf,
+    /// a float file-scope global, or a float-typed struct member — so a comparison on
+    /// it routes to the FPU compare (`fcmpo`/`fcmpu`) path rather than the integer one.
+    pub(crate) fn is_float_operand(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Variable(name) => {
+                self.locations.get(name.as_str()).is_some_and(|location| location.class == ValueClass::Float)
+                    || (!self.locations.contains_key(name.as_str())
+                        && matches!(self.globals.get(name.as_str()), Some(Type::Float | Type::Double)))
+            }
+            Expression::Member { member_type, .. } => matches!(member_type, Type::Float | Type::Double),
+            _ => false,
+        }
+    }
+
     /// Record a relocation against the instruction that is about to be pushed.
     pub(crate) fn record_relocation(&mut self, kind: RelocationKind, symbol: &str) {
         self.record_target(kind, RelocationTarget::External(symbol.to_string()));
