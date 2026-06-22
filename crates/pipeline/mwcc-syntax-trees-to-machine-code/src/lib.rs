@@ -107,11 +107,14 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // on (the default); `-Cpp_exceptions off` suppresses them (the frame itself is
     // unchanged). `frame` drives those sections, so leave it `None` when off.
     if generator.frame_size != 0 && config.flags.cpp_exceptions {
-        // The extab FPU flag is set for a non-leaf that touches the FPU, and also
-        // for a leaf-with-frame that uses single-precision float arithmetic (an
-        // `int`->`float` conversion's `fsubs`) — but not a double-only or
-        // convert-to-int frame (`fsub`/`fctiwz` leave it clear).
-        let touches_fpu = generator.output.instructions.iter().any(|instruction| instruction.is_floating_point());
+        // The extab FPU flag is keyed on *single-precision* float usage: a non-leaf
+        // that uses a single-precision load/store/arith sets it, and so does any
+        // leaf-with-frame that does single-precision arithmetic (an `int`->`float`
+        // conversion's `fsubs`). Double-only work — `lfd`/`fadd`/`fctiwz`, or a bare
+        // `fcmpo` against a double constant — leaves it clear (`if (d > 0.0)` carries
+        // no flag, `if (f > 0.0f)` does). Counting *any* FP here over-set it for
+        // double-only non-leaves such as a double comparison against a constant.
+        let touches_fpu = generator.output.instructions.iter().any(|instruction| instruction.is_single_precision_floating_point());
         let single_arithmetic = generator.output.instructions.iter().any(|instruction| instruction.is_single_precision_arithmetic());
         generator.output.frame = Some(FrameInfo {
             saved_gpr_count: generator.callee_saved.len() as u8,

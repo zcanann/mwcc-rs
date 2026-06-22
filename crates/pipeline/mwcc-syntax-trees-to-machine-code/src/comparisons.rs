@@ -478,7 +478,7 @@ impl Generator {
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
             // `==`/`!=` are commutative; mwcc canonicalizes a literal operand to
             // the front (it loaded the constant first), so `x == 0.0` is `fcmpu 0,x`.
-            let (first, second) = if matches!(right, Expression::FloatLiteral(_)) { (b, a) } else { (a, b) };
+            let (first, second) = if matches!(right, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)) { (b, a) } else { (a, b) };
             self.output.instructions.push(Instruction::FloatCompareUnordered { a: first, b: second });
         } else {
             self.output.instructions.push(Instruction::FloatCompareOrdered { a, b });
@@ -519,7 +519,7 @@ impl Generator {
         let a = self.place_float_compare_operand(left, double)?;
         let b = self.place_float_compare_operand(right, double)?;
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-            let (first, second) = if matches!(right, Expression::FloatLiteral(_)) { (b, a) } else { (a, b) };
+            let (first, second) = if matches!(right, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)) { (b, a) } else { (a, b) };
             self.output.instructions.push(Instruction::FloatCompareUnordered { a: first, b: second });
         } else {
             self.output.instructions.push(Instruction::FloatCompareOrdered { a, b });
@@ -545,6 +545,17 @@ impl Generator {
         if let Expression::FloatLiteral(value) = operand {
             if double {
                 self.load_double_constant(FLOAT_SCRATCH, value.to_bits());
+            } else {
+                self.load_float_constant(FLOAT_SCRATCH, *value as f32);
+            }
+            return Ok(FLOAT_SCRATCH);
+        }
+        // An integer literal in a float comparison (`a > 0`) is promoted to the
+        // comparison's precision and loaded from the constant pool, exactly as mwcc
+        // does for the written `a > 0.0f`.
+        if let Expression::IntegerLiteral(value) = operand {
+            if double {
+                self.load_double_constant(FLOAT_SCRATCH, (*value as f64).to_bits());
             } else {
                 self.load_float_constant(FLOAT_SCRATCH, *value as f32);
             }

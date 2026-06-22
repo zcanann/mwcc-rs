@@ -299,4 +299,23 @@ impl Instruction {
                 | ConvertToIntegerWordZero { .. }
         )
     }
+
+    /// Whether this is a *single-precision* FP operation that sets the extab "uses
+    /// FPU" flag. mwcc keys that flag on single precision specifically: a non-leaf
+    /// (or leaf-with-frame) doing only double-precision work — `lfd`/`stfd`, a
+    /// double `fadd`, a `fctiwz` convert-to-int, or a bare `fcmpo` — leaves the flag
+    /// clear, so `if (d > 0.0)` against a double constant carries no FPU flag while
+    /// the single-precision `if (f > 0.0f)` (an `lfs`) does.
+    pub fn is_single_precision_floating_point(&self) -> bool {
+        use Instruction::*;
+        self.is_single_precision_arithmetic()
+            || matches!(
+                self,
+                LoadFloatSingle { .. }
+                    | LoadFloatSingleIndexed { .. }
+                    | StoreFloatSingle { .. }
+                    | StoreFloatSingleIndexed { .. }
+                    | RoundToSingle { .. }
+            )
+    }
 }
