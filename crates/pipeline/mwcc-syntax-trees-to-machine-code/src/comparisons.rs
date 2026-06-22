@@ -12,6 +12,22 @@ impl Generator {
     /// Emit a comparison as mwcc's branchless idiom. Currently handles `==` (and
     /// `== 0`) and signed `< 0`; the richer signed less/greater idioms are not
     /// implemented yet.
+    /// A register holding `value`, distinct from GENERAL_SCRATCH, for the branchless
+    /// sign idioms that negate/complement into the scratch and then OR/AND with the
+    /// value: a full-width leaf stays in its home register (`neg r0,r3; ... r0,r0,r3`).
+    /// A sub-expression evaluates into the destination — unless that *is* the scratch
+    /// (a store, d=r0), where the scratch op would clobber it, which defers.
+    fn sign_idiom_source(&mut self, value: &Expression, destination: u8) -> Compilation<u8> {
+        if let Some(register) = self.leaf_info(value).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
+            Ok(register)
+        } else if destination != GENERAL_SCRATCH {
+            self.evaluate_general(value, destination)?;
+            Ok(destination)
+        } else {
+            Err(Diagnostic::error("a branchless comparison of a narrow or non-leaf value into the scratch needs a second register (roadmap)"))
+        }
+    }
+
     pub(crate) fn emit_comparison(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
         // A comparison whose operands are floating-point materializes a boolean
         // from cr0 rather than using the integer branchless idioms below.
@@ -93,18 +109,8 @@ impl Generator {
                         return Ok(());
                     }
                 }
-                // `(-x | x) >> 31`. x must stay in a register distinct from the scratch:
-                // a full-width leaf keeps its home register (`neg r0,r3; or r0,r0,r3`).
-                // Computing x into the destination when that is the scratch (a store, d=r0)
-                // would let the neg clobber it, turning the `| x` into a no-op.
-                let source = if let Some(register) = self.leaf_info(left).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
-                    register
-                } else if d != GENERAL_SCRATCH {
-                    self.evaluate_general(left, d)?;
-                    d
-                } else {
-                    return Err(Diagnostic::error("a `!= 0` of a narrow or non-leaf value into the scratch needs a second register (roadmap)"));
-                };
+                // `(-x | x) >> 31`: the top bit is set iff x has any bit set.
+                let source = self.sign_idiom_source(left, d)?;
                 self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: source });
                 self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
@@ -135,9 +141,9 @@ impl Generator {
             }
             // signed x > 0 : sign bit of (-x & ~x)
             BinaryOperator::Greater if is_zero_literal(right) && signed_left => {
-                self.evaluate_general(left, d)?;
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: d });
-                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: d });
+                let source = self.sign_idiom_source(left, d)?;
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: source });
+                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
@@ -150,10 +156,17 @@ impl Generator {
             }
             // signed x <= 0 : `cntlzw(x)` is 0 (x<0) or 32 (x==0) but 1..31 (x>0), so
             // rotating a `1` left by that count lands in the low bit only for x <= 0.
-            // When `x` already occupies the destination (a leaf), the `cntlzw` must
-            // read it before `li d,1` overwrites it; otherwise mwcc schedules `li d,1`
-            // first, ahead of the `cntlzw` of the scratch-resident operand.
+            // A full-width leaf reads x with cntlzw into the scratch, then puts the `1`
+            // in x's now-free home register and rotates (`cntlzw r0,r3; li r3,1;
+            // rlwnm r0,r3,r0`) — putting the `1` in the destination would let the cntlzw
+            // clobber it for a store (d=r0). A non-leaf keeps the original scratch path.
             BinaryOperator::LessEqual if is_zero_literal(right) && signed_left => {
+                if let Some(register) = self.leaf_info(left).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: register });
+                    self.load_integer_constant(register, 1);
+                    self.output.instructions.push(Instruction::RotateAndMaskVariable { a: d, s: register, b: GENERAL_SCRATCH, begin: 31, end: 31 });
+                    return Ok(());
+                }
                 let source = self.place_operand_or_scratch(left, d)?;
                 if source == d {
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
