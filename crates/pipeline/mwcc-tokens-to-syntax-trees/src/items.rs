@@ -885,11 +885,13 @@ impl Parser {
                 let mut size = type_size(field_type);
                 let element_size = size;
                 if *self.peek() == Token::BracketOpen {
-                    // A scalar/pointer array records its element type for indexed access.
-                    // A struct-value array (`GXTexRegion TexRegions[8];`) carries its
-                    // element tag in `struct_tag` instead — its size still lays out
-                    // correctly, so later members resolve.
-                    if !matches!(field_type, Type::Struct { .. }) {
+                    // A scalar array records its element type for indexed access. A
+                    // struct-value array (`GXTexRegion TexRegions[8];`) or a pointer
+                    // array (`u8 *mess_stack[8];`) has no scalar pointee — its element
+                    // size still lays the array out correctly (4 bytes per pointer, the
+                    // struct width per struct), so later members resolve; indexed
+                    // element access defers in codegen rather than miscomputing.
+                    if !matches!(field_type, Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }) {
                         array_element = Some(pointee_of(field_type)?);
                     }
                     // One or more dimensions — `field[N]`, `field[R][C]`, … — occupy the
