@@ -42,13 +42,19 @@ impl Generator {
             self.output.instructions.push(Instruction::XorImmediateShifted { a: source, s: source, immediate: 0x8000 });
         }
         self.output.instructions.push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
+        // The magic bias goes in a register distinct from the assembled value's f0
+        // (FLOAT_SCRATCH): the destination when it isn't f0 (a return into f1), else f1
+        // for a value/store into f0 — otherwise the assembled `lfd f0` would overwrite
+        // the bias, leaving `fsub f0,f0,f0` = 0.
+        const FLOAT_FIRST: u8 = 1; // f1
+        let bias_register = if destination != FLOAT_SCRATCH { destination } else { FLOAT_FIRST };
         // The bias load and the value store are independent; builds schedule them
         // in opposite orders (GC/2.0p1 stores first, every other build loads first).
         if self.behavior.float_cast_value_store_first {
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
-            self.load_double_constant(destination, bias);
+            self.load_double_constant(bias_register, bias);
         } else {
-            self.load_double_constant(destination, bias);
+            self.load_double_constant(bias_register, bias);
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
         }
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
@@ -56,9 +62,9 @@ impl Generator {
         // The bias subtract yields the result at the requested precision: `fsub`
         // for an int->double conversion, `fsubs` for int->float.
         self.output.instructions.push(if double {
-            Instruction::FloatSubtractDouble { d: destination, a: FLOAT_SCRATCH, b: destination }
+            Instruction::FloatSubtractDouble { d: destination, a: FLOAT_SCRATCH, b: bias_register }
         } else {
-            Instruction::FloatSubtractSingle { d: destination, a: FLOAT_SCRATCH, b: destination }
+            Instruction::FloatSubtractSingle { d: destination, a: FLOAT_SCRATCH, b: bias_register }
         });
         Ok(())
     }
