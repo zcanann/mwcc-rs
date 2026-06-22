@@ -294,8 +294,10 @@ impl Generator {
             }
         }
 
-        // Register form: value into the destination, shift amount into a register.
-        self.evaluate_general(left, d)?;
+        // Register form: a leaf value stays in its home register and shifts straight
+        // into the destination (`srw d,a,n`, no redundant move); a sub-expression
+        // evaluates into the destination. The shift amount goes in its own register.
+        let source = self.place_operand_or_scratch(left, d)?;
         let amount = if is_complex(right) {
             if !fits_single_scratch(right, true) {
                 return Err(Diagnostic::error("shift amount needs the full register allocator (roadmap M1)"));
@@ -306,9 +308,9 @@ impl Generator {
             self.general_register_of_leaf(right)?
         };
         self.output.instructions.push(if signed {
-            Instruction::ShiftRightAlgebraicWord { a: d, s: d, b: amount }
+            Instruction::ShiftRightAlgebraicWord { a: d, s: source, b: amount }
         } else {
-            Instruction::ShiftRightWord { a: d, s: d, b: amount }
+            Instruction::ShiftRightWord { a: d, s: source, b: amount }
         });
         Ok(())
     }
