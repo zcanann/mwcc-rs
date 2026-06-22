@@ -735,6 +735,41 @@ impl Parser {
                 }
                 continue;
             }
+            // An array-typedef member (`Mtx unk_F0;` where `Mtx` is `typedef float
+            // Mtx[3][4]`) — the typedef gives the element type and base length; a
+            // trailing `[N]` multiplies it. Recorded as a flat element array so the
+            // member (and those after it) lay out correctly. A 2D element access still
+            // defers in codegen — the flat array stops the second `[]` resolving.
+            let array_typedef = match self.peek() {
+                Token::Identifier(word) => self.array_typedefs.get(word).copied(),
+                _ => None,
+            };
+            if let Some((element, base_len)) = array_typedef {
+                self.advance(); // the array-typedef name
+                let attr_align = self.skip_attributes()?;
+                let element_size = type_size(element);
+                let alignment = type_alignment(element).max(1).max(attr_align.unwrap_or(1));
+                loop {
+                    let field_name = self.parse_identifier()?;
+                    let mut count = base_len;
+                    while *self.peek() == Token::BracketOpen {
+                        self.advance();
+                        let extra = self.parse_integer_constant()? as u16;
+                        self.expect(Token::BracketClose)?;
+                        count = count.saturating_mul(extra);
+                    }
+                    alignment_max = alignment_max.max(alignment);
+                    offset = offset.div_ceil(alignment) * alignment;
+                    bit_unit = None;
+                    layout.fields.insert(field_name, StructField { member_type: element, offset, struct_tag: None, array_element: Some(pointee_of(element)?), bit_field: None });
+                    offset += count.saturating_mul(element_size);
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::Semicolon)?;
+                continue;
+            }
             let field_type = self.parse_type()?;
             let struct_tag = self.last_struct_tag.take();
             // A declarator may carry `__attribute__((aligned(n)))` between the type
@@ -1165,6 +1200,21 @@ impl Parser {
                     return Ok(());
                 }
                 let name = self.parse_identifier()?;
+                // An array typedef (`typedef float Mtx[3][4];`) — record the element
+                // type and total element count so a member of this type lays out with
+                // the right size (the `Type` model has no array variant).
+                if *self.peek() == Token::BracketOpen {
+                    let mut total: u16 = 1;
+                    while *self.peek() == Token::BracketOpen {
+                        self.advance();
+                        let count = self.parse_integer_constant()? as u16;
+                        self.expect(Token::BracketClose)?;
+                        total = total.saturating_mul(count);
+                    }
+                    self.expect(Token::Semicolon)?;
+                    self.array_typedefs.insert(name, (aliased, total));
+                    return Ok(());
+                }
                 self.expect(Token::Semicolon)?;
                 self.typedefs.insert(name, aliased);
                 return Ok(());
