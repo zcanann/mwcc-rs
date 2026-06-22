@@ -231,8 +231,28 @@ impl Generator {
                 self.output.anonymous_label_bump = 2;
                 self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
                 self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+                let condition_start = self.output.instructions.len();
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
-                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                // mwcc fills the mflr->LR-store latency slot with the condition test only
+                // when it is a bare compare (a register operand). A member/complex
+                // condition loads into r0, which would clobber the just-saved LR, so the
+                // LR store must come first — otherwise it would save the loaded value, not
+                // the return address.
+                let condition_clobbers_lr = self.output.instructions[condition_start..].iter().any(|instruction| {
+                    !matches!(
+                        instruction,
+                        Instruction::CompareWord { .. }
+                            | Instruction::CompareWordImmediate { .. }
+                            | Instruction::CompareLogicalWord { .. }
+                            | Instruction::CompareLogicalWordImmediate { .. }
+                    )
+                });
+                let lr_store = Instruction::StoreWord { s: 0, a: 1, offset: 20 };
+                if condition_clobbers_lr {
+                    self.output.instructions.insert(condition_start, lr_store);
+                } else {
+                    self.output.instructions.push(lr_store);
+                }
                 let branch_index = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
                 for statement in then_body {
@@ -265,8 +285,28 @@ impl Generator {
                 self.output.anonymous_label_bump = 3;
                 self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
                 self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+                let condition_start = self.output.instructions.len();
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
-                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                // mwcc fills the mflr->LR-store latency slot with the condition test only
+                // when it is a bare compare (a register operand). A member/complex
+                // condition loads into r0, which would clobber the just-saved LR, so the
+                // LR store must come first — otherwise it would save the loaded value, not
+                // the return address.
+                let condition_clobbers_lr = self.output.instructions[condition_start..].iter().any(|instruction| {
+                    !matches!(
+                        instruction,
+                        Instruction::CompareWord { .. }
+                            | Instruction::CompareWordImmediate { .. }
+                            | Instruction::CompareLogicalWord { .. }
+                            | Instruction::CompareLogicalWordImmediate { .. }
+                    )
+                });
+                let lr_store = Instruction::StoreWord { s: 0, a: 1, offset: 20 };
+                if condition_clobbers_lr {
+                    self.output.instructions.insert(condition_start, lr_store);
+                } else {
+                    self.output.instructions.push(lr_store);
+                }
                 let branch_to_else = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
                 for statement in then_body {
