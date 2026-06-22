@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{Expression, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 use crate::analysis::*;
 use crate::generator::*;
 
@@ -85,12 +85,40 @@ impl Generator {
             return self.evaluate_general(expression, result);
         }
 
-        // A narrow result truncates, so an expression whose low bits depend only
-        // on its operands' low bits could read its narrow operands raw and
-        // re-truncate at the end (mwcc: `addi r0,r3,1; extsh r3,r0`). Reproducing
-        // that needs raw (un-extended) operand reads — a threaded flag through the
-        // operand placement — which is not yet modeled, so it still defers rather
-        // than emit the redundant leading extension.
+        // A narrow result truncates, so for an operator whose low bits depend only on
+        // its operands' low bits — add/sub/and/or/xor/mul/shift-left — a narrow leaf
+        // operand is read raw and the result re-truncated (mwcc: `addi r0,r3,5; clrlwi
+        // r3,r0,24`). Scoped to `variable OP constant`, which the constant-form path
+        // reads through place_operand (honoring the raw flag); a two-variable narrow
+        // op still extends both operands and is left to the full optimization. The
+        // operator restriction keeps the raw read off div/mod/shift-right.
+        if let Expression::Binary { operator, left, right } = expression {
+            // BitAnd and ShiftLeft are excluded: mwcc folds their constant into a single
+            // `rlwinm`/`clrlwi` that also performs the return-width truncation, so the
+            // separate trailing widen this path emits would be redundant. The remaining
+            // ops compute into a register and truncate separately, matching mwcc.
+            let truncation_safe = matches!(
+                operator,
+                BinaryOperator::Add
+                    | BinaryOperator::Subtract
+                    | BinaryOperator::BitOr
+                    | BinaryOperator::BitXor
+                    | BinaryOperator::Multiply
+            );
+            let var_op_constant = matches!(left.as_ref(), Expression::Variable(_))
+                && matches!(right.as_ref(), Expression::IntegerLiteral(_));
+            if truncation_safe && var_op_constant {
+                self.narrow_truncation_context = true;
+                let evaluated = self.evaluate_general(expression, GENERAL_SCRATCH);
+                self.narrow_truncation_context = false;
+                evaluated?;
+                self.emit_widen(result, GENERAL_SCRATCH, width, signed);
+                return Ok(());
+            }
+        }
+        // Other narrow-operand expressions still need the full truncation-propagation
+        // optimization (un-extended reads through nested truncation-safe operators);
+        // defer rather than emit redundant leading extensions.
         if self.contains_narrow_leaf(expression) {
             return Err(Diagnostic::error("narrow return of a narrow-operand expression needs the truncation-context optimization (roadmap)"));
         }

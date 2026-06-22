@@ -78,6 +78,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
         callee_saved: Vec::new(),
+        narrow_truncation_context: false,
         call_return_types: call_return_types.clone(),
     };
     generator.assign_parameters(function)?;

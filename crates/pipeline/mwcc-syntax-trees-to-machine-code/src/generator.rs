@@ -117,6 +117,11 @@ pub(crate) struct Generator {
     /// hold values live across a call. They are saved high-to-low in the prologue
     /// and reloaded in the epilogue, and drive the unwind table's saved-GPR count.
     pub(crate) callee_saved: Vec<u8>,
+    /// Set while evaluating a narrow-return expression whose result is truncated, so a
+    /// narrow leaf operand is read raw (no leading sign/zero extension) — the final
+    /// truncation makes the extension redundant. Only enabled for truncation-safe
+    /// operators with leaf operands, never for div/mod/shift-right.
+    pub(crate) narrow_truncation_context: bool,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {

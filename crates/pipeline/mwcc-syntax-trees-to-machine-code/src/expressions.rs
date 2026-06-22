@@ -1893,6 +1893,12 @@ impl Generator {
             if width == 32 {
                 return Ok(Some(register));
             }
+            // In a narrow-truncation context the result is truncated, so a narrow
+            // operand of a truncation-safe op is read raw (no leading extension) — the
+            // final truncation makes it redundant, matching mwcc.
+            if self.narrow_truncation_context {
+                return Ok(Some(register));
+            }
             // A narrow operand is width-extended to 32 bits before use. The
             // extension lands in the consumer's working register: the destination
             // for addi-family consumers that keep their operand in place, otherwise
