@@ -250,6 +250,14 @@ impl Generator {
                 let lr_store = Instruction::StoreWord { s: 0, a: 1, offset: 20 };
                 if condition_clobbers_lr {
                     self.output.instructions.insert(condition_start, lr_store);
+                    // The insert shifts the condition test's instructions down by one, so
+                    // any relocation recorded against them (a global condition's SDA21
+                    // reloc) must shift too, or it points at the wrong instruction.
+                    for relocation in &mut self.output.relocations {
+                        if relocation.instruction_index >= condition_start {
+                            relocation.instruction_index += 1;
+                        }
+                    }
                 } else {
                     self.output.instructions.push(lr_store);
                 }
@@ -304,6 +312,14 @@ impl Generator {
                 let lr_store = Instruction::StoreWord { s: 0, a: 1, offset: 20 };
                 if condition_clobbers_lr {
                     self.output.instructions.insert(condition_start, lr_store);
+                    // The insert shifts the condition test's instructions down by one, so
+                    // any relocation recorded against them (a global condition's SDA21
+                    // reloc) must shift too, or it points at the wrong instruction.
+                    for relocation in &mut self.output.relocations {
+                        if relocation.instruction_index >= condition_start {
+                            relocation.instruction_index += 1;
+                        }
+                    }
                 } else {
                     self.output.instructions.push(lr_store);
                 }

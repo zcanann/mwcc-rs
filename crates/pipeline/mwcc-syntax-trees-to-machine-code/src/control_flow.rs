@@ -727,6 +727,12 @@ impl Generator {
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);
         }
+        // A global has no home register: load it into the scratch (`lwz r0,gv@sda21`)
+        // and let the caller compare, like a memory load.
+        if self.is_global(operand) {
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            return Ok(GENERAL_SCRATCH);
+        }
         self.general_register_of_leaf(operand)
     }
 }
