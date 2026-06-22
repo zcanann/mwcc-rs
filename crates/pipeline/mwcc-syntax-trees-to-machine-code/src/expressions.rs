@@ -1615,6 +1615,13 @@ impl Generator {
             }
             return self.general_register_of_leaf(value);
         }
+        // A call result lands in the general return register (r3); store from there
+        // directly rather than moving it to the scratch first (mwcc emits no `mr r0,r3`).
+        if let Expression::Call { name, arguments } = value {
+            let result = Eabi::general_result().number;
+            self.emit_call(name, arguments, Some(result), false)?;
+            return Ok(result);
+        }
         // A `cond ? b : c` select with two non-constant leaf arms lands in the false
         // arm's register (the general branch-select path); mwcc stores from there
         // directly — `cmpwi; beq; mr c,b; stw c` — rather than moving it to the scratch

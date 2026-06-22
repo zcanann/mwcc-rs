@@ -46,6 +46,20 @@ fn is_barrier(instruction: &Instruction) -> bool {
     )
 }
 
+/// A store to memory. mwcc keeps a post-call store (the one consuming the call's
+/// result) ahead of the epilogue's saved-LR reload, so the reload hoist must not pass
+/// one — unlike a post-call load or register move, which it does overlap.
+fn is_store(instruction: &Instruction) -> bool {
+    use Instruction::*;
+    matches!(
+        instruction,
+        StoreWord { .. } | StoreByte { .. } | StoreHalfword { .. } | StoreFloatSingle { .. }
+            | StoreFloatDouble { .. } | StoreWordWithUpdate { .. } | StoreWordIndexed { .. }
+            | StoreByteIndexed { .. } | StoreHalfwordIndexed { .. } | StoreFloatSingleIndexed { .. }
+            | StoreFloatDoubleIndexed { .. }
+    )
+}
+
 /// Hoist the epilogue's saved-LR reload (`lwz r0, frame+4(r1)`) up to immediately
 /// after the last call, ahead of any post-call computation — reproducing mwcc,
 /// which issues that load early so its latency overlaps the post-call work. The
@@ -83,6 +97,13 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
     }
     // The reload writes r0; it can only pass post-call work that leaves r0 alone.
     if instructions[target..reload].iter().any(touches_register_zero) {
+        return identity;
+    }
+    // It must also stay after a store mwcc keeps ahead of it — the store that consumes
+    // the call result (`g = h();` -> `bl; stw r3; lwz r0`). mwcc does overlap the
+    // reload with a post-call *load* or register move (the local-reload cases), so only
+    // a store blocks the hoist, not every barrier.
+    if instructions[target..reload].iter().any(is_store) {
         return identity;
     }
     let moved = instructions.remove(reload);
