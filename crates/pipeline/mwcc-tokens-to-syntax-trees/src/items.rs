@@ -773,6 +773,41 @@ impl Parser {
                     }
                     continue;
                 }
+                // An anonymous bit-field `type : width;` is padding with no member: a
+                // positive width advances the current allocation unit (opening a fresh
+                // one if it overflows, same packing as a named bit-field), and a zero
+                // width (`int : 0;`) closes the open unit so the next bit-field starts a
+                // new one at the next boundary.
+                if *self.peek() == Token::Colon {
+                    self.advance();
+                    let width = self.parse_integer_constant()? as u8;
+                    let unit_bits = (type_size(field_type) * 8) as u8;
+                    if width == 0 {
+                        bit_unit = None;
+                    } else if width > unit_bits {
+                        return Err(Diagnostic::error("an unsupported anonymous bit-field width (roadmap)"));
+                    } else {
+                        match bit_unit {
+                            Some((unit_type, unit_offset, bits_used)) if unit_type == field_type && bits_used + width <= unit_bits => {
+                                bit_unit = Some((field_type, unit_offset, bits_used + width));
+                            }
+                            Some((unit_type, ..)) if unit_type != field_type => {
+                                return Err(Diagnostic::error("a struct mixing adjacent bit-field types is not supported yet (roadmap)"));
+                            }
+                            _ => {
+                                let alignment = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
+                                let unit_offset = offset.div_ceil(alignment) * alignment;
+                                offset = unit_offset + type_size(field_type);
+                                alignment_max = alignment_max.max(alignment);
+                                bit_unit = Some((field_type, unit_offset, width));
+                            }
+                        }
+                    }
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 let field_name = self.parse_identifier()?;
                 // A bit-field `type name : width` packs `width` bits (MSB-first) into a
                 // `sizeof(type)` storage unit shared by adjacent same-typed bit-fields;
