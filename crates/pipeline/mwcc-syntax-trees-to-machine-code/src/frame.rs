@@ -5,7 +5,8 @@
 
 use std::collections::HashSet;
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, RelocationKind};
+use mwcc_versions::GlobalAddressing;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, Pointee, Statement, Type};
 use mwcc_target::Eabi;
 use crate::analysis::*;
@@ -174,6 +175,17 @@ impl Generator {
                 self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 1, immediate: offset });
                 return Ok(());
             }
+            // The address of a data global. Under small-data this is `addi d,r13,ga@sda21`
+            // — the EMB_SDA21 relocation (the addi counterpart of the SDA value load),
+            // encoded as `addi d,0,0` pre-link.
+            if !self.locations.contains_key(name)
+                && self.globals.contains_key(name.as_str())
+                && self.behavior.global_addressing == GlobalAddressing::SmallData
+            {
+                self.record_relocation(RelocationKind::EmbSda21, name);
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+                return Ok(());
+            }
         }
         // `&p[i]` is the element address `p + i` — the same pointer arithmetic as
         // `p + i`, scaling the index by the pointee size.
@@ -240,6 +252,13 @@ fn collect_address_taken(function: &Function) -> HashSet<String> {
         walk(condition, &mut names);
         walk(value, &mut names);
     }
+    // Only a parameter or local can be frame-resident. `&global` materializes the
+    // global's address with a relocation and needs no stack slot, so it must not force
+    // a frame (a non-empty set here suppresses the leaf no-frame path).
+    let local_names: HashSet<&str> = function.parameters.iter().map(|parameter| parameter.name.as_str())
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .collect();
+    names.retain(|name| local_names.contains(name.as_str()));
     names
 }
 
