@@ -11,3 +11,9 @@ void d6(int a)   { q6   = a / 6;   }   // magic, shift
 void d7(int a)   { q7   = a / 7;   }   // magic, correction + shift
 void d8(int a)   { q8   = a / 8;   }   // pow2 k>=2: srawi; addze
 void d100(int a) { q100 = a / 100; }   // magic
+// Signed modulo by 2^k into a store has the same latent collision — the sign lands in
+// the dividend register x, not the result r0 (which holds the slwi value).
+int r4, r8, r16;
+void m4(int a)   { r4  = a % 4;  }   // slwi r0,r3,30; srwi r3,r3,31; subf; rotlwi; add r0,r0,r3
+void m8(int a)   { r8  = a % 8;  }
+void m16(int a)  { r16 = a % 16; }

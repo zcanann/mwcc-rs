@@ -284,12 +284,15 @@ impl Generator {
                         self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: sign });
                         self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: sign, b: GENERAL_SCRATCH });
                     } else {
-                        // slwi r0,x,32-k; srwi d,x,31; subf r0,d,r0; rotlwi r0,r0,k; add d,r0,d
+                        // slwi r0,x,32-k; srwi x,x,31; subf r0,x,r0; rotlwi r0,r0,k; add d,r0,x
+                        // The sign goes in the dividend register x (free after the slwi), not
+                        // the result — which would clobber r0's slwi value when the result is
+                        // r0 (a store). The return case has d==x, so this is identical there.
                         self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: x, shift: 32 - k });
-                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: x, shift: 31 });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: destination, b: GENERAL_SCRATCH });
+                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: x, s: x, shift: 31 });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: x, b: GENERAL_SCRATCH });
                         self.output.instructions.push(Instruction::RotateAndMask { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: k, begin: 0, end: 31 });
-                        self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: destination });
+                        self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: x });
                     }
                     return Ok(());
                 }
