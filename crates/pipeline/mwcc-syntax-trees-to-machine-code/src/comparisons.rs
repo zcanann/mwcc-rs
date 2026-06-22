@@ -93,9 +93,20 @@ impl Generator {
                         return Ok(());
                     }
                 }
-                self.evaluate_general(left, d)?;
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: d });
-                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: d });
+                // `(-x | x) >> 31`. x must stay in a register distinct from the scratch:
+                // a full-width leaf keeps its home register (`neg r0,r3; or r0,r0,r3`).
+                // Computing x into the destination when that is the scratch (a store, d=r0)
+                // would let the neg clobber it, turning the `| x` into a no-op.
+                let source = if let Some(register) = self.leaf_info(left).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
+                    register
+                } else if d != GENERAL_SCRATCH {
+                    self.evaluate_general(left, d)?;
+                    d
+                } else {
+                    return Err(Diagnostic::error("a `!= 0` of a narrow or non-leaf value into the scratch needs a second register (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: source });
+                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
