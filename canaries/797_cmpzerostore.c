@@ -9,3 +9,8 @@ void gt0(int a)  { g1 = a > 0; }    // neg r0,r3; andc r0,r0,r3; srwi
 void le0(int a)  { g2 = a <= 0; }   // cntlzw r0,r3; li r3,1; rlwnm
 void lt0(int a)  { g3 = a < 0; }    // unchanged (srwi of the sign bit)
 void ge0(int a)  { g4 = a >= 0; }   // unchanged
+// Two-operand `a < b` into a store: the `(a^b)>>1` intermediate goes to a fresh
+// register (mwcc's `srawi r3`), not the destination — writing it into r0 (the store)
+// would clobber the xor result there. (`>` already did this.)
+int g5;
+void ltb(int a, int b) { g5 = a < b; }   // xor r0,r4,r3; srawi r3,r0,1; and; subf; srwi

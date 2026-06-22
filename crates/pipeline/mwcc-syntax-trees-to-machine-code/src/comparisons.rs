@@ -331,12 +331,17 @@ impl Generator {
                 let (left_register, right_register) = self.place_compare_operands(operator, left, right, d)?;
                 let scratch = GENERAL_SCRATCH;
                 match operator {
-                    // a < b : sign bit of (((a^b)>>1) - ((a^b)&b))
+                    // a < b : sign bit of (((a^b)>>1) - ((a^b)&b)). Like `>`, the
+                    // intermediate `(a^b)>>1` goes to a fresh virtual (the allocator
+                    // coalesces it onto rA, free after the xor — mwcc's `srawi r3`), not
+                    // the destination: writing it into d would clobber the xor result in
+                    // the scratch when d *is* the scratch (a value/store, d=r0).
                     BinaryOperator::Less => {
+                        let temp = self.fresh_virtual_general();
                         self.output.instructions.push(Instruction::Xor { a: scratch, s: right_register, b: left_register });
-                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
                         self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: right_register });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
+                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
                         self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
                     }
                     // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)). The intermediate
