@@ -200,6 +200,12 @@ impl Generator {
                 if is_comparison(*operator) {
                     return self.emit_comparison(*operator, left, right, destination);
                 }
+                // Short-circuit `&&`/`||` as a value (a store, an operand) builds its
+                // 0/1 result with forward branches through the scratch and a join, vs the
+                // tail form's early `beqlr` returns.
+                if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
+                    return self.emit_short_circuit_via_scratch(*operator, left, right, destination);
+                }
                 // Identical simple loads on both sides (`*p op *p`, `a[0]+a[0]`):
                 // mwcc loads the value ONCE and folds operator identities, rather
                 // than the two-operand double load.

@@ -65,7 +65,9 @@ impl Generator {
                 let exit = self.output.instructions.len();
                 self.patch_forward(exit_a, exit);
                 self.patch_forward(exit_b, exit);
-                self.output.instructions.push(Instruction::move_register(result, scratch));
+                if result != scratch {
+                    self.output.instructions.push(Instruction::move_register(result, scratch));
+                }
             }
             BinaryOperator::LogicalOr => {
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
@@ -80,7 +82,9 @@ impl Generator {
                 let exit = self.output.instructions.len();
                 self.patch_forward(to_set_one, set_one);
                 self.patch_forward(to_exit, exit);
-                self.output.instructions.push(Instruction::move_register(result, scratch));
+                if result != scratch {
+                    self.output.instructions.push(Instruction::move_register(result, scratch));
+                }
             }
             _ => unreachable!("caller restricts to logical and/or"),
         }
