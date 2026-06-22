@@ -850,7 +850,13 @@ impl Parser {
                 let mut size = type_size(field_type);
                 let element_size = size;
                 if *self.peek() == Token::BracketOpen {
-                    array_element = Some(pointee_of(field_type)?);
+                    // A scalar/pointer array records its element type for indexed access.
+                    // A struct-value array (`GXTexRegion TexRegions[8];`) carries its
+                    // element tag in `struct_tag` instead — its size still lays out
+                    // correctly, so later members resolve.
+                    if !matches!(field_type, Type::Struct { .. }) {
+                        array_element = Some(pointee_of(field_type)?);
+                    }
                     // One or more dimensions — `field[N]`, `field[R][C]`, … — occupy the
                     // product of the (constant-expression) lengths times the element
                     // size. (Member *access* of a multi-dimensional field still defers in
