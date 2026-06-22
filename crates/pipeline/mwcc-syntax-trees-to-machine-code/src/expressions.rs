@@ -1615,6 +1615,21 @@ impl Generator {
             }
             return self.general_register_of_leaf(value);
         }
+        // A `cond ? b : c` select with two non-constant leaf arms lands in the false
+        // arm's register (the general branch-select path); mwcc stores from there
+        // directly — `cmpwi; beq; mr c,b; stw c` — rather than moving it to the scratch
+        // first. Pass that register as the select's destination so no redundant
+        // `mr r0,c` is emitted, then store from it. (Constant or zero arms take the
+        // branch/mask forms, which already land in the requested destination.)
+        if let Expression::Conditional { condition, when_true, when_false } = value {
+            if leaf_name(when_true).is_some() && leaf_name(when_false).is_some()
+                && constant_value(when_true).is_none() && constant_value(when_false).is_none()
+            {
+                let false_register = self.general_register_of_leaf(when_false)?;
+                self.emit_conditional(condition, when_true, when_false, false_register, false)?;
+                return Ok(false_register);
+            }
+        }
         self.evaluate_general(value, GENERAL_SCRATCH)?;
         Ok(GENERAL_SCRATCH)
     }
