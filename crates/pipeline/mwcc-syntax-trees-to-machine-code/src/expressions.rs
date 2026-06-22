@@ -1623,6 +1623,24 @@ impl Generator {
             }
             return self.general_register_of_leaf(value);
         }
+        // A narrowing integer cast `(short)x`/`(char)x` whose store truncates to the
+        // same or fewer bits (`sth`/`stb`): the cast's sign/zero extension is redundant
+        // — mwcc stores the low bits directly. A float leaf still converts (fctiwz) but
+        // does not narrow (cast to `int`, width 32, skips the `emit_widen`); an integer
+        // leaf stores straight from its own register. Wider stores keep the extension
+        // (`gi = (short)a` genuinely sign-extends), and non-leaf operands fall through
+        // to the cast's own path (still a redundant extension, but never a miscompile).
+        if let Expression::Cast { target_type, operand } = value {
+            if target_type.width() < 32 && pointee.element().width() <= target_type.width() {
+                if self.is_float_leaf(operand) {
+                    self.emit_cast_to_integer(Type::Int, operand, GENERAL_SCRATCH)?;
+                    return Ok(GENERAL_SCRATCH);
+                }
+                if matches!(operand.as_ref(), Expression::Variable(name) if self.lookup_general(name).is_some()) {
+                    return self.place_store_value(operand, pointee);
+                }
+            }
+        }
         // A call result lands in the general return register (r3); store from there
         // directly rather than moving it to the scratch first (mwcc emits no `mr r0,r3`).
         if let Expression::Call { name, arguments } = value {
