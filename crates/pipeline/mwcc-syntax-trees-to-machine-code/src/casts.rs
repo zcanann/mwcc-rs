@@ -93,6 +93,15 @@ impl Generator {
             }
             return Ok(());
         }
+        // A float operand that is NOT a leaf — a global (`(int)gf`), a load, or a
+        // member — needs the same fctiwz + frame-bounce, but loaded first and with
+        // mwcc's distinct prologue order (the `stwu` precedes the `lfs` for a global,
+        // unlike the leaf's fctiwz-first schedule). Until that is modeled, defer:
+        // falling through to the integer path below would evaluate the float operand
+        // into a general register and store garbage.
+        if self.is_float_value(operand) || self.is_float_operand(operand) {
+            return Err(mwcc_core::Diagnostic::error("float-to-int of a non-leaf operand needs the load+convert path (roadmap)"));
+        }
         // int -> int narrowing: place the operand (sub-expression -> scratch),
         // then extend/truncate to the target width into the destination.
         if target_type.width() < 32 {
