@@ -33,6 +33,9 @@ pub enum Instruction {
     CountLeadingZeros { a: u8, s: u8 },
     /// `extsb rA, rS` — sign-extend byte.
     ExtendSignByte { a: u8, s: u8 },
+    /// `extsb. rA, rS` — sign-extend byte, record form (sets cr0). mwcc uses this to
+    /// test a signed `char` condition: sign-extend and compare against 0 in one.
+    ExtendSignByteRecord { a: u8, s: u8 },
     /// `extsh rA, rS` — sign-extend halfword.
     ExtendSignHalfword { a: u8, s: u8 },
     /// `andc rA, rS, rB` => rA = rS & ~rB.

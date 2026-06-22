@@ -633,9 +633,13 @@ impl Generator {
                 }
             }
             let register = self.condition_operand_register(operand)?;
-            // A pointer/unsigned operand tests against 0 with cmplwi (mwcc), a signed
-            // one with cmpwi; both `beq`/`bne` the same since 0 is 0 either way.
-            if self.signedness_of(operand)? {
+            // A signed `char` is sign-extended with the record-form `extsb.` (sets cr0)
+            // — ours loads it with `lbz` (zero-extend), so the explicit sign-extend both
+            // corrects the value and tests it. A pointer/unsigned operand uses cmplwi, a
+            // wider signed one cmpwi; both `beq`/`bne` the same since 0 is 0 either way.
+            if matches!(as_member(operand), Some((_, _, mwcc_syntax_trees::Type::Char))) {
+                self.output.instructions.push(Instruction::ExtendSignByteRecord { a: register, s: register });
+            } else if self.signedness_of(operand)? {
                 self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
             } else {
                 self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: register, immediate: 0 });
@@ -699,7 +703,9 @@ impl Generator {
         // Plain truth test: compare against zero, skip when equal. A pointer/unsigned
         // operand uses cmplwi (mwcc), a signed one cmpwi.
         let register = self.condition_operand_register(condition)?;
-        if self.signedness_of(condition)? {
+        if matches!(as_member(condition), Some((_, _, mwcc_syntax_trees::Type::Char))) {
+            self.output.instructions.push(Instruction::ExtendSignByteRecord { a: register, s: register });
+        } else if self.signedness_of(condition)? {
             self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
         } else {
             self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: register, immediate: 0 });

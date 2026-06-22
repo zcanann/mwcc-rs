@@ -21,6 +21,7 @@ impl Instruction {
             Instruction::Eqv { a, s, b } => logical_form(s, a, b, 284),
             Instruction::CountLeadingZeros { a, s } => logical_form(s, a, 0, 26),
             Instruction::ExtendSignByte { a, s } => logical_form(s, a, 0, 954),
+            Instruction::ExtendSignByteRecord { a, s } => logical_form(s, a, 0, 954) | 1,
             Instruction::ExtendSignHalfword { a, s } => logical_form(s, a, 0, 922),
             Instruction::AndComplement { a, s, b } => logical_form(s, a, b, 60),
             Instruction::OrComplement { a, s, b } => logical_form(s, a, b, 412),
