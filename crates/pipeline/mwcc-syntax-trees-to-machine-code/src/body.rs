@@ -238,28 +238,35 @@ impl Generator {
                 // condition loads into r0, which would clobber the just-saved LR, so the
                 // LR store must come first — otherwise it would save the loaded value, not
                 // the return address.
-                let condition_clobbers_lr = self.output.instructions[condition_start..].iter().any(|instruction| {
+                // mwcc fills the mflr->LR-store latency slot with the FIRST condition
+                // instruction when it does not write r0 (a compare, or a float load/
+                // compare targeting cr/FP), issuing the LR store right after it (e.g.
+                // `lfs f0; stw r0,20; fcmpo`). An integer load / rlwinm. / extsb. into r0
+                // would clobber the saved LR, so the store precedes the whole condition.
+                let first_writes_r0 = self.output.instructions.get(condition_start).map_or(false, |instruction| {
                     !matches!(
                         instruction,
                         Instruction::CompareWord { .. }
                             | Instruction::CompareWordImmediate { .. }
                             | Instruction::CompareLogicalWord { .. }
                             | Instruction::CompareLogicalWordImmediate { .. }
+                            | Instruction::FloatCompareOrdered { .. }
+                            | Instruction::FloatCompareUnordered { .. }
+                            | Instruction::LoadFloatSingle { .. }
+                            | Instruction::LoadFloatSingleIndexed { .. }
+                            | Instruction::LoadFloatDouble { .. }
+                            | Instruction::LoadFloatDoubleIndexed { .. }
+                            | Instruction::ConditionRegisterOr { .. }
                     )
                 });
-                let lr_store = Instruction::StoreWord { s: 0, a: 1, offset: 20 };
-                if condition_clobbers_lr {
-                    self.output.instructions.insert(condition_start, lr_store);
-                    // The insert shifts the condition test's instructions down by one, so
-                    // any relocation recorded against them (a global condition's SDA21
-                    // reloc) must shift too, or it points at the wrong instruction.
-                    for relocation in &mut self.output.relocations {
-                        if relocation.instruction_index >= condition_start {
-                            relocation.instruction_index += 1;
-                        }
+                let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
+                self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                // The insert shifts the condition instructions at/after it down by one, so
+                // their relocations (a global condition's SDA21 reloc) must shift too.
+                for relocation in &mut self.output.relocations {
+                    if relocation.instruction_index >= lr_position {
+                        relocation.instruction_index += 1;
                     }
-                } else {
-                    self.output.instructions.push(lr_store);
                 }
                 let branch_index = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
@@ -300,28 +307,35 @@ impl Generator {
                 // condition loads into r0, which would clobber the just-saved LR, so the
                 // LR store must come first — otherwise it would save the loaded value, not
                 // the return address.
-                let condition_clobbers_lr = self.output.instructions[condition_start..].iter().any(|instruction| {
+                // mwcc fills the mflr->LR-store latency slot with the FIRST condition
+                // instruction when it does not write r0 (a compare, or a float load/
+                // compare targeting cr/FP), issuing the LR store right after it (e.g.
+                // `lfs f0; stw r0,20; fcmpo`). An integer load / rlwinm. / extsb. into r0
+                // would clobber the saved LR, so the store precedes the whole condition.
+                let first_writes_r0 = self.output.instructions.get(condition_start).map_or(false, |instruction| {
                     !matches!(
                         instruction,
                         Instruction::CompareWord { .. }
                             | Instruction::CompareWordImmediate { .. }
                             | Instruction::CompareLogicalWord { .. }
                             | Instruction::CompareLogicalWordImmediate { .. }
+                            | Instruction::FloatCompareOrdered { .. }
+                            | Instruction::FloatCompareUnordered { .. }
+                            | Instruction::LoadFloatSingle { .. }
+                            | Instruction::LoadFloatSingleIndexed { .. }
+                            | Instruction::LoadFloatDouble { .. }
+                            | Instruction::LoadFloatDoubleIndexed { .. }
+                            | Instruction::ConditionRegisterOr { .. }
                     )
                 });
-                let lr_store = Instruction::StoreWord { s: 0, a: 1, offset: 20 };
-                if condition_clobbers_lr {
-                    self.output.instructions.insert(condition_start, lr_store);
-                    // The insert shifts the condition test's instructions down by one, so
-                    // any relocation recorded against them (a global condition's SDA21
-                    // reloc) must shift too, or it points at the wrong instruction.
-                    for relocation in &mut self.output.relocations {
-                        if relocation.instruction_index >= condition_start {
-                            relocation.instruction_index += 1;
-                        }
+                let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
+                self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                // The insert shifts the condition instructions at/after it down by one, so
+                // their relocations (a global condition's SDA21 reloc) must shift too.
+                for relocation in &mut self.output.relocations {
+                    if relocation.instruction_index >= lr_position {
+                        relocation.instruction_index += 1;
                     }
-                } else {
-                    self.output.instructions.push(lr_store);
                 }
                 let branch_to_else = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });

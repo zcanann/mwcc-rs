@@ -264,8 +264,10 @@ impl Instruction {
         )
     }
 
-    /// Whether this is a floating-point operation (FPR loads/stores, arithmetic,
-    /// moves, conversions, compares). Used to set the `extab` "uses FPU" flag.
+    /// Whether this is a floating-point operation that sets the `extab` "uses FPU"
+    /// flag — FPR loads/stores, arithmetic, moves, conversions. A bare float *compare*
+    /// (`fcmpo`/`fcmpu`) does NOT: a non-leaf that only compares its float-register
+    /// arguments (`if (a > b) ...`) leaves the flag clear in mwcc's unwind header.
     pub fn is_floating_point(&self) -> bool {
         use Instruction::*;
         matches!(
@@ -294,8 +296,6 @@ impl Instruction {
                 | RoundToSingle { .. }
                 | FloatMove { .. }
                 | FloatNegate { .. }
-                | FloatCompareOrdered { .. }
-                | FloatCompareUnordered { .. }
                 | ConvertToIntegerWordZero { .. }
         )
     }

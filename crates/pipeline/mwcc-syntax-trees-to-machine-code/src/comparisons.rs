@@ -507,6 +507,37 @@ impl Generator {
         Ok(())
     }
 
+    /// A floating-point comparison used as a *condition* (in an `if`): emit the
+    /// `fcmpo`/`fcmpu` (and the `cror` that folds equality into the eq bit for
+    /// `<=`/`>=`) and return the branch `(options, bit)` that skips the guarded body
+    /// when the relation is false — the same bit mapping the integer compare uses.
+    pub(crate) fn emit_float_condition(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<(u8, u8)> {
+        const LT: u8 = 0;
+        const GT: u8 = 1;
+        const EQ: u8 = 2;
+        let double = self.is_double_value(left) || self.is_double_value(right);
+        let a = self.place_float_compare_operand(left, double)?;
+        let b = self.place_float_compare_operand(right, double)?;
+        if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+            let (first, second) = if matches!(right, Expression::FloatLiteral(_)) { (b, a) } else { (a, b) };
+            self.output.instructions.push(Instruction::FloatCompareUnordered { a: first, b: second });
+        } else {
+            self.output.instructions.push(Instruction::FloatCompareOrdered { a, b });
+        }
+        match operator {
+            BinaryOperator::LessEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: LT, b: EQ }),
+            BinaryOperator::GreaterEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: GT, b: EQ }),
+            _ => {}
+        }
+        Ok(match operator {
+            BinaryOperator::Less => (4, LT),
+            BinaryOperator::Greater => (4, GT),
+            BinaryOperator::LessEqual | BinaryOperator::GreaterEqual | BinaryOperator::Equal => (4, EQ),
+            BinaryOperator::NotEqual => (12, EQ),
+            _ => return Err(Diagnostic::error("unsupported floating-point condition")),
+        })
+    }
+
     /// Place a floating-point comparison operand: a leaf stays in its register; a
     /// float literal is loaded from the constant pool (`lfs`/`lfd`) into the float
     /// scratch, matching mwcc's `x > 0.0` form.

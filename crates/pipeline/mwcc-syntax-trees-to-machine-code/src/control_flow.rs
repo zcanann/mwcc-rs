@@ -648,6 +648,10 @@ impl Generator {
         }
         if let Expression::Binary { operator, left, right } = condition {
             if is_comparison(*operator) {
+                // A floating-point comparison branches off `fcmpo`/`fcmpu`, not `cmpw`.
+                if self.is_float_leaf(left) || self.is_float_leaf(right) {
+                    return self.emit_float_condition(*operator, left, right);
+                }
                 // A member on both sides would both want the scratch; defer.
                 if as_member(left).is_some() && as_member(right).is_some() {
                     return Err(Diagnostic::error("comparison of two members as a condition (roadmap)"));
