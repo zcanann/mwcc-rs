@@ -1572,6 +1572,17 @@ impl Generator {
     /// The register holding the value to store: a leaf stays in its own register,
     /// anything else is computed into the scratch (`li r0,0; stw r0,…`,
     /// `add r0,…; stw r0,…`) ahead of the store.
+    /// The register of the leaf at the end of a chained assignment's value, walking
+    /// through nested `=`. `None` for a computed or non-leaf value (which flows through
+    /// the scratch normally). Used to store the same source register to every target.
+    fn innermost_assigned_leaf(&self, value: &Expression) -> Option<u8> {
+        match value {
+            Expression::Assign { value, .. } => self.innermost_assigned_leaf(value),
+            Expression::Variable(name) => self.lookup_general(name),
+            _ => None,
+        }
+    }
+
     fn place_store_value(&mut self, value: &Expression, pointee: Pointee) -> Compilation<u8> {
         // A constant pre-materialized into a fixed register (a distinct-constant
         // store run) reuses that register instead of re-materializing.
@@ -1622,6 +1633,17 @@ impl Generator {
                 return Ok(GENERAL_SCRATCH);
             }
             return self.general_register_of_leaf(value);
+        }
+        // A chained assignment `g = h = a` stores the same source to each target. Emit
+        // the inner store, then yield the source register directly so the outer store
+        // reuses it (`stw r3,h; stw r3,g`) instead of staging it through the scratch
+        // (`mr r0,r3; stw r0; stw r0`). Only when the ultimate assigned value is a leaf;
+        // a computed value (`g = h = a+b`) already flows through the scratch as mwcc does.
+        if let Expression::Assign { target, value: inner } = value {
+            if let Some(register) = self.innermost_assigned_leaf(inner) {
+                self.emit_store(target, inner)?;
+                return Ok(register);
+            }
         }
         // A narrowing integer cast `(short)x`/`(char)x` whose store truncates to the
         // same or fewer bits (`sth`/`stb`): the cast's sign/zero extension is redundant
