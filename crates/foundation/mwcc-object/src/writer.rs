@@ -9,6 +9,7 @@
 //! pooled across all functions in the unit.
 
 use crate::{DataObject, ObjectInput, RelocationTarget};
+use std::collections::HashMap;
 
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
 /// "LOUSER+0x4a2a82c2").
@@ -237,19 +238,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
+    // mwcc pools each distinct read-only constant once per object: a value a later
+    // function reuses (e.g. several functions comparing against `0.0f`) shares the
+    // first function's `.sdata2` slot — and, below, its `@N` symbol — rather than
+    // appending a duplicate. Dedup by (bits, width); a single and a double zero stay
+    // distinct (different widths → different `lfs`/`lfd` slots).
     let mut constant_offsets: Vec<Vec<u32>> = Vec::new();
+    let mut pooled_offset: HashMap<(u64, u8), u32> = HashMap::new();
     for function in functions {
         let mut offsets = Vec::new();
         for constant in &function.constants {
-            let alignment = constant.byte_width as usize;
-            while sdata2.len() % alignment != 0 {
-                sdata2.push(0);
-            }
-            offsets.push(sdata2.len() as u32);
-            match constant.byte_width {
-                8 => sdata2.extend_from_slice(&constant.bits.to_be_bytes()),
-                _ => sdata2.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
-            }
+            let offset = *pooled_offset.entry((constant.bits, constant.byte_width)).or_insert_with(|| {
+                let alignment = constant.byte_width as usize;
+                while sdata2.len() % alignment != 0 {
+                    sdata2.push(0);
+                }
+                let offset = sdata2.len() as u32;
+                match constant.byte_width {
+                    8 => sdata2.extend_from_slice(&constant.bits.to_be_bytes()),
+                    _ => sdata2.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
+                }
+                offset
+            });
+            offsets.push(offset);
         }
         constant_offsets.push(offsets);
     }
@@ -274,12 +285,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // function's first constant moves from `@5` to `@(5 + strings)`.
     let pooled_string_count = input.data_objects.iter().filter(|object| object.is_static && object.name.starts_with('@')).count() as u32;
     let mut counter = 5u32 + pooled_string_count;
+    // The `@N` of a pooled constant a later function reuses is the one the first
+    // function got — a deduped reuse consumes no new number, so the reusing
+    // function's subsequent unwind `@N` shift down accordingly.
+    let mut numbered_constant: HashMap<(u64, u8), u32> = HashMap::new();
     for function in functions {
         let mut number = counter + function.anonymous_bump;
         let mut numbers = Vec::new();
-        for _ in &function.constants {
-            numbers.push(number);
-            number += 1;
+        for constant in &function.constants {
+            match numbered_constant.get(&(constant.bits, constant.byte_width)) {
+                Some(&existing) => numbers.push(existing),
+                None => {
+                    numbered_constant.insert((constant.bits, constant.byte_width), number);
+                    numbers.push(number);
+                    number += 1;
+                }
+            }
         }
         constant_numbers.push(numbers);
         // A dense switch's jump table is numbered after the function's internal
@@ -455,13 +476,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
     let mut jump_table_symbols: Vec<u32> = Vec::new();
+    // One `.sdata2` symbol per distinct constant: a deduped reuse points at the
+    // symbol the first function emitted (its `@N` and offset already shared above).
+    let mut constant_symbol: HashMap<(u64, u8), u32> = HashMap::new();
     for (index, function) in functions.iter().enumerate() {
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
-            symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
-            let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
-            write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
-            comment_values.push(constant.byte_width as u32);
+            match constant_symbol.get(&(constant.bits, constant.byte_width)) {
+                Some(&existing) => symbols.push(existing),
+                None => {
+                    let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                    constant_symbol.insert((constant.bits, constant.byte_width), symbol);
+                    symbols.push(symbol);
+                    let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
+                    write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
+                    comment_values.push(constant.byte_width as u32);
+                }
+            }
         }
         constant_symbols.push(symbols);
         if let Some(frame) = &frame_numbers[index] {
