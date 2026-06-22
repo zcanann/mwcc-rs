@@ -38,10 +38,24 @@ impl Generator {
                     return Ok(());
                 }
                 if divisor == 2 {
-                    // signed /2 rounds toward zero: add the sign bit, then arithmetic shift.
-                    self.evaluate_general(left, d)?;
-                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: d, shift: 31 });
-                    self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: d });
+                    // signed /2 rounds toward zero: add the dividend's sign bit, then
+                    // arithmetic-shift. The sign occupies the scratch, so the dividend must
+                    // live elsewhere — a leaf stays in its home register (`srwi r0,r3,31;
+                    // add r0,r0,r3; srawi d,r0,1`). Evaluating it into the result and reading
+                    // that would clobber it when the result is the scratch r0 (a store).
+                    let source = if let Some(register) = self.leaf_info(left).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
+                        // A full-width leaf already sits sign-extended in its home register.
+                        register
+                    } else if d != GENERAL_SCRATCH {
+                        // A narrow leaf (needs extension) or a sub-expression evaluates into
+                        // the result; reading it for the sign is fine unless it is the scratch.
+                        self.evaluate_general(left, d)?;
+                        d
+                    } else {
+                        return Err(Diagnostic::error("signed /2 of a narrow or non-leaf result needs a second register (roadmap)"));
+                    };
+                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: source, shift: 31 });
+                    self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: source });
                     self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: GENERAL_SCRATCH, shift: 1 });
                     return Ok(());
                 }
@@ -119,7 +133,11 @@ impl Generator {
 
         let correction = magic < 0;
         let (quotient, sign_temp) = if correction || shift > 0 {
-            // The dividend is needed past the multiply, so the quotient uses r0.
+            // The dividend is consumed by the multiply (and the correction add), so the
+            // quotient accumulates in r0 and the now-free dividend register carries the
+            // sign bit. mwcc reuses the dividend register, not the result register —
+            // which matters when the result *is* r0 (a store): `srwi r3,r0,31; add
+            // r0,r0,r3`, not `srwi r0,r0,31` (that would clobber the quotient).
             self.output.instructions.push(Instruction::MultiplyHighWord { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: dividend_register });
             if correction {
                 self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: dividend_register });
@@ -127,11 +145,13 @@ impl Generator {
             if shift > 0 {
                 self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift });
             }
-            (GENERAL_SCRATCH, destination)
+            (GENERAL_SCRATCH, dividend_register)
         } else {
-            // No correction or shift: the multiply lands straight in the result.
-            self.output.instructions.push(Instruction::MultiplyHighWord { d: destination, a: GENERAL_SCRATCH, b: dividend_register });
-            (destination, GENERAL_SCRATCH)
+            // No correction or shift: the quotient lands in the (now-free) dividend
+            // register and the sign in r0 — `mulhw r3,r0,r3; srwi r0,r3,31; add d,r3,r0`.
+            // Targeting the result register would clobber the scratch when it is r0 (a store).
+            self.output.instructions.push(Instruction::MultiplyHighWord { d: dividend_register, a: GENERAL_SCRATCH, b: dividend_register });
+            (dividend_register, GENERAL_SCRATCH)
         };
         // Round toward zero: add the quotient's sign bit.
         self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: sign_temp, s: quotient, shift: 31 });
