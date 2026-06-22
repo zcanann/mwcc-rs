@@ -1491,6 +1491,12 @@ impl Parser {
         let mut locals = Vec::new();
         while self.peek_is_type() {
             let declared_type = self.parse_type()?;
+            // A volatile local's accesses must not be elided or folded (the straight-
+            // line/value-tracking paths would, e.g. `volatile int x = 5; return x;` ->
+            // `li r3,5` instead of mwcc's store-then-load). Defer until that is modeled.
+            if self.last_type_was_volatile {
+                return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
+            }
             let struct_tag = self.last_struct_tag.take();
             // One or more comma-separated declarators, each optionally initialized.
             loop {
@@ -1636,6 +1642,7 @@ impl Parser {
     /// (its access semantics aren't modeled yet).
     pub(crate) fn skip_type_qualifiers(&mut self) -> Compilation<()> {
         self.last_type_was_const = false;
+        self.last_type_was_volatile = false;
         loop {
             match self.peek() {
                 Token::Identifier(word) if word == "const" => {
@@ -1646,7 +1653,13 @@ impl Parser {
                     self.advance();
                 }
                 Token::Identifier(word) if word == "volatile" => {
-                    return Err(Diagnostic::error("volatile is not supported yet (roadmap)"));
+                    // `volatile` is transparent to layout and to a simple (un-elided)
+                    // access — skip it so a struct with a volatile member (e.g.
+                    // `vu32 mode;` in CARDControl) records its layout. A context that
+                    // could mis-optimize a volatile access (a value-tracked local)
+                    // guards on `last_type_was_volatile` and defers.
+                    self.last_type_was_volatile = true;
+                    self.advance();
                 }
                 _ => return Ok(()),
             }

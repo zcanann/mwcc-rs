@@ -53,6 +53,10 @@ pub(crate) struct Parser {
     /// transparent on a parameter/local/return type, but on a file-scope global it
     /// changes the section (read-only) — so the global path defers when it is set.
     pub(crate) last_type_was_const: bool,
+    /// Set by `skip_type_qualifiers` when the just-parsed type carried `volatile`.
+    /// Layout and a simple access ignore it; a value-tracked local guards on it and
+    /// defers (a volatile local's access must not be elided/folded).
+    pub(crate) last_type_was_volatile: bool,
     /// Names of skipped `static inline` functions with an inline `asm {}` body, in
     /// declaration order; mwcc emits a local undefined symbol for each.
     pub(crate) inline_asm_symbols: Vec<String>,
