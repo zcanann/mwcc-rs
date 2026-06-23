@@ -206,6 +206,15 @@ impl Generator {
                 if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
                     return self.emit_short_circuit_via_scratch(*operator, left, right, destination);
                 }
+                // `&global +/- n` is pointer arithmetic that must scale the offset by the
+                // pointee size (`&ga + 1` is `ga + 4`). That scaling is not yet wired for
+                // an address-of operand — the constant would fold in unscaled — so defer
+                // rather than emit a wrong offset.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
+                    && (self.is_global_address_of(left) || self.is_global_address_of(right))
+                {
+                    return Err(Diagnostic::error("pointer arithmetic on a global's address needs offset scaling (roadmap)"));
+                }
                 // Identical simple loads on both sides (`*p op *p`, `a[0]+a[0]`):
                 // mwcc loads the value ONCE and folds operator identities, rather
                 // than the two-operand double load.
@@ -1578,6 +1587,14 @@ impl Generator {
     /// The register holding the value to store: a leaf stays in its own register,
     /// anything else is computed into the scratch (`li r0,0; stw r0,…`,
     /// `add r0,…; stw r0,…`) ahead of the store.
+    /// Whether `expression` is `&global` — the address of a data global (not a
+    /// frame-resident local). Used to defer the not-yet-scaled `&global +/- n`.
+    fn is_global_address_of(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::AddressOf { operand }
+            if matches!(operand.as_ref(), Expression::Variable(name)
+                if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str())))
+    }
+
     /// The register of the leaf at the end of a chained assignment's value, walking
     /// through nested `=`. `None` for a computed or non-leaf value (which flows through
     /// the scratch normally). Used to store the same source register to every target.
