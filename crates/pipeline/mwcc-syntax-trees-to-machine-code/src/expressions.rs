@@ -206,14 +206,42 @@ impl Generator {
                 if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
                     return self.emit_short_circuit_via_scratch(*operator, left, right, destination);
                 }
-                // `&global +/- n` is pointer arithmetic that must scale the offset by the
-                // pointee size (`&ga + 1` is `ga + 4`). That scaling is not yet wired for
-                // an address-of operand — the constant would fold in unscaled — so defer
-                // rather than emit a wrong offset.
-                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
-                    && (self.is_global_address_of(left) || self.is_global_address_of(right))
-                {
-                    return Err(Diagnostic::error("pointer arithmetic on a global's address needs offset scaling (roadmap)"));
+                // `&global +/- n` is pointer arithmetic: materialize the address into a
+                // fresh register, then add the offset scaled by the pointee size
+                // (`&ga + 1` is `addi d,&ga,4`). Add is commutative; subtract is ptr-int.
+                // A variable index or an offset that overflows the `addi` immediate defers.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+                    let address = if self.is_global_address_of(left) {
+                        Some((left, right))
+                    } else if *operator == BinaryOperator::Add && self.is_global_address_of(right) {
+                        Some((right, left))
+                    } else {
+                        None
+                    };
+                    if let Some((address, offset)) = address {
+                        if let (Expression::AddressOf { operand: inner }, Some(count)) = (address.as_ref(), constant_value(offset)) {
+                            let size = match inner.as_ref() {
+                                Expression::Variable(name) => self.globals.get(name.as_str()).map(|global| (global.width() / 8) as i64),
+                                _ => None,
+                            };
+                            let scaled = size.map(|size| count * size * if *operator == BinaryOperator::Subtract { -1 } else { 1 });
+                            if let Some(Ok(immediate)) = scaled.map(i16::try_from) {
+                                // mwcc materializes the address in the lowest free register
+                                // then adds the offset: the destination in place when it is
+                                // a real register (`addi r3,r3,n` for a return or call arg),
+                                // else a fresh register (`li r3,0; addi r0,r3,n` for a store).
+                                let address_register = if destination == GENERAL_SCRATCH {
+                                    self.fresh_virtual_general()
+                                } else {
+                                    destination
+                                };
+                                self.emit_address_of(inner, address_register)?;
+                                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: address_register, immediate });
+                                return Ok(());
+                            }
+                        }
+                        return Err(Diagnostic::error("pointer arithmetic on a global's address needs offset scaling (roadmap)"));
+                    }
                 }
                 // Identical simple loads on both sides (`*p op *p`, `a[0]+a[0]`):
                 // mwcc loads the value ONCE and folds operator identities, rather
@@ -1595,6 +1623,13 @@ impl Generator {
                 if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str())))
     }
 
+    /// Whether `expression` is `&global +/- n` — the global-address pointer arithmetic
+    /// that materializes as `li rD,0; addi rD,rD,k`.
+    fn is_global_address_arithmetic(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
+            if self.is_global_address_of(left) || self.is_global_address_of(right))
+    }
+
     /// The register of the leaf at the end of a chained assignment's value, walking
     /// through nested `=`. `None` for a computed or non-leaf value (which flows through
     /// the scratch normally). Used to store the same source register to every target.
@@ -1783,6 +1818,13 @@ impl Generator {
     /// evaluated into its positional register; passthrough parameters are already
     /// in place, so this is a no-op for them.
     fn emit_arguments(&mut self, arguments: &[Expression]) -> Compilation<()> {
+        // A `&global + n` argument materializes as `li rD,0; addi rD,rD,k`. Alongside
+        // other arguments mwcc reorders the leading `li`s (the offset arg's base first)
+        // in a way not yet modeled, so defer rather than mis-schedule. A lone such
+        // argument is fine (the single-`li` hoist matches).
+        if arguments.len() >= 2 && arguments.iter().any(|argument| self.is_global_address_arithmetic(argument)) {
+            return Err(Diagnostic::error("a `&global + n` argument alongside others needs the multi-arg schedule (roadmap)"));
+        }
         // Two word members of one pointer base, where loading the first clobbers the
         // base register (`g(p->a, p->b)` with `p` in r3): mwcc pre-copies the base to
         // the second argument register, then loads each member —

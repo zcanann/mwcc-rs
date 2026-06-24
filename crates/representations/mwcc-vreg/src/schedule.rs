@@ -173,7 +173,12 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
             run += 1;
         }
         let next = save + 1 + run;
-        if run == 0 || next >= instructions.len() || !matches!(instructions[next], Instruction::BranchAndLink { .. }) {
+        // The leading `li`-run is hoisted into the gap even when more argument
+        // computation follows before the call — a `&global + n` offset add (`addi
+        // r3,r3,n`) or a register shuffle. mwcc fills the latency slot with the ready
+        // loads regardless, so require only that a `bl` follows the run, not that it is
+        // the very next instruction. (Only the run is moved; the trailing work stays.)
+        if run == 0 || !instructions[next..].iter().any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. })) {
             return identity;
         }
         run.min(2)
