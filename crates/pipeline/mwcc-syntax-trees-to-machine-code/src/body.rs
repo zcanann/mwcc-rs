@@ -545,11 +545,21 @@ impl Generator {
     fn hoist_leading_arg_moves(&mut self, lr_store_index: Option<usize>) {
         let Some(store) = lr_store_index else { return };
         let mut run = 0;
+        // A `li`-form argument (`addi rD,0,n`, `a == 0`) is hoisted by the saved-LR-store
+        // scheduler when it leads — but once a register move (the indirect-call `mr
+        // r12,fp`) has been hoisted ahead of the save, that scheduler can no longer find
+        // the save at `mflr+1`, so the `li` must come along here. Allow it only after a
+        // move, leaving the lone-`li` direct-call case to the other pass unchanged.
+        let mut saw_move = false;
         while run < 2 {
             let Some(instruction) = self.output.instructions.get(store + 1 + run) else { break };
             let hoistable = match *instruction {
-                Instruction::Or { a, s, b } => a != 0 && s != 0 && b != 0,
-                Instruction::AddImmediate { d, a, .. } => d != 0 && a != 0,
+                Instruction::Or { a, s, b } => {
+                    let movable = a != 0 && s != 0 && b != 0;
+                    saw_move |= movable;
+                    movable
+                }
+                Instruction::AddImmediate { d, a, .. } => d != 0 && (a != 0 || saw_move),
                 _ => false,
             };
             if !hoistable {
