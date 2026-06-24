@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 use mwcc_vreg::Class;
 use crate::analysis::*;
 use crate::generator::*;
@@ -192,6 +192,14 @@ impl Generator {
     /// the second into the scratch. Subtraction loads the right operand first so
     /// `subf` computes `left - right`.
     fn place_member_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<Operands> {
+        // A signed-`char` member loads via `lbz` (zero-extend) and needs a separate
+        // `extsb` that mwcc batches *after* both loads (`lbz; lha; extsb; add`). That
+        // batched, destination-targeted sign-extend is not yet modeled here, so defer
+        // rather than drop it (which would zero-extend a negative byte). `unsigned char`
+        // (lbz is correct), `short` (lha self-extends), and `int` are unaffected.
+        if matches!(as_member(left), Some((_, _, Type::Char))) || matches!(as_member(right), Some((_, _, Type::Char))) {
+            return Err(Diagnostic::error("a signed-char member in a binary needs the batched sign-extend (roadmap)"));
+        }
         let subtract = operator == BinaryOperator::Subtract;
         match (as_member(left), as_member(right)) {
             (Some((left_base, left_offset, left_type)), Some((right_base, right_offset, right_type))) => {
