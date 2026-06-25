@@ -336,11 +336,15 @@ impl Generator {
 
         // `(x < 0)` / `(x >= 0)` / `(x > 0)` `? c1 : c2` with consecutive non-zero
         // constants: the shifted sign bit (`srawi`/`srwi`) plus an offset, after a
-        // `neg; andc` preamble for the `> 0` case (which needs the scratch, so it
-        // only applies when the destination is not the scratch).
+        // `neg; andc` preamble for the `> 0` case.
         if let Some(select) = sign_consecutive_select(condition, when_true, when_false) {
-            if self.signedness_of(select.value)? && !(select.positive && destination == GENERAL_SCRATCH) {
+            if self.signedness_of(select.value)? {
                 let register = self.general_register_of_leaf(select.value)?;
+                // The shifted sign bit lands in the value's own (now-dead) register, then
+                // an `addi` carries the offset to the destination — `srawi r3,r3; addi
+                // r0,r3,2`. This keeps it off the scratch, which the `> 0` case needs for
+                // its `neg; andc` preamble, and matches mwcc whether the destination is a
+                // real register (a return, addi in place) or the scratch (a store).
                 let shift_source = if select.positive {
                     self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: register });
                     self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: register });
@@ -349,11 +353,11 @@ impl Generator {
                     register
                 };
                 self.output.instructions.push(if select.arithmetic {
-                    Instruction::ShiftRightAlgebraicImmediate { a: destination, s: shift_source, shift: 31 }
+                    Instruction::ShiftRightAlgebraicImmediate { a: register, s: shift_source, shift: 31 }
                 } else {
-                    Instruction::ShiftRightLogicalImmediate { a: destination, s: shift_source, shift: 31 }
+                    Instruction::ShiftRightLogicalImmediate { a: register, s: shift_source, shift: 31 }
                 });
-                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: select.offset });
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: register, immediate: select.offset });
                 return Ok(());
             }
         }
