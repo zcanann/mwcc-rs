@@ -1321,6 +1321,26 @@ impl Generator {
     /// or a nested trailing if (an `else if` chain). Each then-body is a single
     /// statement — multiple statements need the scheduler.
     fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement]) -> Compilation<()> {
+        // `if (cond) tgt = c1; else tgt = c2;` — both arms a single constant store to the
+        // same target — is one store of a select. mwcc branchless-ifies consecutive
+        // constants (`srawi; addi`) and branch-materializes others into one register, then
+        // stores once; route it through the conditional store path (byte-exact-or-defer)
+        // rather than the two-branch form.
+        if let ([Statement::Store { target: then_target, value: then_value }],
+                [Statement::Store { target: else_target, value: else_value }]) = (then_body, else_body)
+        {
+            if same_operand(then_target, else_target)
+                && constant_value(then_value).is_some()
+                && constant_value(else_value).is_some()
+            {
+                let select = Expression::Conditional {
+                    condition: Box::new(condition.clone()),
+                    when_true: Box::new(then_value.clone()),
+                    when_false: Box::new(else_value.clone()),
+                };
+                return self.emit_store(then_target, &select);
+            }
+        }
         if then_body.len() != 1 {
             return Err(Diagnostic::error("a multi-statement if-body needs the scheduler (roadmap)"));
         }
