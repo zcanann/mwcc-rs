@@ -44,7 +44,7 @@ fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Instruction {
 }
 
 /// A scalar type as the matching [`Pointee`] (for global loads/stores).
-fn pointee_of_type(value_type: Type) -> Option<Pointee> {
+pub(crate) fn pointee_of_type(value_type: Type) -> Option<Pointee> {
     Some(match value_type {
         Type::Int => Pointee::Int,
         Type::UnsignedInt => Pointee::UnsignedInt,
@@ -1378,6 +1378,14 @@ impl Generator {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Emit an SDA-global store of a value already evaluated into `source`. The
+    /// computed-store-fill path evaluates both values (into a virtual and the scratch)
+    /// *before* the stores, so it places the store separately from the value.
+    pub(crate) fn emit_sda_global_store_from(&mut self, name: &str, pointee: Pointee, source: u8) {
+        self.record_relocation(RelocationKind::EmbSda21, name);
+        self.output.instructions.push(displacement_store(pointee, source, 0, 0));
     }
 
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {

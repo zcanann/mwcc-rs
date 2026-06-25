@@ -3,6 +3,8 @@
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Statement, Type, UnaryOperator};
+use mwcc_versions::GlobalAddressing;
+use crate::expressions::pointee_of_type;
 
 /// The branchless select for a guard `if (cond) return value;` with fall-through
 /// `default`. mwcc keeps the *guard value* as the in-place default, so a negated
@@ -185,6 +187,13 @@ impl Generator {
         // A leaf void body that is purely constant stores of one repeated value
         // (struct/array zeroing) materializes the value once and reuses it.
         if self.try_constant_store_fill(function)? {
+            return Ok(());
+        }
+        // Two computed-value stores to distinct SDA globals: mwcc overlaps the two value
+        // computations (both into registers, then both stores), which the sequential path
+        // does not. The allocator places the first value off the scratch (live across the
+        // second), the second into r0.
+        if self.try_computed_store_fill(function)? {
             return Ok(());
         }
         // A `do { …calls… } while (--counter);` loop: the counter goes in r31
@@ -676,6 +685,102 @@ impl Generator {
         self.scratch_constant = None;
         self.emit_epilogue_and_return();
         Ok(true)
+    }
+
+    /// Two computed-value stores to distinct SDA globals (`gi = a+1; gj = b*2;`). mwcc
+    /// overlaps the two value computations: it evaluates both first — the earlier into a
+    /// real GPR, the later into the scratch `r0` — then stores both (`addi r3,r3,1; slwi
+    /// r0,r4,1; stw r3; stw r0`), rather than the unscheduled `compute; store; compute;
+    /// store`. We reproduce it by evaluating the first value into a fresh virtual (the
+    /// allocator gives it the in-place GPR and keeps it off `r0`, since it is live across
+    /// the second computation) and the second into `r0`, then both stores. Leaf/constant
+    /// values (no computation to overlap) and 3+ stores fall through to their own paths.
+    pub(crate) fn try_computed_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || function.statements.len() != 2
+            || self.behavior.global_addressing != GlobalAddressing::SmallData
+        {
+            return Ok(false);
+        }
+        // Both statements must be a store to a distinct SDA global of a computed value (a
+        // leaf or constant value needs no register-resident intermediate, so the normal
+        // sequential path already matches those).
+        let mut stores = Vec::new();
+        for statement in &function.statements {
+            let Statement::Store { target, value } = statement else { return Ok(false) };
+            let Expression::Variable(name) = target else { return Ok(false) };
+            let Some(&global_type) = self.globals.get(name.as_str()) else { return Ok(false) };
+            // Integer globals only — this path evaluates values through the general
+            // (integer) evaluator; a float global/value goes through the float path.
+            if matches!(global_type, Type::Float | Type::Double) {
+                return Ok(false);
+            }
+            let Some(pointee) = pointee_of_type(global_type) else { return Ok(false) };
+            let computed = !matches!(
+                value,
+                Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_)
+            );
+            if !computed {
+                return Ok(false);
+            }
+            // Only a single low-latency op over register operands keeps mwcc's compute
+            // and store both in source order (the schedule this path emits). A multi-cycle
+            // op, a memory read, a comparison idiom, or a nested value reorders or needs
+            // more — leave those on the normal path (unchanged) rather than guess.
+            if !self.is_low_latency_register_value(value) {
+                return Ok(false);
+            }
+            stores.push((name.clone(), pointee, value.clone()));
+        }
+        if stores[0].0 == stores[1].0 {
+            // Same target: the first store is dead (mwcc emits only the second) — a
+            // dead-store elimination this path does not model, so defer.
+            return Ok(false);
+        }
+        let first_register = self.fresh_virtual_general();
+        self.evaluate_general(&stores[0].2, first_register)?;
+        self.evaluate_general(&stores[1].2, GENERAL_SCRATCH)?;
+        self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register);
+        self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH);
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// Whether `value` is a single *low-latency* arithmetic op over register-resident
+    /// operands (parameters and constants) — `a + 1`, `b - c`, `a & 7`, `a << 2`, `-a`,
+    /// and a power-of-two multiply (a shift). That is the shape the computed-store-fill
+    /// schedules byte-exactly: one single-cycle op into one register, compute and store
+    /// both in source order. A multi-cycle op (register or non-power-of-two multiply,
+    /// divide, modulo) reorders mwcc's compute/store schedule by readiness; a comparison/
+    /// logical-not is a multi-instruction idiom; a nested value or a memory read needs an
+    /// intermediate or load hoisting. All of those stay on the normal path.
+    fn is_low_latency_register_value(&self, value: &Expression) -> bool {
+        let is_register_leaf = |operand: &Expression| match operand {
+            Expression::Variable(name) => !self.globals.contains_key(name.as_str()),
+            Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,
+            _ => false,
+        };
+        let is_power_of_two = |operand: &Expression| {
+            matches!(operand, Expression::IntegerLiteral(n) if *n > 0 && (*n & (*n - 1)) == 0)
+        };
+        match value {
+            Expression::Binary { operator, left, right } => {
+                is_register_leaf(left)
+                    && is_register_leaf(right)
+                    && match operator {
+                        BinaryOperator::Add | BinaryOperator::Subtract
+                        | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor
+                        | BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => true,
+                        BinaryOperator::Multiply => is_power_of_two(left) || is_power_of_two(right),
+                        _ => false,
+                    }
+            }
+            Expression::Unary { operator: UnaryOperator::Negate | UnaryOperator::BitNot, operand } => is_register_leaf(operand),
+            _ => false,
+        }
     }
 
     /// Whether a store to `target` writes only memory (and the value register),
