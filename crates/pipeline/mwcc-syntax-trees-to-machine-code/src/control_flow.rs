@@ -454,12 +454,14 @@ impl Generator {
         }
 
         // `(cond) ? leaf : C` / `(cond) ? C : leaf` — exactly one arm a non-zero
-        // constant, the other a register leaf (often the comparison's own operand).
-        // The destination-first form below would `li` the constant into the result
-        // register and clobber that operand before the move could read it. mwcc
-        // instead stages the constant in r0, conditionally moves the leaf over it
-        // (a forward branch skips the move when the condition selects the constant
-        // arm), then `mr dest, r0` — leaving the operand intact.
+        // constant, the other a register leaf — BUT only when that leaf is also an
+        // operand of the condition. There the destination-first conditional-return below
+        // would `li` the constant into the result register and clobber the operand before
+        // the move could read it, so mwcc instead stages the constant in r0, conditionally
+        // moves the leaf over it (a forward branch skips the move when the condition
+        // selects the constant arm), then `mr dest, r0` — `(a>b) ? 7 : b`. An unrelated
+        // leaf (`(c) ? 1 : x`) takes the conditional-return (`li r3,C; bnelr; mr r3,x`),
+        // which clobbers only the spent condition operand — fall through to it below.
         if tail
             && !is_zero_literal(when_true)
             && !is_zero_literal(when_false)
@@ -470,21 +472,25 @@ impl Generator {
             } else {
                 (constant_value(when_true).unwrap(), when_false, true)
             };
-            if let Some(register) = leaf_name(register_arm).and_then(|name| self.lookup_general(name)) {
-                let (options, condition_bit) = self.emit_condition_test(condition)?;
-                let branch_options = if negate { options ^ 8 } else { options };
-                self.load_integer_constant(GENERAL_SCRATCH, const_value);
-                let branch_index = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: branch_options, condition_bit, target: 0 });
-                self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, register));
-                let label = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-                    *target = label;
+            if let Some(name) = leaf_name(register_arm) {
+                if let Some(register) = self.lookup_general(name) {
+                    if expression_reads_name(condition, name) {
+                        let (options, condition_bit) = self.emit_condition_test(condition)?;
+                        let branch_options = if negate { options ^ 8 } else { options };
+                        self.load_integer_constant(GENERAL_SCRATCH, const_value);
+                        let branch_index = self.output.instructions.len();
+                        self.output.instructions.push(Instruction::BranchConditionalForward { options: branch_options, condition_bit, target: 0 });
+                        self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, register));
+                        let label = self.output.instructions.len();
+                        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                            *target = label;
+                        }
+                        if destination != GENERAL_SCRATCH {
+                            self.output.instructions.push(Instruction::move_register(destination, GENERAL_SCRATCH));
+                        }
+                        return Ok(());
+                    }
                 }
-                if destination != GENERAL_SCRATCH {
-                    self.output.instructions.push(Instruction::move_register(destination, GENERAL_SCRATCH));
-                }
-                return Ok(());
             }
         }
 
