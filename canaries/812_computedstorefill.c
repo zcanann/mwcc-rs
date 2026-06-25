@@ -11,16 +11,19 @@
 //     stw  r3,gi
 //     stw  r0,gj
 //
-// Restricted to the shape that stays byte-exact without the full Phase-E scheduler: each
-// value is a single LOW-latency op (add/sub/and/or/xor/shift/neg/not, or a power-of-two
-// multiply = shift) over register-resident operands (parameters and constants). A
-// multi-cycle op (register or non-power-of-two multiply, divide, modulo) reorders mwcc's
-// compute/store schedule by readiness; a memory read needs load hoisting; a float global
-// uses the float path; a member/array target, a repeated target (dead-store), and 3+
-// stores each stay on their own path. All of those defer to the normal path unchanged.
+// Each value is a single-instruction op over register-resident operands (parameters and
+// constants). The fill orders the two by latency: it issues the longer-latency op first
+// and stores the quicker value first, matching mwcc — `gi=a*b; gj=a+b;` is `mullw r5;
+// add r0; stw r0,gj; stw r5,gi` (the add result, ready first, stored first). A multi-
+// instruction op (modulo, comparison), a memory read (needs load hoisting), a float
+// global (float path), a nested value, a member/array target, a repeated target (dead-
+// store), and 3+ stores each stay on their own path / the normal path, unchanged.
 int gi, gj, gk;
 void two_adds(int a, int b)            { gi = a + 1; gj = b + 2; }   // addi r3; addi r0; stw; stw
 void add_then_shift(int a, int b)      { gi = a + 1; gj = b * 2; }   // addi r3; slwi r0; stw; stw
 void logical(int a, int b)             { gi = a & 7; gj = b | 3; }   // andi.; ori; stw; stw
 void two_operand(int a, int b, int c)  { gi = a + b; gj = b - c; }   // add; subf; stw; stw
 void with_negate(int a, int b)         { gi = -a;    gj = b + 1; }   // neg; addi; stw; stw
+void mul_then_add(int a, int b)        { gi = a * b; gj = a + b; }   // mullw r5; add r0; stw r0; stw r5
+void add_then_mul(int a, int b)        { gi = a + 1; gj = b * 3; }   // mulli r0; addi r3; stw r3; stw r0
+void divide_then_add(int a, int b)     { gi = a / b; gj = a + b; }   // divw r5; add r0; stw r0; stw r5

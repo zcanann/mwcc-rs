@@ -726,11 +726,10 @@ impl Generator {
             if !computed {
                 return Ok(false);
             }
-            // Only a single low-latency op over register operands keeps mwcc's compute
-            // and store both in source order (the schedule this path emits). A multi-cycle
-            // op, a memory read, a comparison idiom, or a nested value reorders or needs
-            // more — leave those on the normal path (unchanged) rather than guess.
-            if !self.is_low_latency_register_value(value) {
+            // A single-instruction op over register operands whose latency this path can
+            // order. A memory read, a comparison idiom, a modulo, or a nested value
+            // reorders or needs more — leave those on the normal path unchanged.
+            if !self.is_single_op_register_value(value) {
                 return Ok(false);
             }
             stores.push((name.clone(), pointee, value.clone()));
@@ -740,45 +739,74 @@ impl Generator {
             // dead-store elimination this path does not model, so defer.
             return Ok(false);
         }
+        // The first store's value lives in a virtual (the allocator gives it the in-place
+        // GPR, off r0 since it is live across the other op), the second in the scratch r0.
+        // mwcc issues the longer-latency op first and stores the quicker value first, so
+        // order the two evaluations and the two stores by latency.
+        let high = [self.value_latency_is_high(&stores[0].2), self.value_latency_is_high(&stores[1].2)];
         let first_register = self.fresh_virtual_general();
-        self.evaluate_general(&stores[0].2, first_register)?;
-        self.evaluate_general(&stores[1].2, GENERAL_SCRATCH)?;
-        self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register);
-        self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH);
+        if !high[0] && high[1] {
+            // The second value is the long op: compute it (into r0) first.
+            self.evaluate_general(&stores[1].2, GENERAL_SCRATCH)?;
+            self.evaluate_general(&stores[0].2, first_register)?;
+        } else {
+            self.evaluate_general(&stores[0].2, first_register)?;
+            self.evaluate_general(&stores[1].2, GENERAL_SCRATCH)?;
+        }
+        if high[0] && !high[1] {
+            // The first value is the long op: store the quicker second value first.
+            self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH);
+            self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register);
+        } else {
+            self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register);
+            self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH);
+        }
         self.emit_epilogue_and_return();
         Ok(true)
     }
 
-    /// Whether `value` is a single *low-latency* arithmetic op over register-resident
-    /// operands (parameters and constants) — `a + 1`, `b - c`, `a & 7`, `a << 2`, `-a`,
-    /// and a power-of-two multiply (a shift). That is the shape the computed-store-fill
-    /// schedules byte-exactly: one single-cycle op into one register, compute and store
-    /// both in source order. A multi-cycle op (register or non-power-of-two multiply,
-    /// divide, modulo) reorders mwcc's compute/store schedule by readiness; a comparison/
-    /// logical-not is a multi-instruction idiom; a nested value or a memory read needs an
-    /// intermediate or load hoisting. All of those stay on the normal path.
-    fn is_low_latency_register_value(&self, value: &Expression) -> bool {
+    /// Whether `value` is a single-instruction arithmetic op over register-resident
+    /// operands (parameters and constants) — the shape the computed-store-fill schedules.
+    /// Includes the single-cycle ops (add/sub/and/or/xor/shift/neg/not, power-of-two
+    /// multiply) and the multi-cycle but single-instruction ops (register/immediate
+    /// multiply, divide), whose latency the fill orders around. Excluded (need more than a
+    /// register-shuffle): modulo and comparisons (multi-instruction idioms), a nested
+    /// value (needs an intermediate), and a memory read (needs load hoisting).
+    fn is_single_op_register_value(&self, value: &Expression) -> bool {
         let is_register_leaf = |operand: &Expression| match operand {
             Expression::Variable(name) => !self.globals.contains_key(name.as_str()),
             Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,
             _ => false,
         };
-        let is_power_of_two = |operand: &Expression| {
-            matches!(operand, Expression::IntegerLiteral(n) if *n > 0 && (*n & (*n - 1)) == 0)
-        };
         match value {
             Expression::Binary { operator, left, right } => {
                 is_register_leaf(left)
                     && is_register_leaf(right)
-                    && match operator {
+                    && matches!(
+                        operator,
                         BinaryOperator::Add | BinaryOperator::Subtract
-                        | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor
-                        | BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => true,
-                        BinaryOperator::Multiply => is_power_of_two(left) || is_power_of_two(right),
-                        _ => false,
-                    }
+                            | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor
+                            | BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight
+                            | BinaryOperator::Multiply | BinaryOperator::Divide
+                    )
             }
             Expression::Unary { operator: UnaryOperator::Negate | UnaryOperator::BitNot, operand } => is_register_leaf(operand),
+            _ => false,
+        }
+    }
+
+    /// Whether a single-op value is multi-cycle (a register or non-power-of-two multiply,
+    /// or a divide) rather than single-cycle. mwcc issues the long op early and stores the
+    /// quick value first; the computed-store-fill orders the two values by this.
+    fn value_latency_is_high(&self, value: &Expression) -> bool {
+        let is_power_of_two = |operand: &Expression| {
+            matches!(operand, Expression::IntegerLiteral(n) if *n > 0 && (*n & (*n - 1)) == 0)
+        };
+        match value {
+            Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
+                !(is_power_of_two(left) || is_power_of_two(right))
+            }
+            Expression::Binary { operator: BinaryOperator::Divide, .. } => true,
             _ => false,
         }
     }
