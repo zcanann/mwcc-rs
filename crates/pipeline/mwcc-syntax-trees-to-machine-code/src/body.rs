@@ -1192,47 +1192,65 @@ impl Generator {
         Ok(true)
     }
 
-    /// A void function whose body is two or more calls that each pass the same single
-    /// parameter as their sole argument — `void f(T x){ g(x); h(x); }`. The parameter is
-    /// live across the calls, so mwcc saves it in r31 up front (`mr r31,r3`); the first
-    /// call uses the incoming argument register directly (no move), and each later call
-    /// restores it from r31 (`mr r3,r31`). One of the most common real-code shapes (an
-    /// object handed to several functions in turn).
+    /// A void function whose body is two or more calls that each pass the SAME argument
+    /// list — all the parameters, in order — `f(a,b){ g(a,b); h(a,b); }` (the single-
+    /// parameter `f(x){ g(x); h(x); }` is the common case). Each parameter is live across
+    /// the calls, so mwcc saves them in callee-saved registers up front (r31 to the last
+    /// parameter, descending), interleaving each save with its move; the first call uses
+    /// the incoming argument registers directly (no moves), and each later call restores
+    /// them. One of the most common real shapes (a state handed to several functions).
     fn try_callee_saved_call_args(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
             return Ok(false);
         }
-        if function.return_type != Type::Void || function.statements.len() < 2 {
+        if function.return_type != Type::Void || function.statements.len() < 2 || function.parameters.is_empty() {
             return Ok(false);
         }
-        let [param] = function.parameters.as_slice() else { return Ok(false) };
-        let incoming = match self.locations.get(&param.name) {
-            Some(location) if location.class == ValueClass::General => location.register,
-            _ => return Ok(false),
-        };
-        // Every statement is a call passing exactly the parameter as its sole argument.
+        // Every statement must be a call whose arguments are exactly the parameters in
+        // order, so the first call needs no moves and the live set is all the parameters.
         for statement in &function.statements {
             let Statement::Expression(Expression::Call { arguments, .. }) = statement else { return Ok(false) };
-            if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(name) if name == &param.name) {
+            if arguments.len() != function.parameters.len() {
                 return Ok(false);
             }
+            for (argument, parameter) in arguments.iter().zip(&function.parameters) {
+                if !matches!(argument, Expression::Variable(name) if name == &parameter.name) {
+                    return Ok(false);
+                }
+            }
         }
-        // One callee-saved register (r31) for the live parameter; frame = 8 (LR + back
-        // chain) + 4, rounded up to 16.
-        let frame_size: i16 = 16;
+        // Each parameter's incoming register; all must be general-class.
+        let mut incoming = Vec::new();
+        for parameter in &function.parameters {
+            match self.locations.get(&parameter.name) {
+                Some(location) if location.class == ValueClass::General => incoming.push((parameter.name.clone(), location.register)),
+                _ => return Ok(false),
+            }
+        }
+        let count = incoming.len();
+        let frame_size = ((8 + 4 * count as i32 + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        self.callee_saved = vec![31];
+        self.callee_saved = (0..count as u8).map(|rank| 31 - rank).collect();
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: frame_size - 4 });
-        self.output.instructions.push(Instruction::Or { a: 31, s: incoming, b: incoming });
-        // The first call finds the parameter still in its incoming register (the call's
-        // first-argument register), so no move; after it the value lives only in r31.
+        // Save each parameter to a callee-saved register — highest (r31) to the last
+        // parameter, descending — interleaving the store with the move, as mwcc emits.
+        for (rank, (_, incoming_register)) in incoming.iter().rev().enumerate() {
+            let register = 31 - rank as u8;
+            let offset = frame_size - 4 * (rank as i16 + 1);
+            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
+            self.output.instructions.push(Instruction::Or { a: register, s: *incoming_register, b: *incoming_register });
+        }
+        // The first call finds the parameters still in their incoming registers (no
+        // moves); afterward they live only in their callee-saved registers.
         self.emit_statement(&function.statements[0])?;
-        if let Some(location) = self.locations.get_mut(&param.name) {
-            location.register = 31;
+        for (rank, (name, _)) in incoming.iter().rev().enumerate() {
+            let register = 31 - rank as u8;
+            if let Some(location) = self.locations.get_mut(name) {
+                location.register = register;
+            }
         }
         for statement in &function.statements[1..] {
             self.emit_statement(statement)?;

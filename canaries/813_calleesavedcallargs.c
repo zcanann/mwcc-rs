@@ -23,3 +23,8 @@ void log_int(int);
 void tick(struct Obj *o)  { Init(o); Update(o); Render(o); }   // mr r31,r3; bl; mr r3,r31; bl; mr r3,r31; bl
 void pair(struct Obj *o)  { Init(o); Update(o); }              // mr r31,r3; bl; mr r3,r31; bl
 void twice(int x)         { log_int(x); log_int(x); }          // same, an integer parameter
+
+// Multiple parameters passed as the same argument list to each call: saved r31 (last
+// parameter) descending, the first call uses the incoming registers, later calls restore.
+void at(struct Obj *, int);
+void draw(struct Obj *o, int n) { at(o, n); at(o, n); }        // mr r31,r4; mr r30,r3; bl; mr r3,r30; mr r4,r31; bl
