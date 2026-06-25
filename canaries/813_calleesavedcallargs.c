@@ -28,3 +28,10 @@ void twice(int x)         { log_int(x); log_int(x); }          // same, an integ
 // parameter) descending, the first call uses the incoming registers, later calls restore.
 void at(struct Obj *, int);
 void draw(struct Obj *o, int n) { at(o, n); at(o, n); }        // mr r31,r4; mr r30,r3; bl; mr r3,r30; mr r4,r31; bl
+
+// A non-void function returns a register-only expression over the parameters after the
+// calls. The return reads them from their callee-saved registers; the epilogue scheduler
+// hoists the saved-LR reload ahead of the return move, as mwcc does.
+void use2(int, int);
+int touch(int x)            { log_int(x); return x; }          // mr r31,r3; bl; lwz lr; mr r3,r31; lwz r31; ...
+int combine(int a, int b)   { use2(a, b); return a + b; }      // returns a + b read from the callee-saved regs

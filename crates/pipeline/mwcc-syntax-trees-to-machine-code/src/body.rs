@@ -1203,7 +1203,20 @@ impl Generator {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
             return Ok(false);
         }
-        if function.return_type != Type::Void || function.statements.len() < 2 || function.parameters.is_empty() {
+        if function.parameters.is_empty() || matches!(function.return_type, Type::Float | Type::Double) {
+            return Ok(false);
+        }
+        // A non-void function returns one of the parameters (or a register-only expression
+        // over them) after the calls — the return is the post-call use that keeps them
+        // live; a void function needs two or more calls for that liveness. A call in the
+        // return is a different shape (call-result), so it defers.
+        let returns_value = function.return_type != Type::Void;
+        if returns_value {
+            match &function.return_expression {
+                Some(expression) if !expression_has_call(expression) => {}
+                _ => return Ok(false),
+            }
+        } else if function.statements.len() < 2 {
             return Ok(false);
         }
         // Every statement must be a call whose arguments are exactly the parameters in
@@ -1254,6 +1267,13 @@ impl Generator {
         }
         for statement in &function.statements[1..] {
             self.emit_statement(statement)?;
+        }
+        // A non-void return reads the parameters from their callee-saved registers; the
+        // epilogue scheduler hoists the LR reload ahead of this move, matching mwcc.
+        if returns_value {
+            let result = Eabi::general_result().number;
+            let return_expression = function.return_expression.as_ref().unwrap();
+            self.evaluate_tail(return_expression, function.return_type, result)?;
         }
         self.emit_epilogue_and_return();
         Ok(true)
