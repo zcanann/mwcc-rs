@@ -1622,6 +1622,19 @@ impl Parser {
             let struct_tag = self.last_struct_tag.take();
             // One or more comma-separated declarators, each optionally initialized.
             loop {
+                // `T *p, *q;` — the first declarator's `*` was consumed into the declared
+                // type; a later pointer declarator carries its own `*`, which mirrors it.
+                // A mixed list (`int *p, q;`) or multi-level (`int *p, **q;`) would need a
+                // per-declarator type, so defer those rather than mis-type a declarator.
+                if *self.peek() == Token::Star {
+                    if !matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                        return Err(Diagnostic::error("a mixed pointer/non-pointer declarator list is not supported yet (roadmap)"));
+                    }
+                    self.advance();
+                    if *self.peek() == Token::Star {
+                        return Err(Diagnostic::error("a multi-level pointer declarator list is not supported yet (roadmap)"));
+                    }
+                }
                 let name = self.parse_identifier()?;
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
