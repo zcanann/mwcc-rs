@@ -1574,22 +1574,53 @@ impl Generator {
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
             return self.emit_statement(&then_body[0]);
         }
+        // An `else if` chain keeps the two-exit form: the then-arm returns (`blr`), then
+        // the nested trailing `if`.
+        if let [Statement::If { condition: else_condition, then_body: else_then, else_body: else_else }] = else_body {
+            let branch_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.emit_statement(&then_body[0])?;
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            let label = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = label;
+            }
+            return self.emit_trailing_if(else_condition, else_then, else_else);
+        }
+        if else_body.len() != 1 {
+            return Err(Diagnostic::error("a multi-statement else-body needs the scheduler (roadmap)"));
+        }
+        // For a truthy condition (a bare register compare) with global-store arms, mwcc
+        // uses the re-test idiom: the then-arm falls through to a *re-test* of the
+        // condition and a conditional return, then the else — `cmpwi; beq L; A; L: cmpwi;
+        // bnelr; B; blr`. A comparison condition re-tests by branchless recomputation (not
+        // a second compare), and member/base-register arms keep the two-exit form; both of
+        // those route to the two-exit branch below.
+        let truthy = matches!(condition, Expression::Variable(_))
+            || matches!(condition, Expression::Unary { operator: UnaryOperator::LogicalNot, operand } if matches!(operand.as_ref(), Expression::Variable(_)));
+        let is_global_store = |statement: &Statement| {
+            matches!(statement, Statement::Store { target: Expression::Variable(name), .. } if self.globals.contains_key(name.as_str()))
+        };
+        let use_retest = truthy && is_global_store(&then_body[0]) && is_global_store(&else_body[0]);
         let branch_index = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
         self.emit_statement(&then_body[0])?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
-        let label = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-            *target = label;
-        }
-        // The else: a nested trailing `if` (an `else if`), or a single statement.
-        if let [Statement::If { condition, then_body, else_body }] = else_body {
-            self.emit_trailing_if(condition, then_body, else_body)?;
-        } else if else_body.len() == 1 {
-            self.emit_statement(&else_body[0])?;
+        if use_retest {
+            let label = self.output.instructions.len();
+            let (retest_options, retest_bit) = self.emit_condition_test(condition)?;
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: retest_options ^ 8, condition_bit: retest_bit });
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = label;
+            }
         } else {
-            return Err(Diagnostic::error("a multi-statement else-body needs the scheduler (roadmap)"));
+            // Two-exit form: the then-arm returns, the conditional branch lands on the else.
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            let label = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = label;
+            }
         }
+        self.emit_statement(&else_body[0])?;
         Ok(())
     }
 
