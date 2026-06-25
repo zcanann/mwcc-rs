@@ -309,6 +309,10 @@ fn walk(expression: &Expression, names: &mut HashSet<String>) {
             walk(left, names);
             walk(right, names);
         }
+        Expression::Comma { left, right } => {
+            walk(left, names);
+            walk(right, names);
+        }
         Expression::Unary { operand, .. } => walk(operand, names),
         Expression::Conditional { condition, when_true, when_false } => {
             walk(condition, names);

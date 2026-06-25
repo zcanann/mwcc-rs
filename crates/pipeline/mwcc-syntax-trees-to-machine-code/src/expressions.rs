@@ -195,7 +195,51 @@ impl Generator {
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), false),
             Expression::Assign { target, value } => self.emit_assign(target, value, destination),
+            // The comma operator is byte-exact only in proven value positions: a store
+            // value (peeled in `place_store_value`) and a flat-arithmetic binary operand
+            // (peeled in the `Binary` arm above). Reaching here means a risky sub-operand
+            // position (unary operand, cast, return value, …) where forcing the right into
+            // `destination` adds a move mwcc elides — defer rather than ship that diff.
+            Expression::Comma { .. } => {
+                let _ = destination;
+                Err(Diagnostic::error("a comma operator in this position is not supported yet (roadmap)"))
+            }
             Expression::Binary { operator, left, right } => {
+                // A comma operand with a side-effect-free left is equivalent to its right
+                // value; peel it so the right keeps its natural register (`(a,b)+1` == `b+1`,
+                // no spurious move). Only a flat arithmetic binary of leaves/constants is
+                // provably byte-exact this way — comparisons and computed operands route to
+                // codegen shapes with pre-existing gaps, so those (and a side-effecting left)
+                // defer rather than ship a guess.
+                if matches!(left.as_ref(), Expression::Comma { .. }) || matches!(right.as_ref(), Expression::Comma { .. }) {
+                    let peel = |operand: &Expression| -> Compilation<Expression> {
+                        let mut current = operand;
+                        while let Expression::Comma { left, right } = current {
+                            if expression_has_side_effect(left) {
+                                return Err(Diagnostic::error("a comma operand with a side effect is not supported yet (roadmap)"));
+                            }
+                            current = right;
+                        }
+                        Ok(current.clone())
+                    };
+                    let (peeled_left, peeled_right) = (peel(left)?, peel(right)?);
+                    let is_simple = |operand: &Expression| {
+                        matches!(operand, Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_))
+                    };
+                    if is_comparison(*operator)
+                        || matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
+                        || !is_simple(&peeled_left)
+                        || !is_simple(&peeled_right)
+                    {
+                        return Err(Diagnostic::error("a comma operand in this expression is not supported yet (roadmap)"));
+                    }
+                    let peeled = Expression::Binary {
+                        operator: *operator,
+                        left: Box::new(peeled_left),
+                        right: Box::new(peeled_right),
+                    };
+                    return self.evaluate_general(&peeled, destination);
+                }
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
                     return self.emit_comparison(*operator, left, right, destination);
@@ -1630,6 +1674,37 @@ impl Generator {
             if self.is_global_address_of(left) || self.is_global_address_of(right))
     }
 
+    /// Emit a comma-operator's discarded left operand for its side effects only: a call
+    /// or assignment is emitted, a side-effect-free leaf/literal emits nothing, a nested
+    /// comma recurses. A side effect in a form not modeled here defers rather than
+    /// silently dropping it.
+    pub(crate) fn emit_comma_side_effect(&mut self, expression: &Expression) -> Compilation<()> {
+        // A call in the discarded left operand clobbers the caller-saved register holding
+        // the comma's surviving right value (`gi = (h(), b)` would store h()'s result, not
+        // b). Preserving it needs the callee-saved allocator, so defer over miscompiling.
+        if expression_has_call(expression) {
+            return Err(Diagnostic::error("a comma-operator call side effect is not supported yet (needs the callee-saved allocator)"));
+        }
+        match expression {
+            Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_) => Ok(()),
+            Expression::Comma { left, right } => {
+                self.emit_comma_side_effect(left)?;
+                self.emit_comma_side_effect(right)
+            }
+            // A simple `name = leaf/const` store is a single instruction that never
+            // reorders against the comma's surviving store. An indexed/member target or a
+            // computed value schedules ambiguously against it (mwcc reorders), so defer.
+            Expression::Assign { target, value }
+                if matches!(target.as_ref(), Expression::Variable(_))
+                    && matches!(value.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_)) =>
+            {
+                self.emit_store(target, value)
+            }
+            _ => Err(Diagnostic::error("a comma-operator side effect of this form is not supported yet (roadmap)")),
+        }
+    }
+
     /// The register of the leaf at the end of a chained assignment's value, walking
     /// through nested `=`. `None` for a computed or non-leaf value (which flows through
     /// the scratch normally). Used to store the same source register to every target.
@@ -1642,6 +1717,12 @@ impl Generator {
     }
 
     fn place_store_value(&mut self, value: &Expression, pointee: Pointee) -> Compilation<u8> {
+        // A comma-operator value: emit the left's side effects, then store the right,
+        // which keeps its own register — `gi = (a, b)` is `stw b,gi`, no scratch move.
+        if let Expression::Comma { left, right } = value {
+            self.emit_comma_side_effect(left)?;
+            return self.place_store_value(right, pointee);
+        }
         // A constant pre-materialized into a fixed register (a distinct-constant
         // store run) reuses that register instead of re-materializing.
         if let Some(constant) = constant_value(value) {

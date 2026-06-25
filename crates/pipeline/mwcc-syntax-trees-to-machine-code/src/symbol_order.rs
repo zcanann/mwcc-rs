@@ -56,6 +56,13 @@ fn is_leaf(expression: &Expression) -> bool {
 
 /// `target = value`, visited as a binary node.
 fn collect_assignment(target: &Expression, value: &Expression, names: &mut Names) {
+    // A comma-operator value evaluates its left for side effects before the store, so the
+    // left's symbols register ahead of the target (`gi = (gh=a, b)` registers gh then gi).
+    if let Expression::Comma { left, right } = value {
+        collect(left, names);
+        collect_assignment(target, right, names);
+        return;
+    }
     if is_leaf(value) && !is_leaf(target) {
         collect(value, names);
         collect(target, names);
@@ -104,6 +111,10 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
 fn collect(expression: &Expression, names: &mut Names) {
     match expression {
         Expression::Variable(name) => names.data.push(name.clone()),
+        Expression::Comma { left, right } => {
+            collect(left, names);
+            collect(right, names);
+        }
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => {}
         Expression::Binary { left, right, .. } => {
             if is_leaf(right) && !is_leaf(left) {

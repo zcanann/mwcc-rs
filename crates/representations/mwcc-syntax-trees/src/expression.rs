@@ -75,4 +75,10 @@ pub enum Expression {
         target: Box<Expression>,
         value: Box<Expression>,
     },
+    /// The comma operator `left, right`: evaluate `left` for its side effects, discard
+    /// its value, then yield `right`. A side-effect-free `left` emits nothing.
+    Comma {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
 }

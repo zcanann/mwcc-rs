@@ -152,6 +152,7 @@ fn has_additive_chain(expression: &Expression) -> bool {
         Expression::Index { base, index } => has_additive_chain(base) || has_additive_chain(index),
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => has_additive_chain(base),
         Expression::Assign { target, value } => has_additive_chain(target) || has_additive_chain(value),
+        Expression::Comma { left, right } => has_additive_chain(left) || has_additive_chain(right),
         Expression::Call { arguments, .. } => arguments.iter().any(has_additive_chain),
         Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
     }
@@ -179,6 +180,7 @@ fn count_references(name: &str, expression: &Expression) -> usize {
         Expression::MemberAddress { base, .. } => count_references(name, base),
         Expression::AddressOf { operand } => count_references(name, operand),
         Expression::Assign { target, value } => count_references(name, target) + count_references(name, value),
+        Expression::Comma { left, right } => count_references(name, left) + count_references(name, right),
         Expression::Call { arguments, .. } => arguments.iter().map(|argument| count_references(name, argument)).sum(),
     }
 }
@@ -228,6 +230,10 @@ pub(crate) fn substitute(expression: &Expression, values: &HashMap<String, Expre
         Expression::Assign { target, value } => Expression::Assign {
             target: Box::new(substitute(target, values)),
             value: Box::new(substitute(value, values)),
+        },
+        Expression::Comma { left, right } => Expression::Comma {
+            left: Box::new(substitute(left, values)),
+            right: Box::new(substitute(right, values)),
         },
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => expression.clone(),
     }

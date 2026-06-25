@@ -251,7 +251,16 @@ impl Parser {
                     let operand = self.factor()?;
                     Expression::Cast { target_type, operand: Box::new(operand) }
                 } else {
-                    let inner = self.expression()?;
+                    // A parenthesized expression may be a comma operator `(a, b, …)`:
+                    // each left operand is evaluated for side effects, the last yields
+                    // the value. (Call arguments and declarators split on commas at a
+                    // lower level, so this only applies inside grouping parens.)
+                    let mut inner = self.expression()?;
+                    while *self.peek() == Token::Comma {
+                        self.advance();
+                        let right = self.expression()?;
+                        inner = Expression::Comma { left: Box::new(inner), right: Box::new(right) };
+                    }
                     self.expect(Token::ParenClose)?;
                     inner
                 }

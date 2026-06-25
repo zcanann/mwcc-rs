@@ -152,6 +152,10 @@ fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, co
             collect_register_reads(target, registers, collected);
             collect_register_reads(value, registers, collected);
         }
+        Expression::Comma { left, right } => {
+            collect_register_reads(left, registers, collected);
+            collect_register_reads(right, registers, collected);
+        }
     }
 }
 
@@ -236,6 +240,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
         Expression::Binary { left, right, .. } => pair(left, right),
         Expression::Index { base, index } => pair(base, index),
         Expression::Assign { target, value } => pair(target, value),
+        Expression::Comma { left, right } => pair(left, right),
         Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => reads_register_after_call(operand, registers),
         Expression::Dereference { pointer } => reads_register_after_call(pointer, registers),
         Expression::AddressOf { operand } => reads_register_after_call(operand, registers),
@@ -289,6 +294,9 @@ fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
         Expression::Assign { target, value } => {
             reads_register(target, registers) || reads_register(value, registers)
         }
+        Expression::Comma { left, right } => {
+            reads_register(left, registers) || reads_register(right, registers)
+        }
     }
 }
 
@@ -304,6 +312,23 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
         Expression::Cast { operand, .. } => expression_has_call(operand),
         Expression::Dereference { pointer } => expression_has_call(pointer),
         Expression::Index { base, index } => expression_has_call(base) || expression_has_call(index),
+        _ => false,
+    }
+}
+
+/// Whether `expression` has an observable side effect (a call or an assignment store).
+/// Used to decide whether a comma operand can be peeled to its right value or must defer.
+pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
+    match expression {
+        Expression::Call { .. } | Expression::Assign { .. } => true,
+        Expression::Binary { left, right, .. } => expression_has_side_effect(left) || expression_has_side_effect(right),
+        Expression::Comma { left, right } => expression_has_side_effect(left) || expression_has_side_effect(right),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => expression_has_side_effect(operand),
+        Expression::Conditional { condition, when_true, when_false } => {
+            expression_has_side_effect(condition) || expression_has_side_effect(when_true) || expression_has_side_effect(when_false)
+        }
+        Expression::Dereference { pointer } => expression_has_side_effect(pointer),
+        Expression::Index { base, index } => expression_has_side_effect(base) || expression_has_side_effect(index),
         _ => false,
     }
 }

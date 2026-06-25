@@ -300,6 +300,8 @@ impl Generator {
             Expression::AddressOf { .. } => Ok(false),
             // An assignment yields the stored value.
             Expression::Assign { value, .. } => self.signedness_of(value),
+            // A comma operator yields its right operand.
+            Expression::Comma { right, .. } => self.signedness_of(right),
             // A call returns an int by default (we have no prototype types yet).
             Expression::Call { .. } => Ok(true),
         }

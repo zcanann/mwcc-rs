@@ -1663,6 +1663,7 @@ impl Generator {
                 Expression::Index { base, index } => feeds_an_addition(name, base) || feeds_an_addition(name, index),
                 Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => feeds_an_addition(name, base),
                 Expression::Assign { target, value } => feeds_an_addition(name, target) || feeds_an_addition(name, value),
+                Expression::Comma { left, right } => feeds_an_addition(name, left) || feeds_an_addition(name, right),
                 Expression::Call { arguments, .. } => arguments.iter().any(|argument| feeds_an_addition(name, argument)),
                 Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
             }

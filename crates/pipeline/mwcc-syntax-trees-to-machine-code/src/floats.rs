@@ -38,6 +38,10 @@ impl Generator {
             Expression::Member { base, offset, member_type, index_stride } => self.emit_member_load(base, *offset, *member_type, *index_stride, destination),
             Expression::MemberAddress { .. } => Err(Diagnostic::error("an array address is not a float value")),
             Expression::Assign { .. } => Err(Diagnostic::error("float assignment as an expression is not supported yet (roadmap)")),
+            Expression::Comma { left, right } => {
+                self.emit_comma_side_effect(left)?;
+                self.evaluate_float(right, destination)
+            }
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), true),
             Expression::Binary { operator, left, right } => {
