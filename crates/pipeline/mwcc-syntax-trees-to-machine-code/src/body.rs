@@ -417,6 +417,11 @@ impl Generator {
             if self.try_callee_saved_computed_local(function)? {
                 return Ok(());
             }
+            // A parameter passed to several calls in turn (`g(x); h(x);`) — saved in r31,
+            // the first call uses the incoming register, later calls restore from r31.
+            if self.try_callee_saved_call_args(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -1182,6 +1187,55 @@ impl Generator {
                 .as_ref()
                 .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
             self.evaluate_tail(return_expression, function.return_type, result)?;
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// A void function whose body is two or more calls that each pass the same single
+    /// parameter as their sole argument — `void f(T x){ g(x); h(x); }`. The parameter is
+    /// live across the calls, so mwcc saves it in r31 up front (`mr r31,r3`); the first
+    /// call uses the incoming argument register directly (no move), and each later call
+    /// restores it from r31 (`mr r3,r31`). One of the most common real-code shapes (an
+    /// object handed to several functions in turn).
+    fn try_callee_saved_call_args(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void || function.statements.len() < 2 {
+            return Ok(false);
+        }
+        let [param] = function.parameters.as_slice() else { return Ok(false) };
+        let incoming = match self.locations.get(&param.name) {
+            Some(location) if location.class == ValueClass::General => location.register,
+            _ => return Ok(false),
+        };
+        // Every statement is a call passing exactly the parameter as its sole argument.
+        for statement in &function.statements {
+            let Statement::Expression(Expression::Call { arguments, .. }) = statement else { return Ok(false) };
+            if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(name) if name == &param.name) {
+                return Ok(false);
+            }
+        }
+        // One callee-saved register (r31) for the live parameter; frame = 8 (LR + back
+        // chain) + 4, rounded up to 16.
+        let frame_size: i16 = 16;
+        self.non_leaf = true;
+        self.frame_size = frame_size;
+        self.callee_saved = vec![31];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: frame_size - 4 });
+        self.output.instructions.push(Instruction::Or { a: 31, s: incoming, b: incoming });
+        // The first call finds the parameter still in its incoming register (the call's
+        // first-argument register), so no move; after it the value lives only in r31.
+        self.emit_statement(&function.statements[0])?;
+        if let Some(location) = self.locations.get_mut(&param.name) {
+            location.register = 31;
+        }
+        for statement in &function.statements[1..] {
+            self.emit_statement(statement)?;
         }
         self.emit_epilogue_and_return();
         Ok(true)
