@@ -515,6 +515,30 @@ impl Generator {
             return Ok(());
         }
 
+        // The same two-non-zero-constant select into a value/store (not a tail):
+        // materialize the false arm, branch forward when the condition is false, then the
+        // true arm — `cmpwi; li c2; bne join; li c1; join: stw`. Consecutive constants
+        // take the branchless mask forms above; this is the branch case mwcc uses for the
+        // rest. (Routed here for `if (cond) tgt = c1; else tgt = c2;`.)
+        if !tail
+            && !consecutive_constants
+            && !is_zero_literal(when_true)
+            && !is_zero_literal(when_false)
+            && constant_value(when_true).is_some()
+            && constant_value(when_false).is_some()
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.place_select_value(when_false, destination)?;
+            let branch_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.place_select_value(when_true, destination)?;
+            let join = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = join;
+            }
+            return Ok(());
+        }
+
         let true_register = self.general_register_of_leaf(when_true)?;
         let false_register = self.general_register_of_leaf(when_false)?;
 
