@@ -121,6 +121,27 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
         .collect()
 }
 
+/// Drop `mr rX, rX` self-moves (`or rX,rX,rX`) the register allocator produces when it
+/// colors a value's virtual home to the register the value already holds (`foo()+1` ->
+/// `mr r3,r3; addi r0,r3,1`). mwcc coalesces these away. A self-move is a no-op, so removing
+/// it is byte-neutral — it only shortens the function. Returns the old->new index permutation
+/// so relocations can be remapped; a removed self-move never carries a relocation, so its
+/// own mapping is a don't-care (pointed at the next survivor).
+pub fn coalesce_self_moves(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+    let original = std::mem::take(instructions);
+    let mut permutation = Vec::with_capacity(original.len());
+    let mut next = 0;
+    for instruction in original {
+        permutation.push(next);
+        let is_self_move = matches!(&instruction, Instruction::Or { a, s, b } if a == s && s == b);
+        if !is_self_move {
+            instructions.push(instruction);
+            next += 1;
+        }
+    }
+    permutation
+}
+
 /// Schedule a non-leaf function's link-register save (`stw r0,20(r1)`) past the
 /// leading argument materializations of its first call. mwcc fills the `mflr`->save
 /// latency gap with up to two ready instructions, so `stwu; mflr r0; li r3,…; stw

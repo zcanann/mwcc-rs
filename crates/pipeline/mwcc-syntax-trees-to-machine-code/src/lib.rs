@@ -93,6 +93,9 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // order — reproducing mwcc's interleaving of the two phases.
     schedule_instructions(&mut generator);
     allocate_registers(&mut generator)?;
+    // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
+    // virtual home to the register the value already holds (mwcc coalesces them).
+    coalesce_self_moves(&mut generator);
     // Issue the epilogue's saved-LR reload right after the last call (ahead of the
     // post-call computation), as mwcc does — a final pass on the physical stream.
     hoist_link_register_reload(&mut generator);
@@ -178,6 +181,15 @@ fn hoist_link_register_reload(generator: &mut Generator) {
 
 fn schedule_link_register_save(generator: &mut Generator) {
     let permutation = mwcc_vreg::schedule_link_register_save(&mut generator.output.instructions);
+    for relocation in &mut generator.output.relocations {
+        relocation.instruction_index = permutation[relocation.instruction_index];
+    }
+}
+
+/// Coalesce allocator self-moves (`mr rX,rX`) on the physical stream, remapping relocation
+/// indices through the resulting removal.
+fn coalesce_self_moves(generator: &mut Generator) {
+    let permutation = mwcc_vreg::coalesce_self_moves(&mut generator.output.instructions);
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
