@@ -23,3 +23,13 @@ void store_after_arg_call(int a){ bar(0); gi = a; }      // the call's own arg i
 // epilogue (LR reload between the GPR reloads) and still defer.
 int ret_and_store(int a)       { foo(); gi = a; return a; }       // store then return
 int ret_store_computed(int a)  { foo(); gi = a; return a + 1; }   // return a value of the saved reg
+
+// TWO saved values stored directly (leaves): `void f(int a,int b){ foo(); gi=a; gj=b; }`.
+// mwcc reloads all-but-the-lowest saved GPR, then the saved LR, then the lowest GPR — for
+// two values that is `lwz r31; lwz r0; lwz r30; mtlr` (the LR reload interleaved between
+// the two GPR reloads). Three or more values reschedule that order (LR reload last) and
+// defer; a computed store among two saved values defers (the single-value sink still
+// allows a computed store).
+int gk;
+void store_two(int a, int b)       { foo(); gi = a; gj = b; }     // r31,r0,r30 epilogue
+void store_two_swapped(int a, int b){ foo(); gi = b; gj = a; }    // saved regs by param order

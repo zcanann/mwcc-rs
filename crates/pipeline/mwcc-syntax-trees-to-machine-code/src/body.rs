@@ -1592,20 +1592,34 @@ impl Generator {
         promoted.sort_by_key(|(index, _, _)| *index);
 
         let count = promoted.len();
-        // A store sink is restricted to a single saved value: with two or more, mwcc
-        // interleaves the LR reload between the GPR reloads (`lwz r31; lwz r0; lwz r30`),
-        // which the LR-first epilogue does not reproduce. A single saved value, whether
-        // also returned (`foo(); gi=a; return a;`) or not, keeps the simple LR-first order.
-        if has_store && count != 1 {
+        // A store sink takes one or two saved values: the epilogue reloads all-but-the-
+        // lowest GPR, then LR, then the lowest, matching mwcc for count 1 and 2 (three or
+        // more reschedule the LR reload by register death — `lwz r31; lwz r30; lwz r29; lwz
+        // r0` — and defer). A second saved value must be void; a value returned alongside
+        // two saved values interleaves the return move with the epilogue and is not modeled.
+        if has_store && (count > 2 || (count == 2 && function.return_type != Type::Void)) {
             return Ok(false);
         }
-        // With more than one saved value, mwcc's scheduler interleaves the epilogue
-        // restores with the post-call computation by register death — which we don't
-        // model yet. It coincides with "all restores after" only when the values
+        // A two-value store sink stores the saved values directly (`gi = a; gj = b;`). A
+        // computed store (`gi = a + 1;`) reschedules around the two saves/epilogue and is
+        // deferred; the single-value sink still allows a computed store.
+        if has_store
+            && count == 2
+            && !function.statements.iter().all(|statement| match statement {
+                Statement::Store { value, .. } => matches!(value, Expression::Variable(_)),
+                _ => true,
+            })
+        {
+            return Ok(false);
+        }
+        // With more than one saved value RETURNED, mwcc's scheduler interleaves the
+        // epilogue restores with the post-call computation by register death — which we
+        // don't model yet. It coincides with "all restores after" only when the values
         // combine in a single low-latency instruction (`a+b`, `a-b`, `a&b`); two
         // values through a multiply, or three or more values (multi-step), reschedule
-        // the restores. Restrict count > 1 to that one safe shape.
-        if count >= 2 {
+        // the restores. Restrict count > 1 to that one safe shape. (A two-value store sink
+        // has its own epilogue order above, so it skips this return-shape gate.)
+        if count >= 2 && !has_store {
             let single_op = matches!(
                 function.return_expression.as_ref(),
                 Some(Expression::Binary { operator, left, right })
@@ -1965,9 +1979,23 @@ impl Generator {
             }
         };
         if self.epilogue_lr_first && self.non_leaf {
-            // Store-sink callee-saved: mwcc reloads the saved LR before the GPR reloads.
+            // Store-sink callee-saved: mwcc reloads all saved GPRs except the LOWEST, then
+            // the saved LR, then the lowest GPR (count==1: `lwz r0; lwz r31`; count==2: `lwz
+            // r31; lwz r0; lwz r30`). A register-death schedule this reproduces for one or
+            // two saved values; three or more reschedule it (the sink restricts to <= 2).
+            let last = self.callee_saved.len().saturating_sub(1);
+            for (index, &register) in self.callee_saved.iter().enumerate() {
+                if index == last {
+                    continue;
+                }
+                let offset = self.frame_size - 4 * (index as i16 + 1);
+                self.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+            }
             self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
-            reload_saved_gprs(self);
+            if let Some(&register) = self.callee_saved.last() {
+                let offset = self.frame_size - 4 * (last as i16 + 1);
+                self.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+            }
             self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         } else {
             // Reload callee-saved registers (highest first, from the top of the frame)
