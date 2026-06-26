@@ -1761,10 +1761,15 @@ impl Generator {
                     return self.float_register_of_leaf(value);
                 }
             }
-            // A call result lands in the float return register (f1); store from there
+            // A float call result lands in the float return register (f1); store from there
             // directly rather than moving it to f0 first (mwcc emits no `fmr f0,f1`).
-            // The store-only LR-reload-hoist barrier keeps the reload after the stfs.
+            // The store-only LR-reload-hoist barrier keeps the reload after the stfs. An
+            // INTEGER-returning call stored to a float global needs an int->float conversion
+            // of its r3 result (not yet modeled), so defer rather than mis-store r3 as f1.
             if let Expression::Call { name, arguments } = value {
+                if !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+                    return Err(Diagnostic::error("an integer call result stored to a float global needs an int->float conversion (roadmap)"));
+                }
                 let result = Eabi::float_result().number;
                 self.emit_call(name, arguments, Some(result), true)?;
                 return Ok(result);
