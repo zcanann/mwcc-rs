@@ -660,7 +660,33 @@ impl Generator {
             // — `li r4,v1; li r0,v2; stw r4; stw r0`. Three or more interleave on a
             // sliding window the scheduler models; defer those.
             if constants.len() != 2 {
-                return Err(Diagnostic::error("a run of 3+ differing constant stores needs the scheduler (roadmap)"));
+                // 3+ distinct constants to small-data globals: mwcc materializes them into
+                // r(N+1) descending to r3 and the last into the scratch r0, then stores all
+                // in source order. Member/dereference targets reschedule with their base
+                // register, and a duplicate constant shares one register — both defer.
+                let all_globals = function.statements.iter().all(|statement| {
+                    matches!(statement, Statement::Store { target: Expression::Variable(_), .. })
+                });
+                let count = constants.len();
+                let mut distinct = constants.clone();
+                distinct.sort_unstable();
+                distinct.dedup();
+                if !all_globals || distinct.len() != count || count + 1 > 12 {
+                    return Err(Diagnostic::error("a run of 3+ differing constant stores needs the scheduler (roadmap)"));
+                }
+                let mut prematerialized = Vec::new();
+                for (index, &constant) in constants.iter().enumerate() {
+                    let register = if index + 1 < count { (count + 1 - index) as u8 } else { GENERAL_SCRATCH };
+                    self.load_integer_constant(register, constant as i64);
+                    prematerialized.push((constant, register));
+                }
+                self.prematerialized_constants = prematerialized;
+                for statement in &function.statements {
+                    self.emit_statement(statement)?;
+                }
+                self.prematerialized_constants.clear();
+                self.emit_epilogue_and_return();
+                return Ok(true);
             }
             let base_registers: Vec<u8> = function.statements.iter()
                 .filter_map(|statement| match statement {

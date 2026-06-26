@@ -12,3 +12,9 @@ void two_distinct(void)  { gi = 5; gj = 7; }   // li r3,5; li r0,7; stw r3; stw 
 void unused_param(int a) { gi = 5; gj = 7; }   // same — the dead parameter's r3 is free
 void repeated(void)      { gi = 5; gj = 5; }   // li r0,5; stw r0; stw r0
 void zeros(void)         { gi = 0; gj = 0; }   // li r0,0; stw r0; stw r0
+
+// Three or more distinct constants to SDA globals extend the same pattern: mwcc loads
+// them into r(N+1) down to r3, the last into r0, then stores all in source order —
+// `li r4,1; li r3,2; li r0,3; stw r4; stw r3; stw r0`. A duplicate constant (which would
+// share a register) and member/dereference targets still defer.
+void three(void)        { gi = 1; gj = 2; gk = 3; }   // li r4,1; li r3,2; li r0,3; stw×3
