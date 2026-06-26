@@ -1753,8 +1753,13 @@ impl Generator {
             }
         }
         if matches!(pointee, Pointee::Float | Pointee::Double) {
-            if matches!(value, Expression::Variable(_)) {
-                return self.float_register_of_leaf(value);
+            if let Expression::Variable(name) = value {
+                // A float parameter/local lives in a register; a float global is not in
+                // `locations`, so it falls through to the general float evaluator, which
+                // loads it (`lfs`) into the scratch — `gf = gg` is `lfs f0,gg; stfs f0,gf`.
+                if self.locations.contains_key(name.as_str()) {
+                    return self.float_register_of_leaf(value);
+                }
             }
             // A call result lands in the float return register (f1); store from there
             // directly rather than moving it to f0 first (mwcc emits no `fmr f0,f1`).

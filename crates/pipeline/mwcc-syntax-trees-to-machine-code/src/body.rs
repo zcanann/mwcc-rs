@@ -425,6 +425,29 @@ impl Generator {
         if self.try_leaf_constant_fill(function)? {
             return Ok(());
         }
+        // Multiple stores where a value loads a float/double global reschedule the loads
+        // (mwcc loads the global once and reuses it across the stores); not modeled, so
+        // DEFER rather than emit a redundant load per store. A single such store (`gf =
+        // gg;`) needs no scheduling and stays byte-exact.
+        if function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && function.statements.len() >= 2
+        {
+            let loads_float_global = |generator: &Self, value: &Expression| {
+                matches!(value, Expression::Variable(name)
+                    if !generator.locations.contains_key(name.as_str())
+                        && matches!(generator.globals.get(name.as_str()), Some(Type::Float | Type::Double)))
+            };
+            let all_stores = function.statements.iter().all(|statement| matches!(statement, Statement::Store { .. }));
+            let any_float_global = function
+                .statements
+                .iter()
+                .any(|statement| matches!(statement, Statement::Store { value, .. } if loads_float_global(self, value)));
+            if all_stores && any_float_global {
+                return Err(Diagnostic::error("multiple stores loading a float global need the load scheduler (roadmap)"));
+            }
+        }
         // Un-schedulable multi-store: a body whose statements are 2+ stores to SDA integer
         // globals that the fills above did not absorb (a trailing return, if any, is
         // separate). mwcc latency-schedules these (load/computation hoisting, constant-`li`
