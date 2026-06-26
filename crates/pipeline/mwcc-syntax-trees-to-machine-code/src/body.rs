@@ -741,9 +741,9 @@ impl Generator {
         {
             return Ok(false);
         }
-        // Both statements must be a store to a distinct SDA global of a computed value (a
-        // leaf or constant value needs no register-resident intermediate, so the normal
-        // sequential path already matches those).
+        // Both statements must store to a distinct SDA global. Each value is a single-op
+        // computation or a constant; a bare register leaf needs no overlap and goes through
+        // try_mixed_store_fill / the normal path.
         let mut stores = Vec::new();
         for statement in &function.statements {
             let Statement::Store { target, value } = statement else { return Ok(false) };
@@ -755,20 +755,20 @@ impl Generator {
                 return Ok(false);
             }
             let Some(pointee) = pointee_of_type(global_type) else { return Ok(false) };
-            let computed = !matches!(
-                value,
-                Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_)
-            );
-            if !computed {
-                return Ok(false);
-            }
-            // A single-instruction op over register operands whose latency this path can
-            // order. A memory read, a comparison idiom, a modulo, or a nested value
-            // reorders or needs more — leave those on the normal path unchanged.
-            if !self.is_single_op_register_value(value) {
+            // A single-instruction op over register operands, or a constant (materialized
+            // with `li`, ordered as a low-latency value) — both shapes this path can
+            // schedule. A memory read, comparison idiom, modulo, or nested value reorders
+            // or needs more, and a bare register leaf goes through try_mixed_store_fill.
+            if !self.is_single_op_register_value(value) && constant_value(value).is_none() {
                 return Ok(false);
             }
             stores.push((name.clone(), pointee, value.clone()));
+        }
+        // At least one value must be a genuine computation. Two constants are the constant
+        // fill's domain (it dedups a repeated value to one `li`); this overlap path would
+        // emit a separate `li` per store.
+        if !self.is_single_op_register_value(&stores[0].2) && !self.is_single_op_register_value(&stores[1].2) {
+            return Ok(false);
         }
         if stores[0].0 == stores[1].0 {
             // Same target: the first store is dead (mwcc emits only the second) — a
@@ -777,12 +777,24 @@ impl Generator {
         }
         // The first store's value lives in a virtual (the allocator gives it the in-place
         // GPR, off r0 since it is live across the other op), the second in the scratch r0.
-        // mwcc issues the longer-latency op first and stores the quicker value first, so
-        // order the two evaluations and the two stores by latency.
+        // mwcc issues the heavier op first and stores the quicker value first, so order the
+        // two evaluations and the two stores by latency.
         let high = [self.value_latency_is_high(&stores[0].2), self.value_latency_is_high(&stores[1].2)];
+        // Evaluate the heavier value first so the allocator can reuse a spent operand
+        // register for the lighter one. Weight: high-latency op > single-cycle op >
+        // constant — a constant is just an `li`, materialized last once the computation has
+        // freed its operand register (`gi=5; gj=a+1` → `addi r0,r3,1; li r3,5`, the `5`
+        // reusing a's register).
+        let weight = |is_high: bool, is_constant: bool| -> u8 {
+            if is_high { 2 } else if is_constant { 0 } else { 1 }
+        };
+        let weights = [
+            weight(high[0], constant_value(&stores[0].2).is_some()),
+            weight(high[1], constant_value(&stores[1].2).is_some()),
+        ];
         let first_register = self.fresh_virtual_general();
-        if !high[0] && high[1] {
-            // The second value is the long op: compute it (into r0) first.
+        if weights[1] > weights[0] {
+            // The second value is the heavier op: compute it (into r0) first.
             self.evaluate_general(&stores[1].2, GENERAL_SCRATCH)?;
             self.evaluate_general(&stores[0].2, first_register)?;
         } else {
