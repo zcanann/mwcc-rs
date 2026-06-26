@@ -116,31 +116,57 @@ fn inline_return_only_locals(function: &Function) -> Option<Function> {
     })
 }
 
-/// Fold a void function's value-tracked locals into its stores, then recompile — `int x =
-/// a; gi = x; x = b; gj = x;` becomes the equivalent `gi = a; gj = b;`, which the store
-/// paths emit (or, when mwcc would latency-schedule them, the un-schedulable-store deferral
-/// owns). The locals exist only to feed the stores, so tracking their values sequentially
-/// and substituting into each store eliminates them. Bails on anything outside the void /
-/// no-call / no-guard / assign-or-store shape, on a call-bearing value (a side effect to
-/// preserve), on a store whose value is not a local feeding it, or if a local survives the
-/// substitution. The store-free (pure dead-local) case is left to the value-tracking path.
-fn inline_store_only_locals(function: &Function) -> Option<Function> {
-    if function.return_type != Type::Void
-        || function.locals.is_empty()
-        || function_makes_call(function)
-        || !function.guards.is_empty()
-        || function.return_expression.is_some()
-    {
+/// Tally reads of each tracked local in `expression` toward its current value-version's
+/// running count, returning true if a computed (non-Variable) version would then be read at
+/// a second materialization site. mwcc computes such a value once and keeps it in a
+/// register; inlining would duplicate the computation, so the fold must bail. A Variable
+/// value is register-resident and free to re-read any number of times.
+fn fold_would_duplicate(
+    expression: &Expression,
+    local_names: &std::collections::HashSet<&str>,
+    values: &std::collections::HashMap<String, Expression>,
+    read_count: &mut std::collections::HashMap<String, usize>,
+) -> bool {
+    for &name in local_names {
+        let occurrences = crate::analysis::count_name_occurrences(expression, name);
+        if occurrences == 0 {
+            continue;
+        }
+        let total = read_count.entry(name.to_string()).or_insert(0);
+        *total += occurrences;
+        let computed = values.get(name).is_some_and(|value| !matches!(value, Expression::Variable(_)));
+        if computed && *total >= 2 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fold a function's value-tracked locals into its stores and trailing return, then
+/// recompile — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`, and `int x =
+/// a; gi = x; return x;` becomes `gi = a; return a;`. The store paths (or, when mwcc would
+/// latency-schedule the stores, the un-schedulable-store deferral) own the cleaned body. The
+/// locals exist only to feed the stores and the return, so tracking their values
+/// sequentially and substituting eliminates them. Bails on a call (in the body or a value —
+/// a side effect to preserve), a guard, a non-store/assign statement, a store into a local,
+/// a local that survives the substitution, or a fold that would duplicate a computed value
+/// at 2+ sites (mwcc keeps it in one register — fold_would_duplicate). A store-free body
+/// (pure dead-local, or pure return-folding) is left to the value-tracking path.
+fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
+    if function.locals.is_empty() || function_makes_call(function) || !function.guards.is_empty() {
         return None;
     }
     let local_names: std::collections::HashSet<&str> =
         function.locals.iter().map(|local| local.name.as_str()).collect();
     // Each local's current value, earlier folds applied. Seed from initializers (a call-
-    // bearing initializer is a call result to preserve, not inline).
+    // bearing initializer is a call result to preserve, not inline). `read_count` tracks how
+    // many times each local's CURRENT value-version is read, to reject duplicating a
+    // computation; reassignment resets it.
     let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    let mut read_count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for local in &function.locals {
         let Some(initializer) = &local.initializer else { continue };
-        if expression_has_call(initializer) {
+        if expression_has_call(initializer) || fold_would_duplicate(initializer, &local_names, &values, &mut read_count) {
             return None;
         }
         values.insert(local.name.clone(), crate::value_tracking::substitute(initializer, &values));
@@ -152,7 +178,11 @@ fn inline_store_only_locals(function: &Function) -> Option<Function> {
                 if !local_names.contains(name.as_str()) || expression_has_call(value) {
                     return None;
                 }
+                if fold_would_duplicate(value, &local_names, &values, &mut read_count) {
+                    return None;
+                }
                 values.insert(name.clone(), crate::value_tracking::substitute(value, &values));
+                read_count.insert(name.clone(), 0);
             }
             Statement::Store { target, value } => {
                 if expression_has_call(value) || expression_has_call(target) {
@@ -165,6 +195,11 @@ fn inline_store_only_locals(function: &Function) -> Option<Function> {
                         return None;
                     }
                 }
+                if fold_would_duplicate(target, &local_names, &values, &mut read_count)
+                    || fold_would_duplicate(value, &local_names, &values, &mut read_count)
+                {
+                    return None;
+                }
                 new_statements.push(Statement::Store {
                     target: crate::value_tracking::substitute(target, &values),
                     value: crate::value_tracking::substitute(value, &values),
@@ -173,20 +208,32 @@ fn inline_store_only_locals(function: &Function) -> Option<Function> {
             _ => return None,
         }
     }
-    // Leave the store-free (pure dead-local) case to the value-tracking path's blr handling.
+    if let Some(return_expression) = &function.return_expression {
+        if fold_would_duplicate(return_expression, &local_names, &values, &mut read_count) {
+            return None;
+        }
+    }
+    // A store-free body (a pure dead-local, or pure return-folding) is the value-tracking
+    // path's job, not ours.
     if new_statements.is_empty() {
         return None;
     }
-    // Every local must be fully folded away — none may survive in a resulting store (e.g. a
-    // local whose aggregate or address use the substitution could not eliminate).
+    let folded_return = function
+        .return_expression
+        .as_ref()
+        .map(|expression| crate::value_tracking::substitute(expression, &values));
+    // Every local must be fully folded away — none may survive in a resulting store or the
+    // return (e.g. a local whose aggregate or address use could not be substituted).
+    let survives = |expression: &Expression| local_names.iter().any(|name| expression_reads_name(expression, name));
     for statement in &new_statements {
-        let Statement::Store { target, value } = statement else { continue };
-        if local_names
-            .iter()
-            .any(|name| expression_reads_name(target, name) || expression_reads_name(value, name))
-        {
-            return None;
+        if let Statement::Store { target, value } = statement {
+            if survives(target) || survives(value) {
+                return None;
+            }
         }
+    }
+    if folded_return.as_ref().is_some_and(survives) {
+        return None;
     }
     Some(Function {
         return_type: function.return_type,
@@ -196,7 +243,7 @@ fn inline_store_only_locals(function: &Function) -> Option<Function> {
         locals: Vec::new(),
         statements: new_statements,
         guards: function.guards.clone(),
-        return_expression: None,
+        return_expression: folded_return,
     })
 }
 
@@ -256,11 +303,12 @@ impl Generator {
         if self.try_conditional_assign(function)? {
             return Ok(());
         }
-        // A void function's value-tracked locals are folded into its stores, then
-        // recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`, owned
-        // by the store paths (or the un-schedulable-store deferral). Checked before the
-        // value-tracking path, which has no return to fold a void function's locals into.
-        if let Some(inlined) = inline_store_only_locals(function) {
+        // A function's value-tracked locals are folded into its stores and trailing return,
+        // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
+        // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths
+        // (or the un-schedulable-store deferral) own the cleaned body. Checked before the
+        // value-tracking path, which cannot fold a void function's store-feeding locals.
+        if let Some(inlined) = inline_store_bearing_locals(function) {
             return self.evaluate_body(&inlined);
         }
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
@@ -298,14 +346,13 @@ impl Generator {
         if self.try_leaf_constant_fill(function)? {
             return Ok(());
         }
-        // Un-schedulable multi-store: a void body of 2+ stores to SDA integer globals that
-        // the fills above did not absorb. mwcc latency-schedules these (load/computation
-        // hoisting, constant-`li` slot fill); the normal sequential emission would not
-        // reproduce that, so DEFER rather than ship wrong bytes. Only an all-distinct-leaf
-        // run (no computation to schedule, no dead store) stays byte-exact on the normal
-        // path, so let that through.
-        if function.return_type == Type::Void
-            && function.guards.is_empty()
+        // Un-schedulable multi-store: a body whose statements are 2+ stores to SDA integer
+        // globals that the fills above did not absorb (a trailing return, if any, is
+        // separate). mwcc latency-schedules these (load/computation hoisting, constant-`li`
+        // slot fill); the normal sequential emission would not reproduce that, so DEFER
+        // rather than ship wrong bytes. Only an all-distinct-leaf run (no computation to
+        // schedule, no dead store) stays byte-exact on the normal path, so let that through.
+        if function.guards.is_empty()
             && function.locals.is_empty()
             && !function_makes_call(function)
             && function.statements.len() >= 2

@@ -116,6 +116,29 @@ pub(crate) fn expression_reads_name(expression: &Expression, name: &str) -> bool
     reads_register(expression, &single)
 }
 
+/// Count every textual read of the variable `name` within `expression` (not de-duplicated).
+/// Used to detect a value that would be materialized at more than one site if inlined.
+pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usize {
+    match expression {
+        Expression::Variable(variable) => usize::from(variable == name),
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => 0,
+        Expression::Binary { left, right, .. } => count_name_occurrences(left, name) + count_name_occurrences(right, name),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => count_name_occurrences(operand, name),
+        Expression::Dereference { pointer } => count_name_occurrences(pointer, name),
+        Expression::AddressOf { operand } => count_name_occurrences(operand, name),
+        Expression::Index { base, index } => count_name_occurrences(base, name) + count_name_occurrences(index, name),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => count_name_occurrences(base, name),
+        Expression::Conditional { condition, when_true, when_false } => {
+            count_name_occurrences(condition, name)
+                + count_name_occurrences(when_true, name)
+                + count_name_occurrences(when_false, name)
+        }
+        Expression::Call { arguments, .. } => arguments.iter().map(|argument| count_name_occurrences(argument, name)).sum(),
+        Expression::Assign { target, value } => count_name_occurrences(target, name) + count_name_occurrences(value, name),
+        Expression::Comma { left, right } => count_name_occurrences(left, name) + count_name_occurrences(right, name),
+    }
+}
+
 /// Append (in evaluation order, de-duplicated) every register-resident name read
 /// within `expression`.
 fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, collected: &mut Vec<String>) {
