@@ -64,6 +64,14 @@ impl Generator {
             return Err(Diagnostic::error("value tracking combined with guards is not supported yet (roadmap)"));
         }
         if function.return_type == Type::Void {
+            // A void function whose body is only local reassignments has no observable
+            // effect — every local is dead (assigned but never stored, passed, or
+            // returned), so mwcc dead-code-eliminates the whole body and emits just the
+            // return. A store/call would be observable and is handled (or deferred) below.
+            if function.statements.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+                self.emit_epilogue_and_return();
+                return Ok(true);
+            }
             return Err(Diagnostic::error("value tracking for a void function is not supported yet (roadmap)"));
         }
 
