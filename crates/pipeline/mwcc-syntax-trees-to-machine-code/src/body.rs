@@ -813,12 +813,13 @@ impl Generator {
         Ok(true)
     }
 
-    /// Two stores to distinct integer SDA globals where one value is a single-op register
-    /// computation and the other a register-resident leaf parameter (`gi = a+1; gj = b;`).
-    /// mwcc computes the computed value into the scratch, then stores the LEAF first (it is
-    /// ready immediately, while the computed result settles) and the computed value second
-    /// — `addi r0,r3,1; stw r4,gj; stw r0,gi`. (Both-computed is the latency-ordered fill
-    /// above; both-leaf is the normal path; both-constant is the constant fill.)
+    /// Two stores to distinct integer SDA globals where one value is a register-resident
+    /// leaf parameter and the other a "filler" — a single-op computation (`gi=a+1; gj=b;`)
+    /// or a constant (`gi=a; gj=5;`). mwcc produces the filler into the scratch, then stores
+    /// the LEAF first (it is ready immediately) and the filler second — `addi r0,r3,1; stw
+    /// r4,gj; stw r0,gi` or `li r0,5; stw r3,gi; stw r0,gj`. (Both-computed and computed+
+    /// constant are the latency-ordered fill above; both-leaf is the normal path; both-
+    /// constant is the constant fill.)
     pub(crate) fn try_mixed_store_fill(&mut self, function: &Function) -> Compilation<bool> {
         if function_makes_call(function)
             || function.return_type != Type::Void
@@ -842,24 +843,31 @@ impl Generator {
         if stores[0].0 == stores[1].0 {
             return Ok(false);
         }
-        // Exactly one value is a single-op computation, the other a register-resident leaf
-        // parameter (a global/memory leaf would need a load; a constant the constant fill).
+        // Exactly one value is a "filler" — a single-op computation or a constant — and the
+        // other a register-resident leaf parameter (a global/memory leaf would need a load).
+        // The filler is materialized into the scratch and the leaf stays in its register, so
+        // both `gi=a+1; gj=b;` and `gi=a; gj=5;` reduce to: produce the filler, store the
+        // leaf, store the filler.
+        let filler = [
+            self.is_single_op_register_value(&stores[0].2) || constant_value(&stores[0].2).is_some(),
+            self.is_single_op_register_value(&stores[1].2) || constant_value(&stores[1].2).is_some(),
+        ];
         let is_register_leaf = |value: &Expression| {
             matches!(value, Expression::Variable(name) if !self.globals.contains_key(name.as_str()))
         };
-        let (computed, leaf) = if self.is_single_op_register_value(&stores[0].2) && is_register_leaf(&stores[1].2) {
+        let (filler, leaf) = if filler[0] && is_register_leaf(&stores[1].2) {
             (0usize, 1usize)
-        } else if is_register_leaf(&stores[0].2) && self.is_single_op_register_value(&stores[1].2) {
+        } else if is_register_leaf(&stores[0].2) && filler[1] {
             (1usize, 0usize)
         } else {
             return Ok(false);
         };
-        // The computed value goes into the scratch; the leaf is already in its register, so
-        // store it first, then the computed value.
+        // The filler goes into the scratch; the leaf is already in its register, so store it
+        // first, then the filler.
         let leaf_register = self.general_register_of_leaf(&stores[leaf].2)?;
-        self.evaluate_general(&stores[computed].2, GENERAL_SCRATCH)?;
+        self.evaluate_general(&stores[filler].2, GENERAL_SCRATCH)?;
         self.emit_sda_global_store_from(&stores[leaf].0, stores[leaf].1, leaf_register);
-        self.emit_sda_global_store_from(&stores[computed].0, stores[computed].1, GENERAL_SCRATCH);
+        self.emit_sda_global_store_from(&stores[filler].0, stores[filler].1, GENERAL_SCRATCH);
         self.emit_epilogue_and_return();
         Ok(true)
     }

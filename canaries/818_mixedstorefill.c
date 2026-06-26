@@ -16,3 +16,9 @@ void computed_then_leaf(int a, int b)        { gi = a + 1; gj = b; }   // addi r
 void leaf_then_computed(int a, int b)        { gi = a;     gj = b + 1; } // addi r0; stw r3; stw r0
 void high_latency(int a, int b)              { gi = a * b; gj = b; }   // mullw r0; stw; stw r0
 void two_operand(int a, int b, int c)        { gi = a + b; gj = c; }   // add r0; stw; stw r0
+
+// The filler may also be a constant — `gi = a; gj = 5;` — same shape: `li r0,5; stw
+// r3,gi; stw r0,gj`, the leaf stored first, the constant second, regardless of source
+// order. (Both-constant is the constant fill; computed+constant is the computed fill.)
+void leaf_then_const(int a)                  { gi = a; gj = 5; }    // li r0,5; stw r3; stw r0
+void const_then_leaf(int a)                  { gi = 5; gj = a; }    // li r0,5; stw r3,gj; stw r0,gi
