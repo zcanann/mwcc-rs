@@ -580,16 +580,13 @@ impl Generator {
         // its operand must still go to a non-scratch register. Place it in a fresh
         // virtual the allocator assigns, exactly as mwcc keeps such an operand in a
         // real register (g*BIG + 0x3039 -> the product in r3, then addi r0,r3,...).
-        // A call operand of any immediate op gets the same treatment: forcing the
-        // result out of its r3 home into the scratch would add a move mwcc does not
-        // emit (`foo() & m` -> `rlwinm r0,r3,…`, the result read in place). The
-        // allocator colors the virtual to r3 and the self-move coalesces away.
-        let operand_target =
-            if (matches!(kind, Immediate::Add) || matches!(variable, Expression::Call { .. })) && destination == GENERAL_SCRATCH {
-                self.fresh_virtual_general()
-            } else {
-                destination
-            };
+        // (A call operand of any immediate op is kept in its r3 home centrally by
+        // place_operand, so it needs no special case here.)
+        let operand_target = if matches!(kind, Immediate::Add) && destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            destination
+        };
         let Some(source) = self.place_operand(variable, operand_target, prefer_destination)? else {
             return Ok(false);
         };

@@ -2184,12 +2184,15 @@ impl Generator {
             self.emit_widen(target, register, width, signed);
             return Ok(Some(target));
         }
-        // A call result already lands in the result register, which is the
-        // destination for a tail consumer; compute it there and let the consumer
-        // operate in place (mwcc does not bounce it through the scratch).
+        // A call result lands in r3, its home. Let the consumer read it there rather than
+        // bouncing it through the scratch with a move mwcc does not emit: place it in a
+        // fresh virtual the allocator colors to r3 (the resulting `mr r3,r3` coalesces away).
+        // For a tail consumer (destination already r3) the move is a self-move that vanishes;
+        // for a scratch consumer it keeps the operand in r3, matching mwcc's `<op> d,r3,…`.
         if matches!(operand, Expression::Call { .. }) {
-            self.evaluate_general(operand, destination)?;
-            return Ok(Some(destination));
+            let home = self.fresh_virtual_general();
+            self.evaluate_general(operand, home)?;
+            return Ok(Some(home));
         }
         if prefer_destination {
             self.evaluate_general(operand, destination)?;

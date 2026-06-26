@@ -12,3 +12,9 @@ void shift_left(int a)    { gi = produce(a) << 3; }     // slwi  r0,r3,3
 void or_const(int a)      { gi = produce(a) | 16; }     // ori   r0,r3,16
 void mul_const(int a)     { gi = produce(a) * 5; }      // mulli r0,r3,5
 void add_const(int a)     { gi = produce(a) + 1; }      // addi  r0,r3,1
+
+// The same applies to the shift-right, negate, and divide paths (not just the immediate
+// ops): place_operand keeps any call operand in its r3 home centrally, so `foo() >> n` and
+// `-foo()` read the result in place (`bl; srawi r3,r3,n` / `bl; neg r3,r3`).
+void shift_right(int a)   { gi = produce(a) >> 2; }   // srawi r0,r3,2
+void negate(int a)        { gi = -produce(a); }       // neg   r0,r3
