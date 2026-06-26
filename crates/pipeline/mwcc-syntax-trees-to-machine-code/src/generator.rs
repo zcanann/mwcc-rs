@@ -117,6 +117,11 @@ pub(crate) struct Generator {
     /// hold values live across a call. They are saved high-to-low in the prologue
     /// and reloaded in the epilogue, and drive the unwind table's saved-GPR count.
     pub(crate) callee_saved: Vec<u8>,
+    /// Emit the saved-LR reload BEFORE the callee-saved GPR reloads in the epilogue. mwcc
+    /// orders it this way for a callee-saved STORE sink (`foo(); gi = a;` — the saved value
+    /// is stored after the call, then `lwz r0,20; lwz r31,12; mtlr`), as opposed to the
+    /// return sink where the LR-reload hoist issues it right after the last call.
+    pub(crate) epilogue_lr_first: bool,
     /// Set while evaluating a narrow-return expression whose result is truncated, so a
     /// narrow leaf operand is read raw (no leading sign/zero extension) — the final
     /// truncation makes the extension redundant. Only enabled for truncation-safe

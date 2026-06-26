@@ -1545,13 +1545,17 @@ impl Generator {
         if !self.frame_slots.is_empty() {
             return Ok(false);
         }
-        // The body must be straight-line calls (control flow / stores route through their
-        // own paths; a store adjacent to the moves would be scheduler-shuffled). A trailing
-        // store sink (`foo(); gi = a;`) defers: mwcc orders the epilogue LR reload BEFORE
-        // the GPR reload there (`stw r31,gi; lwz r0,20; lwz r31,12`), whereas our base
-        // epilogue is GPR-then-LR and the LR-reload hoist (tuned for the return sink) is
-        // blocked by the store — making it byte-exact needs the epilogue reorder reworked.
-        if function.statements.iter().any(|statement| !matches!(statement, Statement::Expression(_))) {
+        // The body is straight-line calls and stores (control flow routes through its own
+        // paths). A trailing store sink (`foo(); gi = a;`) saves the live value, runs the
+        // calls, then stores it from the callee-saved register; mwcc orders that epilogue's
+        // LR reload before the GPR reload (epilogue_lr_first), unlike the return sink.
+        if function.statements.iter().any(|statement| !matches!(statement, Statement::Expression(_) | Statement::Store { .. })) {
+            return Ok(false);
+        }
+        // A store sink must be void: a value returned alongside a store would interleave the
+        // return move with the epilogue differently.
+        let has_store = function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }));
+        if has_store && function.return_type != Type::Void {
             return Ok(false);
         }
         if matches!(function.return_type, Type::Float | Type::Double) {
@@ -1620,6 +1624,8 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
+        // A store sink reloads the saved LR before the GPR reloads in the epilogue.
+        self.epilogue_lr_first = has_store;
         // Save and move each, highest register first (r31 ← last parameter), with the
         // save interleaved before its move, as mwcc emits them.
         for (rank, (_, name, incoming)) in promoted.iter().rev().enumerate() {
@@ -1950,16 +1956,26 @@ impl Generator {
     }
 
     pub(crate) fn emit_epilogue_and_return(&mut self) {
-        // Reload callee-saved registers (highest first, from the top of the frame)
-        // before the saved-LR reload, so that reload stays directly before `mtlr`
-        // where the hoist pass finds it and issues it right after the last call.
-        for (index, &register) in self.callee_saved.iter().enumerate() {
-            let offset = self.frame_size - 4 * (index as i16 + 1);
-            self.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
-        }
-        if self.non_leaf {
+        let reload_saved_gprs = |generator: &mut Self| {
+            for (index, &register) in generator.callee_saved.iter().enumerate() {
+                let offset = generator.frame_size - 4 * (index as i16 + 1);
+                generator.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+            }
+        };
+        if self.epilogue_lr_first && self.non_leaf {
+            // Store-sink callee-saved: mwcc reloads the saved LR before the GPR reloads.
             self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+            reload_saved_gprs(self);
             self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            // Reload callee-saved registers (highest first, from the top of the frame)
+            // before the saved-LR reload, so that reload stays directly before `mtlr`
+            // where the hoist pass finds it and issues it right after the last call.
+            reload_saved_gprs(self);
+            if self.non_leaf {
+                self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+                self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+            }
         }
         if self.frame_size != 0 {
             self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
