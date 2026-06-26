@@ -116,6 +116,90 @@ fn inline_return_only_locals(function: &Function) -> Option<Function> {
     })
 }
 
+/// Fold a void function's value-tracked locals into its stores, then recompile — `int x =
+/// a; gi = x; x = b; gj = x;` becomes the equivalent `gi = a; gj = b;`, which the store
+/// paths emit (or, when mwcc would latency-schedule them, the un-schedulable-store deferral
+/// owns). The locals exist only to feed the stores, so tracking their values sequentially
+/// and substituting into each store eliminates them. Bails on anything outside the void /
+/// no-call / no-guard / assign-or-store shape, on a call-bearing value (a side effect to
+/// preserve), on a store whose value is not a local feeding it, or if a local survives the
+/// substitution. The store-free (pure dead-local) case is left to the value-tracking path.
+fn inline_store_only_locals(function: &Function) -> Option<Function> {
+    if function.return_type != Type::Void
+        || function.locals.is_empty()
+        || function_makes_call(function)
+        || !function.guards.is_empty()
+        || function.return_expression.is_some()
+    {
+        return None;
+    }
+    let local_names: std::collections::HashSet<&str> =
+        function.locals.iter().map(|local| local.name.as_str()).collect();
+    // Each local's current value, earlier folds applied. Seed from initializers (a call-
+    // bearing initializer is a call result to preserve, not inline).
+    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    for local in &function.locals {
+        let Some(initializer) = &local.initializer else { continue };
+        if expression_has_call(initializer) {
+            return None;
+        }
+        values.insert(local.name.clone(), crate::value_tracking::substitute(initializer, &values));
+    }
+    let mut new_statements = Vec::new();
+    for statement in &function.statements {
+        match statement {
+            Statement::Assign { name, value } => {
+                if !local_names.contains(name.as_str()) || expression_has_call(value) {
+                    return None;
+                }
+                values.insert(name.clone(), crate::value_tracking::substitute(value, &values));
+            }
+            Statement::Store { target, value } => {
+                if expression_has_call(value) || expression_has_call(target) {
+                    return None;
+                }
+                // A store INTO a local is a different shape — we only fold locals that feed
+                // memory stores, not locals that are themselves store targets.
+                if let Expression::Variable(name) = target {
+                    if local_names.contains(name.as_str()) {
+                        return None;
+                    }
+                }
+                new_statements.push(Statement::Store {
+                    target: crate::value_tracking::substitute(target, &values),
+                    value: crate::value_tracking::substitute(value, &values),
+                });
+            }
+            _ => return None,
+        }
+    }
+    // Leave the store-free (pure dead-local) case to the value-tracking path's blr handling.
+    if new_statements.is_empty() {
+        return None;
+    }
+    // Every local must be fully folded away — none may survive in a resulting store (e.g. a
+    // local whose aggregate or address use the substitution could not eliminate).
+    for statement in &new_statements {
+        let Statement::Store { target, value } = statement else { continue };
+        if local_names
+            .iter()
+            .any(|name| expression_reads_name(target, name) || expression_reads_name(value, name))
+        {
+            return None;
+        }
+    }
+    Some(Function {
+        return_type: function.return_type,
+        name: function.name.clone(),
+        is_static: function.is_static,
+        parameters: function.parameters.clone(),
+        locals: Vec::new(),
+        statements: new_statements,
+        guards: function.guards.clone(),
+        return_expression: None,
+    })
+}
+
 impl Generator {
 
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
@@ -171,6 +255,13 @@ impl Generator {
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
             return Ok(());
+        }
+        // A void function's value-tracked locals are folded into its stores, then
+        // recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`, owned
+        // by the store paths (or the un-schedulable-store deferral). Checked before the
+        // value-tracking path, which has no return to fold a void function's locals into.
+        if let Some(inlined) = inline_store_only_locals(function) {
+            return self.evaluate_body(&inlined);
         }
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
         // return expression and compiled there; this takes over the whole body when
