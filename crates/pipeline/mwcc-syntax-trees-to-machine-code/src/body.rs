@@ -828,6 +828,14 @@ impl Generator {
             Expression::Index { base, index } => {
                 matches!(base.as_ref(), Expression::Variable(_)) && constant_value(index).is_some()
             }
+            // A small-data (SDA21) integer global store folds the relocation into the
+            // store itself (`stw r0, g@sda21`) — no base register, and it never writes the
+            // scratch — so a constant fill can keep its value live across it. An absolute-
+            // addressing global needs a base register, so it stays excluded.
+            Expression::Variable(name) => {
+                matches!(self.behavior.global_addressing, GlobalAddressing::SmallData)
+                    && self.globals.get(name.as_str()).is_some_and(|global_type| !matches!(global_type, Type::Float | Type::Double))
+            }
             _ => false,
         }
     }
