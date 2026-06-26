@@ -201,6 +201,12 @@ impl Generator {
         if self.try_mixed_store_fill(function)? {
             return Ok(());
         }
+        // Three+ stores of register leaves with a single constant interspersed (`gi=a;
+        // gj=b; gk=5;`): the constant's `li` is hoisted and the stores keep source order
+        // (a leading constant swaps off the latency slot).
+        if self.try_leaf_constant_fill(function)? {
+            return Ok(());
+        }
         // A `do { …calls… } while (--counter);` loop: the counter goes in r31
         // (callee-saved), the body branches back, and the decrement-and-test is a
         // single `addic.`/`bne`.
@@ -868,6 +874,80 @@ impl Generator {
         self.evaluate_general(&stores[filler].2, GENERAL_SCRATCH)?;
         self.emit_sda_global_store_from(&stores[leaf].0, stores[leaf].1, leaf_register);
         self.emit_sda_global_store_from(&stores[filler].0, stores[filler].1, GENERAL_SCRATCH);
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// Three or more stores to distinct integer SDA globals where exactly one value is a
+    /// constant and the rest are register-resident leaf parameters (`gi=a; gj=b; gk=5;`).
+    /// mwcc hoists the constant's `li` into the scratch up front and stores in source order
+    /// — except a constant store cannot occupy the `li`'s one-cycle latency slot, so if the
+    /// constant is the FIRST store it swaps with the next (leaf) store:
+    ///
+    ///     gi=a; gj=b; gk=5  ->  li r0,5; stw r3,gi; stw r4,gj; stw r0,gk   (source order)
+    ///     gi=5; gj=a; gk=b  ->  li r0,5; stw r3,gj; stw r0,gi; stw r4,gk   (leading const swaps)
+    ///
+    /// (Two stores are the mixed fill; all-constant is the constant fill; a non-leaf, non-
+    /// constant value among the rest needs the general scheduler and defers.)
+    pub(crate) fn try_leaf_constant_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || function.statements.len() < 3
+            || self.behavior.global_addressing != GlobalAddressing::SmallData
+        {
+            return Ok(false);
+        }
+        let mut stores = Vec::new();
+        for statement in &function.statements {
+            let Statement::Store { target: Expression::Variable(name), value } = statement else { return Ok(false) };
+            let Some(&global_type) = self.globals.get(name.as_str()) else { return Ok(false) };
+            if matches!(global_type, Type::Float | Type::Double) {
+                return Ok(false);
+            }
+            let Some(pointee) = pointee_of_type(global_type) else { return Ok(false) };
+            stores.push((name.clone(), pointee, value.clone()));
+        }
+        // Distinct targets (a repeated target is a dead store this path does not model).
+        for outer in 0..stores.len() {
+            for inner in (outer + 1)..stores.len() {
+                if stores[outer].0 == stores[inner].0 {
+                    return Ok(false);
+                }
+            }
+        }
+        // Exactly one constant; every other value a register-resident leaf parameter.
+        let mut constant_index = None;
+        for (index, store) in stores.iter().enumerate() {
+            if constant_value(&store.2).is_some() {
+                if constant_index.is_some() {
+                    return Ok(false);
+                }
+                constant_index = Some(index);
+            } else if !matches!(&store.2, Expression::Variable(name) if !self.globals.contains_key(name.as_str())) {
+                return Ok(false);
+            }
+        }
+        let Some(constant_index) = constant_index else {
+            return Ok(false);
+        };
+        let constant = constant_value(&stores[constant_index].2).unwrap();
+        self.load_integer_constant(GENERAL_SCRATCH, constant as i64);
+        // Source order, except a leading constant store swaps with the next store so it does
+        // not sit in the `li`'s latency slot.
+        let mut order: Vec<usize> = (0..stores.len()).collect();
+        if constant_index == 0 {
+            order.swap(0, 1);
+        }
+        for &index in &order {
+            if index == constant_index {
+                self.emit_sda_global_store_from(&stores[index].0, stores[index].1, GENERAL_SCRATCH);
+            } else {
+                let register = self.general_register_of_leaf(&stores[index].2)?;
+                self.emit_sda_global_store_from(&stores[index].0, stores[index].1, register);
+            }
+        }
         self.emit_epilogue_and_return();
         Ok(true)
     }
