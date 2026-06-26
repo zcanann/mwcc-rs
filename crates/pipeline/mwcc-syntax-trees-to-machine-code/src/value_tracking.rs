@@ -48,8 +48,13 @@ impl Generator {
                 function.locals.first().and_then(|local| local.initializer.as_ref()),
                 Some(Expression::Variable(_))
             );
+        // A single local read by a store (not just an assignment) still belongs here: the
+        // statement loop below defers stores honestly. Declining would drop it to the normal
+        // path, which cannot read a value-tracked local and emits garbage (it reads an
+        // unallocated register) — a silent miscompile for `int x = a+1; gi = x; return x;`.
+        let has_store = function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }));
         if function.locals.is_empty()
-            || (function.locals.len() == 1 && !has_assignment && !single_conditional_local && !single_alias_local)
+            || (function.locals.len() == 1 && !has_assignment && !has_store && !single_conditional_local && !single_alias_local)
         {
             return Ok(false);
         }
