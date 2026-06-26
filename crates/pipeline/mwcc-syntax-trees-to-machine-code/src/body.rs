@@ -1545,8 +1545,12 @@ impl Generator {
         if !self.frame_slots.is_empty() {
             return Ok(false);
         }
-        // The body must be straight-line calls (control flow / stores route through
-        // their own paths; a store adjacent to the moves would be scheduler-shuffled).
+        // The body must be straight-line calls (control flow / stores route through their
+        // own paths; a store adjacent to the moves would be scheduler-shuffled). A trailing
+        // store sink (`foo(); gi = a;`) defers: mwcc orders the epilogue LR reload BEFORE
+        // the GPR reload there (`stw r31,gi; lwz r0,20; lwz r31,12`), whereas our base
+        // epilogue is GPR-then-LR and the LR-reload hoist (tuned for the return sink) is
+        // blocked by the store — making it byte-exact needs the epilogue reorder reworked.
         if function.statements.iter().any(|statement| !matches!(statement, Statement::Expression(_))) {
             return Ok(false);
         }
