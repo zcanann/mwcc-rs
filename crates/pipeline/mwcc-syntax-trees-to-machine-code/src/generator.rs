@@ -302,8 +302,12 @@ impl Generator {
             Expression::Assign { value, .. } => self.signedness_of(value),
             // A comma operator yields its right operand.
             Expression::Comma { right, .. } => self.signedness_of(right),
-            // A call returns an int by default (we have no prototype types yet).
-            Expression::Call { .. } => Ok(true),
+            // A call's signedness is its declared return type's; an unknown callee
+            // defaults to a signed int.
+            Expression::Call { name, .. } => Ok(self
+                .call_return_types
+                .get(name)
+                .map_or(true, |return_type| self.signed_of(*return_type))),
         }
     }
 

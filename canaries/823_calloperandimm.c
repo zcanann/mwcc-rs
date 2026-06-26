@@ -18,3 +18,11 @@ void add_const(int a)     { gi = produce(a) + 1; }      // addi  r0,r3,1
 // `-foo()` read the result in place (`bl; srawi r3,r3,n` / `bl; neg r3,r3`).
 void shift_right(int a)   { gi = produce(a) >> 2; }   // srawi r0,r3,2
 void negate(int a)        { gi = -produce(a); }       // neg   r0,r3
+
+// A call's signedness is its declared return type's (call_return_types), not a hardcoded
+// signed default — so an UNSIGNED function result shifts/divides logically (srwi), not
+// arithmetically (srawi).
+unsigned uproduce(unsigned);
+unsigned gu;
+void ushift(unsigned a)   { gu = uproduce(a) >> 2; }   // srwi r0,r3,2 (logical)
+void udiv(unsigned a)     { gu = uproduce(a) / 4; }    // srwi r0,r3,2
