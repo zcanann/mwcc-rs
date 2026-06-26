@@ -30,6 +30,6 @@ int ret_store_computed(int a)  { foo(); gi = a; return a + 1; }   // return a va
 // the two GPR reloads). Three or more values reschedule that order (LR reload last) and
 // defer; a computed store among two saved values defers (the single-value sink still
 // allows a computed store).
-int gk;
+int gj;
 void store_two(int a, int b)       { foo(); gi = a; gj = b; }     // r31,r0,r30 epilogue
 void store_two_swapped(int a, int b){ foo(); gi = b; gj = a; }    // saved regs by param order
