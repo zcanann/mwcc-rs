@@ -207,6 +207,50 @@ impl Generator {
         if self.try_leaf_constant_fill(function)? {
             return Ok(());
         }
+        // Un-schedulable multi-store: a void body of 2+ stores to SDA integer globals that
+        // the fills above did not absorb. mwcc latency-schedules these (load/computation
+        // hoisting, constant-`li` slot fill); the normal sequential emission would not
+        // reproduce that, so DEFER rather than ship wrong bytes. Only an all-distinct-leaf
+        // run (no computation to schedule, no dead store) stays byte-exact on the normal
+        // path, so let that through.
+        if function.return_type == Type::Void
+            && function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && function.statements.len() >= 2
+            && self.behavior.global_addressing == GlobalAddressing::SmallData
+        {
+            let mut targets = Vec::new();
+            let mut all_leaves = true;
+            let mut all_sda_integer_stores = true;
+            for statement in &function.statements {
+                let Statement::Store { target: Expression::Variable(name), value } = statement else {
+                    all_sda_integer_stores = false;
+                    break;
+                };
+                match self.globals.get(name.as_str()) {
+                    Some(global_type) if !matches!(global_type, Type::Float | Type::Double) => targets.push(name.as_str()),
+                    _ => {
+                        all_sda_integer_stores = false;
+                        break;
+                    }
+                }
+                if !matches!(value, Expression::Variable(leaf) if !self.globals.contains_key(leaf.as_str())) {
+                    all_leaves = false;
+                }
+            }
+            if all_sda_integer_stores {
+                let distinct = {
+                    let mut sorted = targets.clone();
+                    sorted.sort_unstable();
+                    sorted.dedup();
+                    sorted.len() == targets.len()
+                };
+                if !all_leaves || !distinct {
+                    return Err(Diagnostic::error("a run of stores that mwcc latency-schedules needs the scheduler (roadmap)"));
+                }
+            }
+        }
         // A `do { …calls… } while (--counter);` loop: the counter goes in r31
         // (callee-saved), the body branches back, and the decrement-and-test is a
         // single `addic.`/`bne`.
