@@ -16,3 +16,10 @@ void store_live(int a)         { foo(); gi = a; }        // mr r31,r3; bl; stw r
 void store_computed(int a)     { foo(); gi = a + 1; }    // ...; addi r0,r31,1; stw r0,gi
 void store_after_two(int a)    { foo(); foo(); gi = a; }
 void store_after_arg_call(int a){ bar(0); gi = a; }      // the call's own arg is a constant
+
+// The single saved value may also be RETURNED after the store — `int f(int a){ foo(); gi =
+// a; return a; }` — `stw r31,gi; mr r3,r31; lwz r0,20; lwz r31,12; mtlr` (the LR-first
+// epilogue still applies, the return move sits before it). Two saved values reschedule the
+// epilogue (LR reload between the GPR reloads) and still defer.
+int ret_and_store(int a)       { foo(); gi = a; return a; }       // store then return
+int ret_store_computed(int a)  { foo(); gi = a; return a + 1; }   // return a value of the saved reg

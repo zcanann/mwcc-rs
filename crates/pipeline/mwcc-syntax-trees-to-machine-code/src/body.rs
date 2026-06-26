@@ -1552,12 +1552,7 @@ impl Generator {
         if function.statements.iter().any(|statement| !matches!(statement, Statement::Expression(_) | Statement::Store { .. })) {
             return Ok(false);
         }
-        // A store sink must be void: a value returned alongside a store would interleave the
-        // return move with the epilogue differently.
         let has_store = function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }));
-        if has_store && function.return_type != Type::Void {
-            return Ok(false);
-        }
         if matches!(function.return_type, Type::Float | Type::Double) {
             return Ok(false);
         }
@@ -1597,6 +1592,13 @@ impl Generator {
         promoted.sort_by_key(|(index, _, _)| *index);
 
         let count = promoted.len();
+        // A store sink is restricted to a single saved value: with two or more, mwcc
+        // interleaves the LR reload between the GPR reloads (`lwz r31; lwz r0; lwz r30`),
+        // which the LR-first epilogue does not reproduce. A single saved value, whether
+        // also returned (`foo(); gi=a; return a;`) or not, keeps the simple LR-first order.
+        if has_store && count != 1 {
+            return Ok(false);
+        }
         // With more than one saved value, mwcc's scheduler interleaves the epilogue
         // restores with the post-call computation by register death — which we don't
         // model yet. It coincides with "all restores after" only when the values
