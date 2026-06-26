@@ -13,3 +13,11 @@ void init_field(int a)      { int x = produce(a); gi = x; }        // gi = produ
 void assigned_form(int a)   { int x; x = produce(a); gi = x; }     // same via assignment
 void no_args(void)          { int x = side(); gi = x; }            // gi = side()
 void two_args(int a, int b) { int x = produce2(a, b); gj = x; }    // gj = produce2(a, b)
+
+// The result may instead be RETURNED — `int x = foo(...); return x;` — same shape, the
+// call result already in r3 is the return value (`return foo(...)` is byte-exact). A second
+// use (store AND return), a non-void store sink with a return, or the result fused with
+// arithmetic still defer.
+int ret_result(int a)       { int x = produce(a); return x; }     // return produce(a)
+int ret_assigned(int a)     { int x; x = produce(a); return x; }  // same via assignment
+int ret_no_args(void)       { int x = side(); return x; }         // return side()

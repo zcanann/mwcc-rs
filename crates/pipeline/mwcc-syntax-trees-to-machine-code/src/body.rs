@@ -247,20 +247,16 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
     })
 }
 
-/// `int x = foo(...); gi = x;` — a single local whose value is exactly one call, used once as
-/// the WHOLE value of one global store. mwcc leaves the call result in r3 and stores it
-/// directly (`gi = foo(...)` is already byte-exact), and the result is not live across any
-/// other call, so it needs no callee-save. Inline the local and recompile. This is the
-/// trivial entry into value-tracking-with-calls; a second call, a second use of the result,
-/// the result fused with arithmetic, or a non-void return all need the callee-saved
-/// allocator and fall through to it. (Kept separate from inline_store_bearing_locals, which
-/// bails on any call at its entry.)
-fn inline_single_call_result_store(function: &Function) -> Option<Function> {
-    if !function.guards.is_empty()
-        || function.return_expression.is_some()
-        || function.return_type != Type::Void
-        || function.locals.len() != 1
-    {
+/// A single local whose value is exactly one call, consumed once — either stored directly to
+/// a global (`int x = foo(...); gi = x;`) or returned (`int x = foo(...); return x;`). mwcc
+/// leaves the call result in r3; `gi = foo(...)` and `return foo(...)` are both already
+/// byte-exact, and the result is not live across any other call, so it needs no callee-save.
+/// Inline the local and recompile. This is the trivial entry into value-tracking-with-calls;
+/// a second call, a second use of the result, the result fused with arithmetic, or any other
+/// statement all need the callee-saved allocator and fall through to it. (Kept separate from
+/// inline_store_bearing_locals, which bails on any call at its entry.)
+fn inline_single_call_result(function: &Function) -> Option<Function> {
+    if !function.guards.is_empty() || function.locals.len() != 1 {
         return None;
     }
     let local_name = function.locals[0].name.as_str();
@@ -299,16 +295,27 @@ fn inline_single_call_result_store(function: &Function) -> Option<Function> {
             _ => return None,
         }
     }
-    let (call_value, store_target) = (call_value?, store_target?);
+    let call_value = call_value?;
+    let (statements, return_expression) = match &store_target {
+        // Store sink: a void function with no return, the result stored directly.
+        Some(target) if function.return_type == Type::Void && function.return_expression.is_none() => {
+            (vec![Statement::Store { target: target.clone(), value: call_value }], None)
+        }
+        // Return sink: no stores, the trailing return is exactly the local.
+        None if matches!(&function.return_expression, Some(Expression::Variable(name)) if name == local_name) => {
+            (Vec::new(), Some(call_value))
+        }
+        _ => return None,
+    };
     Some(Function {
         return_type: function.return_type,
         name: function.name.clone(),
         is_static: function.is_static,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
-        statements: vec![Statement::Store { target: store_target, value: call_value }],
+        statements,
         guards: Vec::new(),
-        return_expression: None,
+        return_expression,
     })
 }
 
@@ -376,10 +383,11 @@ impl Generator {
         if let Some(inlined) = inline_store_bearing_locals(function) {
             return self.evaluate_body(&inlined);
         }
-        // `int x = foo(...); gi = x;` — a single-use call result stored directly. The result
-        // lives in r3 and is not live across another call, so `gi = foo(...)` is byte-exact;
-        // inline the local. A second call or use defers to the callee-saved allocator.
-        if let Some(inlined) = inline_single_call_result_store(function) {
+        // `int x = foo(...); gi = x;` / `int x = foo(...); return x;` — a single-use call
+        // result stored directly or returned. The result lives in r3 and is not live across
+        // another call, so both are byte-exact; inline the local. A second call or use
+        // defers to the callee-saved allocator.
+        if let Some(inlined) = inline_single_call_result(function) {
             return self.evaluate_body(&inlined);
         }
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
