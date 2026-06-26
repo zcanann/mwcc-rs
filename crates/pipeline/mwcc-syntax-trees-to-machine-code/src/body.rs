@@ -196,6 +196,11 @@ impl Generator {
         if self.try_computed_store_fill(function)? {
             return Ok(());
         }
+        // The same overlap with one computed value and one register-leaf value (`gi=a+1;
+        // gj=b;`): the leaf is stored first (ready), the computed second.
+        if self.try_mixed_store_fill(function)? {
+            return Ok(());
+        }
         // A `do { …calls… } while (--counter);` loop: the counter goes in r31
         // (callee-saved), the body branches back, and the decrement-and-test is a
         // single `addic.`/`bne`.
@@ -792,6 +797,57 @@ impl Generator {
             self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register);
             self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH);
         }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// Two stores to distinct integer SDA globals where one value is a single-op register
+    /// computation and the other a register-resident leaf parameter (`gi = a+1; gj = b;`).
+    /// mwcc computes the computed value into the scratch, then stores the LEAF first (it is
+    /// ready immediately, while the computed result settles) and the computed value second
+    /// — `addi r0,r3,1; stw r4,gj; stw r0,gi`. (Both-computed is the latency-ordered fill
+    /// above; both-leaf is the normal path; both-constant is the constant fill.)
+    pub(crate) fn try_mixed_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || function.statements.len() != 2
+            || self.behavior.global_addressing != GlobalAddressing::SmallData
+        {
+            return Ok(false);
+        }
+        let mut stores = Vec::new();
+        for statement in &function.statements {
+            let Statement::Store { target: Expression::Variable(name), value } = statement else { return Ok(false) };
+            let Some(&global_type) = self.globals.get(name.as_str()) else { return Ok(false) };
+            if matches!(global_type, Type::Float | Type::Double) {
+                return Ok(false);
+            }
+            let Some(pointee) = pointee_of_type(global_type) else { return Ok(false) };
+            stores.push((name.clone(), pointee, value.clone()));
+        }
+        if stores[0].0 == stores[1].0 {
+            return Ok(false);
+        }
+        // Exactly one value is a single-op computation, the other a register-resident leaf
+        // parameter (a global/memory leaf would need a load; a constant the constant fill).
+        let is_register_leaf = |value: &Expression| {
+            matches!(value, Expression::Variable(name) if !self.globals.contains_key(name.as_str()))
+        };
+        let (computed, leaf) = if self.is_single_op_register_value(&stores[0].2) && is_register_leaf(&stores[1].2) {
+            (0usize, 1usize)
+        } else if is_register_leaf(&stores[0].2) && self.is_single_op_register_value(&stores[1].2) {
+            (1usize, 0usize)
+        } else {
+            return Ok(false);
+        };
+        // The computed value goes into the scratch; the leaf is already in its register, so
+        // store it first, then the computed value.
+        let leaf_register = self.general_register_of_leaf(&stores[leaf].2)?;
+        self.evaluate_general(&stores[computed].2, GENERAL_SCRATCH)?;
+        self.emit_sda_global_store_from(&stores[leaf].0, stores[leaf].1, leaf_register);
+        self.emit_sda_global_store_from(&stores[computed].0, stores[computed].1, GENERAL_SCRATCH);
         self.emit_epilogue_and_return();
         Ok(true)
     }
