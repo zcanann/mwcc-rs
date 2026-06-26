@@ -1,0 +1,15 @@
+// `int x = foo(...); gi = x;` — a single local whose value is exactly one call, used once
+// as the WHOLE value of one global store. The call result lives in r3 and is not live
+// across any other call, so mwcc stores it directly (`gi = foo(...)` is already byte-exact)
+// — no callee-save needed. inline_single_call_result_store folds the local and recompiles.
+// This is the trivial entry into value-tracking-with-calls. A second call, a second use of
+// the result, the result fused with arithmetic, or a non-void return still need the callee-
+// saved register allocator and defer.
+int produce(int);
+int produce2(int, int);
+int side(void);
+int gi, gj;
+void init_field(int a)      { int x = produce(a); gi = x; }        // gi = produce(a)
+void assigned_form(int a)   { int x; x = produce(a); gi = x; }     // same via assignment
+void no_args(void)          { int x = side(); gi = x; }            // gi = side()
+void two_args(int a, int b) { int x = produce2(a, b); gj = x; }    // gj = produce2(a, b)

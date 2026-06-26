@@ -247,6 +247,71 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
     })
 }
 
+/// `int x = foo(...); gi = x;` — a single local whose value is exactly one call, used once as
+/// the WHOLE value of one global store. mwcc leaves the call result in r3 and stores it
+/// directly (`gi = foo(...)` is already byte-exact), and the result is not live across any
+/// other call, so it needs no callee-save. Inline the local and recompile. This is the
+/// trivial entry into value-tracking-with-calls; a second call, a second use of the result,
+/// the result fused with arithmetic, or a non-void return all need the callee-saved
+/// allocator and fall through to it. (Kept separate from inline_store_bearing_locals, which
+/// bails on any call at its entry.)
+fn inline_single_call_result_store(function: &Function) -> Option<Function> {
+    if !function.guards.is_empty()
+        || function.return_expression.is_some()
+        || function.return_type != Type::Void
+        || function.locals.len() != 1
+    {
+        return None;
+    }
+    let local_name = function.locals[0].name.as_str();
+    // The local's value is exactly one call, set once — by the initializer xor a single
+    // assignment — and the call must not read the local itself.
+    let mut call_value: Option<Expression> = None;
+    if let Some(initializer) = &function.locals[0].initializer {
+        if !matches!(initializer, Expression::Call { .. }) || expression_reads_name(initializer, local_name) {
+            return None;
+        }
+        call_value = Some(initializer.clone());
+    }
+    let mut store_target: Option<Expression> = None;
+    for statement in &function.statements {
+        match statement {
+            Statement::Assign { name, value } if name == local_name => {
+                if call_value.is_some()
+                    || !matches!(value, Expression::Call { .. })
+                    || expression_reads_name(value, local_name)
+                {
+                    return None;
+                }
+                call_value = Some(value.clone());
+            }
+            // The result is consumed by exactly one store, whose whole value is the local and
+            // whose target does not read it.
+            Statement::Store { target, value } => {
+                if store_target.is_some()
+                    || !matches!(value, Expression::Variable(name) if name == local_name)
+                    || expression_reads_name(target, local_name)
+                {
+                    return None;
+                }
+                store_target = Some(target.clone());
+            }
+            _ => return None,
+        }
+    }
+    let (call_value, store_target) = (call_value?, store_target?);
+    Some(Function {
+        return_type: function.return_type,
+        name: function.name.clone(),
+        is_static: function.is_static,
+        parameters: function.parameters.clone(),
+        locals: Vec::new(),
+        statements: vec![Statement::Store { target: store_target, value: call_value }],
+        guards: Vec::new(),
+        return_expression: None,
+    })
+}
+
 impl Generator {
 
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
@@ -309,6 +374,12 @@ impl Generator {
         // (or the un-schedulable-store deferral) own the cleaned body. Checked before the
         // value-tracking path, which cannot fold a void function's store-feeding locals.
         if let Some(inlined) = inline_store_bearing_locals(function) {
+            return self.evaluate_body(&inlined);
+        }
+        // `int x = foo(...); gi = x;` — a single-use call result stored directly. The result
+        // lives in r3 and is not live across another call, so `gi = foo(...)` is byte-exact;
+        // inline the local. A second call or use defers to the callee-saved allocator.
+        if let Some(inlined) = inline_single_call_result_store(function) {
             return self.evaluate_body(&inlined);
         }
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
