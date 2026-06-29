@@ -14,11 +14,17 @@ int member_mask(struct C* p)   { return p->x & 0xf; }  // lbz r0; clrlwi (partia
 int member_mask2(struct C* p)  { return p->x & 0x7f; } // partial mask within the byte
 int umember_add(struct U* p)   { return p->x + 1; }    // lbz (zero-extended); addi
 int imember_add(struct I* p)   { return p->x + 1; }    // lwz; addi
+int g;
+void member_if(struct C* p)    { if (p->x > 0) g = 1; }  // CONDITION form: byte-exact (extsb; ble)
+void member_truthy(struct C* p){ if (p->x) g = 1; }      // truthiness: byte-exact
 
-// DEFERRED — a signed narrow member promoted to int needs the extsb its load does not carry,
-// with mwcc's r0-load register choice gated on the keystone allocator. Every constant-form
-// operator routed through emit_constant_form defers, plus the full/wide mask:
-//   p->x + 1   p->x - 3   p->x * 2   p->x << 2   p->x | 5   p->x ^ 5
-//   p->x & 0xff (full byte: mwcc drops the redundant mask)   p->x & 0x100 (reaches sign bit)
-// STILL OPEN (separate codegen paths, not yet deferred): p->x >> 1, p->x / 2, -p->x, ~p->x,
-// p->x > 0 — the place_operand chokepoint catches these but needs the mask exemption wired.
+// CLUSTER CLOSED — a signed narrow member promoted to int needs the extsb its load does not
+// carry; mwcc loads it into r0 and sign-extends into the destination, a register choice gated
+// on the keystone allocator. Every operator that takes the member as a DIRECT integer operand
+// now defers rather than miscompile on the raw zero-extended byte (`p->x = 0xFF` reads 255):
+//   p->x + 1  - 3  * 2  << 2  >> 1  | 5  ^ 5  / 2  % 4    (arith / shift / divide)
+//   -p->x  ~p->x                                          (unary, via place_operand)
+//   p->x > 0  < 5  == 1  != 0   p->x + p->y  p->x ? 1 : 2 (compare / reg-form / ternary)
+//   p->x & 0xff (full byte: mwcc drops it)  & 0x100 (reaches the sign bit)
+// EXEMPT (byte-exact): a STRICT partial mask (`& 0xf`, `& 0x7f`), the direct return, an
+// unsigned member (zero-extends), an int member, and the CONDITION form `if (p->x > 0)`.

@@ -625,7 +625,20 @@ impl Generator {
         } else {
             destination
         };
-        let Some(source) = self.place_operand(variable, operand_target, prefer_destination)? else {
+        // A signed narrow (char/short) member reaching here under a Mask is a STRICT partial
+        // mask (the wider masks already deferred at the top of this function), so the raw,
+        // un-sign-extended byte is exactly what the `clrlwi` wants. place_operand defers a
+        // signed narrow member operand by default (the promotion needs an extsb it cannot
+        // emit byte-exactly yet); flag the truncation context so this masked read is exempt.
+        let mask_reads_raw_member = matches!(kind, Immediate::Mask(..))
+            && matches!(variable, Expression::Member { member_type: mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::Short, .. });
+        let saved_truncation_context = self.narrow_truncation_context;
+        if mask_reads_raw_member {
+            self.narrow_truncation_context = true;
+        }
+        let placed = self.place_operand(variable, operand_target, prefer_destination);
+        self.narrow_truncation_context = saved_truncation_context;
+        let Some(source) = placed? else {
             return Ok(false);
         };
         let d = destination;

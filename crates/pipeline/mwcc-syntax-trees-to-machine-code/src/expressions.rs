@@ -240,6 +240,21 @@ impl Generator {
                     };
                     return self.evaluate_general(&peeled, destination);
                 }
+                // A signed narrow (char/short) struct member that is a DIRECT operand of a
+                // comparison or a signed divide is loaded raw by these branchless idioms —
+                // `p->x > 0` / `p->x / 2` operate on the zero-extended byte where mwcc
+                // sign-extends first (`lbz r0; extsb r3,r0; <idiom>`), a miscompile for a
+                // negative member. The byte-exact form needs mwcc's r0-load register choice
+                // (the keystone allocator), so defer. (A masked operand `(p->x & 0xf) > 0` is
+                // not a direct member and is unaffected; an unsigned member zero-extends.)
+                if is_comparison(*operator) || matches!(operator, BinaryOperator::Divide) {
+                    let signed_narrow_member = |operand: &Expression| {
+                        matches!(operand, Expression::Member { member_type: Type::Char | Type::Short, .. })
+                    };
+                    if signed_narrow_member(left.as_ref()) || signed_narrow_member(right.as_ref()) {
+                        return Err(Diagnostic::error("a signed narrow struct member operand of a comparison/divide needs a sign-extension (roadmap)"));
+                    }
+                }
                 // Comparisons compile to branchless idioms.
                 if is_comparison(*operator) {
                     return self.emit_comparison(*operator, left, right, destination);
@@ -2219,6 +2234,19 @@ impl Generator {
         if let Expression::Cast { target_type, operand: inner } = operand {
             if target_type.width() == 32 && self.plain_integer_leaf_register(inner).is_some() {
                 return self.place_operand(inner, destination, prefer_destination);
+            }
+        }
+        // A SIGNED narrow (char/short) struct member used as an integer operand needs the
+        // sign-extension its load (`displacement_load`) does not carry — `p->x + 1` is
+        // `lbz r0; extsb r3,r0; addi`, and every non-truncating operator (`+ - * << >> | ^ /`,
+        // unary, compare) miscompiles on the raw zero-extended byte (`p->x = 0xFF` reads 255,
+        // not -1). mwcc loads it into r0 and sign-extends into the destination, a register
+        // choice that is the keystone allocator's, so defer. A TRUNCATING consumer (a fitting
+        // mask) sets narrow_truncation_context and reads the raw byte — exempt; the direct
+        // `return p->x` uses evaluate_general (not this path) and is also unaffected.
+        if !self.narrow_truncation_context {
+            if let Expression::Member { member_type: Type::Char | Type::Short, .. } = operand {
+                return Err(Diagnostic::error("a signed narrow struct member operand needs a sign-extension (roadmap)"));
             }
         }
         if let Expression::Variable(name) = operand {
