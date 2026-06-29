@@ -2567,6 +2567,29 @@ impl Generator {
                 if self.is_integer_leaf(expression) {
                     return self.emit_cast_to_float(expression, destination, value_type == Type::Double);
                 }
+                // An integer memory load (`*p`, `a[i]`, `s.member` of integer type) in a
+                // float context needs the loaded value run through the int->float conversion.
+                // That path is not wired, so defer rather than hand it to evaluate_float,
+                // which would mis-evaluate the integer as a float and load it into the GPR
+                // whose NUMBER matches the float destination (f1 -> r1, clobbering the stack
+                // pointer). Float-typed loads fall through to evaluate_float as before.
+                // A deref/index of a leaf-variable base (int pointer, int global array) whose
+                // loaded value is not float, or a direct integer struct member. Member-based
+                // bases (`*p->fq`, `p->e[i]`) are left to evaluate_float — is_float_value
+                // cannot resolve them, and those float loads are already byte-exact.
+                let integer_memory_load = match expression {
+                    Expression::Dereference { pointer } => {
+                        matches!(pointer.as_ref(), Expression::Variable(_)) && !self.is_float_value(expression)
+                    }
+                    Expression::Index { base, .. } => {
+                        matches!(base.as_ref(), Expression::Variable(_)) && !self.is_float_value(expression)
+                    }
+                    Expression::Member { member_type, .. } => !matches!(member_type, Type::Float | Type::Double),
+                    _ => false,
+                };
+                if integer_memory_load {
+                    return Err(Diagnostic::error("an integer memory load in a float context needs an int->float conversion (roadmap)"));
+                }
                 self.evaluate_float(expression, destination)
             }
             Type::Void => Err(Diagnostic::error("cannot evaluate a void expression")),
