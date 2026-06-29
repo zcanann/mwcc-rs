@@ -112,7 +112,21 @@ impl Generator {
         // int -> int narrowing: place the operand (sub-expression -> scratch),
         // then extend/truncate to the target width into the destination.
         if target_type.width() < 32 {
-            let source = self.place_operand_or_scratch(operand, destination)?;
+            // The cast itself narrows (extsb/extsh/clrlwi), so a leaf param/local operand is
+            // read RAW — it skips the promotion extsb that the cast's own widen would
+            // immediately override: `(unsigned char)a` is `clrlwi r3,r3,24`, not `extsb r0,r3;
+            // clrlwi r3,r0,24`, and `(char)char_a` is one `extsb`, not two. A pointer load
+            // (`(unsigned char)*p`) keeps its char-load defer (raw-reading it would expose the
+            // load's r0-vs-destination register choice — a byte diff). A char GLOBAL is also
+            // excluded: mwcc recognizes its `lbz` already zero-extends and drops the cast
+            // entirely (`(unsigned char)gc` is a bare `lbz`), a separate fold not modeled here.
+            let saved_truncation_context = self.narrow_truncation_context;
+            if matches!(operand, Expression::Variable(name) if self.locations.contains_key(name.as_str())) {
+                self.narrow_truncation_context = true;
+            }
+            let source = self.place_operand_or_scratch(operand, destination);
+            self.narrow_truncation_context = saved_truncation_context;
+            let source = source?;
             self.emit_widen(destination, source, target_type.width(), self.signed_of(target_type));
         } else {
             self.evaluate_general(operand, destination)?;
