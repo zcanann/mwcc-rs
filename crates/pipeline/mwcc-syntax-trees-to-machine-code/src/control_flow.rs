@@ -469,14 +469,16 @@ impl Generator {
         }
 
         // `(cond) ? leaf : C` / `(cond) ? C : leaf` — exactly one arm a non-zero
-        // constant, the other a register leaf — BUT only when that leaf is also an
-        // operand of the condition. There the destination-first conditional-return below
-        // would `li` the constant into the result register and clobber the operand before
-        // the move could read it, so mwcc instead stages the constant in r0, conditionally
-        // moves the leaf over it (a forward branch skips the move when the condition
-        // selects the constant arm), then `mr dest, r0` — `(a>b) ? 7 : b`. An unrelated
-        // leaf (`(c) ? 1 : x`) takes the conditional-return (`li r3,C; bnelr; mr r3,x`),
-        // which clobbers only the spent condition operand — fall through to it below.
+        // constant, the other a register leaf — when materializing the constant into the
+        // result register would clobber the leaf before the move could read it. That
+        // happens when the leaf is an operand of the condition (`(a>b) ? 7 : b`) OR when the
+        // leaf already lives in the result register (`if (c) return 5; return a` with a in
+        // r3 — the destination-first `li r3,5; bnelr; mr r3,a` self-move-coalesces the
+        // `mr r3,r3` away, silently losing `a`). In both cases mwcc stages the constant in
+        // r0, conditionally moves the leaf over it (a forward branch skips the move when the
+        // condition selects the constant arm), then `mr dest, r0`. A leaf that is neither
+        // (`(c) ? 1 : x`, x in r4) takes the conditional-return (`li r3,C; bnelr; mr r3,x`)
+        // below, which clobbers only the spent condition operand.
         if tail
             && !is_zero_literal(when_true)
             && !is_zero_literal(when_false)
@@ -489,7 +491,7 @@ impl Generator {
             };
             if let Some(name) = leaf_name(register_arm) {
                 if let Some(register) = self.lookup_general(name) {
-                    if expression_reads_name(condition, name) {
+                    if expression_reads_name(condition, name) || register == destination {
                         let (options, condition_bit) = self.emit_condition_test(condition)?;
                         let branch_options = if negate { options ^ 8 } else { options };
                         self.load_integer_constant(GENERAL_SCRATCH, const_value);
