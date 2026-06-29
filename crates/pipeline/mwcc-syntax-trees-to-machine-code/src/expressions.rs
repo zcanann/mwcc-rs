@@ -1777,6 +1777,14 @@ impl Generator {
             self.evaluate_float(value, FLOAT_SCRATCH)?;
             return Ok(FLOAT_SCRATCH);
         }
+        // A float VALUE stored to a NON-float (integer) target — `int g; g = *p;` with a
+        // float `*p`, or `g = s->fx` — needs a float->int conversion (fctiwz + frame bounce)
+        // of the loaded value before the integer store. A float leaf converts in place via
+        // the cast path below; a non-leaf float load is not wired, so defer rather than load
+        // it as a float and store an integer register that never received the conversion.
+        if self.is_float_value(value) && !self.is_float_leaf(value) {
+            return Err(Diagnostic::error("a non-leaf float value stored to an integer target needs a float->int conversion (roadmap)"));
+        }
         if let Expression::Variable(name) = value {
             // A bare identifier that is neither a local nor a known data global is
             // an external symbol (a function, typically) — store its *address*. mwcc

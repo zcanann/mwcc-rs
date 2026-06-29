@@ -89,7 +89,12 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: 8 });
             self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: 12 });
             if target_type.width() < 32 {
-                self.emit_widen(destination, destination, target_type.width(), self.signed_of(target_type));
+                // mwcc does NOT narrow a float -> (char/short) cast with an extend
+                // instruction: `return (char)a` leaves the fctiwz int in r3 as-is, and a
+                // store truncates via stb/sth. Emitting an extsb/extsh here is a spurious
+                // extra instruction; the exact contexts where mwcc does vs does not narrow
+                // are not modeled, so defer rather than diff.
+                return Err(mwcc_core::Diagnostic::error("float-to-narrow-int cast narrowing is not modeled (roadmap)"));
             }
             return Ok(());
         }
