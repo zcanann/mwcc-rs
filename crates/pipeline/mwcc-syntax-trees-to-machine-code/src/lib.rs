@@ -73,6 +73,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         next_virtual: 0,
         register_avoid: HashMap::new(),
         stored_globals: HashMap::new(),
+        const_address_bases: HashSet::new(),
         frame_slots: HashMap::new(),
         reuse_scratch_constant: false,
         scratch_constant: None,

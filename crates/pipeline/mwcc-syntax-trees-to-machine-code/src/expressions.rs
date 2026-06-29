@@ -913,16 +913,24 @@ impl Generator {
         let Some(displacement) = (low as i32).checked_add(offset as i32).and_then(|d| i16::try_from(d).ok()) else {
             return Ok(false);
         };
+        if high != 0 && destination == 0 {
+            return Ok(false); // r0 can't be an address base
+        }
+        // Only the FIRST constant-address access in a function is byte-exact. mwcc handles a run
+        // of them by allocating all the bases up front (chosen by look-ahead over every value)
+        // and scheduling them together — keystone-level register allocation. So a second access
+        // of any kind defers rather than emit a fresh, mis-scheduled sequence.
+        if !self.const_address_bases.is_empty() {
+            return Ok(false);
+        }
+        self.const_address_bases.insert(high);
         if high == 0 {
             self.output.instructions.push(displacement_load(pointee, destination, 0, displacement));
-            return Ok(true);
-        }
-        if destination != 0 {
+        } else {
             self.output.instructions.push(Instruction::load_immediate_shifted(destination, high));
             self.output.instructions.push(displacement_load(pointee, destination, destination, displacement));
-            return Ok(true);
         }
-        Ok(false)
+        Ok(true)
     }
 
     /// Store `value` to constant `address + offset` (a `*(T *)C = v` or `(*(struct S *)C).f = v`).
@@ -934,17 +942,23 @@ impl Generator {
         let Some(displacement) = (low as i32).checked_add(offset as i32).and_then(|d| i16::try_from(d).ok()) else {
             return Ok(false);
         };
+        // Only the FIRST constant-address access in a function is byte-exact; a second of any
+        // kind needs mwcc's look-ahead base allocation and scheduling (keystone-level). Defer.
+        if !self.const_address_bases.is_empty() {
+            return Ok(false);
+        }
+        self.const_address_bases.insert(high);
         if high == 0 {
             let source = self.place_store_value(value, pointee)?;
             self.output.instructions.push(displacement_store(pointee, source, 0, displacement));
-        } else {
-            let base = self.free_register_avoiding(&[value])?;
-            let restore = self.reserved.insert(base);
-            self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
-            let source = self.place_store_value(value, pointee)?;
-            if restore { self.reserved.remove(&base); }
-            self.output.instructions.push(displacement_store(pointee, source, base, displacement));
+            return Ok(true);
         }
+        let base = self.free_register_avoiding(&[value])?;
+        let restore = self.reserved.insert(base);
+        self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
+        let source = self.place_store_value(value, pointee)?;
+        if restore { self.reserved.remove(&base); }
+        self.output.instructions.push(displacement_store(pointee, source, base, displacement));
         Ok(true)
     }
 
@@ -1016,10 +1030,11 @@ impl Generator {
         // displacement (the GX FIFO `(*(PPCWGPipe*)ADDR).u8` is offset 0).
         if let Some(address) = const_address_of(base) {
             if let Some(pointee) = pointee_of_type(member_type) {
-                if !matches!(pointee, Pointee::Float | Pointee::Double)
-                    && self.emit_const_address_load(pointee, address, offset, destination)?
-                {
-                    return Ok(());
+                if !matches!(pointee, Pointee::Float | Pointee::Double) {
+                    if self.emit_const_address_load(pointee, address, offset, destination)? {
+                        return Ok(());
+                    }
+                    return Err(Diagnostic::error("a constant-address member load needing base reuse is not supported yet (roadmap)"));
                 }
             }
         }
@@ -1663,8 +1678,10 @@ impl Generator {
         // global store, with a numeric hi/lo split in place of `@ha`/`@l` relocations.
         if let Expression::Dereference { pointer } = target {
             if let Some((pointee, address)) = const_address_pointer(pointer) {
-                self.emit_const_address_store(pointee, address, 0, value)?;
-                return Ok(());
+                if self.emit_const_address_store(pointee, address, 0, value)? {
+                    return Ok(());
+                }
+                return Err(Diagnostic::error("a constant-address store needing base reuse is not supported yet (roadmap)"));
             }
         }
         // `(*(struct S *)0xADDR).field = v` — store to a member of a constant-address pointer.
@@ -1673,10 +1690,11 @@ impl Generator {
         if let Expression::Member { base, offset, member_type, index_stride: None } = target {
             if let Some(address) = const_address_of(base) {
                 if let Some(pointee) = pointee_of_type(*member_type) {
-                    if !matches!(pointee, Pointee::Float | Pointee::Double)
-                        && self.emit_const_address_store(pointee, address, *offset, value)?
-                    {
-                        return Ok(());
+                    if !matches!(pointee, Pointee::Float | Pointee::Double) {
+                        if self.emit_const_address_store(pointee, address, *offset, value)? {
+                            return Ok(());
+                        }
+                        return Err(Diagnostic::error("a constant-address member store needing base reuse is not supported yet (roadmap)"));
                     }
                 }
             }

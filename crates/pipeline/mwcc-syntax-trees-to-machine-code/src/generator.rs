@@ -102,6 +102,15 @@ pub(crate) struct Generator {
     /// instruction has been emitted since (so the value is provably still there).
     /// This reproduces mwcc keeping a just-written global live in its register.
     pub(crate) stored_globals: HashMap<String, (u8, usize)>,
+    /// Non-empty once a constant-address access in this function has materialized a
+    /// base register (`lis hi`). mwcc handles multiple such accesses by allocating
+    /// ALL the bases up front, chosen by look-ahead over every value and (for the
+    /// same high half) reusing one `lis` across the run — keystone-level register
+    /// allocation. So only the FIRST high-half base is emitted; a second const-address
+    /// access defers rather than emitting a fresh, mis-scheduled `lis` (a correct
+    /// value, but the wrong bytes). Accesses with a zero high half (r0=0 base, no
+    /// `lis`) never record here and are unaffected.
+    pub(crate) const_address_bases: HashSet<i16>,
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
