@@ -2050,6 +2050,30 @@ impl Generator {
                         }
                     }
                 }
+                // An argument WIDER than a narrow (char/short) parameter must be narrowed to
+                // the parameter type — `void g(char); g(int_a)` is `extsb r3,r3; bl g` (the C
+                // conversion to `(char)`). That narrowing is not modeled, and mwcc schedules
+                // the `extsb` into the non-leaf prologue (keystone), so defer rather than pass
+                // the wide value un-narrowed: `g(256)` to a `char` parameter must pass 0, not
+                // 256 (a miscompile). A constant is materialized in range; a narrow leaf /
+                // load / global already fits and is handled by the passthrough above.
+                if let Some(parameter_type) = self.call_parameter_types.get(name).and_then(|types| types.get(index)) {
+                    if (parameter_type.width() as u32) < 32 && constant_value(argument).is_none() {
+                        let argument_is_narrow = match argument {
+                            Expression::Variable(variable) if self.locations.contains_key(variable.as_str()) => {
+                                self.leaf_info(argument).map(|(_, width, _)| width < 32).unwrap_or(false)
+                            }
+                            Expression::Variable(variable) => self.globals.get(variable.as_str()).map(|global| global.width() < 32).unwrap_or(false),
+                            Expression::Dereference { pointer } => self.dereferenced_width(pointer).is_some_and(|width| width < 32),
+                            Expression::Index { base, .. } => self.dereferenced_width(base).is_some_and(|width| width < 32),
+                            Expression::Member { member_type, .. } => member_type.width() < 32,
+                            _ => false,
+                        };
+                        if !argument_is_narrow {
+                            return Err(Diagnostic::error("an argument wider than a narrow parameter needs a narrowing conversion (roadmap)"));
+                        }
+                    }
+                }
                 // Honest guard: evaluating into this argument register must not
                 // clobber a register a later argument still needs. mwcc handles
                 // that (e.g. two members of one struct) by pre-copying the shared
