@@ -473,6 +473,26 @@ impl Parser {
             self.last_struct_tag = Some(tag);
             return Ok(Type::StructPointer { element_size });
         }
+        // `union Name*` / `union Name` — a union is laid out like a struct with every member
+        // at offset 0 (overlapping storage), so it reuses the struct machinery once the layout
+        // is registered. `union` is lexed as a plain identifier, not a keyword.
+        if matches!(self.peek(), Token::Identifier(word) if word == "union") {
+            self.advance();
+            let tag = self.parse_identifier()?;
+            if *self.peek() != Token::Star {
+                return match self.struct_value_type(&tag) {
+                    Some(union_type) => {
+                        self.last_struct_tag = Some(tag);
+                        Ok(union_type)
+                    }
+                    None => Err(Diagnostic::error("union values are not supported yet — use a union pointer")),
+                };
+            }
+            self.advance();
+            let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
+            self.last_struct_tag = Some(tag);
+            return Ok(Type::StructPointer { element_size });
+        }
         // A struct-pointer typedef (`VecPtr`) is itself a pointer to the struct —
         // no trailing `*` — carrying the layout's tag.
         if let Token::Identifier(name) = self.peek() {
@@ -1241,6 +1261,21 @@ impl Parser {
             // carry the tag so `var.field` resolves — the `static struct OSAlarmQueue
             // { ... } AlarmQueue;` shape. A `struct Name*` use (function return or
             // parameter) falls through to parse_type.
+            // `union Tag { … };` — a top-level union declaration. A union is laid out like a
+            // struct with every member at offset 0; register the layout under the tag so a
+            // later `union Tag*` use resolves. A trailing union-value declarator is rare and
+            // defers.
+            if matches!(self.peek(), Token::Identifier(word) if word == "union") && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
+                self.advance(); // `union`
+                let tag = self.parse_identifier()?;
+                let layout = self.parse_union_body()?;
+                self.structs.insert(tag, layout);
+                if *self.peek() == Token::Semicolon {
+                    self.advance();
+                    return Ok(());
+                }
+                return Err(Diagnostic::error("a union-definition global value is not supported yet (roadmap)"));
+            }
             if *self.peek() == Token::KeywordStruct && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
                 self.expect(Token::KeywordStruct)?;
                 let tag = self.parse_identifier()?;
