@@ -305,6 +305,17 @@ impl Generator {
         destination: u8,
         tail: bool,
     ) -> Compilation<()> {
+        // A logical (&&/||) condition feeding a select/guard would compute the operator as a
+        // 0/1 value and then re-normalize/select on it (`(a&&b) ? 1 : 0` -> `(a&&b) != 0`),
+        // whereas mwcc short-circuits the logical operator directly into the arms (each term
+        // branches to the return blocks: `cmpwi r3,0; beq END; cmpwi r4,0; beq END; li
+        // r3,1`). That short-circuit-to-arms lowering is the general control-flow path
+        // (roadmap #21); until then defer rather than ship the normalize-shaped diff. (A bare
+        // `return a && b` goes through evaluate_general, not here, and stays byte-exact.)
+        if matches!(condition, Expression::Binary { operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr, .. }) {
+            return Err(Diagnostic::error("a logical (&&/||) condition in a select/guard needs short-circuit lowering (roadmap #21)"));
+        }
+
         // `comparison ? 1 : 0` is the comparison; `comparison ? 0 : 1` is its negation.
         if let Expression::Binary { operator, left, right } = condition {
             if is_comparison(*operator) {
