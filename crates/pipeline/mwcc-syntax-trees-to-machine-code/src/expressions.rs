@@ -1422,6 +1422,25 @@ impl Generator {
     }
 
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
+        // `*(p + i) = v` is `p[i] = v`: rewrite a pointer-plus-index dereference target to the
+        // subscript store, the symmetric counterpart of the load routing in
+        // emit_load_from_pointer. The pointer operand is the base, the integer the index; `+`
+        // commutes. The store truncates a narrow value (stb/sth), so unlike the LOAD this has
+        // no sign-extension hazard — the rewritten Index store handles every pointee width.
+        if let Expression::Dereference { pointer } = target {
+            if let Expression::Binary { operator: BinaryOperator::Add, left, right } = pointer.as_ref() {
+                let base_index = if self.dereferenced_width(left).is_some() {
+                    Some((left.clone(), right.clone()))
+                } else if self.dereferenced_width(right).is_some() {
+                    Some((right.clone(), left.clone()))
+                } else {
+                    None
+                };
+                if let Some((base, index)) = base_index {
+                    return self.emit_store(&Expression::Index { base, index }, value);
+                }
+            }
+        }
         // A type-pun store through a frame-resident address (`*(int*)&x = v`) is a
         // plain displacement store to r1.
         if let Expression::Dereference { pointer } = target {
