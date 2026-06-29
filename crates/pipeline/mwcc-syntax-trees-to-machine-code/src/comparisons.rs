@@ -45,7 +45,18 @@ impl Generator {
             return Ok(());
         }
         let d = destination;
-        let signed_left = self.signedness_of(left)?;
+        // A RELATIONAL comparison (`< <= > >=`) is UNSIGNED if EITHER operand is unsigned
+        // (C's usual arithmetic conversions): `int a < unsigned b` uses mwcc's unsigned idiom,
+        // not the signed `srawi` form — signed only when both operands are signed. `==`/`!=`
+        // are signedness-INDEPENDENT (the bit patterns differ iff the values do), and mwcc
+        // keys their idiom off the left operand's declared type, so they take its signedness
+        // alone. (The `x OP 0` idioms test the left's sign; there the literal 0 is signed, so
+        // the relational form equals the left's signedness too.)
+        let signed_comparison = if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+            self.signedness_of(left)?
+        } else {
+            self.signedness_of(left)? && self.signedness_of(right)?
+        };
         match operator {
             BinaryOperator::Equal => {
                 if is_zero_literal(right) || is_zero_literal(left) {
@@ -134,13 +145,13 @@ impl Generator {
                 Ok(())
             }
             // signed x < 0 : the sign bit.
-            BinaryOperator::Less if is_zero_literal(right) && signed_left => {
+            BinaryOperator::Less if is_zero_literal(right) && signed_comparison => {
                 let source = self.place_operand_or_scratch(left, d)?;
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift: 31 });
                 Ok(())
             }
             // signed x > 0 : sign bit of (-x & ~x)
-            BinaryOperator::Greater if is_zero_literal(right) && signed_left => {
+            BinaryOperator::Greater if is_zero_literal(right) && signed_comparison => {
                 let source = self.sign_idiom_source(left, d)?;
                 self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: source });
                 self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: source });
@@ -148,7 +159,7 @@ impl Generator {
                 Ok(())
             }
             // signed x >= 0 : !(x < 0)
-            BinaryOperator::GreaterEqual if is_zero_literal(right) && signed_left => {
+            BinaryOperator::GreaterEqual if is_zero_literal(right) && signed_comparison => {
                 let source = self.place_operand_or_scratch(left, d)?;
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: source, shift: 31 });
                 self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
@@ -160,7 +171,7 @@ impl Generator {
             // in x's now-free home register and rotates (`cntlzw r0,r3; li r3,1;
             // rlwnm r0,r3,r0`) — putting the `1` in the destination would let the cntlzw
             // clobber it for a store (d=r0). A non-leaf keeps the original scratch path.
-            BinaryOperator::LessEqual if is_zero_literal(right) && signed_left => {
+            BinaryOperator::LessEqual if is_zero_literal(right) && signed_comparison => {
                 if let Some(register) = self.leaf_info(left).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: register });
                     self.load_integer_constant(register, 1);
@@ -190,7 +201,7 @@ impl Generator {
             // operand once), then the same sign-bit idiom with a fresh temp. `x` is
             // a leaf or a full-word load (e.g. `*p > C`, `s->a > C`).
             BinaryOperator::Greater
-                if signed_left && !self.is_narrow_leaf(left)
+                if signed_comparison && !self.is_narrow_leaf(left)
                     && (leaf_name(left).is_some() || self.is_simple_word_load(left))
                     && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
             {
@@ -217,7 +228,7 @@ impl Generator {
             // signed `(load) < C` : the load is the low operand (read once) → r0;
             // the constant is the high operand (read twice) → a fresh register.
             BinaryOperator::Less
-                if signed_left && self.is_simple_word_load(left) && !self.is_narrow_leaf(right)
+                if signed_comparison && self.is_simple_word_load(left) && !self.is_narrow_leaf(right)
                     && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
             {
                 self.evaluate_general(left, GENERAL_SCRATCH)?;
@@ -279,7 +290,7 @@ impl Generator {
             // would collide with the scratch and mwcc declines to reuse the dead
             // base anyway, so `<` defers there.
             BinaryOperator::Less | BinaryOperator::Greater
-                if signed_left && self.is_simple_word_load(left) && self.is_simple_word_load(right)
+                if signed_comparison && self.is_simple_word_load(left) && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
                     && load_base_name(right).is_some()
                     && (matches!(operator, BinaryOperator::Greater) || d != GENERAL_SCRATCH) =>
@@ -317,7 +328,7 @@ impl Generator {
                 Ok(())
             }
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
-                if signed_left && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
+                if signed_comparison && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
                     && (
                         (leaf_name(left).is_some() && leaf_name(right).is_some())
                         || (matches!(operator, BinaryOperator::Greater)
@@ -372,7 +383,7 @@ impl Generator {
             // is the low side (read once) → r0; `x < C` is the high side (read twice)
             // → a fresh register the allocator places at the lowest free GPR.
             BinaryOperator::Less | BinaryOperator::Greater
-                if !signed_left && leaf_name(left).is_some()
+                if !signed_comparison && leaf_name(left).is_some()
                     && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
                     && (leaf_name(right).is_some()
                         || constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok())) =>
@@ -397,7 +408,7 @@ impl Generator {
             }
             // unsigned a <= b / a >= b : orc-based, dest + scratch.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if !signed_left && leaf_name(left).is_some() && leaf_name(right).is_some()
+                if !signed_comparison && leaf_name(left).is_some() && leaf_name(right).is_some()
                     && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
@@ -421,7 +432,7 @@ impl Generator {
             // `lwz r0; lwz r5; srawi r4,high,31; srwi d,low,31; subfc r0,low,high;
             // adde d,r4,d`. Different bases / value context defer.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if signed_left && self.is_simple_word_load(left) && self.is_simple_word_load(right)
+                if signed_comparison && self.is_simple_word_load(left) && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
                     && load_base_name(left) == load_base_name(right)
                     && d != GENERAL_SCRATCH =>
@@ -454,7 +465,7 @@ impl Generator {
             // constant right operand materializes into r0 (read twice before being
             // overwritten by the subfc).
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if signed_left && leaf_name(left).is_some()
+                if signed_comparison && leaf_name(left).is_some()
                     && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
                     && (leaf_name(right).is_some() || constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok())) =>
             {
