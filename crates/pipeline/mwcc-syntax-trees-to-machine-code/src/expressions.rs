@@ -2004,6 +2004,19 @@ impl Generator {
                 self.evaluate_float(argument, next_float)?;
                 next_float += 1;
             } else {
+                // A narrow (char/short) argument to a parameter that is NOT wider is passed
+                // WITHOUT the int promotion — `void g(char); g(char_a)` is just `bl g`, no
+                // `extsb` (only a wider parameter, e.g. `void g(int)`, widens the argument).
+                // Handled for the in-place case (the value already sits in the argument
+                // register); a move or a non-leaf falls through to the widening eval.
+                if let Some(parameter_type) = self.call_parameter_types.get(name).and_then(|types| types.get(index)) {
+                    if let Ok((register, width, _)) = self.leaf_info(argument) {
+                        if width < 32 && (parameter_type.width() as u32) <= width as u32 && register == next_general {
+                            next_general += 1;
+                            continue;
+                        }
+                    }
+                }
                 // Honest guard: evaluating into this argument register must not
                 // clobber a register a later argument still needs. mwcc handles
                 // that (e.g. two members of one struct) by pre-copying the shared
