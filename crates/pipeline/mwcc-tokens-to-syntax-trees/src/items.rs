@@ -1447,6 +1447,22 @@ impl Parser {
                         } else {
                             String::new()
                         };
+                        // `T a[]` / `T a[N]` is exactly `T* a` — C array-to-pointer parameter
+                        // decay. Consume the `[...]` (the size is irrelevant for a parameter)
+                        // and make the parameter a pointer to the element type.
+                        let parameter_type = if *self.peek() == Token::BracketOpen {
+                            self.advance(); // `[`
+                            while !matches!(self.peek(), Token::BracketClose | Token::EndOfFile) {
+                                self.advance(); // skip the optional size expression
+                            }
+                            self.expect(Token::BracketClose)?;
+                            match parameter_type {
+                                Type::Struct { size, .. } => Type::StructPointer { element_size: size },
+                                scalar => Type::Pointer(pointee_of(scalar)?),
+                            }
+                        } else {
+                            parameter_type
+                        };
                         if let Some(tag) = struct_tag {
                             if !name.is_empty() {
                                 self.variable_structs.insert(name.clone(), tag);
