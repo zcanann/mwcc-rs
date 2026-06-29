@@ -380,18 +380,29 @@ impl Generator {
     /// that source directly — `addi` must not take `r0` as its source, which would
     /// silently mean `li`.
     pub(crate) fn emit_constant_form(&mut self, operator: BinaryOperator, variable: &Expression, constant: i64, destination: u8) -> Compilation<bool> {
-        // A SIGNED narrow (char/short) struct member used as an additive/multiplicative
-        // operand must be sign-extended before the op — `p->x + 1` is `lbz r0; extsb r3,r0;
-        // addi`. The member load (`displacement_load`) does not carry that extsb (the return
-        // path adds it separately, the operand path does not), and mwcc's r0-load register
-        // choice is the allocator's, so the byte-exact form is gated on the keystone. Defer
-        // rather than emit the raw zero-extended byte (a miscompile). A mask (`& 0xf`) makes
-        // the sign-extension redundant, and an unsigned member zero-extends on load — both
-        // unaffected.
-        if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply)
-            && matches!(variable, Expression::Member { member_type: mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::Short, .. })
-        {
-            return Err(Diagnostic::error("a signed narrow struct member in arithmetic needs a sign-extension (roadmap)"));
+        // A SIGNED narrow (char/short) struct member promoted to int needs the sign-extension
+        // its load (`displacement_load`) does not carry — `p->x + 1` is `lbz r0; extsb r3,r0;
+        // addi`. Nearly every operator (`+ - * << >> | ^ /`, a wide mask) miscompiles on the
+        // raw zero-extended byte (`p->x = 0xFF` reads 255, not -1); the return path adds the
+        // extsb separately, this operand path does not, and mwcc's r0-load register choice is
+        // the keystone allocator's, so defer. The sole exemption is a mask (`& m`) whose bits
+        // fit within the member width: the mask clears the would-be sign-extended high bits,
+        // so the raw byte is already correct (`p->x & 0xf` stays `lbz r0; clrlwi`). An
+        // unsigned member zero-extends on load and is not handled here.
+        if let Expression::Member { member_type, .. } = variable {
+            if matches!(member_type, mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::Short) {
+                let member_mask: i64 = if matches!(member_type, mwcc_syntax_trees::Type::Char) { 0xff } else { 0xffff };
+                // Exempt only a STRICT partial mask within the member (`& 0xf`): it clears the
+                // would-be sign-extended high bits, and mwcc emits the same `lbz; clrlwi`. The
+                // full-byte mask (`& 0xff`) is byte-different — mwcc drops it as redundant on a
+                // byte load — and a wider mask (`& 0x100`) reaches the sign bit, so both defer.
+                let is_fitting_mask = matches!(operator, BinaryOperator::BitAnd)
+                    && constant > 0
+                    && constant < member_mask;
+                if !is_fitting_mask {
+                    return Err(Diagnostic::error("a signed narrow struct member promoted to int needs a sign-extension (roadmap)"));
+                }
+            }
         }
         // Identity and strength-reduction folds.
         match (operator, constant) {

@@ -9,11 +9,16 @@
 struct C { char x; };
 struct U { unsigned char x; };
 struct I { int x; };
-int member_return(struct C* p) { return p->x; }       // lbz; extsb
-int member_mask(struct C* p)   { return p->x & 0xf; } // lbz r0; clrlwi
-int umember_add(struct U* p)   { return p->x + 1; }   // lbz (zero-extended); addi
-int imember_add(struct I* p)   { return p->x + 1; }   // lwz; addi
+int member_return(struct C* p) { return p->x; }        // lbz; extsb
+int member_mask(struct C* p)   { return p->x & 0xf; }  // lbz r0; clrlwi (partial mask)
+int member_mask2(struct C* p)  { return p->x & 0x7f; } // partial mask within the byte
+int umember_add(struct U* p)   { return p->x + 1; }    // lbz (zero-extended); addi
+int imember_add(struct I* p)   { return p->x + 1; }    // lwz; addi
 
-// DEFERRED (signed narrow member in arithmetic, sign-extension + r0 register choice):
-//   int f(struct C* p) { return p->x + 1; }
-//   int f(struct C* p) { return p->x * 2; }
+// DEFERRED — a signed narrow member promoted to int needs the extsb its load does not carry,
+// with mwcc's r0-load register choice gated on the keystone allocator. Every constant-form
+// operator routed through emit_constant_form defers, plus the full/wide mask:
+//   p->x + 1   p->x - 3   p->x * 2   p->x << 2   p->x | 5   p->x ^ 5
+//   p->x & 0xff (full byte: mwcc drops the redundant mask)   p->x & 0x100 (reaches sign bit)
+// STILL OPEN (separate codegen paths, not yet deferred): p->x >> 1, p->x / 2, -p->x, ~p->x,
+// p->x > 0 — the place_operand chokepoint catches these but needs the mask exemption wired.
