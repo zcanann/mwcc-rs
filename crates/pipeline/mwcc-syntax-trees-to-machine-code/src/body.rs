@@ -864,6 +864,14 @@ impl Generator {
             // mwcc lowers a single guard as a select (working-register form) but a
             // chain of guards as separate return blocks.
             if let [guard] = function.guards.as_slice() {
+                // `if (c) return X; return X` is degenerate: both paths return the same
+                // value, and mwcc keeps the dead condition test then a single `blr`. Defer
+                // rather than emit a spurious conditional return for the matching arms.
+                if let (Expression::Variable(value_name), Expression::Variable(return_name)) = (&guard.value, return_expression) {
+                    if value_name == return_name {
+                        return Err(Diagnostic::error("a guard whose value equals the fall-through return is degenerate (roadmap)"));
+                    }
+                }
                 let select = guard_select(&guard.condition, &guard.value, return_expression);
                 self.evaluate_tail(&select, function.return_type, result)?;
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
@@ -2407,11 +2415,16 @@ impl Generator {
                 return Ok(());
             }
 
+            // A non-last guard whose value already sits in the result register is a
+            // conditional return falling through to the next guard (mwcc: `cmpwi; bnelr`),
+            // not a forward branch over the return.
+            if result == value_register {
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                continue;
+            }
             let branch_index = self.output.instructions.len();
             self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-            if result != value_register {
-                self.output.instructions.push(Instruction::move_register(result, value_register));
-            }
+            self.output.instructions.push(Instruction::move_register(result, value_register));
             self.output.instructions.push(Instruction::BranchToLinkRegister);
             let next = self.output.instructions.len();
             if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
