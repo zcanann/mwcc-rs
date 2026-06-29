@@ -109,6 +109,23 @@ impl Generator {
         if self.is_float_value(operand) || self.is_float_operand(operand) || is_float_call {
             return Err(mwcc_core::Diagnostic::error("float-to-int of a non-leaf operand needs the load/call + convert path (roadmap)"));
         }
+        // `(unsigned char)<char load>`: the byte load (`lbz`/`lbzx`) already zero-extends to
+        // 0..255, which IS the unsigned-char value, so mwcc drops BOTH the signed-promotion
+        // extsb and the cast's clrlwi — `(unsigned char)gc` / `(unsigned char)*p` is a bare
+        // `lbz`. Emit just the load (raw, no promotion) with no trailing widen. A signed-char
+        // global, dereference, member, or array element qualifies; a short operand needs the
+        // `& 0xff` (its load is wider), and a leaf is handled byte-exactly by the path below.
+        let operand_is_char_load = self.is_signed_byte_load(operand)?
+            || matches!(operand, Expression::Variable(name)
+                if !self.locations.contains_key(name.as_str()) && self.globals.get(name.as_str()) == Some(&Type::Char));
+        if target_type == Type::UnsignedChar && operand_is_char_load {
+            let saved_truncation_context = self.narrow_truncation_context;
+            self.narrow_truncation_context = true;
+            let evaluated = self.evaluate_general(operand, destination);
+            self.narrow_truncation_context = saved_truncation_context;
+            evaluated?;
+            return Ok(());
+        }
         // int -> int narrowing: place the operand (sub-expression -> scratch),
         // then extend/truncate to the target width into the destination.
         if target_type.width() < 32 {
