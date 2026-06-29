@@ -92,6 +92,10 @@ pub(crate) struct Generator {
     /// Return type of each callable name (prototypes + definitions), so a call's
     /// result type is known — e.g. `(float)cos(x)` rounds a double with `frsp`.
     pub(crate) call_return_types: HashMap<String, Type>,
+    /// Parameter types of each callable name, so a call places each argument in the
+    /// register its parameter requires (a float parameter takes f1.., an integer
+    /// takes r3..) and a type mismatch is detected rather than silently mis-passed.
+    pub(crate) call_parameter_types: HashMap<String, Vec<Type>>,
     /// A global just stored, with the register holding the stored value and the
     /// instruction count at the moment of the store. A subsequent read of the
     /// global reuses that register instead of reloading — but only while no

@@ -159,14 +159,24 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let call_return_types: std::collections::HashMap<String, mwcc_syntax_trees::Type> = unit
         .prototypes
         .iter()
-        .cloned()
+        .map(|(name, return_type, _)| (name.clone(), *return_type))
         .chain(unit.functions.iter().map(|function| (function.name.clone(), function.return_type)))
+        .collect();
+    // Every callable's parameter types (prototypes + definitions) so a call places
+    // each argument in the register the parameter's type requires (int vs float).
+    let call_parameter_types: std::collections::HashMap<String, Vec<mwcc_syntax_trees::Type>> = unit
+        .prototypes
+        .iter()
+        .map(|(name, _, parameter_types)| (name.clone(), parameter_types.clone()))
+        .chain(unit.functions.iter().map(|function| {
+            (function.name.clone(), function.parameters.iter().map(|parameter| parameter.parameter_type).collect())
+        }))
         .collect();
     // Lower every function definition in source order; they share one object.
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
         .functions
         .iter()
-        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, config))
+        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, config))
         .collect::<Compilation<_>>()?;
     // Deferred inlining (`-inline …,deferred`) emits the object's functions — and
     // hence their `.text`, symbols, and metadata records — in reverse order.

@@ -1126,7 +1126,7 @@ impl Parser {
         &mut self,
         globals: &mut Vec<GlobalDeclaration>,
         functions: &mut Vec<Function>,
-        prototypes: &mut Vec<(String, Type)>,
+        prototypes: &mut Vec<(String, Type, Vec<Type>)>,
     ) -> Compilation<()> {
         {
             // `extern`/`static` storage qualifiers: `extern` makes the declaration a
@@ -1449,8 +1449,9 @@ impl Parser {
             self.expect(Token::ParenClose)?;
 
             if *self.peek() == Token::Semicolon {
-                self.advance(); // a prototype — record its return type, keep looking
-                prototypes.push((name, return_type));
+                self.advance(); // a prototype — record its return + parameter types, keep looking
+                let parameter_types = parameters.iter().map(|parameter| parameter.parameter_type).collect();
+                prototypes.push((name, return_type, parameter_types));
                 return Ok(());
             }
             // A variadic function DEFINITION needs the variadic-register save

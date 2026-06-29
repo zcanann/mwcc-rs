@@ -1869,7 +1869,7 @@ impl Generator {
         // register), then `mtctr r12; bctrl`. A named function is the direct `bl` below.
         if let Some(pointer_register) = self.locations.get(name).map(|location| location.register) {
             self.output.instructions.push(Instruction::Or { a: 12, s: pointer_register, b: pointer_register });
-            self.emit_arguments(arguments)?;
+            self.emit_arguments(arguments, name)?;
             self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
             self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
             if let Some(destination) = destination {
@@ -1889,7 +1889,7 @@ impl Generator {
         // the arguments, load the pointer, then `mtctr r12; bctrl`. (The saved-LR store
         // stays in the prologue here, since no `mr r12` setup precedes it.)
         if self.globals.contains_key(name) {
-            self.emit_arguments(arguments)?;
+            self.emit_arguments(arguments, name)?;
             self.emit_global_load_value(name, 12)?;
             self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
             self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
@@ -1905,7 +1905,7 @@ impl Generator {
             }
             return Ok(());
         }
-        self.emit_arguments(arguments)?;
+        self.emit_arguments(arguments, name)?;
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
         if let Some(destination) = destination {
@@ -1924,7 +1924,7 @@ impl Generator {
     /// Place call arguments in the EABI argument registers (r3.. / f1..). Each is
     /// evaluated into its positional register; passthrough parameters are already
     /// in place, so this is a no-op for them.
-    fn emit_arguments(&mut self, arguments: &[Expression]) -> Compilation<()> {
+    fn emit_arguments(&mut self, arguments: &[Expression], name: &str) -> Compilation<()> {
         // A `&global + n` argument materializes as `li rD,0; addi rD,rD,k`. Alongside
         // other arguments mwcc reorders the leading `li`s (the offset arg's base first)
         // in a way not yet modeled, so defer rather than mis-schedule. A lone such
@@ -1962,6 +1962,17 @@ impl Generator {
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         for (index, argument) in arguments.iter().enumerate() {
+            // A call argument whose float-ness does not match the parameter's needs an
+            // int<->float conversion at the call site (the int->float magic-constant
+            // sequence, or fctiwz). That conversion is not modeled, so defer rather than
+            // place the argument in the wrong register file — passing an integer in r3 to a
+            // float parameter that reads f1 (or vice versa) is a miscompile. A parameterless
+            // / variadic position (no recorded type) keeps the argument-driven placement.
+            if let Some(parameter_type) = self.call_parameter_types.get(name).and_then(|types| types.get(index)) {
+                if matches!(parameter_type, Type::Float | Type::Double) != self.is_float_value(argument) {
+                    return Err(Diagnostic::error("a call argument needs an int<->float conversion to match the parameter type (roadmap)"));
+                }
+            }
             if self.is_float_value(argument) {
                 self.evaluate_float(argument, next_float)?;
                 next_float += 1;

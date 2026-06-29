@@ -136,10 +136,11 @@ pub enum PointerElement {
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
-    /// Function prototypes (`type name(params);`) by name and return type, so a
-    /// call to an externally-defined function knows its result type (e.g. a
-    /// `double`-returning math routine).
-    pub prototypes: Vec<(String, Type)>,
+    /// Function prototypes (`type name(params);`) by name, return type, and
+    /// parameter types, so a call to an externally-defined function knows its
+    /// result type (e.g. a `double`-returning math routine) and its parameter
+    /// types (so an argument's int<->float register placement is correct).
+    pub prototypes: Vec<(String, Type, Vec<Type>)>,
     /// Names of `static inline` functions whose body contains an inline `asm {}`
     /// block, in declaration order. mwcc keeps each as a deferred function and
     /// emits a local *undefined* symbol for it even when unused (it cannot inline
