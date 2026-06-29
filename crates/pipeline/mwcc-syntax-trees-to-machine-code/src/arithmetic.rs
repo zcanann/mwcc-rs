@@ -574,6 +574,20 @@ impl Generator {
                 }
             }
         }
+        // A narrow leaf masked entirely within its own bit-width needs no promotion
+        // (extsb/extsh/clrlwi): the mask keeps only bits the extension would leave
+        // unchanged, so mwcc masks the raw register — `char a & 0xf` is `clrlwi r3,r3,28`,
+        // not `extsb r0,r3; clrlwi r3,r0,28`. The mask run must start within the narrow
+        // value's low `width` bits (big-endian bit `32-width` onward); a mask reaching the
+        // extension bits (`a & 0x1ff`) keeps the promotion via the normal path below.
+        if let &Immediate::Mask(begin, end) = &kind {
+            if let Ok((register, width, _signed)) = self.leaf_info(variable) {
+                if width < 32 && (begin as u32) >= 32 - width as u32 {
+                    self.output.instructions.push(Instruction::AndContiguousMask { a: destination, s: register, begin, end });
+                    return Ok(true);
+                }
+            }
+        }
         let prefer_destination = matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract);
         // `addi d, r0, imm` is `li d, imm` — it drops the source. So when an
         // add-immediate's own result lands in the scratch (it is a sub-expression),
