@@ -675,6 +675,18 @@ impl Generator {
                 return self.emit_subscript(right, left, destination);
             }
         }
+        // `*(p - C)` is `p[-C]` — a displacement load at the negative offset. Subtract does NOT
+        // commute (the pointer is always the left operand), and only a CONSTANT offset to a
+        // NON-narrow pointee is routed: a variable `*(p - i)` needs a negated, scaled index
+        // (`neg; slwi; lwzx`), and a char/short pointee needs the narrow machinery to see
+        // through the `p - C` pointer (as it does for `p + C`) — both keep deferring.
+        if let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = pointer {
+            if let Some(constant) = constant_value(right) {
+                if self.dereferenced_width(left) >= Some(32) {
+                    return self.emit_subscript(left, &Expression::IntegerLiteral(-constant), destination);
+                }
+            }
+        }
         let (pointee, address) = self.resolve_pointer(pointer)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, 0));
         Ok(())
