@@ -240,6 +240,41 @@ impl Generator {
                     };
                     return self.evaluate_general(&peeled, destination);
                 }
+                // Fold `(x OP c1) OP c2` to `x OP (c1 ⊕ c2)` for an associative operation with a
+                // constant at each level — mwcc combines consecutive constant operations into a
+                // single instruction: `(a+3)+5` is `addi r3,r3,8`, `(a>>2)>>3` is `srawi
+                // r3,r3,5`, `(a&0xf0)&0x3c` is one `rlwinm`. Rewrite and re-evaluate so the
+                // existing single-constant path emits it. (Left-associative trees keep the
+                // constant on the inner/outer right, the common shape.)
+                if let Some(outer_constant) = constant_value(right) {
+                    if let Expression::Binary { operator: inner_operator, left: inner_left, right: inner_right } = left.as_ref() {
+                        if let Some(inner_constant) = constant_value(inner_right) {
+                            use BinaryOperator::*;
+                            let folded = match (*operator, *inner_operator) {
+                                (Add, Add) => Some((Add, inner_constant + outer_constant)),
+                                (Subtract, Add) => Some((Add, inner_constant - outer_constant)),
+                                (Add, Subtract) => Some((Add, outer_constant - inner_constant)),
+                                (Subtract, Subtract) => Some((Subtract, inner_constant + outer_constant)),
+                                (Multiply, Multiply) => inner_constant.checked_mul(outer_constant).map(|product| (Multiply, product)),
+                                (BitAnd, BitAnd) => Some((BitAnd, inner_constant & outer_constant)),
+                                (BitOr, BitOr) => Some((BitOr, inner_constant | outer_constant)),
+                                (BitXor, BitXor) => Some((BitXor, inner_constant ^ outer_constant)),
+                                (ShiftLeft, ShiftLeft) | (ShiftRight, ShiftRight)
+                                    if (1..=31).contains(&(inner_constant + outer_constant)) =>
+                                    Some((*operator, inner_constant + outer_constant)),
+                                _ => None,
+                            };
+                            if let Some((result_operator, result_constant)) = folded {
+                                let folded_expression = Expression::Binary {
+                                    operator: result_operator,
+                                    left: inner_left.clone(),
+                                    right: Box::new(Expression::IntegerLiteral(result_constant)),
+                                };
+                                return self.evaluate_general(&folded_expression, destination);
+                            }
+                        }
+                    }
+                }
                 // `a*c1 + a*c2` / `a*c1 - a*c2` on the same variable distributes to `a*(c1±c2)`
                 // — mwcc combines the like terms before strength reduction (`a*3 + a*5` is one
                 // `slwi r3,r3,3` for `a*8`, not two `mulli`s). Fold and re-evaluate so the
