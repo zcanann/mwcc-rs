@@ -61,6 +61,14 @@ impl Generator {
             BinaryOperator::Equal => {
                 if is_zero_literal(right) || is_zero_literal(left) {
                     let value = if is_zero_literal(right) { left } else { right };
+                    // `(comparison) == 0` is the NEGATED comparison — `(a < b) == 0` is `a >= b`
+                    // (one idiom), not "compute `a < b` to 0/1, then test that against 0". mwcc
+                    // folds the double-test; `!(a < b)` already did, so match it here too.
+                    if let Expression::Binary { operator: inner_operator, left: inner_left, right: inner_right } = value {
+                        if let Some(flipped) = flip_comparison(*inner_operator) {
+                            return self.emit_comparison(flipped, inner_left, inner_right, d);
+                        }
+                    }
                     // `(x & (1<<k)) == 0`: extract bit k to the low bit (one rlwinm),
                     // then flip it.
                     if let Some((variable, mask)) = as_masked_leaf(value) {
@@ -111,6 +119,12 @@ impl Generator {
             }
             // x != 0 : sign bit of (-x | x)
             BinaryOperator::NotEqual if is_zero_literal(right) => {
+                // `(comparison) != 0` is just the comparison — `(a < b) != 0` is `a < b`.
+                if let Expression::Binary { operator: inner_operator, left: inner_left, right: inner_right } = left {
+                    if is_comparison(*inner_operator) {
+                        return self.emit_comparison(*inner_operator, inner_left, inner_right, d);
+                    }
+                }
                 // `(x & (1<<k)) != 0`: extract bit k to the low bit with one rlwinm.
                 if let Some((variable, mask)) = as_masked_leaf(left) {
                     if mask.is_power_of_two() {
