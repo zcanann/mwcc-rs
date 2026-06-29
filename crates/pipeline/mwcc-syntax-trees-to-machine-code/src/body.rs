@@ -269,7 +269,7 @@ fn inline_single_call_result(function: &Function) -> Option<Function> {
         }
         call_value = Some(initializer.clone());
     }
-    let mut store_target: Option<Expression> = None;
+    let mut store: Option<(Expression, Expression)> = None;
     for statement in &function.statements {
         match statement {
             Statement::Assign { name, value } if name == local_name => {
@@ -281,29 +281,40 @@ fn inline_single_call_result(function: &Function) -> Option<Function> {
                 }
                 call_value = Some(value.clone());
             }
-            // The result is consumed by exactly one store, whose whole value is the local and
-            // whose target does not read it.
+            // The result is consumed by exactly one store, whose target does not read the
+            // local (only its value may).
             Statement::Store { target, value } => {
-                if store_target.is_some()
-                    || !matches!(value, Expression::Variable(name) if name == local_name)
-                    || expression_reads_name(target, local_name)
-                {
+                if store.is_some() || expression_reads_name(target, local_name) {
                     return None;
                 }
-                store_target = Some(target.clone());
+                store = Some((target.clone(), value.clone()));
             }
             _ => return None,
         }
     }
     let call_value = call_value?;
-    let (statements, return_expression) = match &store_target {
-        // Store sink: a void function with no return, the result stored directly.
-        Some(target) if function.return_type == Type::Void && function.return_expression.is_none() => {
-            (vec![Statement::Store { target: target.clone(), value: call_value }], None)
+    // The result is consumed in exactly one place and read EXACTLY ONCE there — a call read
+    // twice would call twice. Substitute the call into that single use (`gi = x + 1;` ->
+    // `gi = foo(a) + 1;`); the re-dispatch is byte-exact (call fused with a constant) or
+    // defers (a value live across the call), never a diff.
+    let occurrences = |expression: &Expression| crate::analysis::count_name_occurrences(expression, local_name);
+    let mut values = std::collections::HashMap::new();
+    values.insert(local_name.to_string(), call_value);
+    let (statements, return_expression) = match &store {
+        // Store sink: a void function with no return, the local consumed once in the value.
+        Some((target, value)) if function.return_type == Type::Void && function.return_expression.is_none() => {
+            if occurrences(value) != 1 {
+                return None;
+            }
+            (vec![Statement::Store { target: target.clone(), value: crate::value_tracking::substitute(value, &values) }], None)
         }
-        // Return sink: no stores, the trailing return is exactly the local.
-        None if matches!(&function.return_expression, Some(Expression::Variable(name)) if name == local_name) => {
-            (Vec::new(), Some(call_value))
+        // Return sink: no stores, the trailing return consumes the local once.
+        None => {
+            let return_expression = function.return_expression.as_ref()?;
+            if occurrences(return_expression) != 1 {
+                return None;
+            }
+            (Vec::new(), Some(crate::value_tracking::substitute(return_expression, &values)))
         }
         _ => return None,
     };

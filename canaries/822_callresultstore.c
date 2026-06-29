@@ -21,3 +21,12 @@ void two_args(int a, int b) { int x = produce2(a, b); gj = x; }    // gj = produ
 int ret_result(int a)       { int x = produce(a); return x; }     // return produce(a)
 int ret_assigned(int a)     { int x; x = produce(a); return x; }  // same via assignment
 int ret_no_args(void)       { int x = side(); return x; }         // return side()
+
+// The single-use call result may be fused with a CONSTANT before the store/return —
+// `int x = foo(a); gi = x + 1;` -> `gi = foo(a) + 1;` (byte-exact, the result read in r3).
+// The call is substituted into its one use; reading it twice, or fusing it with a value
+// live across the call, still defers.
+int gk2;
+void store_plus_const(int a)   { int x = produce(a); gk2 = x + 1; }   // gk2 = produce(a)+1
+int ret_plus_const(int a)      { int x = produce(a); return x & 255; } // return produce(a)&255
+int ret_times(int a)           { int x = produce(a); return x * 2; }   // return produce(a)*2
