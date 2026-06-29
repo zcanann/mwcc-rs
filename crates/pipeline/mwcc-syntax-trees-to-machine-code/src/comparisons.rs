@@ -57,6 +57,24 @@ impl Generator {
         } else {
             self.signedness_of(left)? && self.signedness_of(right)?
         };
+        // Unsigned comparisons against literal ZERO collapse to `== 0` / `!= 0` — since an
+        // unsigned value is always >= 0, `u > 0` (and `0 < u`) is `u != 0`, and `u <= 0` (and
+        // `0 >= u`) is `u == 0`. mwcc emits the cheaper equality idiom for these. (It keeps
+        // `u >= 1` / `u < 1` as their own relational idioms, so those are NOT folded; and signed
+        // comparisons are unaffected — `int a > 0` is not `a != 0`.)
+        if !signed_comparison {
+            let folded = match operator {
+                BinaryOperator::Greater if is_zero_literal(right) => Some((BinaryOperator::NotEqual, left)),
+                BinaryOperator::LessEqual if is_zero_literal(right) => Some((BinaryOperator::Equal, left)),
+                BinaryOperator::Less if is_zero_literal(left) => Some((BinaryOperator::NotEqual, right)),
+                BinaryOperator::GreaterEqual if is_zero_literal(left) => Some((BinaryOperator::Equal, right)),
+                _ => None,
+            };
+            if let Some((equality_operator, operand)) = folded {
+                let zero = Expression::IntegerLiteral(0);
+                return self.emit_comparison(equality_operator, operand, &zero, d);
+            }
+        }
         match operator {
             BinaryOperator::Equal => {
                 if is_zero_literal(right) || is_zero_literal(left) {
