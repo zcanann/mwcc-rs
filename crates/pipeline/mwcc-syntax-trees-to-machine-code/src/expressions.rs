@@ -299,6 +299,26 @@ impl Generator {
                         }
                     }
                 }
+                // Absorption: `(a & b) | a` is `a`, `(a | b) & a` is `a` (and the commuted
+                // `a | (a & b)`, plus the bit-constant forms `(x | c) & c` -> c, `(x & c) | c`
+                // -> c when the survivor is the constant). One operand subsumes the other and
+                // mwcc folds straight to the survivor (`(a&b)|a` is a bare `blr`; `(x|7)&7` is
+                // `li r3,7`). The inner op is dropped, so its operands — and the surviving leaf
+                // — must be side-effect-free leaves (variables/constants) for the fold to hold.
+                if matches!(operator, BinaryOperator::BitOr | BinaryOperator::BitAnd) {
+                    let dual = if matches!(operator, BinaryOperator::BitOr) { BinaryOperator::BitAnd } else { BinaryOperator::BitOr };
+                    for (inner, survivor) in [(left.as_ref(), right.as_ref()), (right.as_ref(), left.as_ref())] {
+                        let survivor_is_leaf = matches!(survivor, Expression::Variable(_) | Expression::IntegerLiteral(_));
+                        if let Expression::Binary { operator: inner_operator, left: p, right: q } = inner {
+                            let inner_leaves = matches!(p.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
+                                && matches!(q.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_));
+                            if survivor_is_leaf && *inner_operator == dual && inner_leaves
+                                && (same_operand(survivor, p) || same_operand(survivor, q)) {
+                                return self.evaluate_general(survivor, destination);
+                            }
+                        }
+                    }
+                }
                 // `a*c1 + a*c2` / `a*c1 - a*c2` on the same variable distributes to `a*(c1±c2)`
                 // — mwcc combines the like terms before strength reduction (`a*3 + a*5` is one
                 // `slwi r3,r3,3` for `a*8`, not two `mulli`s). Fold and re-evaluate so the
