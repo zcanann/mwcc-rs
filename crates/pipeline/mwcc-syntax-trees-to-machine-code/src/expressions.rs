@@ -107,6 +107,18 @@ fn split_address(address: u32) -> (i16, i16) {
     (high, low)
 }
 
+/// The absolute address of any constant-address pointer cast — `(T *)C`, `(struct S *)C`,
+/// `(union U *)C` — used as a member base (`(*(struct S *)C).field`) where the access width
+/// comes from the member, not the cast. Returns `None` for non-constant or non-pointer casts.
+fn const_address_of(pointer: &Expression) -> Option<u32> {
+    if let Expression::Cast { target_type, operand } = pointer {
+        if matches!(target_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+            return constant_value(operand).map(|address| address as u32);
+        }
+    }
+    None
+}
+
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
 fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
     match pointee {
@@ -842,14 +854,7 @@ impl Generator {
         // load into r0 (the char-return narrowing path, which also masks) is deferred rather
         // than miscompiled.
         if let Some((pointee, address)) = const_address_pointer(pointer) {
-            let (high, low) = split_address(address);
-            if high == 0 {
-                self.output.instructions.push(displacement_load(pointee, destination, 0, low));
-                return Ok(());
-            }
-            if destination != 0 {
-                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high));
-                self.output.instructions.push(displacement_load(pointee, destination, destination, low));
+            if self.emit_const_address_load(pointee, address, 0, destination)? {
                 return Ok(());
             }
             return Err(Diagnostic::error("a constant-address load into r0 is not supported yet (roadmap)"));
@@ -898,6 +903,51 @@ impl Generator {
     /// Emit `base->field` — a displacement load from the struct pointer's register
     /// at the member's offset, choosing the load by the member type. The base must
     /// be a struct-pointer leaf variable (chained/complex bases are roadmap).
+    /// Load from constant `address + offset` (a `*(T *)C` deref or a `(*(struct S *)C).field`
+    /// member). Materializes the address with the `lis hi` / displacement-`lo` split, folding
+    /// the member offset into the displacement; a zero high half loads off the r0=0 base. Returns
+    /// `false` (caller defers) when it cannot be byte-exact: the displacement overflows i16, or a
+    /// high-half address would have to use r0 (an invalid base) as the destination/base register.
+    fn emit_const_address_load(&mut self, pointee: Pointee, address: u32, offset: u16, destination: u8) -> Compilation<bool> {
+        let (high, low) = split_address(address);
+        let Some(displacement) = (low as i32).checked_add(offset as i32).and_then(|d| i16::try_from(d).ok()) else {
+            return Ok(false);
+        };
+        if high == 0 {
+            self.output.instructions.push(displacement_load(pointee, destination, 0, displacement));
+            return Ok(true);
+        }
+        if destination != 0 {
+            self.output.instructions.push(Instruction::load_immediate_shifted(destination, high));
+            self.output.instructions.push(displacement_load(pointee, destination, destination, displacement));
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Store `value` to constant `address + offset` (a `*(T *)C = v` or `(*(struct S *)C).f = v`).
+    /// The address base is materialized before the value and kept clear of the value's input
+    /// registers, mirroring the absolute global store. Returns `false` (caller defers) when the
+    /// displacement overflows i16.
+    fn emit_const_address_store(&mut self, pointee: Pointee, address: u32, offset: u16, value: &Expression) -> Compilation<bool> {
+        let (high, low) = split_address(address);
+        let Some(displacement) = (low as i32).checked_add(offset as i32).and_then(|d| i16::try_from(d).ok()) else {
+            return Ok(false);
+        };
+        if high == 0 {
+            let source = self.place_store_value(value, pointee)?;
+            self.output.instructions.push(displacement_store(pointee, source, 0, displacement));
+        } else {
+            let base = self.free_register_avoiding(&[value])?;
+            let restore = self.reserved.insert(base);
+            self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
+            let source = self.place_store_value(value, pointee)?;
+            if restore { self.reserved.remove(&base); }
+            self.output.instructions.push(displacement_store(pointee, source, base, displacement));
+        }
+        Ok(true)
+    }
+
     pub(crate) fn emit_member_load(&mut self, base: &Expression, offset: u16, member_type: Type, index_stride: Option<u16>, destination: u8) -> Compilation<()> {
         // `a[i].field`: scale the index by the struct size, then load at the field
         // offset — `slwi/mulli r0,i,stride; add a,a,r0; lwz d,offset(a)` (or `lwzx`
@@ -957,6 +1007,18 @@ impl Generator {
                     }
                     self.emit_global_array_base(name, size as u32, destination)?;
                     self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
+                    return Ok(());
+                }
+            }
+        }
+        // `(*(struct S *)0xADDR).field` — a member through a constant-address pointer. Same
+        // idiom as a plain const-address load, with the member offset folded into the
+        // displacement (the GX FIFO `(*(PPCWGPipe*)ADDR).u8` is offset 0).
+        if let Some(address) = const_address_of(base) {
+            if let Some(pointee) = pointee_of_type(member_type) {
+                if !matches!(pointee, Pointee::Float | Pointee::Double)
+                    && self.emit_const_address_load(pointee, address, offset, destination)?
+                {
                     return Ok(());
                 }
             }
@@ -1601,20 +1663,22 @@ impl Generator {
         // global store, with a numeric hi/lo split in place of `@ha`/`@l` relocations.
         if let Expression::Dereference { pointer } = target {
             if let Some((pointee, address)) = const_address_pointer(pointer) {
-                let (high, low) = split_address(address);
-                if high == 0 {
-                    // address fits the displacement: store off the r0=0 base, no `lis`.
-                    let source = self.place_store_value(value, pointee)?;
-                    self.output.instructions.push(displacement_store(pointee, source, 0, low));
-                } else {
-                    let base = self.free_register_avoiding(&[value])?;
-                    let restore = self.reserved.insert(base);
-                    self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
-                    let source = self.place_store_value(value, pointee)?;
-                    if restore { self.reserved.remove(&base); }
-                    self.output.instructions.push(displacement_store(pointee, source, base, low));
-                }
+                self.emit_const_address_store(pointee, address, 0, value)?;
                 return Ok(());
+            }
+        }
+        // `(*(struct S *)0xADDR).field = v` — store to a member of a constant-address pointer.
+        // Same idiom as the plain const-address store, with the member offset folded into the
+        // displacement (the GX FIFO union store `(*(PPCWGPipe*)ADDR).u8 = v` is offset 0).
+        if let Expression::Member { base, offset, member_type, index_stride: None } = target {
+            if let Some(address) = const_address_of(base) {
+                if let Some(pointee) = pointee_of_type(*member_type) {
+                    if !matches!(pointee, Pointee::Float | Pointee::Double)
+                        && self.emit_const_address_store(pointee, address, *offset, value)?
+                    {
+                        return Ok(());
+                    }
+                }
             }
         }
         // `*(p + i) = v` is `p[i] = v`: rewrite a pointer-plus-index dereference target to the
