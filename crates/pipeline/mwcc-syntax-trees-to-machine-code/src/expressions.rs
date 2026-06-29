@@ -1446,6 +1446,17 @@ impl Generator {
                     return self.emit_store(&Expression::Index { base, index }, value);
                 }
             }
+            // `*(p - C) = v` is `p[-C] = v` — the subtract counterpart, a constant negative
+            // index (subtract does not commute; the pointer is the left operand). The store
+            // truncates, so every width is fine.
+            if let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = pointer.as_ref() {
+                if let Some(constant) = constant_value(right) {
+                    if self.dereferenced_width(left).is_some() {
+                        let index = Box::new(Expression::IntegerLiteral(-constant));
+                        return self.emit_store(&Expression::Index { base: left.clone(), index }, value);
+                    }
+                }
+            }
         }
         // A type-pun store through a frame-resident address (`*(int*)&x = v`) is a
         // plain displacement store to r1.
