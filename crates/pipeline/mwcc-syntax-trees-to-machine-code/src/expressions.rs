@@ -660,6 +660,27 @@ impl Generator {
                 }
             }
         }
+        // `*(p + i)` / `*(p + 3)` is exactly `p[i]` / `p[3]` — mwcc emits the identical
+        // `slwi; lwzx` (variable index) or displacement `lwz` (constant). Route a
+        // pointer-plus-index dereference to the subscript path. The pointer operand is the
+        // base, the integer the index; `+` is commutative, so either order is accepted.
+        // Restricted to a NON-narrow pointee (int/float/double/pointer, width >= 32): a
+        // char/short element needs the load's sign/zero-extension, which the narrow-load
+        // machinery (is_signed_byte_load / dereferenced_width) does not yet recognize through
+        // the `p + i` pointer, so a narrow `*(p+i)` keeps deferring rather than drop the extsb
+        // (a miscompile).
+        if let Expression::Binary { operator: BinaryOperator::Add, left, right } = pointer {
+            let base_index_width = if let Some(width) = self.dereferenced_width(left) {
+                Some((left, right, width))
+            } else {
+                self.dereferenced_width(right).map(|width| (right, left, width))
+            };
+            if let Some((base, index, width)) = base_index_width {
+                if width >= 32 {
+                    return self.emit_subscript(base, index, destination);
+                }
+            }
+        }
         let (pointee, address) = self.resolve_pointer(pointer)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, 0));
         Ok(())
