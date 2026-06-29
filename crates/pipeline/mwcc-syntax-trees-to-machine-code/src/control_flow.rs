@@ -52,6 +52,32 @@ impl Generator {
     /// register is still needed by the right operand.
     pub(crate) fn emit_short_circuit_via_scratch(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
         let scratch = GENERAL_SCRATCH;
+        // `(a == c1) || (a == c2)` for CONSECUTIVE constants is, as a VALUE, mwcc's unsigned
+        // range check `(unsigned)(a - min) <= 1` — a branchless idiom (`addi; subfic; orc;
+        // srwi; subf; srwi.; bnelr`) not reproduced here. Defer rather than emit our
+        // compare-branch form (a byte diff). NON-consecutive constants use the same
+        // compare-branch idiom as mwcc (byte-exact), and the `if (...)` CONDITION form takes a
+        // different path, so both are unaffected.
+        if matches!(operator, BinaryOperator::LogicalOr) {
+            let as_equality_constant = |expression: &Expression| -> Option<(String, i64)> {
+                if let Expression::Binary { operator: BinaryOperator::Equal, left, right } = expression {
+                    if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), constant_value(right)) {
+                        return Some((name.clone(), constant));
+                    }
+                    if let (Some(constant), Expression::Variable(name)) = (constant_value(left), right.as_ref()) {
+                        return Some((name.clone(), constant));
+                    }
+                }
+                None
+            };
+            if let (Some((left_variable, left_constant)), Some((right_variable, right_constant))) =
+                (as_equality_constant(left), as_equality_constant(right))
+            {
+                if left_variable == right_variable && (left_constant - right_constant).abs() == 1 {
+                    return Err(Diagnostic::error("a consecutive-constant equality OR value is mwcc's unsigned range idiom (roadmap)"));
+                }
+            }
+        }
         match operator {
             BinaryOperator::LogicalAnd => {
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
