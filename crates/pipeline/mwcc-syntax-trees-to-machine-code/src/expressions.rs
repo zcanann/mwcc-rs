@@ -275,6 +275,30 @@ impl Generator {
                         }
                     }
                 }
+                // Operand cancellation: `(X + Y) - Y` is `X`, `(X + Y) - X` is `Y`, and
+                // `(X - Y) + Y` is `X` — the operand that appears with opposite signs cancels,
+                // and mwcc folds straight to the survivor (`(a+b)-b` is `blr`; `(a+5)-a` is
+                // `li r3,5`). The cancelling operand must be a side-effect-free LEAF (a variable
+                // or constant — read twice gives the same value), so dropping its evaluation is
+                // safe; the survivor is then evaluated normally.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+                    if matches!(right.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_)) {
+                        if let Expression::Binary { operator: inner_operator, left: inner_left, right: inner_right } = left.as_ref() {
+                            let survivor = match (*operator, *inner_operator) {
+                                (BinaryOperator::Subtract, BinaryOperator::Add) => {
+                                    if same_operand(right, inner_right) { Some(inner_left) }
+                                    else if same_operand(right, inner_left) { Some(inner_right) }
+                                    else { None }
+                                }
+                                (BinaryOperator::Add, BinaryOperator::Subtract) if same_operand(right, inner_right) => Some(inner_left),
+                                _ => None,
+                            };
+                            if let Some(survivor) = survivor {
+                                return self.evaluate_general(survivor, destination);
+                            }
+                        }
+                    }
+                }
                 // `a*c1 + a*c2` / `a*c1 - a*c2` on the same variable distributes to `a*(c1±c2)`
                 // — mwcc combines the like terms before strength reduction (`a*3 + a*5` is one
                 // `slwi r3,r3,3` for `a*8`, not two `mulli`s). Fold and re-evaluate so the
