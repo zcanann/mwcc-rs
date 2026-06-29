@@ -823,6 +823,14 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
 
         if !function.guards.is_empty() {
+            // A single value-tracked local feeding a guarded return materializes in r3 (its
+            // home) and the leaf select reads it there — the register MODEL is right (verified
+            // by hand: `andc r3,r3,r0`). BUT mwcc SCHEDULES the local's materialization into
+            // the select's `neg`->`or` latency slot: `neg r0,c; addi r3,a,1; or r0,r0,c;
+            // srawi; andc r3,r3,r0` — the addi AFTER the leading neg. Emitting the local
+            // first (`addi; neg; or; …`) is byte-identical except mis-ordered. Needs the
+            // instruction scheduler (or a manual interleave of the materialization after the
+            // select's leading neg), so defer rather than ship the order diff.
             if !function.locals.is_empty() {
                 return Err(Diagnostic::error("locals combined with guards not yet supported"));
             }
