@@ -1785,6 +1785,33 @@ impl Generator {
         if self.is_float_value(value) && !self.is_float_leaf(value) {
             return Err(Diagnostic::error("a non-leaf float value stored to an integer target needs a float->int conversion (roadmap)"));
         }
+        // A NARROW value (char/short parameter, or a narrow memory load) stored to a wider
+        // INTEGER target must be widened first — `int gi; char a; gi = a;` is `extsb r0,r3;
+        // stw r0,gi` (or `extsb r3,r3` in place when the value is also returned). mwcc picks
+        // r0 vs r3 by whether the value is reused, an allocator decision not modeled here, so
+        // defer rather than store the raw narrow value (a miscompile: the byte/halfword is
+        // stored without the int sign/zero-extension). A signed-narrow GLOBAL source already
+        // extends on load, so it is excluded (only params/locals and narrow loads defer).
+        if matches!(pointee, Pointee::Int | Pointee::UnsignedInt) {
+            let value_is_narrow = match value {
+                Expression::Variable(name) if self.locations.contains_key(name.as_str()) => {
+                    self.leaf_info(value).is_ok_and(|(_, width, _)| width < 32)
+                }
+                Expression::Dereference { pointer } => {
+                    matches!(self.pointee_of(pointer), Ok(Pointee::Char | Pointee::UnsignedChar | Pointee::Short | Pointee::UnsignedShort))
+                }
+                Expression::Index { base, .. } => {
+                    matches!(self.pointee_of(base), Ok(Pointee::Char | Pointee::UnsignedChar | Pointee::Short | Pointee::UnsignedShort))
+                }
+                Expression::Member { member_type, .. } => {
+                    matches!(member_type, Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+                }
+                _ => false,
+            };
+            if value_is_narrow {
+                return Err(Diagnostic::error("a narrow value stored to a wider integer target needs a widening coercion (roadmap)"));
+            }
+        }
         if let Expression::Variable(name) = value {
             // A bare identifier that is neither a local nor a known data global is
             // an external symbol (a function, typically) — store its *address*. mwcc
