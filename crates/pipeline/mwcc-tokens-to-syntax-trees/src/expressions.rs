@@ -191,6 +191,29 @@ impl Parser {
             return Ok(increment_assignment(operand, operator));
         }
 
+        // `sizeof(type)` is a compile-time constant — the type's byte size as a `size_t`
+        // literal, which lowers to `li r3, N`. `struct S` uses its laid-out size, a pointer is
+        // 4, scalars are their width in bytes. The expression forms (`sizeof x`, `sizeof(expr)`)
+        // need the operand's type and are left to defer.
+        if matches!(self.peek(), Token::Identifier(name) if name == "sizeof") {
+            self.advance(); // `sizeof`
+            let parenthesized = *self.peek() == Token::ParenOpen;
+            if parenthesized {
+                self.advance(); // `(`
+            }
+            if parenthesized && self.peek_is_type() {
+                let target_type = self.parse_type()?;
+                self.expect(Token::ParenClose)?;
+                let bytes = match target_type {
+                    mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
+                    mwcc_syntax_trees::Type::Pointer(_) | mwcc_syntax_trees::Type::StructPointer { .. } => 4,
+                    other => other.width() as u32 / 8,
+                };
+                return Ok(Expression::IntegerLiteral(bytes as i64));
+            }
+            return Err(Diagnostic::error("sizeof of an expression is not supported yet (roadmap)"));
+        }
+
         // A `(struct S *)x` cast carries the struct tag (stashed by `parse_type` in
         // `last_struct_tag`) so a member access on the cast result resolves its layout.
         let mut cast_struct_tag: Option<String> = None;
