@@ -1254,7 +1254,7 @@ impl Generator {
     /// multiply, divide), whose latency the fill orders around. Excluded (need more than a
     /// register-shuffle): modulo and comparisons (multi-instruction idioms), a nested
     /// value (needs an intermediate), and a memory read (needs load hoisting).
-    fn is_single_op_register_value(&self, value: &Expression) -> bool {
+    pub(crate) fn is_single_op_register_value(&self, value: &Expression) -> bool {
         let is_register_leaf = |operand: &Expression| match operand {
             Expression::Variable(name) => !self.globals.contains_key(name.as_str()),
             Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,

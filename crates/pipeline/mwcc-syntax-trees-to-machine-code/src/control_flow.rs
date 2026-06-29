@@ -159,6 +159,21 @@ impl Generator {
             self.output.instructions.push(combine(destination, GENERAL_SCRATCH, destination));
             return Ok(true);
         }
+        // A single-op computed value (`a+1`, `a*2`, `a&m`) is evaluated into r0, exactly
+        // like a constant materialized there: `neg t,c; <op> r0; or d,t,c; srawi d,31;
+        // and/andc d,r0,d`. The `-c` temp `t` must avoid the value's operand registers
+        // (else the `neg` clobbers them before the op reads them), so it goes in a fresh
+        // virtual the allocator places after them (mwcc's r5). A multi-op value would need
+        // temporaries beyond the scratch and defers.
+        if self.is_single_op_register_value(value) {
+            let temp = self.fresh_virtual_general();
+            self.output.instructions.push(Instruction::Negate { d: temp, a: condition_register });
+            self.evaluate_general(value, GENERAL_SCRATCH)?;
+            self.output.instructions.push(Instruction::Or { a: destination, s: temp, b: condition_register });
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: destination, shift: 31 });
+            self.output.instructions.push(combine(destination, GENERAL_SCRATCH, destination));
+            return Ok(true);
+        }
         Ok(false)
     }
 
