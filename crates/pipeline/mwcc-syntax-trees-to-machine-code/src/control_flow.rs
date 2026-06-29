@@ -341,14 +341,12 @@ impl Generator {
         }
 
         // When the taken value already sits in the result register, mwcc drops the separate
-        // taken block: the deciding AND term becomes a conditional return (`cmpwi r4,0;
-        // bnelr`) and the fall-through return follows. (OR with the taken value in the result
-        // register is not wired yet, so it defers.)
+        // taken block. For AND the deciding (last) term becomes a conditional return
+        // (`cmpwi; bnelr`); for OR every early term is a conditional return (any true term
+        // returns the taken value in the result), the last term branches to the fall block,
+        // and the last-true path falls through to a trailing `blr`.
         let taken_in_result = leaf_name(when_true).and_then(|name| self.lookup_general(name)) == Some(result);
-        if taken_in_result && operator == BinaryOperator::LogicalOr {
-            return Ok(false);
-        }
-        let use_conditional_return = taken_in_result && operator == BinaryOperator::LogicalAnd;
+        let use_conditional_return = taken_in_result;
 
         let mut to_taken = Vec::new();
         let mut to_fall = Vec::new();
@@ -365,15 +363,22 @@ impl Generator {
                     self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
                     to_fall.push(branch_index);
                 }
-            } else if index < last {
-                // OR: an early true term takes the guard.
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: options ^ 8, condition_bit, target: 0 });
-                to_taken.push(branch_index);
-            } else {
-                // OR: the last term false falls through; true falls into the taken block.
+            } else if index == last {
+                // OR: the last term false branches to the fall block; true falls through.
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
                 to_fall.push(branch_index);
+            } else if use_conditional_return {
+                // OR taken-in-result: an early true term returns the taken value in the result.
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+            } else {
+                // OR: an early true term jumps to the taken block.
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: options ^ 8, condition_bit, target: 0 });
+                to_taken.push(branch_index);
             }
+        }
+        // OR taken-in-result: the last-true path falls through here, returning the taken value.
+        if use_conditional_return && operator == BinaryOperator::LogicalOr {
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
         }
         // The taken (guard) block sits right after the short-circuit (the all-true / last-true
         // path falls into it); the fall-through return follows it. With the conditional-return

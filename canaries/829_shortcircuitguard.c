@@ -23,3 +23,9 @@ int and_float_cmp(float a, float b, float c, float d) { if (a > b && c > d) retu
 int and_negated(int a, int b)                         { if (!a && b) return 1; return 0; }
 int and_four(int a, int b, int c, int d)              { if (a && b && c && d) return 1; return 0; }
 int and_pointer(int *p, int b)                        { if (p && b) return 1; return 0; }
+
+// `||` with the taken value already in the result register: every early term is a
+// conditional return, the last term branches to the fall block, and the last-true path
+// falls through to a trailing blr (`cmpwi r3,0; bnelr; cmpwi r4,0; beq L; blr; L: mr r3,r4; blr`).
+int or_taken_in_r3(int a, int b)          { if (a || b) return a; return b; }
+int or_taken_three(int a, int b, int c)   { if (a || b || c) return a; return c; }
