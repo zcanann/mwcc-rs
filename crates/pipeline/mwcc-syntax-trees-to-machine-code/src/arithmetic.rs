@@ -380,6 +380,19 @@ impl Generator {
     /// that source directly — `addi` must not take `r0` as its source, which would
     /// silently mean `li`.
     pub(crate) fn emit_constant_form(&mut self, operator: BinaryOperator, variable: &Expression, constant: i64, destination: u8) -> Compilation<bool> {
+        // A SIGNED narrow (char/short) struct member used as an additive/multiplicative
+        // operand must be sign-extended before the op — `p->x + 1` is `lbz r0; extsb r3,r0;
+        // addi`. The member load (`displacement_load`) does not carry that extsb (the return
+        // path adds it separately, the operand path does not), and mwcc's r0-load register
+        // choice is the allocator's, so the byte-exact form is gated on the keystone. Defer
+        // rather than emit the raw zero-extended byte (a miscompile). A mask (`& 0xf`) makes
+        // the sign-extension redundant, and an unsigned member zero-extends on load — both
+        // unaffected.
+        if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply)
+            && matches!(variable, Expression::Member { member_type: mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::Short, .. })
+        {
+            return Err(Diagnostic::error("a signed narrow struct member in arithmetic needs a sign-extension (roadmap)"));
+        }
         // Identity and strength-reduction folds.
         match (operator, constant) {
             (BinaryOperator::Add, 0) => {
