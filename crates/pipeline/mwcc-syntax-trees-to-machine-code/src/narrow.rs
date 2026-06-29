@@ -20,6 +20,14 @@ impl Generator {
                 if let Some(Type::Pointer(pointee)) = self.globals.get(name) {
                     return Some(pointee.element().width());
                 }
+                // A file-scope global ARRAY subscripts to its element type — `globals` stores
+                // the element type itself (there is no `Type::Array`), and `global_array_sizes`
+                // records the extent, so `char a[8]; a[2]` resolves to the 8-bit element.
+                if self.global_array_sizes.contains_key(name) {
+                    if let Some(element) = self.globals.get(name) {
+                        return Some(element.width());
+                    }
+                }
             }
         }
         // The address of an array member subscripts to its element.

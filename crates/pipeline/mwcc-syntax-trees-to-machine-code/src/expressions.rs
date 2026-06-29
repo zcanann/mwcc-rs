@@ -240,19 +240,16 @@ impl Generator {
                     };
                     return self.evaluate_general(&peeled, destination);
                 }
-                // A signed narrow (char/short) struct member that is a DIRECT operand of a
-                // comparison or a signed divide is loaded raw by these branchless idioms —
-                // `p->x > 0` / `p->x / 2` operate on the zero-extended byte where mwcc
-                // sign-extends first (`lbz r0; extsb r3,r0; <idiom>`), a miscompile for a
-                // negative member. The byte-exact form needs mwcc's r0-load register choice
-                // (the keystone allocator), so defer. (A masked operand `(p->x & 0xf) > 0` is
-                // not a direct member and is unaffected; an unsigned member zero-extends.)
+                // A signed char load (member `p->x`, element `a[i]`, deref `*p`) that is a
+                // DIRECT operand of a comparison or a signed divide is loaded raw by these
+                // branchless idioms — `p->x > 0` / `p->x / 2` operate on the zero-extended byte
+                // where mwcc sign-extends first (`lbz r0; extsb r3,r0; <idiom>`), a miscompile
+                // for a negative value. The byte-exact form needs mwcc's r0-load register
+                // choice (the keystone allocator), so defer. (A masked operand `(p->x & 0xf) >
+                // 0` is not a direct load and is unaffected; a short load sign-extends.)
                 if is_comparison(*operator) || matches!(operator, BinaryOperator::Divide) {
-                    let signed_narrow_member = |operand: &Expression| {
-                        matches!(operand, Expression::Member { member_type: Type::Char | Type::Short, .. })
-                    };
-                    if signed_narrow_member(left.as_ref()) || signed_narrow_member(right.as_ref()) {
-                        return Err(Diagnostic::error("a signed narrow struct member operand of a comparison/divide needs a sign-extension (roadmap)"));
+                    if self.is_signed_byte_load(left.as_ref())? || self.is_signed_byte_load(right.as_ref())? {
+                        return Err(Diagnostic::error("a signed char load operand of a comparison/divide needs a sign-extension (roadmap)"));
                     }
                 }
                 // Comparisons compile to branchless idioms.
@@ -2236,18 +2233,16 @@ impl Generator {
                 return self.place_operand(inner, destination, prefer_destination);
             }
         }
-        // A SIGNED narrow (char/short) struct member used as an integer operand needs the
-        // sign-extension its load (`displacement_load`) does not carry — `p->x + 1` is
+        // A SIGNED CHAR load (member `p->x`, element `a[i]`, deref `*p`) used as an integer
+        // operand needs the sign-extension its `lbz`/`lbzx` does not carry — `p->x + 1` is
         // `lbz r0; extsb r3,r0; addi`, and every non-truncating operator (`+ - * << >> | ^ /`,
-        // unary, compare) miscompiles on the raw zero-extended byte (`p->x = 0xFF` reads 255,
-        // not -1). mwcc loads it into r0 and sign-extends into the destination, a register
-        // choice that is the keystone allocator's, so defer. A TRUNCATING consumer (a fitting
-        // mask) sets narrow_truncation_context and reads the raw byte — exempt; the direct
-        // `return p->x` uses evaluate_general (not this path) and is also unaffected.
-        if !self.narrow_truncation_context {
-            if let Expression::Member { member_type: Type::Char | Type::Short, .. } = operand {
-                return Err(Diagnostic::error("a signed narrow struct member operand needs a sign-extension (roadmap)"));
-            }
+        // unary, compare) miscompiles on the raw zero-extended byte (`0xFF` reads 255, not -1).
+        // mwcc loads it into r0 and sign-extends into the destination, a register choice that
+        // is the keystone allocator's, so defer. A TRUNCATING consumer (a fitting mask) sets
+        // narrow_truncation_context and reads the raw byte — exempt; a SHORT load sign-extends
+        // (`lha`) and the direct `return p->x` uses evaluate_general — both unaffected.
+        if !self.narrow_truncation_context && self.is_signed_byte_load(operand)? {
+            return Err(Diagnostic::error("a signed char load operand needs a sign-extension (roadmap)"));
         }
         if let Expression::Variable(name) = operand {
             // A global is loaded into the consumer's register (the destination for

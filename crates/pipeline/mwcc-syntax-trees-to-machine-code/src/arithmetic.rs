@@ -380,28 +380,23 @@ impl Generator {
     /// that source directly — `addi` must not take `r0` as its source, which would
     /// silently mean `li`.
     pub(crate) fn emit_constant_form(&mut self, operator: BinaryOperator, variable: &Expression, constant: i64, destination: u8) -> Compilation<bool> {
-        // A SIGNED narrow (char/short) struct member promoted to int needs the sign-extension
-        // its load (`displacement_load`) does not carry — `p->x + 1` is `lbz r0; extsb r3,r0;
-        // addi`. Nearly every operator (`+ - * << >> | ^ /`, a wide mask) miscompiles on the
-        // raw zero-extended byte (`p->x = 0xFF` reads 255, not -1); the return path adds the
-        // extsb separately, this operand path does not, and mwcc's r0-load register choice is
-        // the keystone allocator's, so defer. The sole exemption is a mask (`& m`) whose bits
-        // fit within the member width: the mask clears the would-be sign-extended high bits,
-        // so the raw byte is already correct (`p->x & 0xf` stays `lbz r0; clrlwi`). An
-        // unsigned member zero-extends on load and is not handled here.
-        if let Expression::Member { member_type, .. } = variable {
-            if matches!(member_type, mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::Short) {
-                let member_mask: i64 = if matches!(member_type, mwcc_syntax_trees::Type::Char) { 0xff } else { 0xffff };
-                // Exempt only a STRICT partial mask within the member (`& 0xf`): it clears the
-                // would-be sign-extended high bits, and mwcc emits the same `lbz; clrlwi`. The
-                // full-byte mask (`& 0xff`) is byte-different — mwcc drops it as redundant on a
-                // byte load — and a wider mask (`& 0x100`) reaches the sign bit, so both defer.
-                let is_fitting_mask = matches!(operator, BinaryOperator::BitAnd)
-                    && constant > 0
-                    && constant < member_mask;
-                if !is_fitting_mask {
-                    return Err(Diagnostic::error("a signed narrow struct member promoted to int needs a sign-extension (roadmap)"));
-                }
+        // A SIGNED CHAR load (struct member `p->x`, array element `a[i]`/`a[2]`, or pointer
+        // deref `*p`) promoted to int needs the sign-extension its `lbz`/`lbzx` does not carry
+        // — `p->x + 1` is `lbz r0; extsb r3,r0; addi`. Nearly every operator (`+ - * << >> | ^
+        // /`, a wide mask) miscompiles on the raw zero-extended byte (`0xFF` reads 255, not
+        // -1); the return path adds the extsb separately, this operand path does not, and
+        // mwcc's r0-load register choice is the keystone allocator's, so defer. A SHORT load
+        // sign-extends on load (`lha`/`lhax`) and stays byte-exact, so only the byte case is
+        // here. The sole exemption is a STRICT partial mask (`& 0xf`): the mask clears the
+        // would-be sign-extended high bits, so the raw byte is already correct (`lbz; clrlwi`),
+        // while `& 0xff` (mwcc drops the redundant mask) and `& 0x100` (reaches the sign bit)
+        // both defer. An unsigned byte zero-extends on load and is not handled here.
+        if self.is_signed_byte_load(variable)? {
+            let is_fitting_mask = matches!(operator, BinaryOperator::BitAnd)
+                && constant > 0
+                && constant < 0xff;
+            if !is_fitting_mask {
+                return Err(Diagnostic::error("a signed char load promoted to int needs a sign-extension (roadmap)"));
             }
         }
         // Identity and strength-reduction folds.
@@ -630,8 +625,7 @@ impl Generator {
         // un-sign-extended byte is exactly what the `clrlwi` wants. place_operand defers a
         // signed narrow member operand by default (the promotion needs an extsb it cannot
         // emit byte-exactly yet); flag the truncation context so this masked read is exempt.
-        let mask_reads_raw_member = matches!(kind, Immediate::Mask(..))
-            && matches!(variable, Expression::Member { member_type: mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::Short, .. });
+        let mask_reads_raw_member = matches!(kind, Immediate::Mask(..)) && self.is_signed_byte_load(variable)?;
         let saved_truncation_context = self.narrow_truncation_context;
         if mask_reads_raw_member {
             self.narrow_truncation_context = true;
