@@ -42,8 +42,13 @@ impl Generator {
         // then dereferences it, which for a pointer picks r0 and emits an invalid
         // `lwz rD,off(0)` (r0 in a base position means literal 0). Substituting the
         // alias away (`q->a` -> `p->a`) matches mwcc's plain `lwz rD,off(rP)`.
+        // The alias must be the SAME width as its source (a pointer/int alias). A narrow
+        // local aliasing a wider variable (`char c = a;`) is a narrowing, not a pure alias —
+        // inlining it drops the truncation + sign-extension; let it fall to the single-local
+        // path, which defers the not-already-extended narrow returns.
         let single_alias_local = function.locals.len() == 1
             && function.return_type != Type::Void
+            && function.locals.first().is_some_and(|local| local.declared_type.width() >= 32)
             && matches!(
                 function.locals.first().and_then(|local| local.initializer.as_ref()),
                 Some(Expression::Variable(_))

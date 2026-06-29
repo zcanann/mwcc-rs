@@ -2501,6 +2501,30 @@ impl Generator {
         // `return x;` — the local is the result, so compute its initializer
         // straight into the result register.
         if matches!(return_expression, Expression::Variable(name) if *name == local.name) {
+            // A signed narrow local (char/short) returned at a wider type must be
+            // sign-extended — `char c = *s; return c;` is `lbz; extsb` like the direct
+            // `return *s`. Evaluating the initializer at the local's own narrow type drops
+            // that widening, and whether the value is already extended depends on the
+            // initializer (a global narrow load appends extsb/lha; a char* deref's `lbz`
+            // and a parameter leave the raw byte). Defer the not-already-extended cases
+            // rather than return a zero-extended byte where a sign-extended char is meant.
+            if self.signed_of(local.declared_type)
+                && local.declared_type.width() < return_type.width()
+                && local.declared_type.width() < 32
+            {
+                let initializer_extends = match initializer {
+                    // A global signed-narrow load appends the extension (lbz+extsb / lha).
+                    Expression::Variable(name) => self.globals.contains_key(name.as_str()),
+                    // `lha` sign-extends a halfword; `lbz` does not extend a byte.
+                    Expression::Dereference { .. } | Expression::Index { .. } | Expression::Member { .. } => {
+                        local.declared_type.width() >= 16
+                    }
+                    _ => false,
+                };
+                if !initializer_extends {
+                    return Err(Diagnostic::error("a signed narrow local returned at a wider type needs a widening coercion (roadmap)"));
+                }
+            }
             return self.evaluate(initializer, local.declared_type, result);
         }
 
