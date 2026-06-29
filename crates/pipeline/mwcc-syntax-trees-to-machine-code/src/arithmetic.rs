@@ -420,6 +420,17 @@ impl Generator {
                 self.output.instructions.push(Instruction::Negate { d: destination, a: source });
                 return Ok(true);
             }
+            // Bitwise identities: `x | 0`, `x ^ 0`, and `x & ~0` (all bits) are `x` — mwcc
+            // emits no instruction (the value stays in its register), where ours would have
+            // emitted a dead `ori`/`xori`/`rlwinm`. (`x & 0` is the constant 0; `x | ~0` is ~0
+            // — those are different folds, not handled here.)
+            (BinaryOperator::BitOr, 0)
+            | (BinaryOperator::BitXor, 0)
+            | (BinaryOperator::BitAnd, -1)
+            | (BinaryOperator::BitAnd, 0xffff_ffff) => {
+                self.evaluate_general(variable, destination)?;
+                return Ok(true);
+            }
             _ => {}
         }
 
