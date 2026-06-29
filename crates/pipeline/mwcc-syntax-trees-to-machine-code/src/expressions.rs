@@ -1895,7 +1895,28 @@ impl Generator {
                 return Ok(false_register);
             }
         }
-        self.evaluate_general(value, GENERAL_SCRATCH)?;
+        // A truncation-safe `var op constant` (`+ - | ^ * &`) stored to a NARROW target
+        // re-truncates through the store (`stb`/`sth`), so a signed-char operand is read raw —
+        // `char gc; gc += 1;` is `lbz r3; addi r0,r3,1; stb r0`, no `extsb` (the byte store
+        // drops the high bits mwcc would otherwise sign-extend into). Mirror the narrow-return
+        // truncation: read raw under the flag and let the store narrow. The operator set
+        // excludes div/mod/shift-right (the sign genuinely matters); shift-left is already
+        // byte-exact. BitAnd IS included (unlike the return path, which does a trailing
+        // emit_widen the `clrlwi` would make redundant — the store has no such widen).
+        let narrow_store_truncates = matches!(
+            pointee,
+            Pointee::Char | Pointee::UnsignedChar | Pointee::Short | Pointee::UnsignedShort
+        ) && matches!(value, Expression::Binary { operator, left, right }
+            if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitXor | BinaryOperator::Multiply | BinaryOperator::BitAnd)
+                && matches!(left.as_ref(), Expression::Variable(_))
+                && matches!(right.as_ref(), Expression::IntegerLiteral(_)));
+        let saved_truncation_context = self.narrow_truncation_context;
+        if narrow_store_truncates {
+            self.narrow_truncation_context = true;
+        }
+        let evaluated = self.evaluate_general(value, GENERAL_SCRATCH);
+        self.narrow_truncation_context = saved_truncation_context;
+        evaluated?;
         Ok(GENERAL_SCRATCH)
     }
 
@@ -2070,8 +2091,11 @@ impl Generator {
     pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
         self.emit_global_load_value(name, destination)?;
         // A signed `char` global promotes to int with a trailing sign-extension:
-        // `lbz` zero-extends the byte, so the value must be re-signed (`extsb`).
-        if self.global_char_extend(name)? {
+        // `lbz` zero-extends the byte, so the value must be re-signed (`extsb`). In a
+        // truncation context (the consumer re-narrows the result — a narrow return or a
+        // narrow store of a truncation-safe op) the extsb is redundant and mwcc omits it:
+        // `gc += 1` is `lbz r3; addi r0,r3,1; stb r0`, the byte store dropping the high bits.
+        if self.global_char_extend(name)? && !self.narrow_truncation_context {
             self.emit_widen(destination, destination, 8, true);
         }
         Ok(())
