@@ -84,6 +84,29 @@ fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instructio
     }
 }
 
+/// `*(T *)0xADDR` — a dereference through a constant-address pointer cast (memory-mapped
+/// hardware registers, the GX FIFO). Returns the pointee and the absolute address.
+fn const_address_pointer(pointer: &Expression) -> Option<(Pointee, u32)> {
+    if let Expression::Cast { target_type: Type::Pointer(pointee), operand } = pointer {
+        // Integer/char/short pointees only — a float/double const-address access needs an
+        // FPR destination and a separate path, so leave those to defer.
+        if !matches!(pointee, Pointee::Float | Pointee::Double) {
+            return constant_value(operand).map(|address| (*pointee, address as u32));
+        }
+    }
+    None
+}
+
+/// Split a 32-bit absolute address into the `lis` high half and the displacement low half,
+/// the way mwcc does: the low half is sign-interpreted (so a `lo >= 0x8000` reads back as a
+/// negative displacement), and the high half is carry-adjusted to compensate. So
+/// `0xCC008000` becomes `lis -13311` + displacement `-32768`.
+fn split_address(address: u32) -> (i16, i16) {
+    let low = address as i16;
+    let high = ((address >> 16) as i16).wrapping_add(if address & 0x8000 != 0 { 1 } else { 0 });
+    (high, low)
+}
+
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
 fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
     match pointee {
@@ -810,6 +833,26 @@ impl Generator {
                     return self.emit_subscript(left, &Expression::IntegerLiteral(-constant), destination);
                 }
             }
+        }
+        // `*(T *)0xADDR` — a constant-address load. When the address fits the signed 16-bit
+        // displacement (high half zero) mwcc loads straight off the r0=0 base (`ld dest,
+        // lo(0)`); otherwise it materializes the sign-adjusted high half with `lis dest, hi`
+        // and folds the low half into the displacement (`ld dest, lo(dest)`), reusing the
+        // destination as the address register. r0 cannot be an address base, so a high-half
+        // load into r0 (the char-return narrowing path, which also masks) is deferred rather
+        // than miscompiled.
+        if let Some((pointee, address)) = const_address_pointer(pointer) {
+            let (high, low) = split_address(address);
+            if high == 0 {
+                self.output.instructions.push(displacement_load(pointee, destination, 0, low));
+                return Ok(());
+            }
+            if destination != 0 {
+                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high));
+                self.output.instructions.push(displacement_load(pointee, destination, destination, low));
+                return Ok(());
+            }
+            return Err(Diagnostic::error("a constant-address load into r0 is not supported yet (roadmap)"));
         }
         let (pointee, address) = self.resolve_pointer(pointer)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, 0));
@@ -1552,6 +1595,28 @@ impl Generator {
     }
 
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
+        // `*(T *)0xADDR = v` — a constant-address store (memory-mapped registers, the GX FIFO).
+        // mwcc materializes the address base before the value (`lis base, hi`), keeping the base
+        // GPR clear of the value's inputs, then stores `st value, lo(base)`. Mirrors the absolute
+        // global store, with a numeric hi/lo split in place of `@ha`/`@l` relocations.
+        if let Expression::Dereference { pointer } = target {
+            if let Some((pointee, address)) = const_address_pointer(pointer) {
+                let (high, low) = split_address(address);
+                if high == 0 {
+                    // address fits the displacement: store off the r0=0 base, no `lis`.
+                    let source = self.place_store_value(value, pointee)?;
+                    self.output.instructions.push(displacement_store(pointee, source, 0, low));
+                } else {
+                    let base = self.free_register_avoiding(&[value])?;
+                    let restore = self.reserved.insert(base);
+                    self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
+                    let source = self.place_store_value(value, pointee)?;
+                    if restore { self.reserved.remove(&base); }
+                    self.output.instructions.push(displacement_store(pointee, source, base, low));
+                }
+                return Ok(());
+            }
+        }
         // `*(p + i) = v` is `p[i] = v`: rewrite a pointer-plus-index dereference target to the
         // subscript store, the symmetric counterpart of the load routing in
         // emit_load_from_pointer. The pointer operand is the base, the integer the index; `+`
