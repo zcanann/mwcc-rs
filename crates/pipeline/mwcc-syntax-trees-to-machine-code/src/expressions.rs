@@ -240,6 +240,51 @@ impl Generator {
                     };
                     return self.evaluate_general(&peeled, destination);
                 }
+                // `a*c1 + a*c2` / `a*c1 - a*c2` on the same variable distributes to `a*(c1±c2)`
+                // — mwcc combines the like terms before strength reduction (`a*3 + a*5` is one
+                // `slwi r3,r3,3` for `a*8`, not two `mulli`s). Fold and re-evaluate so the
+                // existing `a*const` strength reduction emits the single instruction.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+                    let as_variable_times_constant = |expression: &Expression| -> Option<(String, i64)> {
+                        if let Expression::Binary { operator: BinaryOperator::Multiply, left, right } = expression {
+                            if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), constant_value(right)) {
+                                return Some((name.clone(), constant));
+                            }
+                            if let (Some(constant), Expression::Variable(name)) = (constant_value(left), right.as_ref()) {
+                                return Some((name.clone(), constant));
+                            }
+                        }
+                        None
+                    };
+                    if let (Some((left_variable, left_constant)), Some((right_variable, right_constant))) =
+                        (as_variable_times_constant(left), as_variable_times_constant(right))
+                    {
+                        let combined = if *operator == BinaryOperator::Add { left_constant + right_constant } else { left_constant - right_constant };
+                        // mwcc folds `a*c1 ± a*c2` to a single `slwi` only in a narrow shape:
+                        // both factors ODD and ≥ 3, distinct, with the combined factor a power
+                        // of two ≥ 2. Each odd factor would otherwise be its own `mulli`, so
+                        // collapsing them to one shift (`a*3 + a*5` -> `slwi r3,r3,3`) is mwcc's
+                        // win. An even factor (`a*2`, itself shift-cheap), a factor of 1 (really
+                        // `a`), identical terms (CSE'd), or a non-power-of-two sum (a `mulli`
+                        // result) are NOT folded — they keep their existing lowering.
+                        if left_variable == right_variable
+                            && left_constant % 2 == 1
+                            && right_constant % 2 == 1
+                            && left_constant >= 3
+                            && right_constant >= 3
+                            && left_constant != right_constant
+                            && combined >= 2
+                            && (combined as u64).is_power_of_two()
+                        {
+                            let folded = Expression::Binary {
+                                operator: BinaryOperator::Multiply,
+                                left: Box::new(Expression::Variable(left_variable)),
+                                right: Box::new(Expression::IntegerLiteral(combined)),
+                            };
+                            return self.evaluate_general(&folded, destination);
+                        }
+                    }
+                }
                 // A signed char load (member `p->x`, element `a[i]`, deref `*p`) that is a
                 // DIRECT operand of a comparison or a signed divide is loaded raw by these
                 // branchless idioms — `p->x > 0` / `p->x / 2` operate on the zero-extended byte
