@@ -34,6 +34,17 @@ impl Generator {
         if let Expression::MemberAddress { element, .. } = pointer {
             return Some(element.element().width());
         }
+        // `*(p + i)`: the dereferenced width is the pointer operand's pointee width (the
+        // integer offset does not change the element type). `+` commutes, and this resolves a
+        // global pointer operand (via the global-pointer arm above) as well as a local one.
+        if let Expression::Binary { operator: BinaryOperator::Add, left, right } = pointer {
+            if let Some(width) = self.dereferenced_width(left) {
+                return Some(width);
+            }
+            if let Some(width) = self.dereferenced_width(right) {
+                return Some(width);
+            }
+        }
         self.pointee_of(pointer).ok().map(|pointee| pointee.element().width())
     }
 

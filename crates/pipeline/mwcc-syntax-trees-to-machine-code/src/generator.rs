@@ -322,6 +322,18 @@ impl Generator {
 
     /// The pointee type of a pointer leaf variable.
     pub(crate) fn pointee_of(&self, pointer: &Expression) -> Compilation<mwcc_syntax_trees::Pointee> {
+        // `*(p + i)` / `p[i]` of a pointer-plus-index dereferences the pointer operand's
+        // pointee (the integer offset does not change the element type). `+` commutes. This
+        // gives `signedness_of(*(p + i))` the element signedness, so `is_signed_byte_load`
+        // recognizes a narrow `*(char* p + i)`.
+        if let Expression::Binary { operator: mwcc_syntax_trees::BinaryOperator::Add, left, right } = pointer {
+            if let Ok(pointee) = self.pointee_of(left) {
+                return Ok(pointee);
+            }
+            if let Ok(pointee) = self.pointee_of(right) {
+                return Ok(pointee);
+            }
+        }
         let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("pointer access needs a pointer variable (roadmap)"))?;
         self.locations
             .get(name)
