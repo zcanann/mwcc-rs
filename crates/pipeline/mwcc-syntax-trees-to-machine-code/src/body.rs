@@ -156,6 +156,33 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() || function_makes_call(function) || !function.guards.is_empty() {
         return None;
     }
+    // A NARROWING narrow local (`char c = a;` for a wider `a`) must not inline: substituting
+    // the wider value drops the truncation + sign-extension — `char c = a; gi = c;` would
+    // store the full int instead of `(int)(char)a`. Decline so the function defers honestly
+    // on the normal path rather than emitting the raw value.
+    let variable_width = |name: &str| -> Option<u32> {
+        function
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == name)
+            .map(|parameter| parameter.parameter_type.width() as u32)
+            .or_else(|| {
+                function
+                    .locals
+                    .iter()
+                    .find(|local| local.name == name)
+                    .map(|local| local.declared_type.width() as u32)
+            })
+    };
+    for local in &function.locals {
+        if (local.declared_type.width() as u32) < 32 {
+            if let Some(Expression::Variable(initializer_name)) = &local.initializer {
+                if variable_width(initializer_name).is_some_and(|width| width > local.declared_type.width() as u32) {
+                    return None;
+                }
+            }
+        }
+    }
     let local_names: std::collections::HashSet<&str> =
         function.locals.iter().map(|local| local.name.as_str()).collect();
     // Each local's current value, earlier folds applied. Seed from initializers (a call-
@@ -2523,6 +2550,17 @@ impl Generator {
                 };
                 if !initializer_extends {
                     return Err(Diagnostic::error("a signed narrow local returned at a wider type needs a widening coercion (roadmap)"));
+                }
+            }
+            // A NARROWING leaf initializer — `char c = a;` for a wider `a` — truncates to the
+            // narrow type. Inlining it into the return drops that truncation (and the char
+            // return's sign-extension): mwcc emits `extsb r3,r3` for `char f(int a){ char c =
+            // a; return c; }`, ours returned the raw int. Defer the narrowing.
+            if local.declared_type.width() < 32 {
+                if let Ok((_, init_width, _)) = self.leaf_info(initializer) {
+                    if init_width as u32 > local.declared_type.width() as u32 {
+                        return Err(Diagnostic::error("a narrowing narrow local (char/short from a wider value) returned is not supported yet (roadmap)"));
+                    }
                 }
             }
             return self.evaluate(initializer, local.declared_type, result);

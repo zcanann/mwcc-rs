@@ -69,6 +69,23 @@ impl Generator {
             return Ok(false);
         }
 
+        // A narrow (char/short) local initialized from a WIDER value is a NARROWING
+        // (`char c = a;` truncates an int to a byte). Inlining substitutes the wider value
+        // raw, dropping the truncation AND the sign-extension — `char c = a; gi = c;` would
+        // store the full int instead of `(int)(char)a`. Defer until the narrowing coercion is
+        // modeled. (A same-width initializer, e.g. `char c = *char_ptr;`, is not a narrowing.)
+        for local in &function.locals {
+            if local.declared_type.width() < 32 {
+                if let Some(initializer) = &local.initializer {
+                    if let Ok((_, init_width, _)) = self.leaf_info(initializer) {
+                        if init_width as u32 > local.declared_type.width() as u32 {
+                            return Err(Diagnostic::error("a narrowing narrow local (char/short from a wider value) is not supported yet (roadmap)"));
+                        }
+                    }
+                }
+            }
+        }
+
         // Constraints — anything outside the pure-local-arithmetic shape defers.
         if !function.guards.is_empty() {
             return Err(Diagnostic::error("value tracking combined with guards is not supported yet (roadmap)"));
