@@ -864,6 +864,11 @@ impl Generator {
             // mwcc lowers a single guard as a select (working-register form) but a
             // chain of guards as separate return blocks.
             if let [guard] = function.guards.as_slice() {
+                // A logical (&&/||) condition short-circuits straight into the two return
+                // blocks rather than computing the operator as a 0/1 value.
+                if self.try_emit_short_circuit_guard(&guard.condition, &guard.value, return_expression, result)? {
+                    return Ok(());
+                }
                 // `if (c) return X; return X` is degenerate: both paths return the same
                 // value, and mwcc keeps the dead condition test then a single `blr`. Defer
                 // rather than emit a spurious conditional return for the matching arms.

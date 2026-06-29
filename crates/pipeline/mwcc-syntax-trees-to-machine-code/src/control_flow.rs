@@ -297,6 +297,104 @@ impl Generator {
         Ok(())
     }
 
+    /// `if (a && b) return X; return Y;` (or `||`) lowers as a short-circuit branching
+    /// straight into the two return blocks — mwcc branches each term to the taken or
+    /// fall-through return rather than computing the logical operator as a 0/1 value:
+    ///
+    ///     &&: cmpwi rA,0; beq FALL; cmpwi rB,0; beq FALL; <X>; blr; FALL: <Y>; blr
+    ///     ||: cmpwi rA,0; bne TAKEN; cmpwi rB,0; beq FALL; TAKEN: <X>; blr; FALL: <Y>; blr
+    ///
+    /// Restricted to a single &&/|| chain of leaf/comparison terms (no mixed/nested logical)
+    /// with leaf-or-constant return values; anything else returns false to defer.
+    pub(crate) fn try_emit_short_circuit_guard(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        result: u8,
+    ) -> Compilation<bool> {
+        let operator = match condition {
+            Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), .. } => *operator,
+            _ => return Ok(false),
+        };
+        // Flatten the same-operator chain into its terms; a nested different logical operator
+        // (mixed `a && b || c`) is left for the general path.
+        fn collect<'e>(condition: &'e Expression, operator: BinaryOperator, terms: &mut Vec<&'e Expression>) -> bool {
+            match condition {
+                Expression::Binary { operator: inner, left, right } if *inner == operator => {
+                    collect(left, operator, terms) && collect(right, operator, terms)
+                }
+                Expression::Binary { operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr, .. } => false,
+                _ => {
+                    terms.push(condition);
+                    true
+                }
+            }
+        }
+        let mut terms = Vec::new();
+        if !collect(condition, operator, &mut terms) {
+            return Ok(false);
+        }
+        let is_simple = |expression: &Expression| leaf_name(expression).is_some() || constant_value(expression).is_some();
+        if !is_simple(when_true) || !is_simple(when_false) {
+            return Ok(false);
+        }
+
+        // When the taken value already sits in the result register, mwcc drops the separate
+        // taken block: the deciding AND term becomes a conditional return (`cmpwi r4,0;
+        // bnelr`) and the fall-through return follows. (OR with the taken value in the result
+        // register is not wired yet, so it defers.)
+        let taken_in_result = leaf_name(when_true).and_then(|name| self.lookup_general(name)) == Some(result);
+        if taken_in_result && operator == BinaryOperator::LogicalOr {
+            return Ok(false);
+        }
+        let use_conditional_return = taken_in_result && operator == BinaryOperator::LogicalAnd;
+
+        let mut to_taken = Vec::new();
+        let mut to_fall = Vec::new();
+        let last = terms.len() - 1;
+        for (index, term) in terms.iter().enumerate() {
+            let (options, condition_bit) = self.emit_condition_test(term)?;
+            let branch_index = self.output.instructions.len();
+            if operator == BinaryOperator::LogicalAnd {
+                if use_conditional_return && index == last {
+                    // The all-true path returns the taken value already in the result.
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                } else {
+                    // Any false term fails the AND -> fall-through return.
+                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    to_fall.push(branch_index);
+                }
+            } else if index < last {
+                // OR: an early true term takes the guard.
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: options ^ 8, condition_bit, target: 0 });
+                to_taken.push(branch_index);
+            } else {
+                // OR: the last term false falls through; true falls into the taken block.
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                to_fall.push(branch_index);
+            }
+        }
+        // The taken (guard) block sits right after the short-circuit (the all-true / last-true
+        // path falls into it); the fall-through return follows it. With the conditional-return
+        // form the taken value is already returned, so only the fall block remains.
+        if !use_conditional_return {
+            let taken_block = self.output.instructions.len();
+            self.place_select_value(when_true, result)?;
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            for branch_index in to_taken {
+                self.patch_forward(branch_index, taken_block);
+            }
+        }
+        let fall_block = self.output.instructions.len();
+        self.place_select_value(when_false, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        for branch_index in to_fall {
+            self.patch_forward(branch_index, fall_block);
+        }
+        Ok(true)
+    }
+
     pub(crate) fn emit_conditional(
         &mut self,
         condition: &Expression,
