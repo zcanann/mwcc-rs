@@ -823,14 +823,41 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
 
         if !function.guards.is_empty() {
-            // A single value-tracked local feeding a guarded return materializes in r3 (its
-            // home) and the leaf select reads it there — the register MODEL is right (verified
-            // by hand: `andc r3,r3,r0`). BUT mwcc SCHEDULES the local's materialization into
-            // the select's `neg`->`or` latency slot: `neg r0,c; addi r3,a,1; or r0,r0,c;
-            // srawi; andc r3,r3,r0` — the addi AFTER the leading neg. Emitting the local
-            // first (`addi; neg; or; …`) is byte-identical except mis-ordered. Needs the
-            // instruction scheduler (or a manual interleave of the materialization after the
-            // select's leading neg), so defer rather than ship the order diff.
+            // Guard + single value-tracked local, zero-select: `int x = a+1; if (c) return 0;
+            // return x;` (or `if (c) return x; return 0;`). mwcc materializes the local in
+            // the result register but SCHEDULES the materialization into the select's
+            // neg->or latency slot — `neg r0,c; addi r3,a,1; or r0,r0,c; srawi r0,31; and/
+            // andc r3,r3,r0` (the addi AFTER the leading neg). Emit that interleave directly:
+            // leading neg, the local, then the mask combine. Restricted to a single-op
+            // integer local, a leaf condition, no statements, and exactly one arm the
+            // constant 0 (the other the local).
+            if let ([local], [guard]) = (function.locals.as_slice(), function.guards.as_slice()) {
+                let zero_is_then = matches!(guard.value, Expression::IntegerLiteral(0));
+                let zero_is_else = matches!(return_expression, Expression::IntegerLiteral(0));
+                let local_is_other = (zero_is_then && matches!(return_expression, Expression::Variable(name) if *name == local.name))
+                    || (zero_is_else && matches!(&guard.value, Expression::Variable(name) if *name == local.name));
+                let condition_register = leaf_name(&guard.condition).and_then(|name| self.lookup_general(name));
+                let initializer = local.initializer.as_ref();
+                if local_is_other
+                    && function.statements.is_empty()
+                    && initializer.is_some_and(|init| self.is_single_op_register_value(init))
+                    && class_of(local.declared_type)? == ValueClass::General
+                {
+                    if let (Some(condition_register), Some(initializer)) = (condition_register, initializer) {
+                        self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
+                        self.evaluate(initializer, local.declared_type, result)?;
+                        self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                        self.output.instructions.push(if zero_is_then {
+                            Instruction::AndComplement { a: result, s: result, b: GENERAL_SCRATCH }
+                        } else {
+                            Instruction::And { a: result, s: result, b: GENERAL_SCRATCH }
+                        });
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                }
+            }
             if !function.locals.is_empty() {
                 return Err(Diagnostic::error("locals combined with guards not yet supported"));
             }

@@ -14,3 +14,16 @@ int sel_mul_zero(int a, int c)   { return c ? a * 2 : 0; }   // and
 int sel_zero_mask(int a, int c)  { return c ? 0 : a & 0xff; }
 int sel_zero_neg(int a, int c)   { return c ? 0 : -a; }
 int guard_zero_add(int a, int c) { if (c) return 0; return a + 1; }  // same via the guard
+
+// The same select-against-zero with a value-tracked LOCAL feeding the guarded return —
+// `int x = a+1; if (c) return 0; return x;`. mwcc materializes the local in its result
+// home but SCHEDULES the materialization into the select's neg->or latency slot:
+//
+//     neg r0,c ; addi r3,a,1 ; or r0,r0,c ; srawi r0,31 ; andc r3,r3,r0   (return x;  arm 0 = then)
+//     neg r0,c ; addi r3,a,1 ; or r0,r0,c ; srawi r0,31 ; and  r3,r3,r0   (return 0;  arm 0 = else)
+//
+// The guard dispatch emits that interleave directly (leading neg, the local, then the mask
+// combine). Restricted to a single-op integer local, a leaf condition, and one arm 0.
+int guard_local_then(int a, int c)  { int x = a + 1; if (c) return 0; return x; }   // andc
+int guard_local_else(int a, int c)  { int x = a * 2; if (c) return x; return 0; }   // and
+int guard_local_mask(int a, int c)  { int x = a & 0xff; if (c) return 0; return x; }
