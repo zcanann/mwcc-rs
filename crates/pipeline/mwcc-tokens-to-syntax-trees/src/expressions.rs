@@ -276,6 +276,14 @@ impl Parser {
             // this factor's own cast, or (via the parens) the inner factor's recorded
             // `expression_struct_tag`.
             Expression::Cast { .. } => cast_struct_tag.take().or_else(|| self.expression_struct_tag.take()),
+            // `(*p).field` and `(*(struct S *)x).field`: dereference-then-member is the
+            // same access as the arrow form `p->field`, so it carries the pointee's tag —
+            // taken from a struct/union-pointer variable, or from the cast recorded in
+            // `expression_struct_tag` when the inner operand was parsed.
+            Expression::Dereference { pointer } => match pointer.as_ref() {
+                Expression::Variable(name) => self.variable_structs.get(name).cloned(),
+                _ => self.expression_struct_tag.take(),
+            },
             _ => None,
         };
         loop {
@@ -308,6 +316,14 @@ impl Parser {
                     // `a[i].field`: the index scales by the struct size — recorded so
                     // codegen can emit `a + i*size + offset`.
                     let index_stride = matches!(expression, Expression::Index { .. }).then_some(struct_size);
+                    // `(*p).field` is exactly `p->field`: the member's base is the pointer
+                    // itself, so unwrap one dereference level here (the index_stride check
+                    // above already saw the original shape). Without this the base would be
+                    // `*p` and codegen would emit a spurious extra load.
+                    expression = match expression {
+                        Expression::Dereference { pointer } => *pointer,
+                        other => other,
+                    };
                     if let Some((bit_offset, width)) = bit_field {
                         // A bit-field read is the containing unit load shifted+masked to
                         // the field's bits: `(load >> shift) & mask`, which lowers to
