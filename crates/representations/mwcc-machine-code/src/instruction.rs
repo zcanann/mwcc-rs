@@ -49,6 +49,10 @@ pub enum Instruction {
     SubtractFromImmediate { d: u8, a: u8, immediate: i16 },
     /// `subfc rD, rA, rB` => rD = rB - rA, setting the carry.
     SubtractFromCarrying { d: u8, a: u8, b: u8 },
+    /// `subfe rD, rA, rB` => rD = rB - rA + carry - 1 (the carrying high word of a 64-bit subtract).
+    SubtractFromExtended { d: u8, a: u8, b: u8 },
+    /// `addc rD, rA, rB` => rD = rA + rB, setting the carry (the low word of a 64-bit add).
+    AddCarrying { d: u8, a: u8, b: u8 },
     /// `adde rD, rA, rB` => rD = rA + rB + carry.
     AddExtended { d: u8, a: u8, b: u8 },
     /// `addze rD, rA` => rD = rA + carry. Used to round a signed power-of-two

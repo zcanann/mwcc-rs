@@ -28,6 +28,8 @@ impl Instruction {
             Instruction::OrComplement { a, s, b } => logical_form(s, a, b, 412),
             Instruction::SubtractFromImmediate { d, a, immediate } => d_form(8, d, a, immediate as u16),
             Instruction::SubtractFromCarrying { d, a, b } => xo_form(d, a, b, 8),
+            Instruction::SubtractFromExtended { d, a, b } => xo_form(d, a, b, 136),
+            Instruction::AddCarrying { d, a, b } => xo_form(d, a, b, 10),
             Instruction::AddExtended { d, a, b } => xo_form(d, a, b, 138),
             Instruction::AddToZeroExtended { d, a } => (31 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (202 << 1),
             Instruction::MultiplyLow { d, a, b } => xo_form(d, a, b, 235),

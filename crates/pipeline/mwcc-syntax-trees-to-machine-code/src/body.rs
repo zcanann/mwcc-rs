@@ -419,66 +419,136 @@ impl Generator {
     /// (`r3:r4` = high:low). Only a narrow set of shapes is modeled; the rest defer rather than
     /// fall through to the 32-bit codegen (which emits a single-register result for a 64-bit value).
     fn emit_long_long(&mut self, function: &Function) -> Compilation<()> {
-        // Long-long PARAMETERS/LOCALS (which need pair allocation and spills), guards, statements,
-        // or a non-long-long return are not modeled yet — defer them honestly.
-        let has_long_long_parameter = function
-            .parameters
-            .iter()
-            .any(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong));
-        if has_long_long_parameter
-            || !function.locals.is_empty()
-            || !function.guards.is_empty()
-            || !function.statements.is_empty()
-            || !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong)
-        {
+        // Long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
+        if !function.locals.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
             return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
         }
-        let high = Eabi::general_result().number; // r3 — the HIGH word
-        let low = high + 1; //                       r4 — the LOW word
+        let high = Eabi::general_result().number; // r3 — the result HIGH word
+        let low = high + 1; //                       r4 — the result LOW word
         let return_expression = function
             .return_expression
             .as_ref()
             .ok_or_else(|| Diagnostic::error("a non-void long long function needs a return value"))?;
+        let any_long_long_parameter = function
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong));
 
-        // (a) A 64-bit integer CONSTANT — `li low,LOW ; li high,HIGH` (the LOW word first, as mwcc
-        // emits it). Restricted to words that load with a single `li`; a wider constant needs the
-        // exact lis/ori sequence, which is not modeled.
-        if let Some(value) = crate::analysis::constant_value(return_expression) {
-            let low_word = value as i32 as i64;
-            let high_word = value >> 32;
-            if i16::try_from(low_word).is_err() || i16::try_from(high_word).is_err() {
-                return Err(Diagnostic::error("a wide long long constant needs lis/ori (roadmap)"));
+        // ===== No long-long PARAMETERS: a long-long RETURN from a constant or a widened 32-bit value.
+        if !any_long_long_parameter {
+            if !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong) {
+                return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
             }
-            self.load_integer_constant(low, low_word);
-            self.load_integer_constant(high, high_word);
-            self.emit_epilogue_and_return();
-            return Ok(());
+            // (a) A 64-bit integer CONSTANT — `li low,LOW ; li high,HIGH` (LOW word first, as mwcc
+            // emits it). Restricted to words that load with a single `li`.
+            if let Some(value) = crate::analysis::constant_value(return_expression) {
+                let low_word = value as i32 as i64;
+                let high_word = value >> 32;
+                if i16::try_from(low_word).is_err() || i16::try_from(high_word).is_err() {
+                    return Err(Diagnostic::error("a wide long long constant needs lis/ori (roadmap)"));
+                }
+                self.load_integer_constant(low, low_word);
+                self.load_integer_constant(high, high_word);
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+            // (b) Widen a 32-bit int/unsigned FIRST PARAMETER. It arrives in r3 (= result HIGH), so
+            // copy it to LOW, then fill HIGH with its sign (`srawi`) or zero (`li`). A NARROW source
+            // (short/char) re-extends differently and defers.
+            if let Expression::Variable(name) = return_expression {
+                if function.parameters.first().is_some_and(|parameter| &parameter.name == name) {
+                    let parameter_type = function.parameters[0].parameter_type;
+                    if matches!(parameter_type, Type::Int | Type::UnsignedInt) {
+                        self.output.instructions.push(Instruction::move_register(low, high));
+                        if parameter_type.is_signed() {
+                            self.output
+                                .instructions
+                                .push(Instruction::ShiftRightAlgebraicImmediate { a: high, s: high, shift: 31 });
+                        } else {
+                            self.load_integer_constant(high, 0);
+                        }
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
+            return Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"));
         }
 
-        // (b) Widen a 32-bit int/unsigned FIRST PARAMETER to a long long. It arrives in r3 (the
-        // first argument register, which is also the result HIGH register), so copy it to the LOW
-        // word, then fill HIGH with its sign (`srawi`) or zero (`li`). mwcc emits
-        // `mr r4,r3 ; srawi r3,r3,31` (signed) or `mr r4,r3 ; li r3,0` (unsigned). A NARROW source
-        // (short/char) re-extends differently and defers (like the reassigned-narrow-param case).
-        if let Expression::Variable(name) = return_expression {
-            if function.parameters.first().is_some_and(|parameter| &parameter.name == name) {
-                let parameter_type = function.parameters[0].parameter_type;
-                if matches!(parameter_type, Type::Int | Type::UnsignedInt) {
-                    self.output.instructions.push(Instruction::move_register(low, high));
-                    if parameter_type.is_signed() {
-                        self.output
-                            .instructions
-                            .push(Instruction::ShiftRightAlgebraicImmediate { a: high, s: high, shift: 31 });
-                    } else {
-                        self.load_integer_constant(high, 0);
-                    }
+        // ===== Long-long PARAMETERS present. Only an ALL-long-long list is modeled: each occupies
+        // an odd-start GPR pair r3:r4, r5:r6, … (high = r3 + 2*index, low = high + 1). A mixed int/
+        // long-long list skips registers for alignment, and >4 long-long args overflow to the
+        // stack — both defer.
+        let all_long_long_parameters = function
+            .parameters
+            .iter()
+            .all(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong));
+        if !all_long_long_parameters || function.parameters.len() > 4 {
+            return Err(Diagnostic::error("a mixed or overflowing long-long parameter list is not modeled yet (roadmap)"));
+        }
+        let index_of = |name: &str| function.parameters.iter().position(|parameter| parameter.name == name);
+        let pair_high = |index: usize| high + 2 * index as u8;
+        let pair_low = |index: usize| high + 2 * index as u8 + 1;
+
+        // (c) TRUNCATE a long-long param to int/unsigned — `(int)a` or implicit — is its LOW word:
+        // `mr r3, low(a)`.
+        if matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            let truncated = match return_expression {
+                Expression::Cast { target_type: Type::Int | Type::UnsignedInt, operand } => operand.as_ref(),
+                other => other,
+            };
+            if let Expression::Variable(name) = truncated {
+                if let Some(index) = index_of(name) {
+                    self.output.instructions.push(Instruction::move_register(high, pair_low(index)));
                     self.emit_epilogue_and_return();
                     return Ok(());
                 }
             }
+            return Err(Diagnostic::error("this long long truncation is not modeled yet (roadmap)"));
+        }
+        if !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong) {
+            return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
         }
 
-        Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"))
+        // (d) RETURN a long-long param: move its pair into the result pair (a bare `blr` when it is
+        // already there — the first parameter). mwcc moves LOW then HIGH (`mr r4,r6 ; mr r3,r5`).
+        if let Expression::Variable(name) = return_expression {
+            if let Some(index) = index_of(name) {
+                if pair_high(index) != high {
+                    self.output.instructions.push(Instruction::move_register(low, pair_low(index)));
+                    self.output.instructions.push(Instruction::move_register(high, pair_high(index)));
+                }
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+        }
+
+        // (e) ADD / SUBTRACT two long-long params into the result pair; the LOW word carries into
+        // HIGH: `addc r4,r4,r6 ; adde r3,r3,r5` or `subfc r4,r6,r4 ; subfe r3,r5,r3`.
+        if let Expression::Binary { operator, left, right } = return_expression {
+            if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
+                if let (Some(left_index), Some(right_index)) = (index_of(left_name), index_of(right_name)) {
+                    match operator {
+                        BinaryOperator::Add => {
+                            self.output.instructions.push(Instruction::AddCarrying { d: low, a: pair_low(left_index), b: pair_low(right_index) });
+                            self.output.instructions.push(Instruction::AddExtended { d: high, a: pair_high(left_index), b: pair_high(right_index) });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        // subfc rD,rA,rB = rB - rA, so the minuend (left) is `b` and subtrahend (right) is `a`.
+                        BinaryOperator::Subtract => {
+                            self.output.instructions.push(Instruction::SubtractFromCarrying { d: low, a: pair_low(right_index), b: pair_low(left_index) });
+                            self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: pair_high(right_index), b: pair_high(left_index) });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"))
     }
 
     /// Emit the whole function body, including its `blr`(s).
