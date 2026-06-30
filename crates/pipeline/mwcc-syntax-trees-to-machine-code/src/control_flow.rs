@@ -302,15 +302,35 @@ impl Generator {
         // — a full-word memory load brought into the destination (`*q ? 1 : 2` is
         // `lwz r3,…; neg r0,r3; or; srawi r3; addi`). A load is taken only after the
         // arms are confirmed (so a non-matching shape emits nothing).
-        let leaf_register = leaf_name(condition).and_then(|name| self.lookup_general(name));
-        let loadable = leaf_register.is_none() && destination != GENERAL_SCRATCH && self.is_word_load(condition);
-        if leaf_register.is_none() && !loadable {
-            return Ok(false);
-        }
         let (Some(c1), Some(c2)) = (constant_value(when_true), constant_value(when_false)) else {
             return Ok(false);
         };
         if c1 == 0 || c2 == 0 || (c1 - c2).abs() != 1 || i16::try_from(c2).is_err() {
+            return Ok(false);
+        }
+        // A COMPARISON condition `cmp ? c1 : c2` with consecutive arms, INCREASING (c1 > c2): the
+        // value is `cmp + c2` — the bare comparison (0/1, computed exactly as `return a REL b`) plus
+        // the smaller constant. (The DECREASING case `c1 < c2` is mwcc's `-(cmp) + c1` via a subfc/
+        // subfe negated-mask idiom we do not reproduce yet, so it keeps deferring rather than diff.)
+        // Only a non-scratch destination (the flag can't share the comparison's r0 in a value context).
+        if destination != GENERAL_SCRATCH && c1 > c2 {
+            if let Expression::Binary { operator, .. } = condition {
+                if is_comparison(*operator) {
+                    if let Ok(minimum) = i16::try_from(c2) {
+                        self.evaluate_general(condition, destination)?;
+                        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: minimum });
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        // The truth value comes from a leaf in its register, or — in a tail context
+        // — a full-word memory load brought into the destination (`*q ? 1 : 2` is
+        // `lwz r3,…; neg r0,r3; or; srawi r3; addi`). A load is taken only after the
+        // arms are confirmed (so a non-matching shape emits nothing).
+        let leaf_register = leaf_name(condition).and_then(|name| self.lookup_general(name));
+        let loadable = leaf_register.is_none() && destination != GENERAL_SCRATCH && self.is_word_load(condition);
+        if leaf_register.is_none() && !loadable {
             return Ok(false);
         }
         let cond_register = match leaf_register {
