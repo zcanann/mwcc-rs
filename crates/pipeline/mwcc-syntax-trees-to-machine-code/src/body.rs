@@ -1079,6 +1079,14 @@ impl Generator {
                     && then_body.len() <= 2
                     && has_continuation
                     && matches!(then_body.last(), Some(Statement::Return(_)))
+                    // A store before a VALUE return must be INTERLEAVED with the return-value
+                    // computation the way mwcc's scheduler does (`li r0,V; li r3,R; stw r0`, not
+                    // `li r0,V; stw r0; li r3,R`) — that needs the keystone scheduler (#20), so
+                    // defer it. A valueless `return;` has no value to interleave (store + bare
+                    // epilogue is byte-exact), and a value-tracked Assign emits nothing here, so
+                    // both of those stay byte-exact.
+                    && (matches!(then_body.last(), Some(Statement::Return(None)))
+                        || then_body[..then_body.len() - 1].iter().all(|statement| matches!(statement, Statement::Assign { .. })))
                 {
                     self.emit_if_early_return(condition, then_body, function.return_type)?;
                     continue;
