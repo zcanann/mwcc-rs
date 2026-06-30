@@ -139,6 +139,56 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
     }
 }
 
+/// The length of the CONNECTED add-chain rooted at this node (the add-tree mwcc reassociates). A
+/// non-add operand (a `*`, a leaf) terminates the chain, so `(a+b)*c + a` is a 1-add chain
+/// (byte-exact) — the `a+b` is consumed by the `*c` into a single value — not a 2-add tree.
+pub(crate) fn count_adds(expression: &Expression) -> usize {
+    match expression {
+        Expression::Binary { operator: BinaryOperator::Add, left, right } => 1 + count_adds(left) + count_adds(right),
+        _ => 0,
+    }
+}
+
+/// A bare register/constant leaf, for add-tree shape classification.
+fn is_add_leaf(expression: &Expression) -> bool {
+    matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_))
+}
+
+/// An integer `Add` that mwcc REASSOCIATES and our register allocator does not match byte-for-byte:
+/// a tree of >= 2 additions that is NOT the simple left-associated `(leaf + leaf) + leaf` form.
+/// Byte-exact and kept: `a+b`, `a+b+c`, `a+b*c`, `a*b+c*d`, `(a+b+c)*d`. Diverges: `a+b+c+d`,
+/// `a+(b+c)`, `a+b+c*d`, `d+(a+b+c)` — mwcc evaluates the nested-add operand in its own order.
+pub(crate) fn is_complex_add(expression: &Expression) -> bool {
+    let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
+        return false;
+    };
+    if count_adds(expression) < 2 {
+        return false;
+    }
+    // The one byte-exact >= 2-add shape: `(leaf + leaf) + (leaf | const)`.
+    let simple = matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right }
+        if is_add_leaf(inner_left) && is_add_leaf(inner_right))
+        && is_add_leaf(right);
+    !simple
+}
+
+/// Whether an integer expression CONTAINS a reassociated add-tree anywhere — the whole expression
+/// then defers, since the divergence is in register allocation (after instruction selection).
+pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
+    if is_complex_add(expression) {
+        return true;
+    }
+    match expression {
+        Expression::Binary { left, right, .. } => contains_complex_add(left) || contains_complex_add(right),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => contains_complex_add(operand),
+        Expression::Index { base, index } => contains_complex_add(base) || contains_complex_add(index),
+        Expression::Conditional { condition, when_true, when_false } => {
+            contains_complex_add(condition) || contains_complex_add(when_true) || contains_complex_add(when_false)
+        }
+        _ => false,
+    }
+}
+
 /// Append (in evaluation order, de-duplicated) every register-resident name read
 /// within `expression`.
 fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, collected: &mut Vec<String>) {

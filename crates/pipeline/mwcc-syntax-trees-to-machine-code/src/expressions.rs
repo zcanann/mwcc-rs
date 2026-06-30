@@ -174,6 +174,13 @@ impl Generator {
                 return Ok(());
             }
         }
+        // mwcc REASSOCIATES integer add-trees (`a+b+c+d` -> `a+((b+c)+d)`) and evaluates a nested-add
+        // operand in its own order; our register allocator emits a valid but non-matching sequence.
+        // Only the simple shapes match (`a+b`, the left-assoc `(a+b)+c`, an add with a non-add operand
+        // like `a+b*c`), so defer a reassociated add-tree rather than emit wrong bytes (#20 allocator).
+        if crate::analysis::contains_complex_add(expression) {
+            return Err(Diagnostic::error("a reassociated integer add-tree needs the keystone allocator (roadmap)"));
+        }
         match expression {
             Expression::IntegerLiteral(value) => {
                 self.load_integer_constant(destination, *value);
