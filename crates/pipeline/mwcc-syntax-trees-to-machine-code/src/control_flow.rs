@@ -616,7 +616,10 @@ impl Generator {
         // follows the converged `mr` for a non-leaf): `cmpwi r3,0; li r0,-1; blt skip; addi
         // r0,r3,100; skip: mr r3,r0`. Placed before the leaf/constant branch selects below, gated
         // to the computed-arm case so it never intercepts those.
-        if tail && !is_zero_literal(when_true) && !is_zero_literal(when_false) {
+        // Fires in tail position (`mr dest, r0` then the epilogue) and in a value/store context
+        // where the destination is r0 (the store then writes r0) — both stage in r0, only the
+        // tail/value `mr` differs and is keyed off `destination != r0`.
+        if (tail || destination == GENERAL_SCRATCH) && !is_zero_literal(when_true) && !is_zero_literal(when_false) {
             let is_computed = |arm: &Expression| leaf_name(arm).is_none() && constant_value(arm).is_none();
             let plan = match (constant_value(when_true), constant_value(when_false)) {
                 (Some(c), None) if is_computed(when_false) => Some((c, when_false, true)),
@@ -647,7 +650,7 @@ impl Generator {
         // leaf or constant). mwcc stages the FALSE arm in r0, forward-branches past the true arm
         // when the condition is false (keeping the false arm), evaluates the true arm into r0,
         // then `mr dest, r0`: `cmpwi r3,0; addi r0,r3,-1; bge skip; addi r0,r3,1; skip: mr r3,r0`.
-        if tail {
+        if tail || destination == GENERAL_SCRATCH {
             let is_computed = |arm: &Expression| leaf_name(arm).is_none() && constant_value(arm).is_none();
             if is_computed(when_true) && is_computed(when_false) {
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
