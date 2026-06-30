@@ -515,8 +515,18 @@ impl Generator {
         if !condition_is_comparison {
             let zero = Expression::IntegerLiteral(0);
             match (constant_value(when_true), constant_value(when_false)) {
-                (Some(1), Some(0)) => return self.emit_comparison(BinaryOperator::NotEqual, condition, &zero, destination),
-                (Some(0), Some(1)) => return self.emit_comparison(BinaryOperator::Equal, condition, &zero, destination),
+                // The `cond ? 1 : 0` / `? 0 : 1` TERNARY — even lowered to a branchless `cond != 0`
+                // / `cond == 0` comparison — advances mwcc's anonymous-`@N` counter by 3, like a
+                // float conditional branch; a DIRECT `cond != 0` does not. Only visible in a frame
+                // function's extab/extabindex numbering (a leaf function has no anonymous symbols).
+                (Some(1), Some(0)) => {
+                    self.output.anonymous_label_bump += 3;
+                    return self.emit_comparison(BinaryOperator::NotEqual, condition, &zero, destination);
+                }
+                (Some(0), Some(1)) => {
+                    self.output.anonymous_label_bump += 3;
+                    return self.emit_comparison(BinaryOperator::Equal, condition, &zero, destination);
+                }
                 _ => {}
             }
         }
