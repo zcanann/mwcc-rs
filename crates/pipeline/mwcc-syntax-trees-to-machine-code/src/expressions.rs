@@ -270,6 +270,19 @@ impl Generator {
                 Err(Diagnostic::error("a comma operator in this position is not supported yet (roadmap)"))
             }
             Expression::Binary { operator, left, right } => {
+                // mwcc folds a unary minus into a subtract: `-a + b` -> `b - a` (subf), `a + -b` ->
+                // `a - b`. Rewrite to the equivalent Subtract so the byte-exact subtract path emits it
+                // (the operand order matches: `subf d, a, b` computes b - a).
+                if *operator == BinaryOperator::Add {
+                    if let Expression::Unary { operator: UnaryOperator::Negate, operand } = left.as_ref() {
+                        let rewritten = Expression::Binary { operator: BinaryOperator::Subtract, left: right.clone(), right: operand.clone() };
+                        return self.evaluate_general(&rewritten, destination);
+                    }
+                    if let Expression::Unary { operator: UnaryOperator::Negate, operand } = right.as_ref() {
+                        let rewritten = Expression::Binary { operator: BinaryOperator::Subtract, left: left.clone(), right: operand.clone() };
+                        return self.evaluate_general(&rewritten, destination);
+                    }
+                }
                 // `(cmp1) OP (cmp2)` — an arithmetic/bitwise combine of TWO comparison-as-value
                 // idioms (`(a>0) - (a<0)`, `(a<b) + (a>b)`, `(a>0) | (a<0)`). mwcc INTERLEAVES the
                 // two comparison computations (instruction scheduling + register allocation); ours
@@ -459,6 +472,18 @@ impl Generator {
                             return self.evaluate_general(&folded, destination);
                         }
                     }
+                }
+                // `(a-b)-(c-d)`, `a*b-c*d`: a SUBTRACT whose BOTH operands are computed binary
+                // expressions evaluates the two sub-trees in an order/allocation our straight-line path
+                // does not match mwcc's (unlike `+`, subtraction is not commutative, so it cannot reuse
+                // the overlap idiom). Defer until the keystone allocator schedules it; a leaf/constant
+                // operand keeps the byte-exact single-scratch shape (`a-b-c`, `a-(b-c)`). Placed AFTER
+                // the distributive fold so `a*5 - a*3` collapses to `a*2` first.
+                if *operator == BinaryOperator::Subtract
+                    && matches!(left.as_ref(), Expression::Binary { .. })
+                    && matches!(right.as_ref(), Expression::Binary { .. })
+                {
+                    return Err(Diagnostic::error("a subtract of two computed sub-expressions needs the keystone allocator (roadmap)"));
                 }
                 // A signed char load (member `p->x`, element `a[i]`, deref `*p`) that is a
                 // DIRECT operand of a comparison or a signed divide is loaded raw by these
