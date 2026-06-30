@@ -445,6 +445,29 @@ impl Generator {
             return Err(Diagnostic::error("a logical (&&/||) condition in a select/guard needs short-circuit lowering (roadmap #21)"));
         }
 
+        // `cond ? <leaf/const> : <nested select>` — a ternary chain like `a==1 ? 10 : (a==2 ? 20
+        // : 0)`. In tail position mwcc tests the condition, returns the true arm early when it
+        // holds, and emits the false arm (the next select) as the fall-through:
+        // `cmpwi a,1; bne else; li r3,10; blr; else: <a==2?20:0>`. Emit that and recurse into the
+        // false arm; the caller's `blr` ends the fall-through. The true arm must be a placeable
+        // leaf/constant; a computed true arm with a nested false arm is left to defer.
+        if tail {
+            if let Expression::Conditional { condition: inner_condition, when_true: inner_true, when_false: inner_false } = when_false {
+                if leaf_name(when_true).is_some() || constant_value(when_true).is_some() {
+                    let (options, condition_bit) = self.emit_condition_test(condition)?;
+                    let branch_index = self.output.instructions.len();
+                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    self.place_select_value(when_true, destination)?;
+                    self.output.instructions.push(Instruction::BranchToLinkRegister);
+                    let else_label = self.output.instructions.len();
+                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                        *target = else_label;
+                    }
+                    return self.emit_conditional(inner_condition, inner_true, inner_false, destination, tail);
+                }
+            }
+        }
+
         // `comparison ? 1 : 0` is the comparison; `comparison ? 0 : 1` is its negation.
         if let Expression::Binary { operator, left, right } = condition {
             if is_comparison(*operator) {
