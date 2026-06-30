@@ -1527,6 +1527,33 @@ impl Generator {
                 }
             }
         }
+        // `a[i * const]`: the constant multiplies the element scale (`a[i*2]` of `int` is `i << 3`).
+        // Fold it — a power-of-two total scale uses `slwi`, otherwise `mulli` — then the bare `lwzx`.
+        if let Expression::Binary { operator: BinaryOperator::Multiply, left, right } = index {
+            let variable_and_factor = if let Some(factor) = constant_value(right) {
+                Some((left.as_ref(), factor))
+            } else if let Some(factor) = constant_value(left) {
+                Some((right.as_ref(), factor))
+            } else {
+                None
+            };
+            if let Some((variable, factor)) = variable_and_factor {
+                let total = factor * pointee.size() as i64;
+                let index_register = self.general_register_of_leaf(variable)?;
+                let scaled = if total == 1 {
+                    index_register
+                } else if total > 1 && (total as u64).is_power_of_two() {
+                    self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: (total as u64).trailing_zeros() as u8 });
+                    GENERAL_SCRATCH
+                } else {
+                    let total = i16::try_from(total).map_err(|_| Diagnostic::error("subscript scale out of range (roadmap)"))?;
+                    self.output.instructions.push(Instruction::MultiplyImmediate { d: GENERAL_SCRATCH, a: index_register, immediate: total });
+                    GENERAL_SCRATCH
+                };
+                self.output.instructions.push(indexed_load(pointee, destination, address, scaled));
+                return Ok(());
+            }
+        }
         let index_register = self.general_register_of_leaf(index)?;
         let size = pointee.size();
         let scaled = if size == 1 {
