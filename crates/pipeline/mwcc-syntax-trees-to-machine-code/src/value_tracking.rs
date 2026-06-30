@@ -73,6 +73,25 @@ impl Generator {
             return Ok(false);
         }
 
+        // A reassigned NARROW (char/short) PARAMETER narrows differently across versions: for
+        // `char f(char a){ a += 1; return a; }`, mwcc 2.6 re-narrows on the return (`addi r0,r3,1;
+        // extsb r3,r0`) but 1.3.2 mutates in place and returns raw (`addi r3,r3,1`). Inlining the
+        // reassignment and letting the return narrow matches 2.6 but diffs 1.3.2, so defer. (A
+        // narrow LOCAL is handled below; a narrow param that is only READ, not reassigned, is fine.)
+        let narrow_params: std::collections::HashSet<&str> = function
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.parameter_type.width() < 32)
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+        if function
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::Assign { name, .. } if narrow_params.contains(name.as_str())))
+        {
+            return Err(Diagnostic::error("a reassigned narrow (char/short) parameter narrows differently across versions (roadmap)"));
+        }
+
         // A narrow (char/short) local initialized from a WIDER value is a NARROWING
         // (`char c = a;` truncates an int to a byte). Inlining substitutes the wider value
         // raw, dropping the truncation AND the sign-extension — `char c = a; gi = c;` would
