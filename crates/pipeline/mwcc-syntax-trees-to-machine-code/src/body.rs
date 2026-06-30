@@ -647,6 +647,25 @@ impl Generator {
                 }
             }
         }
+        // `global = const; return <const or global>` — mwcc's scheduler computes the return value
+        // (a `li` for a constant, an SDA `lwz` for a global) BEFORE the global constant store; ours
+        // emits the store first. A param return (already in r3) or a deref/index return is
+        // byte-exact and unaffected, as is a non-constant or non-global store.
+        if let Some(return_expression) = &function.return_expression {
+            let return_is_const_or_global = constant_value(return_expression).is_some()
+                || matches!(return_expression, Expression::Variable(name) if self.globals.contains_key(name.as_str()));
+            if return_is_const_or_global {
+                for statement in &function.statements {
+                    if let Statement::Store { target, value } = statement {
+                        if constant_value(value).is_some()
+                            && matches!(target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
+                        {
+                            return Err(Diagnostic::error("a global constant store scheduled around a const/global return is not modeled (roadmap)"));
+                        }
+                    }
+                }
+            }
+        }
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,
         // since an address-taken variable cannot be value-tracked in a register.
