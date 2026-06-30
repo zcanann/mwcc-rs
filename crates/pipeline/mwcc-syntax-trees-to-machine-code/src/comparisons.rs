@@ -248,6 +248,17 @@ impl Generator {
                     self.output.instructions.push(Instruction::RotateAndMaskVariable { a: d, s: register, b: GENERAL_SCRATCH, begin: 31, end: 31 });
                     return Ok(());
                 }
+                // A signed-char load keeps the value in the scratch and sign-extends in place,
+                // putting the `1` in the destination between the load and the extend:
+                // `lbz r0; li r3,1; extsb r0,r0; cntlzw r0,r0; rlwnm r3,r3,r0`.
+                if self.is_signed_byte_load(left)? && d != GENERAL_SCRATCH {
+                    self.evaluate_general(left, GENERAL_SCRATCH)?;
+                    self.load_integer_constant(d, 1);
+                    self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
+                    self.output.instructions.push(Instruction::RotateAndMaskVariable { a: d, s: d, b: GENERAL_SCRATCH, begin: 31, end: 31 });
+                    return Ok(());
+                }
                 let source = self.place_operand_or_scratch(left, d)?;
                 if source == d {
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
