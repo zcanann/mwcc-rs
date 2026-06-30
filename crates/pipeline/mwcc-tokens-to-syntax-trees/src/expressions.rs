@@ -124,15 +124,14 @@ impl Parser {
             self.advance();
             let right = self.binary_expression(operator.precedence() + 1)?;
             left = Expression::Binary { operator, left: Box::new(left), right: Box::new(right) };
-            // Fold a constant `/` or `%` of two integer literals — `16/4` is `li r3,4` (mwcc), not a
-            // runtime divide. (Add/sub/mul/shift of literals already lower to the constant; division
-            // did not.) Enables the `sizeof(arr)/sizeof(arr[0])` array-length idiom.
-            if matches!(operator, BinaryOperator::Divide | BinaryOperator::Modulo) {
-                if let Expression::Binary { left: numerator, right: denominator, .. } = &left {
-                    if matches!((numerator.as_ref(), denominator.as_ref()), (Expression::IntegerLiteral(_), Expression::IntegerLiteral(_))) {
-                        if let Ok(value) = fold_constant_expression(&left) {
-                            left = Expression::IntegerLiteral(value);
-                        }
+            // Fold ANY constant operation on two integer literals to its value (`li r3,N`) — mwcc
+            // folds all constant subexpressions. Arithmetic/bitwise/shift already lowered to the
+            // constant; this also covers division/modulo (else a runtime divide) and the comparison
+            // and logical operators (else a runtime compare). Enables `sizeof(a)/sizeof(b)`, `5>3`, etc.
+            if let Expression::Binary { left: lhs, right: rhs, .. } = &left {
+                if matches!((lhs.as_ref(), rhs.as_ref()), (Expression::IntegerLiteral(_), Expression::IntegerLiteral(_))) {
+                    if let Ok(value) = fold_constant_expression(&left) {
+                        left = Expression::IntegerLiteral(value);
                     }
                 }
             }
@@ -187,7 +186,17 @@ impl Parser {
         if let Some(operator) = unary {
             self.advance();
             let operand = self.factor()?;
-            return Ok(Expression::Unary { operator, operand: Box::new(operand) });
+            let unary_expression = Expression::Unary { operator, operand: Box::new(operand) };
+            // Fold a unary operator on an integer literal (`-5`, `~0xff`, `!0`) to its value, as mwcc
+            // does — e.g. `!0` is `li r3,1`, not a runtime `cntlzw` sequence.
+            if let Expression::Unary { operand, .. } = &unary_expression {
+                if matches!(operand.as_ref(), Expression::IntegerLiteral(_)) {
+                    if let Ok(value) = fold_constant_expression(&unary_expression) {
+                        return Ok(Expression::IntegerLiteral(value));
+                    }
+                }
+            }
+            return Ok(unary_expression);
         }
         // prefix increment/decrement: `++x` / `--x` desugar to `x = x ± 1`. The
         // value of the expression is the assigned (new) value, which an assignment
