@@ -737,6 +737,12 @@ impl Generator {
         if self.try_for_counter(function)? {
             return Ok(());
         }
+        // A leaf non-counting `while`/`do-while` whose body is pure in-place increments
+        // (`while (*p) p++;`) lowers to the rotated form; claimed before value-tracking since the
+        // loop-carried increment must emit in place.
+        if self.try_emit_increment_while(function)? {
+            return Ok(());
+        }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
@@ -1992,6 +1998,95 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadWord { d: SAVED, a: 1, offset: self.frame_size - 4 });
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// A leaf `void` function whose body is a single non-counting `while` loop (truthy condition)
+    /// whose body is pure in-place increments/decrements of register parameters (`while (*p) p++;`).
+    /// mwcc does
+    /// NOT unroll these; it emits the rotated form `[b COND;] BODY: <addi>; COND: <test>; <bne BODY>;
+    /// blr` with no frame (leaf). The body is emitted directly via `evaluate_general` into each
+    /// variable's OWN register, so the loop-carried mutation stays in place rather than being
+    /// value-tracked across the back-edge (the linear value tracker has no back-edge). A store in the
+    /// body (mwcc hoists loop-invariant store values — not modeled), an empty body (different
+    /// structure: the condition is the loop top), a call, a local, a guard, a counted loop (mwcc
+    /// unrolls), or a non-void return falls through to defer.
+    fn try_emit_increment_while(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || !function.locals.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let kind = *kind;
+        // A do-while (mwcc fuses the body increment with the next condition load into `lwzu`) or a
+        // comparison condition (`while (p < e)` — mwcc computes the trip count and emits a counted
+        // CTR loop, `mtctr`/`bdnz`) is deferred; only a `while` with a truthy condition keeps the
+        // plain rotated form this models.
+        if !matches!(kind, LoopKind::While) || body.is_empty() {
+            return Ok(false);
+        }
+        if matches!(condition, Expression::Binary { operator, .. } if crate::analysis::is_comparison(*operator)) {
+            return Ok(false);
+        }
+        // Every body statement must be an in-place `var = var +/- const` on a register parameter — the
+        // increment/decrement of a scan pointer or index. No stores, calls, loads, or nested control.
+        for statement in body {
+            let Statement::Assign { name, value } = statement else {
+                return Ok(false);
+            };
+            if self.lookup_general(name).is_none() {
+                return Ok(false);
+            }
+            // The incremented variable must be a POINTER: mwcc countifies an integer increment loop
+            // (`while (x) x++;` -> neg/mtctr/bdnz, trip count `-x`) but leaves a pointer scan as the
+            // rotated form this models.
+            if self.locations.get(name).map_or(true, |location| location.pointee.is_none()) {
+                return Ok(false);
+            }
+            let is_increment = matches!(value, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
+                if matches!(left.as_ref(), Expression::Variable(other) if other == name)
+                    && matches!(right.as_ref(), Expression::IntegerLiteral(_)));
+            if !is_increment {
+                return Ok(false);
+            }
+        }
+        // The loop's labels advance mwcc's anonymous-`@N` counter (4 for a while, 6 for a do-while).
+        self.output.anonymous_label_bump = if matches!(kind, LoopKind::DoWhile) { 6 } else { 4 };
+        // A while tests the condition first: branch down to the test; a do-while falls into the body.
+        let skip = if matches!(kind, LoopKind::While) {
+            let index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            Some(index)
+        } else {
+            None
+        };
+        let body_top = self.output.instructions.len();
+        for statement in body {
+            if let Statement::Assign { name, value } = statement {
+                let register = self.lookup_general(name).expect("gated to a register variable above");
+                self.evaluate_general(value, register)?;
+            }
+        }
+        if let Some(index) = skip {
+            let condition_at = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[index] {
+                *target = condition_at;
+            }
+        }
+        // emit_condition_test gives the body-SKIP branch (taken when the condition is FALSE); the loop
+        // branches BACK to the body when it is TRUE, so invert the BO (branch-if-clear <-> -if-set).
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let back = if options == 4 { 12 } else { 4 };
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: back, condition_bit, target: body_top });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
