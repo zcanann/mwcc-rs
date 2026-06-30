@@ -503,6 +503,103 @@ pub(crate) fn same_operand(a: &Expression, b: &Expression) -> bool {
     }
 }
 
+/// Full structural equality of two expressions (deeper than [`same_operand`], which stops at
+/// leaves/derefs/members). Used to detect a repeated common sub-expression.
+pub(crate) fn structurally_equal(a: &Expression, b: &Expression) -> bool {
+    match (a, b) {
+        (Expression::IntegerLiteral(x), Expression::IntegerLiteral(y)) => x == y,
+        (Expression::FloatLiteral(x), Expression::FloatLiteral(y)) => x == y,
+        (Expression::StringLiteral(x), Expression::StringLiteral(y)) => x == y,
+        (Expression::Variable(x), Expression::Variable(y)) => x == y,
+        (Expression::Binary { operator: oa, left: la, right: ra }, Expression::Binary { operator: ob, left: lb, right: rb }) => {
+            oa == ob && structurally_equal(la, lb) && structurally_equal(ra, rb)
+        }
+        (Expression::Unary { operator: oa, operand: pa }, Expression::Unary { operator: ob, operand: pb }) => oa == ob && structurally_equal(pa, pb),
+        (Expression::Conditional { condition: ca, when_true: ta, when_false: fa }, Expression::Conditional { condition: cb, when_true: tb, when_false: fb }) => {
+            structurally_equal(ca, cb) && structurally_equal(ta, tb) && structurally_equal(fa, fb)
+        }
+        (Expression::Cast { target_type: ta, operand: pa }, Expression::Cast { target_type: tb, operand: pb }) => ta == tb && structurally_equal(pa, pb),
+        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => structurally_equal(pa, pb),
+        (Expression::AddressOf { operand: pa }, Expression::AddressOf { operand: pb }) => structurally_equal(pa, pb),
+        (Expression::Index { base: ba, index: ia }, Expression::Index { base: bb, index: ib }) => structurally_equal(ba, bb) && structurally_equal(ia, ib),
+        (Expression::Member { base: ba, offset: oa, member_type: ma, index_stride: sa }, Expression::Member { base: bb, offset: ob, member_type: mb, index_stride: sb }) => {
+            oa == ob && ma == mb && sa == sb && structurally_equal(ba, bb)
+        }
+        (Expression::MemberAddress { base: ba, offset: oa, element: ea }, Expression::MemberAddress { base: bb, offset: ob, element: eb }) => {
+            oa == ob && ea == eb && structurally_equal(ba, bb)
+        }
+        (Expression::Call { name: na, arguments: aa }, Expression::Call { name: nb, arguments: ab }) => {
+            na == nb && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| structurally_equal(x, y))
+        }
+        (Expression::Assign { target: ta, value: va }, Expression::Assign { target: tb, value: vb }) => structurally_equal(ta, tb) && structurally_equal(va, vb),
+        (Expression::Comma { left: la, right: ra }, Expression::Comma { left: lb, right: rb }) => structurally_equal(la, lb) && structurally_equal(ra, rb),
+        _ => false,
+    }
+}
+
+/// Whether the expression tree COMPUTES the same arithmetic sub-expression more than once — a
+/// common sub-expression mwcc computes once and reuses, but our straight-line codegen recomputes
+/// (a byte-different sequence: `(a+1)+(a+1)`, `(a + (a>>31)) ^ (a>>31)`). Only Binary/Unary
+/// COMPUTATIONS count: a repeated LOAD (`*p * *p`, `p->a + p->b`, `a[0]==a[0]`) is re-read
+/// byte-exactly, matching mwcc, and a leaf is a cheap re-read.
+pub(crate) fn has_repeated_nonleaf_subexpression(expression: &Expression) -> bool {
+    let mut computed: Vec<&Expression> = Vec::new();
+    collect_computed_subexpressions(expression, &mut computed);
+    for i in 0..computed.len() {
+        for j in (i + 1)..computed.len() {
+            if structurally_equal(computed[i], computed[j]) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Collect every Binary/Unary COMPUTATION node in the tree (recursing through loads, casts, calls,
+/// etc. to find nested computations, but not counting those non-arithmetic nodes themselves).
+fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Vec<&'a Expression>) {
+    match expression {
+        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) | Expression::Variable(_) => {}
+        Expression::Binary { left, right, .. } => {
+            into.push(expression);
+            collect_computed_subexpressions(left, into);
+            collect_computed_subexpressions(right, into);
+        }
+        Expression::Unary { operand, .. } => {
+            into.push(expression);
+            collect_computed_subexpressions(operand, into);
+        }
+        Expression::Cast { operand, .. } | Expression::AddressOf { operand } | Expression::Dereference { pointer: operand } => {
+            collect_computed_subexpressions(operand, into);
+        }
+        Expression::Conditional { condition, when_true, when_false } => {
+            collect_computed_subexpressions(condition, into);
+            collect_computed_subexpressions(when_true, into);
+            collect_computed_subexpressions(when_false, into);
+        }
+        Expression::Index { base, index } => {
+            collect_computed_subexpressions(base, into);
+            collect_computed_subexpressions(index, into);
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            collect_computed_subexpressions(base, into);
+        }
+        Expression::Call { arguments, .. } => {
+            for argument in arguments {
+                collect_computed_subexpressions(argument, into);
+            }
+        }
+        Expression::Assign { target, value } => {
+            collect_computed_subexpressions(target, into);
+            collect_computed_subexpressions(value, into);
+        }
+        Expression::Comma { left, right } => {
+            collect_computed_subexpressions(left, into);
+            collect_computed_subexpressions(right, into);
+        }
+    }
+}
+
 /// The variable name if `expression` is a plain variable reference.
 pub(crate) fn leaf_name(expression: &Expression) -> Option<&str> {
     match expression {

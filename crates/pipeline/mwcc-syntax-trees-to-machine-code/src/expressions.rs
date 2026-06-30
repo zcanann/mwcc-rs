@@ -281,6 +281,13 @@ impl Generator {
                 {
                     return Err(Diagnostic::error("a shift-left or bitwise-and of a comparison value uses a fused rlwinm / dropped mask not modeled (roadmap)"));
                 }
+                // A repeated NON-LEAF sub-expression (`(a+1)+(a+1)`, `(a + (a>>31)) ^ (a>>31)`) is a
+                // common sub-expression mwcc computes ONCE and reuses; our straight-line codegen
+                // recomputes it — a byte-different sequence. Defer until the register allocator does
+                // CSE. (Leaf repeats like `a + a` are cheap re-reads and stay byte-exact.)
+                if crate::analysis::has_repeated_nonleaf_subexpression(expression) {
+                    return Err(Diagnostic::error("a repeated common sub-expression needs the register allocator's CSE (roadmap)"));
+                }
                 // A comma operand with a side-effect-free left is equivalent to its right
                 // value; peel it so the right keeps its natural register (`(a,b)+1` == `b+1`,
                 // no spurious move). Only a flat arithmetic binary of leaves/constants is
