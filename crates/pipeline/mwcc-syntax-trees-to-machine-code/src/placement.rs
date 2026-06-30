@@ -92,7 +92,15 @@ impl Generator {
                 // needs a temporary (a magic-number divide) can't pick the leaf's register
                 // and clobber it. left into scratch, right is a leaf: mwcc puts the leaf first.
                 self.with_reserved_inputs(right, |generator| generator.evaluate_general(left, GENERAL_SCRATCH))?;
-                Operands::reversed(GENERAL_SCRATCH, self.general_register_of_leaf(right)?)
+                let leaf = self.general_register_of_leaf(right)?;
+                // A constant-amount SHIFT left (`(a<<2) + b`) is ordered SHIFT-FIRST by mwcc — the
+                // source `<<` drives it, even though it lowers to the same `slwi` as a strength-reduced
+                // `a*4`, which mwcc orders leaf-first. Every other complex left (mul, magic divide)
+                // stays leaf-first.
+                if is_commutative(operator) && crate::analysis::is_constant_shift(left) {
+                    return Operands::ordered(GENERAL_SCRATCH, leaf);
+                }
+                Operands::reversed(GENERAL_SCRATCH, leaf)
             }
             (false, true) => {
                 self.with_reserved_inputs(left, |generator| generator.evaluate_general(right, GENERAL_SCRATCH))?;

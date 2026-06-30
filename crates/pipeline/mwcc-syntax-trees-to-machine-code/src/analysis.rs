@@ -192,7 +192,7 @@ pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
 /// A constant-amount shift (`a << 2`, `a >> 3`). mwcc keeps such a shift as the FIRST operand of a
 /// commutative op (`(a<<2)+b` -> `add d, shift, b`); our placement swaps it to second (matching the
 /// strength-reduced `(a*4)+b` instead). A variable-amount shift, or a shift on the right, matches.
-fn is_constant_shift(expression: &Expression) -> bool {
+pub(crate) fn is_constant_shift(expression: &Expression) -> bool {
     matches!(expression, Expression::Binary { operator: BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight, right, .. }
         if constant_value(right).is_some())
 }
@@ -203,9 +203,13 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
     if let Expression::Binary { operator, left, right } = expression {
         // A CONSTANT right operand fuses (`(x>>n) & const` -> a single `rlwinm`), which is byte-exact;
         // only a non-constant right operand takes the swapped add/or/and/xor/mul order that diverges.
+        // A register-LEAF right (`(a<<2) + b`) is now ordered shift-first by place_general_operands
+        // (byte-exact), so only a non-leaf right (`(a<<2) + (b<<2)`, a memory/computed operand) still
+        // defers — those route through a different placement path that keeps the swapped order.
         if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor)
             && is_constant_shift(left)
             && constant_value(right).is_none()
+            && !is_add_leaf(right)
         {
             return true;
         }
