@@ -68,6 +68,23 @@ impl Generator {
                         }
                     }
                 }
+                // `f op f` for the identical side-effect-free MEMORY load (`*p + *p`, `a[i]*a[i]`):
+                // load ONCE into the scratch, then apply the op to that register twice
+                // (`lfs f0,(p); fadds d,f0,f0`), like the integer identical-load idiom — not two loads.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply)
+                    && same_operand(left, right)
+                    && matches!(left.as_ref(), Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. })
+                {
+                    self.evaluate_float(left, FLOAT_SCRATCH)?;
+                    let r = FLOAT_SCRATCH;
+                    self.output.instructions.push(match (operator, double) {
+                        (BinaryOperator::Add, false) => Instruction::FloatAddSingle { d: destination, a: r, b: r },
+                        (BinaryOperator::Add, true) => Instruction::FloatAddDouble { d: destination, a: r, b: r },
+                        (BinaryOperator::Multiply, false) => Instruction::FloatMultiplySingle { d: destination, a: r, c: r },
+                        _ => Instruction::FloatMultiplyDouble { d: destination, a: r, c: r },
+                    });
+                    return Ok(());
+                }
                 if !fits_single_scratch(expression, destination == FLOAT_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
@@ -165,6 +182,10 @@ impl Generator {
             Expression::Conditional { when_true, when_false, .. } => self.is_double_value(when_true) || self.is_double_value(when_false),
             Expression::Cast { target_type, .. } => *target_type == Type::Double,
             Expression::Member { member_type, .. } => *member_type == Type::Double,
+            // A `double*` deref / subscript is a double value (so its arithmetic uses fadd/fmul, not
+            // the single fadds/fmuls). Without this, double-pointer math read as single.
+            Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Double)),
+            Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Double)),
             Expression::Call { name, .. } => self.call_return_types.get(name) == Some(&Type::Double),
             _ => false,
         }

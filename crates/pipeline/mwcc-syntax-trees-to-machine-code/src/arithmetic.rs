@@ -599,6 +599,20 @@ impl Generator {
             return Ok(true);
         }
 
+        // `a * -C` for a power-of-two C is `-(a << log2 C)`: shift into the scratch then negate into
+        // the destination (`slwi r0,a,n; neg d,r0`), as mwcc does — not a `mulli` by the negative.
+        if operator == BinaryOperator::Multiply && constant <= -2 {
+            let magnitude = constant.unsigned_abs();
+            if magnitude.is_power_of_two() {
+                let shift = magnitude.trailing_zeros();
+                if (1..=31).contains(&shift) {
+                    let source = self.place_operand_or_scratch(variable, destination)?;
+                    self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: source, shift: shift as u8 });
+                    self.output.instructions.push(Instruction::Negate { d: destination, a: GENERAL_SCRATCH });
+                    return Ok(true);
+                }
+            }
+        }
         enum Immediate {
             Add,
             ShiftLeft(u8),
