@@ -232,7 +232,7 @@ impl Generator {
     /// or `*float_pointer`). A single located operand loads into the scratch (its
     /// leaf partner stays home), two load left into the destination and right into
     /// the scratch, and a located-with-constant loads the constant first.
-    fn place_float_located_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<Operands> {
+    fn place_float_located_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8, double: bool) -> Compilation<Operands> {
         if self.is_float_located(left) && self.is_float_located(right) {
             // The left load goes to a fresh virtual the allocator places (it
             // coalesces onto a free FPR, or the result register when that is free);
@@ -252,15 +252,19 @@ impl Generator {
                 if destination == FLOAT_SCRATCH {
                     return Err(Diagnostic::error("float load with constant needs a non-scratch destination (roadmap)"));
                 }
-                // mwcc loads the constant first, then the memory operand.
-                self.load_float_constant(destination, *value as f32);
-                self.emit_located_operand(left, FLOAT_SCRATCH)?;
-                // Commutative ops lead with the constant; subtraction is load - constant.
-                return if operator == BinaryOperator::Subtract {
-                    Operands::ordered(FLOAT_SCRATCH, destination)
+                // A commutative op leads with the constant (into the dest), then the memory operand
+                // (scratch): `lfs/lfd f1,const; lfs/lfd f0,(p); op f1,f1,f0`. A non-commutative op
+                // (`value - const`, `value / const`) leads with the VALUE (into the dest), then the
+                // constant (scratch): `lfs/lfd f1,(p); lfs/lfd f0,const; op f1,f1,f0`. load_float_literal
+                // picks lfs vs lfd from `double`, so a double pointee loads an 8-byte constant.
+                if matches!(operator, BinaryOperator::Subtract | BinaryOperator::Divide) {
+                    self.emit_located_operand(left, destination)?;
+                    self.load_float_literal(FLOAT_SCRATCH, *value, double);
                 } else {
-                    Operands::ordered(destination, FLOAT_SCRATCH)
-                };
+                    self.load_float_literal(destination, *value, double);
+                    self.emit_located_operand(left, FLOAT_SCRATCH)?;
+                }
+                return Operands::ordered(destination, FLOAT_SCRATCH);
             }
             let right_register = self.float_register_of_leaf(right)?;
             self.emit_located_operand(left, FLOAT_SCRATCH)?;
@@ -271,7 +275,7 @@ impl Generator {
                 if destination == FLOAT_SCRATCH {
                     return Err(Diagnostic::error("float load with constant needs a non-scratch destination (roadmap)"));
                 }
-                self.load_float_constant(destination, *value as f32);
+                self.load_float_literal(destination, *value, double);
                 self.emit_located_operand(right, FLOAT_SCRATCH)?;
                 return Operands::ordered(destination, FLOAT_SCRATCH);
             }
@@ -287,7 +291,7 @@ impl Generator {
         // into a float register; the general base register is untouched, so it can
         // even land straight in the float destination.
         if self.is_float_located(left) || self.is_float_located(right) {
-            return self.place_float_located_operands(operator, left, right, destination);
+            return self.place_float_located_operands(operator, left, right, destination, double);
         }
         // A float constant operand is loaded from `.sdata2` into the scratch
         // register (an 8-byte `lfd` in a double op, a 4-byte `lfs` otherwise); the
