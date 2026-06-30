@@ -141,6 +141,66 @@ fn inline_return_only_locals(function: &Function) -> Option<Function> {
     })
 }
 
+/// Inline value-tracked locals that only feed a single `switch` into the switch, then recompile —
+/// `int m = n + 1; switch(m) {...}` becomes `switch(n + 1) {...}`, which the switch fast path emits
+/// (mwcc compiles them identically). Mirrors `inline_return_only_locals` for a switch body. Each
+/// local must be an int-width (>= 32) value with a call-free initializer, read AT MOST ONCE across
+/// the scrutinee/arms/default/return, so the substitution cannot duplicate a computation mwcc would
+/// keep in a register. Anything outside this leaves the function unchanged (`None`) to defer honestly.
+fn inline_switch_scrutinee_locals(function: &Function) -> Option<Function> {
+    if function.locals.is_empty() || !function.guards.is_empty() || function_makes_call(function) {
+        return None;
+    }
+    let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() else {
+        return None;
+    };
+    // Each local's value, with earlier locals folded in. A narrow local (width < 32) changes the
+    // lowering (truncation/sign-extension) and a call-bearing initializer is a call result — bail.
+    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    for local in &function.locals {
+        let initializer = local.initializer.as_ref()?;
+        if expression_has_call(initializer) || local.declared_type.width() < 32 {
+            return None;
+        }
+        values.insert(local.name.clone(), crate::value_tracking::substitute(initializer, &values));
+    }
+    // No inlined local may be read more than once across the whole body, so substituting it cannot
+    // duplicate a computation (mwcc materializes a multiply-read value once in a register).
+    for local in &function.locals {
+        let mut occurrences = crate::analysis::count_name_occurrences(scrutinee, &local.name);
+        for arm in arms {
+            occurrences += crate::analysis::count_name_occurrences(&arm.result, &local.name);
+        }
+        if let Some(expression) = default {
+            occurrences += crate::analysis::count_name_occurrences(expression, &local.name);
+        }
+        if let Some(expression) = &function.return_expression {
+            occurrences += crate::analysis::count_name_occurrences(expression, &local.name);
+        }
+        if occurrences > 1 {
+            return None;
+        }
+    }
+    let arms = arms
+        .iter()
+        .map(|arm| mwcc_syntax_trees::SwitchArm { value: arm.value, result: crate::value_tracking::substitute(&arm.result, &values) })
+        .collect();
+    Some(Function {
+        return_type: function.return_type,
+        name: function.name.clone(),
+        is_static: function.is_static,
+        parameters: function.parameters.clone(),
+        locals: Vec::new(),
+        statements: vec![Statement::Switch {
+            scrutinee: crate::value_tracking::substitute(scrutinee, &values),
+            arms,
+            default: default.as_ref().map(|expression| crate::value_tracking::substitute(expression, &values)),
+        }],
+        guards: function.guards.clone(),
+        return_expression: function.return_expression.as_ref().map(|expression| crate::value_tracking::substitute(expression, &values)),
+    })
+}
+
 /// Tally reads of each tracked local in `expression` toward its current value-version's
 /// running count, returning true if a computed (non-Variable) version would then be read at
 /// a second materialization site. mwcc computes such a value once and keeps it in a
@@ -712,6 +772,11 @@ impl Generator {
         // into the return, then recompile — `int z = x + 1; g(); return z;` becomes the
         // equivalent `g(); return x + 1;`, which the parameter-preservation path emits.
         if let Some(inlined) = inline_return_only_locals(function) {
+            return self.evaluate_body(&inlined);
+        }
+        // A value-tracked local feeding a single switch's scrutinee/arms inlines into the switch and
+        // recompiles, so `int m = n + 1; switch(m)` lowers like the direct `switch(n + 1)`.
+        if let Some(inlined) = inline_switch_scrutinee_locals(function) {
             return self.evaluate_body(&inlined);
         }
         // A leaf void body that is purely constant stores of one repeated value
