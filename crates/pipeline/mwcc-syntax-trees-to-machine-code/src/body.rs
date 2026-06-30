@@ -6,6 +6,31 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, Loc
 use mwcc_versions::GlobalAddressing;
 use crate::expressions::pointee_of_type;
 
+/// The `(operand, constant)` a guard condition compares against, when it is `<var> OP <const>`
+/// (or the commuted `<const> OP <var>`). Two consecutive guards with the same key share one
+/// `cmpwi` in mwcc, which emit_guard_sequence does not model (so it defers such a pair).
+fn guard_comparison_key(condition: &Expression) -> Option<(String, i64)> {
+    let Expression::Binary { operator, left, right } = condition else { return None };
+    if !matches!(
+        operator,
+        BinaryOperator::Less
+            | BinaryOperator::Greater
+            | BinaryOperator::LessEqual
+            | BinaryOperator::GreaterEqual
+            | BinaryOperator::Equal
+            | BinaryOperator::NotEqual
+    ) {
+        return None;
+    }
+    if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), constant_value(right)) {
+        return Some((name.clone(), constant));
+    }
+    if let (Some(constant), Expression::Variable(name)) = (constant_value(left), right.as_ref()) {
+        return Some((name.clone(), constant));
+    }
+    None
+}
+
 /// The branchless select for a guard `if (cond) return value;` with fall-through
 /// `default`. mwcc keeps the *guard value* as the in-place default, so a negated
 /// guard `if (!c) ...` is compiled by stripping the `!` and swapping the arms —
@@ -2420,6 +2445,21 @@ impl Generator {
             _ => false,
         };
 
+        // mwcc reuses one `cmpwi` across consecutive guards that test the same operand against the
+        // same constant: `if (a < 0) ...; if (a == 0) ...` shares `cmpwi r3,0`, the second guard
+        // branching on the same result (`bne`). That cross-guard condition-register reuse is not
+        // modeled — each guard here emits its own compare — so a sequence containing such a pair
+        // would emit a redundant second `cmpwi` (a byte diff). Defer it rather than ship that.
+        for pair in guards.windows(2) {
+            if let (Some(first), Some(second)) =
+                (guard_comparison_key(&pair[0].condition), guard_comparison_key(&pair[1].condition))
+            {
+                if first == second {
+                    return Err(Diagnostic::error("consecutive guards sharing a compare need cross-guard CR reuse (roadmap)"));
+                }
+            }
+        }
+
         for (index, guard) in guards.iter().enumerate() {
             let is_last = index + 1 == guards.len();
 
@@ -2427,7 +2467,11 @@ impl Generator {
             // one branchless select `(cond) ? value : final` — the same form as a
             // lone guard — not a third early-return branch. Earlier guards stay as
             // forward-branching early returns.
-            if is_last && !final_in_result {
+            // The last guard folds into the fall-through as a single select `(cond) ? value :
+            // final` whenever the final isn't already in the result register, OR the guard value
+            // is a constant (the select's constant-arm forms cover `(a>10) ? 1 : a` etc., which
+            // the in-result `bnelr` path below cannot — it needs a register value).
+            if is_last && (!final_in_result || constant_value(&guard.value).is_some()) {
                 let select = guard_select(&guard.condition, &guard.value, final_return);
                 self.evaluate_tail(&select, return_type, result)?;
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
@@ -2435,6 +2479,21 @@ impl Generator {
             }
 
             let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+            // A (non-last) guard with a CONSTANT value: forward-branch past the return when the
+            // condition is false, load the constant into the result, and return —
+            // `cmpwi; bge skip; li result, c; blr; skip:`. (A constant has no leaf register, so the
+            // leaf paths below would defer at general_register_of_leaf.)
+            if let Some(constant) = constant_value(&guard.value) {
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.load_integer_constant(result, constant);
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                let next = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = next;
+                }
+                continue;
+            }
             let value_register = self.general_register_of_leaf(&guard.value)?;
 
             if is_last && final_in_result {
