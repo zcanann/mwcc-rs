@@ -475,20 +475,37 @@ impl Generator {
             return Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"));
         }
 
-        // ===== Long-long PARAMETERS present. Only an ALL-long-long list is modeled: each occupies
-        // an odd-start GPR pair r3:r4, r5:r6, … (high = r3 + 2*index, low = high + 1). A mixed int/
-        // long-long list skips registers for alignment, and >4 long-long args overflow to the
-        // stack — both defer.
-        let all_long_long_parameters = function
-            .parameters
-            .iter()
-            .all(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong));
-        if !all_long_long_parameters || function.parameters.len() > 4 {
-            return Err(Diagnostic::error("a mixed or overflowing long-long parameter list is not modeled yet (roadmap)"));
+        // ===== Long-long PARAMETERS present. Allocate GPR argument registers per the EABI: each
+        // int-like param takes one GPR; each long-long param an odd-start GPR pair (aligning up if
+        // the next GPR is even), so `f(int x, long long a)` puts x in r3 and a in r5:r6. A float/
+        // double/struct param alongside a long long (FPRs or aggregates) and an argument list that
+        // overflows r3..r10 both defer.
+        const LAST_GENERAL_ARGUMENT: u8 = Eabi::FIRST_GENERAL_ARGUMENT + 7; // r10
+        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
+        let mut param_pair: std::collections::HashMap<&str, (u8, Option<u8>)> = std::collections::HashMap::new();
+        for parameter in &function.parameters {
+            match parameter.parameter_type {
+                Type::LongLong | Type::UnsignedLongLong => {
+                    if next_general % 2 == 0 {
+                        next_general += 1; // a long-long pair starts on an odd register
+                    }
+                    if next_general + 1 > LAST_GENERAL_ARGUMENT {
+                        return Err(Diagnostic::error("a long-long argument that overflows to the stack is not modeled yet (roadmap)"));
+                    }
+                    param_pair.insert(parameter.name.as_str(), (next_general, Some(next_general + 1)));
+                    next_general += 2;
+                }
+                Type::Int | Type::UnsignedInt | Type::Short | Type::UnsignedShort | Type::Char | Type::UnsignedChar
+                | Type::Pointer(_) | Type::StructPointer { .. } => {
+                    if next_general > LAST_GENERAL_ARGUMENT {
+                        return Err(Diagnostic::error("an integer argument that overflows to the stack is not modeled yet (roadmap)"));
+                    }
+                    param_pair.insert(parameter.name.as_str(), (next_general, None));
+                    next_general += 1;
+                }
+                _ => return Err(Diagnostic::error("a float/double/struct parameter alongside a long long is not modeled yet (roadmap)")),
+            }
         }
-        let index_of = |name: &str| function.parameters.iter().position(|parameter| parameter.name == name);
-        let pair_high = |index: usize| high + 2 * index as u8;
-        let pair_low = |index: usize| high + 2 * index as u8 + 1;
 
         // (c) TRUNCATE a long-long param to int/unsigned — `(int)a` or implicit — is its LOW word:
         // `mr r3, low(a)`.
@@ -498,8 +515,8 @@ impl Generator {
                 other => other,
             };
             if let Expression::Variable(name) = truncated {
-                if let Some(index) = index_of(name) {
-                    self.output.instructions.push(Instruction::move_register(high, pair_low(index)));
+                if let Some(&(_, Some(low_register))) = param_pair.get(name.as_str()) {
+                    self.output.instructions.push(Instruction::move_register(high, low_register));
                     self.emit_epilogue_and_return();
                     return Ok(());
                 }
@@ -513,10 +530,10 @@ impl Generator {
         // (d) RETURN a long-long param: move its pair into the result pair (a bare `blr` when it is
         // already there — the first parameter). mwcc moves LOW then HIGH (`mr r4,r6 ; mr r3,r5`).
         if let Expression::Variable(name) = return_expression {
-            if let Some(index) = index_of(name) {
-                if pair_high(index) != high {
-                    self.output.instructions.push(Instruction::move_register(low, pair_low(index)));
-                    self.output.instructions.push(Instruction::move_register(high, pair_high(index)));
+            if let Some(&(parameter_high, Some(parameter_low))) = param_pair.get(name.as_str()) {
+                if parameter_high != high {
+                    self.output.instructions.push(Instruction::move_register(low, parameter_low));
+                    self.output.instructions.push(Instruction::move_register(high, parameter_high));
                 }
                 self.emit_epilogue_and_return();
                 return Ok(());
@@ -527,18 +544,20 @@ impl Generator {
         // HIGH: `addc r4,r4,r6 ; adde r3,r3,r5` or `subfc r4,r6,r4 ; subfe r3,r5,r3`.
         if let Expression::Binary { operator, left, right } = return_expression {
             if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
-                if let (Some(left_index), Some(right_index)) = (index_of(left_name), index_of(right_name)) {
+                if let (Some(&(left_high, Some(left_low))), Some(&(right_high, Some(right_low)))) =
+                    (param_pair.get(left_name.as_str()), param_pair.get(right_name.as_str()))
+                {
                     match operator {
                         BinaryOperator::Add => {
-                            self.output.instructions.push(Instruction::AddCarrying { d: low, a: pair_low(left_index), b: pair_low(right_index) });
-                            self.output.instructions.push(Instruction::AddExtended { d: high, a: pair_high(left_index), b: pair_high(right_index) });
+                            self.output.instructions.push(Instruction::AddCarrying { d: low, a: left_low, b: right_low });
+                            self.output.instructions.push(Instruction::AddExtended { d: high, a: left_high, b: right_high });
                             self.emit_epilogue_and_return();
                             return Ok(());
                         }
                         // subfc rD,rA,rB = rB - rA, so the minuend (left) is `b` and subtrahend (right) is `a`.
                         BinaryOperator::Subtract => {
-                            self.output.instructions.push(Instruction::SubtractFromCarrying { d: low, a: pair_low(right_index), b: pair_low(left_index) });
-                            self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: pair_high(right_index), b: pair_high(left_index) });
+                            self.output.instructions.push(Instruction::SubtractFromCarrying { d: low, a: right_low, b: left_low });
+                            self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: right_high, b: left_high });
                             self.emit_epilogue_and_return();
                             return Ok(());
                         }
