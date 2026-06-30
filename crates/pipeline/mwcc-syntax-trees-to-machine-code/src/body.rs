@@ -629,6 +629,24 @@ impl Generator {
         {
             return self.emit_long_long(function);
         }
+        // `loc = …; return loc` where `loc` is a VARIABLE-INDEXED access (`p[i]`) or a GLOBAL —
+        // mwcc reuses the scaled index it already computed (`slwi` once) or the just-stored value,
+        // but ours recomputes the index (`slwi` twice) or reloads the global, a byte-different
+        // sequence. Defer. (A deref `*p`, a member `s->x`, a const index `p[0]`, and a
+        // register param/local are byte-exact and unaffected.)
+        if let Some(return_expression) = &function.return_expression {
+            for statement in &function.statements {
+                if let Statement::Store { target, .. } = statement {
+                    if structurally_equal(target, return_expression) {
+                        let recomputes_address = matches!(target, Expression::Index { index, .. } if constant_value(index).is_none())
+                            || matches!(target, Expression::Variable(name) if self.globals.contains_key(name.as_str()));
+                        if recomputes_address {
+                            return Err(Diagnostic::error("storing to a variable-indexed or global location then returning it recomputes the address (roadmap)"));
+                        }
+                    }
+                }
+            }
+        }
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,
         // since an address-taken variable cannot be value-tracked in a register.
