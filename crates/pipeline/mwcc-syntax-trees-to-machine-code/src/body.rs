@@ -1293,6 +1293,8 @@ impl Generator {
         // the save at `mflr+1`, so the `li` must come along here. Allow it only after a
         // move, leaving the lone-`li` direct-call case to the other pass unchanged.
         let mut saw_move = false;
+        // mwcc hoists at most the first TWO leading argument-setup instructions into the mflr->LR-store
+        // gap (three moves, `sink3(a,b,c)`, keep the third after the store), so the run is capped at 2.
         while run < 2 {
             let Some(instruction) = self.output.instructions.get(store + 1 + run) else { break };
             let hoistable = match *instruction {
@@ -1302,6 +1304,25 @@ impl Generator {
                     movable
                 }
                 Instruction::AddImmediate { d, a, .. } => d != 0 && (a != 0 || saw_move),
+                // Any other single-cycle ALU arg-compute (`add`, `mullw`, `subf`, `and`, `xor`, shifts,
+                // `neg`) leading a call's argument setup is hoisted the same way (`g(a+b)` ->
+                // `add r3,r3,r4; stw r0`). A LOAD arg (`g(*p)`) is NOT hoisted — it stays after the LR
+                // save — so this is an ALU whitelist; the no-r0-operand check keeps the hoisted compute
+                // independent of the saved-LR store (which reads r0).
+                ref other
+                    if matches!(other,
+                        Instruction::Add { .. } | Instruction::MultiplyLow { .. } | Instruction::SubtractFrom { .. }
+                        | Instruction::And { .. } | Instruction::Xor { .. } | Instruction::ShiftLeftWord { .. }
+                        | Instruction::ShiftRightWord { .. } | Instruction::ShiftRightAlgebraicWord { .. }
+                        | Instruction::Negate { .. } | Instruction::ShiftLeftImmediate { .. }
+                        | Instruction::ShiftRightAlgebraicImmediate { .. } | Instruction::ShiftRightLogicalImmediate { .. }
+                        | Instruction::ClearLeftImmediate { .. } | Instruction::AndContiguousMask { .. }
+                        | Instruction::RotateAndMask { .. } | Instruction::OrImmediate { .. }) =>
+                {
+                    let movable = mwcc_vreg::register_operands(other).iter().all(|operand| operand.register != 0);
+                    saw_move |= movable;
+                    movable
+                }
                 _ => false,
             };
             if !hoistable {
