@@ -109,6 +109,30 @@ impl Generator {
             }
         }
 
+        // A local that REINTERPRETS signedness (`unsigned u = signed_x;`, `int s = unsigned_x;`)
+        // carries the LOCAL's declared signedness, which only matters when the local is USED in a
+        // SIGN-SENSITIVE op: `u >> 4` is a LOGICAL shift (`srwi`) for an unsigned `u` but ARITHMETIC
+        // (`srawi`) for a signed one — likewise signed/unsigned divide and compare. Inlining the
+        // initializer raw drops the local's signedness and emits the wrong shift/divide/compare (a
+        // miscompile for negative values). A sign-INSENSITIVE use (`x | y`, `+`, `==`) is byte-exact
+        // either way, so only defer when a reinterpreting local feeds a sign-sensitive op.
+        for local in &function.locals {
+            let Some(initializer) = &local.initializer else { continue };
+            let Ok(initializer_signed) = self.signedness_of(initializer) else { continue };
+            if initializer_signed == self.signed_of(local.declared_type) {
+                continue;
+            }
+            let name: std::collections::HashSet<&str> = std::iter::once(local.name.as_str()).collect();
+            let feeds_sign_sensitive_op = function.return_expression.as_ref().is_some_and(|ret| used_in_sign_sensitive_op(ret, &name))
+                || function.statements.iter().any(|statement| match statement {
+                    Statement::Store { value, .. } | Statement::Assign { value, .. } => used_in_sign_sensitive_op(value, &name),
+                    _ => false,
+                });
+            if feeds_sign_sensitive_op {
+                return Err(Diagnostic::error("a local that reinterprets signedness and feeds a sign-sensitive op is not value-tracked (roadmap)"));
+            }
+        }
+
         // Constraints — anything outside the pure-local-arithmetic shape defers.
         if !function.guards.is_empty() {
             return Err(Diagnostic::error("value tracking combined with guards is not supported yet (roadmap)"));
@@ -178,6 +202,35 @@ impl Generator {
 
 /// Error if substituting `values` into `expression` would duplicate a non-leaf
 /// computation (a local whose value is not a leaf appearing more than once).
+/// Whether `expression` uses any of `names` as an operand of a SIGN-SENSITIVE operation — a right
+/// shift, a divide/modulo, or a relational comparison — where the operand's signedness selects the
+/// instruction (`srwi`/`srawi`, `divwu`/`divw`, `cmplw`/`cmpw`).
+fn used_in_sign_sensitive_op(expression: &Expression, names: &std::collections::HashSet<&str>) -> bool {
+    match expression {
+        Expression::Binary { operator, left, right } => {
+            let sign_sensitive = matches!(
+                operator,
+                BinaryOperator::ShiftRight | BinaryOperator::Divide | BinaryOperator::Modulo
+                    | BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
+            );
+            (sign_sensitive && (crate::analysis::reads_register(left, names) || crate::analysis::reads_register(right, names)))
+                || used_in_sign_sensitive_op(left, names)
+                || used_in_sign_sensitive_op(right, names)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } | Expression::AddressOf { operand } => used_in_sign_sensitive_op(operand, names),
+        Expression::Dereference { pointer } => used_in_sign_sensitive_op(pointer, names),
+        Expression::Conditional { condition, when_true, when_false } => {
+            used_in_sign_sensitive_op(condition, names) || used_in_sign_sensitive_op(when_true, names) || used_in_sign_sensitive_op(when_false, names)
+        }
+        Expression::Index { base, index } => used_in_sign_sensitive_op(base, names) || used_in_sign_sensitive_op(index, names),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => used_in_sign_sensitive_op(base, names),
+        Expression::Call { arguments, .. } => arguments.iter().any(|argument| used_in_sign_sensitive_op(argument, names)),
+        Expression::Assign { target, value } => used_in_sign_sensitive_op(target, names) || used_in_sign_sensitive_op(value, names),
+        Expression::Comma { left, right } => used_in_sign_sensitive_op(left, names) || used_in_sign_sensitive_op(right, names),
+        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+    }
+}
+
 fn guard_no_duplication(expression: &Expression, values: &HashMap<String, Expression>) -> Compilation<()> {
     for (name, value) in values {
         if !is_leaf_value(value) && count_references(name, expression) > 1 {
