@@ -224,6 +224,10 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             // A standalone `.` is member access; `.` inside a number is consumed
             // by the literal lexer above.
             '.' => Token::Dot,
+            // `@` only occurs inside a Metrowerks inline-`asm` block (a local label
+            // `@2` or a reloc suffix `sym@ha`). Tokenize it so one asm-bodied function
+            // does not turn the whole file into a lex-error; the asm function defers.
+            '@' => Token::At,
             other => return Err(Diagnostic::error(format!("unexpected character '{other}'"))),
         };
         tokens.push(punctuation);

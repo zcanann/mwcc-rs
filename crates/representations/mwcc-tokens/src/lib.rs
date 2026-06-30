@@ -37,6 +37,11 @@ pub enum Token {
     Minus,
     Arrow,
     Dot,
+    /// `@` — only ever appears inside a Metrowerks inline-`asm` block (a local
+    /// label like `@2` or a relocation suffix like `sym@ha`). Lexed so a whole
+    /// file is not an opaque lex-error when one of its functions has an asm body;
+    /// the asm function itself still defers (codegen never consumes this token).
+    At,
     Star,
     Slash,
     Percent,
