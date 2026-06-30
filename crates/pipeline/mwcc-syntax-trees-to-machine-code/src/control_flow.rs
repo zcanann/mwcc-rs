@@ -986,6 +986,27 @@ impl Generator {
                 if as_member(left).is_some() && as_member(right).is_some() {
                     return Err(Diagnostic::error("comparison of two members as a condition (roadmap)"));
                 }
+                // `unsigned u > 0` / `0 < u` is `u != 0`, and `unsigned u <= 0` / `0 >= u` is
+                // `u == 0` — as a branch mwcc uses the equality idiom (`bne`/`beq`), not the
+                // unsigned relational one (`bgt`/`ble`). Rewrite to the equality and recurse, the
+                // same fold emit_comparison applies in value position (canary 856).
+                if !(self.signedness_of(left)? && self.signedness_of(right)?) {
+                    let folded = match operator {
+                        BinaryOperator::Greater if is_zero_literal(right) => Some((BinaryOperator::NotEqual, left.as_ref(), right.as_ref())),
+                        BinaryOperator::LessEqual if is_zero_literal(right) => Some((BinaryOperator::Equal, left.as_ref(), right.as_ref())),
+                        BinaryOperator::Less if is_zero_literal(left) => Some((BinaryOperator::NotEqual, right.as_ref(), left.as_ref())),
+                        BinaryOperator::GreaterEqual if is_zero_literal(left) => Some((BinaryOperator::Equal, right.as_ref(), left.as_ref())),
+                        _ => None,
+                    };
+                    if let Some((equality, operand, zero)) = folded {
+                        let rewritten = Expression::Binary {
+                            operator: equality,
+                            left: Box::new(operand.clone()),
+                            right: Box::new(zero.clone()),
+                        };
+                        return self.emit_condition_test(&rewritten);
+                    }
+                }
                 let signed = self.signedness_of(left)? && self.signedness_of(right)?;
                 let left_register = self.condition_operand_register(left)?;
                 // An operand whose register isn't already the right width must be
