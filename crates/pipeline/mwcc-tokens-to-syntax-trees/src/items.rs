@@ -1677,6 +1677,7 @@ impl Parser {
         // Track each parameter's type (function-scoped — cleared per function) so `sizeof(param)`
         // folds to a `size_t` constant.
         self.variable_types.clear();
+        self.variable_array_bytes.clear();
         for parameter in &parameters {
             self.variable_types.insert(parameter.name.clone(), parameter.parameter_type);
         }
@@ -1730,10 +1731,17 @@ impl Parser {
                     None
                 };
                 let initializer = if array_length.is_none() && self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
-                // A scalar local's type feeds `sizeof(local)` (an array's sizeof is its total, which
-                // needs the element count — left to defer for now).
-                if array_length.is_none() {
-                    self.variable_types.insert(name.clone(), declared_type);
+                // A scalar local's type — and an array's ELEMENT type — feeds `sizeof(local)` and
+                // `sizeof(local[i])`/`sizeof(*local)`; an array also records its TOTAL byte size
+                // (element size * length) for `sizeof(arr)`.
+                self.variable_types.insert(name.clone(), declared_type);
+                if let Some(length) = array_length {
+                    let element_bytes = match declared_type {
+                        Type::Struct { size, .. } => size as u32,
+                        Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                        other => other.width() as u32 / 8,
+                    };
+                    self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
                 }
                 locals.push(LocalDeclaration { declared_type, name, initializer, array_length });
                 if *self.peek() == Token::Comma {

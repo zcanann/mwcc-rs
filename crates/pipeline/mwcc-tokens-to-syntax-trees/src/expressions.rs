@@ -124,6 +124,18 @@ impl Parser {
             self.advance();
             let right = self.binary_expression(operator.precedence() + 1)?;
             left = Expression::Binary { operator, left: Box::new(left), right: Box::new(right) };
+            // Fold a constant `/` or `%` of two integer literals — `16/4` is `li r3,4` (mwcc), not a
+            // runtime divide. (Add/sub/mul/shift of literals already lower to the constant; division
+            // did not.) Enables the `sizeof(arr)/sizeof(arr[0])` array-length idiom.
+            if matches!(operator, BinaryOperator::Divide | BinaryOperator::Modulo) {
+                if let Expression::Binary { left: numerator, right: denominator, .. } = &left {
+                    if matches!((numerator.as_ref(), denominator.as_ref()), (Expression::IntegerLiteral(_), Expression::IntegerLiteral(_))) {
+                        if let Ok(value) = fold_constant_expression(&left) {
+                            left = Expression::IntegerLiteral(value);
+                        }
+                    }
+                }
+            }
         }
         Ok(left)
     }
@@ -231,11 +243,13 @@ impl Parser {
                 }
             };
             let bytes = match &operand {
-                Expression::Variable(name) => self.variable_types.get(name).map(|variable_type| size_of(*variable_type)),
+                Expression::Variable(name) => self.variable_array_bytes.get(name).copied().or_else(|| self.variable_types.get(name).map(|variable_type| size_of(*variable_type))),
                 Expression::Member { member_type, .. } => Some(size_of(*member_type)),
                 Expression::Cast { target_type, .. } => Some(size_of(*target_type)),
-                // `*p` / `a[i]`: the size of the pointed-to element of the base pointer variable.
+                // `*p` / `a[i]`: the size of the pointed-to element. For an ARRAY base the element
+                // type is in variable_types; for a POINTER base it is the pointee.
                 Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => match pointer.as_ref() {
+                    Expression::Variable(name) if self.variable_array_bytes.contains_key(name) => self.variable_types.get(name).map(|element_type| size_of(*element_type)),
                     Expression::Variable(name) => match self.variable_types.get(name) {
                         Some(Type::Pointer(pointee)) => Some(size_of(pointee.element())),
                         Some(Type::StructPointer { element_size }) => Some(*element_size as u32),
