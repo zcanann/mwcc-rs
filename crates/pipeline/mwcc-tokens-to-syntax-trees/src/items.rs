@@ -1183,15 +1183,19 @@ impl Parser {
             // `typedef <type> <name>;` registers a type alias. (Function-pointer and
             // array typedefs are not in the subset yet.)
             if self.eat_word("typedef") {
-                // `typedef struct [Tag] { … } Alias;` registers the layout and the
-                // alias->tag mapping (an anonymous struct uses the alias as its tag).
-                let tagged = *self.peek() == Token::KeywordStruct
+                // `typedef struct/union [Tag] { … } Alias;` registers the layout and the
+                // alias->tag mapping (an anonymous one uses the alias as its tag). A union is
+                // laid out like a struct — every member at offset 0 — so both share this path
+                // and member access resolves identically. `union` is lexed as a plain identifier,
+                // not a keyword. (A bodyless `typedef union Tag Alias;` falls through to parse_type.)
+                let is_union_kw = matches!(self.peek(), Token::Identifier(word) if word == "union");
+                let tagged = (*self.peek() == Token::KeywordStruct || is_union_kw)
                     && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
                         || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen));
                 if tagged {
-                    self.advance(); // `struct`
+                    self.advance(); // `struct` or `union`
                     let tag = if matches!(self.peek(), Token::Identifier(_)) { self.parse_identifier()? } else { String::new() };
-                    let layout = self.parse_struct_body()?;
+                    let layout = if is_union_kw { self.parse_union_body()? } else { self.parse_struct_body()? };
                     // One or more comma-separated declarators: a value alias `Vec`
                     // or a pointer alias `*VecPtr`. The first value alias names an
                     // anonymous struct's tag.
