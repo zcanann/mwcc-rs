@@ -456,7 +456,15 @@ impl Generator {
                 // 0` is not a direct load and is unaffected; a short load sign-extends.)
                 if is_comparison(*operator) || matches!(operator, BinaryOperator::Divide) {
                     if self.is_signed_byte_load(left.as_ref())? || self.is_signed_byte_load(right.as_ref())? {
-                        return Err(Diagnostic::error("a signed char load operand of a comparison/divide needs a sign-extension (roadmap)"));
+                        // `signed_char < 0` is the 1-instruction sign-bit idiom; comparisons.rs loads
+                        // the byte into the scratch and sign-extends it in place. The other relations
+                        // (and divide) still need per-case handling, so defer them.
+                        let handled = matches!(operator, BinaryOperator::Less)
+                            && is_zero_literal(right.as_ref())
+                            && self.is_signed_byte_load(left.as_ref())?;
+                        if !handled {
+                            return Err(Diagnostic::error("a signed char load operand of a comparison/divide needs a sign-extension (roadmap)"));
+                        }
                     }
                 }
                 // Comparisons compile to branchless idioms.

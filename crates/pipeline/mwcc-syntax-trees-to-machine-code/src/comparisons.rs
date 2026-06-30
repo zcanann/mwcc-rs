@@ -185,9 +185,18 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
-            // signed x < 0 : the sign bit.
+            // signed x < 0 : the sign bit. A signed-char load is brought into the scratch and
+            // sign-extended in place (`lbz r0; extsb r0,r0`), matching mwcc, rather than through
+            // place_operand (which sign-extends into the destination and would mismatch the idiom's
+            // register).
             BinaryOperator::Less if is_zero_literal(right) && signed_comparison => {
-                let source = self.place_operand_or_scratch(left, d)?;
+                let source = if self.is_signed_byte_load(left)? {
+                    self.evaluate_general(left, GENERAL_SCRATCH)?;
+                    self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+                    GENERAL_SCRATCH
+                } else {
+                    self.place_operand_or_scratch(left, d)?
+                };
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift: 31 });
                 Ok(())
             }
