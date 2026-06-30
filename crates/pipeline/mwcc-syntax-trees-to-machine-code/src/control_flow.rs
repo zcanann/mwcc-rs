@@ -290,6 +290,10 @@ impl Generator {
         } else {
             Instruction::And { a: destination, s: x, b: GENERAL_SCRATCH }
         });
+        // This clamp-to-zero SELECT is a ternary: advance mwcc's anonymous-`@N` counter by 3,
+        // like the other ternary forms. The value is integer (signedness checked above), so no
+        // float guard is needed; only a frame fn's extab numbering observes it.
+        self.output.anonymous_label_bump += 3;
         Ok(true)
     }
 
