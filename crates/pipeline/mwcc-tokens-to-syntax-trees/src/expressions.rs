@@ -211,7 +211,27 @@ impl Parser {
                 };
                 return Ok(Expression::IntegerLiteral(bytes as i64));
             }
-            return Err(Diagnostic::error("sizeof of an expression is not supported yet (roadmap)"));
+            // `sizeof expr` / `sizeof(expr)` for a form whose type we can resolve — a plain variable
+            // (parameter or scalar local) of a known type. mwcc folds it to a `size_t` constant
+            // (`li r3,N`), exactly like `sizeof(type)`. Other expression shapes still defer.
+            let operand = if parenthesized {
+                let inner = self.expression()?;
+                self.expect(Token::ParenClose)?;
+                inner
+            } else {
+                self.factor()?
+            };
+            if let Expression::Variable(variable) = &operand {
+                if let Some(variable_type) = self.variable_types.get(variable).copied() {
+                    let bytes = match variable_type {
+                        mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
+                        mwcc_syntax_trees::Type::Pointer(_) | mwcc_syntax_trees::Type::StructPointer { .. } => 4,
+                        other => other.width() as u32 / 8,
+                    };
+                    return Ok(Expression::IntegerLiteral(bytes as i64));
+                }
+            }
+            return Err(Diagnostic::error("sizeof of this expression is not supported yet (roadmap)"));
         }
 
         // A `(struct S *)x` cast carries the struct tag (stashed by `parse_type` in

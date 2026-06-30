@@ -1674,6 +1674,13 @@ impl Parser {
     fn function_body(&mut self, return_type: Type, name: String, is_static: bool, parameters: Vec<Parameter>) -> Compilation<Function> {
         self.expect(Token::BraceOpen)?;
 
+        // Track each parameter's type (function-scoped — cleared per function) so `sizeof(param)`
+        // folds to a `size_t` constant.
+        self.variable_types.clear();
+        for parameter in &parameters {
+            self.variable_types.insert(parameter.name.clone(), parameter.parameter_type);
+        }
+
         // Zero or more local declarations precede the return statement. A
         // statement that begins with a type keyword is a local declaration;
         // `return` ends the body.
@@ -1723,6 +1730,11 @@ impl Parser {
                     None
                 };
                 let initializer = if array_length.is_none() && self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
+                // A scalar local's type feeds `sizeof(local)` (an array's sizeof is its total, which
+                // needs the element count — left to defer for now).
+                if array_length.is_none() {
+                    self.variable_types.insert(name.clone(), declared_type);
+                }
                 locals.push(LocalDeclaration { declared_type, name, initializer, array_length });
                 if *self.peek() == Token::Comma {
                     self.advance();
