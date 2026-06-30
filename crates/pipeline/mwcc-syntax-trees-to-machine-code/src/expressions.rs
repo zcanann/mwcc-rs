@@ -624,6 +624,15 @@ impl Generator {
                 if self.try_emit_distributive_bitwise(*operator, left, right, destination)? {
                     return Ok(());
                 }
+                // Two COMPOUND-load operands (each wrapping a load in an op, `p->x*p->x +
+                // p->y*p->y`) reach the generic combine only as genuinely complex shapes — the
+                // simple two-load idioms above already took `*p op *q`, `s->x op s->y`, and two BARE
+                // loads (`*(p+1)+*(p+2)`) stay byte-exact (loads adjacent). mwcc hoists both loads to
+                // the top with an allocator-chosen register assignment; the generic combine
+                // interleaves load/op/load/op — same result, different schedule. Defer, don't ship.
+                if is_compound_load(left) && is_compound_load(right) {
+                    return Err(Diagnostic::error("a binary over two compound-load operands needs the allocator (roadmap)"));
+                }
                 if !fits_single_scratch(expression, destination == GENERAL_SCRATCH) {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }

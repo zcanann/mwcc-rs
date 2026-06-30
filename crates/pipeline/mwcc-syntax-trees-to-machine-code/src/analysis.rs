@@ -846,6 +846,31 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
     }
 }
 
+/// Whether `expression` reads a value from memory (a dereference, subscript, or struct member),
+/// possibly nested inside arithmetic. When BOTH operands of a binary need a load, the generic
+/// combine interleaves them (`lwz; op; lwz; op; combine`) while mwcc hoists both loads to the top
+/// (`lwz; lwz; op; op; combine`) with an allocator-chosen register assignment we do not reproduce —
+/// a correct-result mis-schedule, so such shapes defer. Variables (value-tracked into registers)
+/// and calls (a separate path) are not memory loads here.
+pub(crate) fn contains_memory_load(expression: &Expression) -> bool {
+    match expression {
+        Expression::Dereference { .. } | Expression::Index { .. } | Expression::Member { .. } => true,
+        Expression::Binary { left, right, .. } => contains_memory_load(left) || contains_memory_load(right),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => contains_memory_load(operand),
+        _ => false,
+    }
+}
+
+/// A COMPOUND operand that wraps a memory load inside an operation (`p->x*p->x`, `-a[i]`), as
+/// opposed to a BARE load (`*p`, `a[i]`, `*(p+1)`). Evaluating a compound-load operand emits the
+/// load THEN an op, so when both operands are compound the two loads are not adjacent — the
+/// schedule mwcc avoids by hoisting both loads first (the keystone allocator). Two BARE loads keep
+/// their loads adjacent (`lwz; lwz; combine`) and stay byte-exact, so they are not compound.
+pub(crate) fn is_compound_load(expression: &Expression) -> bool {
+    matches!(expression, Expression::Binary { .. } | Expression::Unary { .. } | Expression::Cast { .. })
+        && contains_memory_load(expression)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
