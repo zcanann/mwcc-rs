@@ -682,6 +682,11 @@ impl Generator {
         if self.try_conditional_assign(function)? {
             return Ok(());
         }
+        // `T y = INIT; if (c) y = NEW; return y;` (no else), constant arms — mwcc lowers the
+        // conditional ASSIGN as an early-return branch form (NOT the select/branchless idiom).
+        if self.try_conditional_assign_initialized(function)? {
+            return Ok(());
+        }
         // A function's value-tracked locals are folded into its stores and trailing return,
         // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
         // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths
@@ -1280,6 +1285,53 @@ impl Generator {
         // guard_select rather than a bare `(c) ? A : B` select.
         let select = guard_select(condition, &when_true, &when_false);
         self.evaluate_tail(&select, function.return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// `T y = INIT; if (c) y = NEW; return y;` (an `if` with no else) where INIT and NEW are
+    /// constants. mwcc lowers this conditional ASSIGN as an early-return branch — distinct from the
+    /// select/branchless idiom it uses for the equivalent guard `if(c) return NEW; return INIT;`:
+    /// `<test c>; li result,INIT; b<!c>lr; li result,NEW; blr` (the false path returns the
+    /// initializer already in the result; the true path falls through to the new value). Variable
+    /// arms use a different move/staging form and are deferred here.
+    pub(crate) fn try_conditional_assign_initialized(&mut self, function: &Function) -> Compilation<bool> {
+        let [local] = function.locals.as_slice() else { return Ok(false) };
+        let Some(initializer) = &local.initializer else { return Ok(false) };
+        if local.array_length.is_some() || !function.guards.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        let Some(Expression::Variable(returned)) = &function.return_expression else { return Ok(false) };
+        if returned != &local.name {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name, value }] = then_body.as_slice() else {
+            return Ok(false);
+        };
+        if name != &local.name {
+            return Ok(false);
+        }
+        // Constant arms only — the branch form. Variable arms (the move/staging form) defer.
+        let (Some(init_const), Some(new_const)) = (constant_value(initializer), constant_value(value)) else {
+            return Ok(false);
+        };
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let result = Eabi::general_result().number;
+        // emit_condition_test returns the branch-if-FALSE options (as used for a guard's forward
+        // skip); here that is exactly what we want — return the initializer in place when the
+        // condition does not hold, then fall through to the new value.
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        self.load_integer_constant(result, init_const);
+        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+        self.load_integer_constant(result, new_const);
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
