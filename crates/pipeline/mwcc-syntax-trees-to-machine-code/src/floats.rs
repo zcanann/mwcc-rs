@@ -50,6 +50,17 @@ impl Generator {
                 if self.try_emit_mixed_promotion(*operator, left, right, destination, double)? {
                     return Ok(());
                 }
+                // A commutative float op (`+`/`*`) with a NEGATE operand diverges: `-a + b` keeps the
+                // fneg but swaps the fadds operand order (mwcc puts the fneg result FIRST), and
+                // `-(a*b) + c` contracts to a single `fnmsubs` we emit un-fused (fmuls; fneg; fadds).
+                // Defer until those are modeled. A SUBTRACT (`-a - b`, `c - a*b`) and a bare negate keep
+                // their byte-exact form, so this is gated to add/multiply with a direct negate operand.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply)
+                    && (matches!(left.as_ref(), Expression::Unary { operator: UnaryOperator::Negate, .. })
+                        || matches!(right.as_ref(), Expression::Unary { operator: UnaryOperator::Negate, .. }))
+                {
+                    return Err(Diagnostic::error("a float add/multiply with a negated operand needs fnmsubs / operand-order modeling (roadmap)"));
+                }
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
                     && self.try_emit_float_fused(*operator, left, right, destination, double)?
                 {
