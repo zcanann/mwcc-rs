@@ -241,6 +241,20 @@ impl Generator {
                 Err(Diagnostic::error("a comma operator in this position is not supported yet (roadmap)"))
             }
             Expression::Binary { operator, left, right } => {
+                // `(cmp1) OP (cmp2)` — an arithmetic/bitwise combine of TWO comparison-as-value
+                // idioms (`(a>0) - (a<0)`, `(a<b) + (a>b)`, `(a>0) | (a<0)`). mwcc INTERLEAVES the
+                // two comparison computations (instruction scheduling + register allocation); ours
+                // evaluates them sequentially — a correct value but a byte-different order. Matching
+                // the schedule needs the register allocator, so defer. (A logical `&&`/`||` combine
+                // routes through the short-circuit path; a comparison mixed with a leaf/constant —
+                // `(a<b) - 1` — keeps its single-comparison shape and is unaffected.)
+                if !is_comparison(*operator)
+                    && !matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
+                    && matches!(left.as_ref(), Expression::Binary { operator: inner, .. } if is_comparison(*inner))
+                    && matches!(right.as_ref(), Expression::Binary { operator: inner, .. } if is_comparison(*inner))
+                {
+                    return Err(Diagnostic::error("an arithmetic combine of two comparison values needs the register allocator's interleaving (roadmap)"));
+                }
                 // A comma operand with a side-effect-free left is equivalent to its right
                 // value; peel it so the right keeps its natural register (`(a,b)+1` == `b+1`,
                 // no spurious move). Only a flat arithmetic binary of leaves/constants is
