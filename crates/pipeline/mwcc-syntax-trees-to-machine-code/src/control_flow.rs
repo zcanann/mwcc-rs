@@ -580,12 +580,23 @@ impl Generator {
                 // r0,r3,2`. This keeps it off the scratch, which the `> 0` case needs for
                 // its `neg; andc` preamble, and matches mwcc whether the destination is a
                 // real register (a return, addi in place) or the scratch (a store).
-                let shift_source = if select.positive {
-                    self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: register });
-                    self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: register });
-                    GENERAL_SCRATCH
-                } else {
-                    register
+                let shift_source = match select.preamble {
+                    MaskPreamble::None => register,
+                    MaskPreamble::Andc => {
+                        self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: register });
+                        self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: register });
+                        GENERAL_SCRATCH
+                    }
+                    MaskPreamble::Or => {
+                        self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: register });
+                        self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: register });
+                        GENERAL_SCRATCH
+                    }
+                    MaskPreamble::Orc => {
+                        self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: register });
+                        self.output.instructions.push(Instruction::OrComplement { a: GENERAL_SCRATCH, s: register, b: GENERAL_SCRATCH });
+                        GENERAL_SCRATCH
+                    }
                 };
                 self.output.instructions.push(if select.arithmetic {
                     Instruction::ShiftRightAlgebraicImmediate { a: register, s: shift_source, shift: 31 }
@@ -1333,9 +1344,23 @@ pub(crate) fn sign_mask_select<'e>(condition: &'e Expression, when_true: &'e Exp
 /// `value` is the compared operand; `arithmetic` picks `srawi` (`-1/0`) vs `srwi`
 /// (`0/1`); `offset` is the trailing `addi`. When `positive` is set the truth is
 /// `x > 0`, needing a `neg; andc` preamble to form the mask base from `x`.
+/// The preamble that places, into the scratch, a value whose SIGN BIT is set exactly when the
+/// relation holds; `srawi`/`srwi` then broadcasts/extracts it. `None` uses the value's own sign
+/// bit directly (`< 0` / `>= 0`).
+#[derive(Clone, Copy)]
+enum MaskPreamble {
+    None,
+    /// `neg; andc` — bit 31 set iff `> 0`.
+    Andc,
+    /// `neg; or` — bit 31 set iff `!= 0`.
+    Or,
+    /// `neg; orc` — bit 31 set iff `<= 0`.
+    Orc,
+}
+
 struct SignConsecutive<'e> {
     value: &'e Expression,
-    positive: bool,
+    preamble: MaskPreamble,
     arithmetic: bool,
     offset: i16,
 }
@@ -1355,16 +1380,21 @@ fn sign_consecutive_select<'e>(condition: &'e Expression, when_true: &Expression
     }
     let value = left.as_ref();
     match operator {
-        // x < 0 ? c1 : c2 — mask + c2; the mask is -1/0 (srawi) when the negative
+        // x < 0 ? c1 : c2 — the value's own sign bit; -1/0 (srawi) when the negative
         // arm c1 is the lower constant, else 0/1 (srwi). Both orders match mwcc.
-        BinaryOperator::Less => Some(SignConsecutive { value, positive: false, arithmetic: c1 < c2, offset: i16::try_from(c2).ok()? }),
+        BinaryOperator::Less => Some(SignConsecutive { value, preamble: MaskPreamble::None, arithmetic: c1 < c2, offset: i16::try_from(c2).ok()? }),
         // x >= 0 ? c1 : c2 — only the c1<c2 order is this clean `srwi d,x,31; addi c1`
         // form (the negative arm c2 is the higher constant). The reverse order uses
         // an extra `xori`, so defer it rather than emit the two-instruction shape.
-        BinaryOperator::GreaterEqual if c1 < c2 => Some(SignConsecutive { value, positive: false, arithmetic: false, offset: i16::try_from(c1).ok()? }),
+        BinaryOperator::GreaterEqual if c1 < c2 => Some(SignConsecutive { value, preamble: MaskPreamble::None, arithmetic: false, offset: i16::try_from(c1).ok()? }),
         // x > 0 ? c1 : c2 — `neg r0,x; andc r0,r0,x` sets bit 31 iff x > 0, then the
         // same srawi/srwi + addi c2. Both arm orders match mwcc.
-        BinaryOperator::Greater => Some(SignConsecutive { value, positive: true, arithmetic: c1 < c2, offset: i16::try_from(c2).ok()? }),
+        BinaryOperator::Greater => Some(SignConsecutive { value, preamble: MaskPreamble::Andc, arithmetic: c1 < c2, offset: i16::try_from(c2).ok()? }),
+        // x != 0 ? c1 : c2 — `neg r0,x; or r0,r0,x` sets bit 31 iff x != 0. Both orders match.
+        BinaryOperator::NotEqual => Some(SignConsecutive { value, preamble: MaskPreamble::Or, arithmetic: c1 < c2, offset: i16::try_from(c2).ok()? }),
+        // x <= 0 ? c1 : c2 — `neg r0,x; orc r0,x,r0` sets bit 31 iff x <= 0. Only the c1<c2
+        // (srawi) order matches this shape; the reverse uses a different cntlzw idiom, so defer.
+        BinaryOperator::LessEqual if c1 < c2 => Some(SignConsecutive { value, preamble: MaskPreamble::Orc, arithmetic: true, offset: i16::try_from(c2).ok()? }),
         _ => None,
     }
 }
