@@ -554,6 +554,39 @@ impl Generator {
         // `cond ? x : 0` (AND) and `cond ? 0 : x` (ANDC) with a plain truth
         // condition are branchless: a mask all-ones when cond != 0, combined with
         // `x` (a leaf, or a non-zero constant materialized in r0).
+        // `(a == K) ? C : 0` (K, C non-zero) — mwcc forms the equality mask with NO compare:
+        // `addi t,a,-K; subfic r0,a,K; nor d,t,r0` yields a word whose sign bit is set iff a==K
+        // (both `a-K` and `K-a` are 0 then, so the NOR is all-ones); `srawi d,d,31` broadcasts it,
+        // and `and d,C,d` keeps C only when set — `addi r4,r3,-2; subfic r0,r3,2; nor r3,r4,r0;
+        // li r0,20; srawi r3,r3,31; and r3,r0,r3` for `(a==2)?20:0`. This is what a ternary chain
+        // recurses into. The constant C stages in r0, so a real-register destination is required.
+        if is_zero_literal(when_false) && destination != GENERAL_SCRATCH {
+            if let Expression::Binary { operator: BinaryOperator::Equal, left, right } = condition {
+                if let (Some(value_register), Some(equal_to), Some(result)) = (
+                    leaf_name(left).and_then(|name| self.lookup_general(name)),
+                    constant_value(right),
+                    constant_value(when_true),
+                ) {
+                    // `a == 0` uses a different (cntlzw) mask, so this `addi/subfic/nor` form is
+                    // only for a non-zero K (and a non-zero result C).
+                    if result != 0 && equal_to != 0 {
+                        if let Ok(constant) = i16::try_from(equal_to) {
+                            if let Some(negated) = constant.checked_neg() {
+                                let difference = self.fresh_virtual_general_avoiding(vec![value_register, destination]);
+                                self.output.instructions.push(Instruction::AddImmediate { d: difference, a: value_register, immediate: negated });
+                                self.output.instructions.push(Instruction::SubtractFromImmediate { d: GENERAL_SCRATCH, a: value_register, immediate: constant });
+                                self.output.instructions.push(Instruction::Nor { a: destination, s: difference, b: GENERAL_SCRATCH });
+                                self.load_integer_constant(GENERAL_SCRATCH, result);
+                                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: destination, shift: 31 });
+                                self.output.instructions.push(Instruction::And { a: destination, s: GENERAL_SCRATCH, b: destination });
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if is_zero_literal(when_false) && !is_zero_literal(when_true) {
             if self.try_emit_branchless_mask(condition, when_true, false, destination)? {
                 return Ok(());
