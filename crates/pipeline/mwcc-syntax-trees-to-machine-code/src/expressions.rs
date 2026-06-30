@@ -208,7 +208,23 @@ impl Generator {
                     self.emit_global_load(name, destination)
                 }
             }
-            Expression::Unary { operator, operand } => self.emit_unary(*operator, operand, destination),
+            Expression::Unary { operator, operand } => {
+                // Negating a COMPARISON value — mwcc folds the negate into the comparison's bool
+                // idiom. The SIGN-BIT comparisons `-(x < 0)` / `-(x > 0)` are modeled byte-exactly
+                // (a 0/-1 via neg/andc/srawi), but every OTHER negated comparison (`-(a < b)`,
+                // `-(a == 0)`, against a non-zero constant) uses a fused srawi/rlwinm we don't model,
+                // whereas ours emits the 0/1 value and a separate `neg` — a byte-different sequence.
+                if *operator == UnaryOperator::Negate {
+                    if let Expression::Binary { operator: inner, right, .. } = operand.as_ref() {
+                        let is_sign_bit_comparison = matches!(inner, BinaryOperator::Less | BinaryOperator::Greater)
+                            && crate::analysis::constant_value(right) == Some(0);
+                        if is_comparison(*inner) && !is_sign_bit_comparison {
+                            return Err(Diagnostic::error("negating a comparison value uses a fused bool idiom not modeled (roadmap)"));
+                        }
+                    }
+                }
+                self.emit_unary(*operator, operand, destination)
+            }
             Expression::Conditional { condition, when_true, when_false } => {
                 self.emit_conditional(condition, when_true, when_false, destination, false)
             }
