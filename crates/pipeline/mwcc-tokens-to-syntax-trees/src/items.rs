@@ -1800,9 +1800,16 @@ impl Parser {
             conditional_return
         } else if *self.peek() == Token::KeywordReturn {
             self.advance();
-            let value = self.expression()?;
-            self.expect(Token::Semicolon)?;
-            Some(value)
+            // A bare `return;` ends a `void` function with no value — like reaching the
+            // closing brace, it produces no return value (the epilogue is the whole tail).
+            if *self.peek() == Token::Semicolon {
+                self.advance();
+                None
+            } else {
+                let value = self.expression()?;
+                self.expect(Token::Semicolon)?;
+                Some(value)
+            }
         } else {
             None
         };
