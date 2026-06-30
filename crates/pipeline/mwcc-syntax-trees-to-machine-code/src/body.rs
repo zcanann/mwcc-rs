@@ -422,6 +422,13 @@ impl Generator {
         if let Some(cleaned) = remove_dead_locals(function) {
             return self.evaluate_body(&cleaned);
         }
+        // Returning a struct BY VALUE (`struct S f(...) { return s; }`) uses the struct-return
+        // ABI — a small struct in r3:r4, a larger one via a hidden pointer argument — which is
+        // not modeled. Defer rather than emit a bare `blr` that drops the result (a miscompile:
+        // the caller would read the input pointer / stale registers as the returned struct).
+        if matches!(function.return_type, Type::Struct { .. }) {
+            return Err(Diagnostic::error("returning a struct by value is not supported yet (roadmap)"));
+        }
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,
         // since an address-taken variable cannot be value-tracked in a register.

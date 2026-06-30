@@ -74,6 +74,14 @@ impl Generator {
     /// Leaf float operands only for now; int->float (the constant-pool direction)
     /// is handled separately once .sdata2 lands.
     pub(crate) fn emit_cast_to_integer(&mut self, target_type: Type, operand: &Expression, destination: u8) -> Compilation<()> {
+        // `(int)(float)x` / `(int)(double)x` is a ROUND-TRIP conversion, not an identity — a float
+        // cannot represent every int exactly, so the value can change. The full int->float->int
+        // sequence (constant-pool magic in, fctiwz out) is not modeled for a cast operand, so
+        // defer rather than fall through to the integer path, which would cancel both casts and
+        // silently drop the conversion (returning x unchanged — a miscompile for large ints).
+        if matches!(operand, Expression::Cast { target_type: Type::Float | Type::Double, .. }) {
+            return Err(mwcc_core::Diagnostic::error("an int<-float<-int round-trip cast is not modeled (roadmap)"));
+        }
         if self.is_float_leaf(operand) {
             // float -> unsigned uses a runtime helper call (the value may exceed
             // INT_MAX, which `fctiwz` cannot represent), not the signed frame bounce.
