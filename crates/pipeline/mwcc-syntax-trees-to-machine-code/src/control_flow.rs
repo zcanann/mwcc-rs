@@ -608,6 +608,41 @@ impl Generator {
             }
         }
 
+        // `(cond) ? const : <computed>` (and the mirror) in tail position — one arm a non-zero
+        // constant, the other a COMPUTED expression (not a leaf or constant), as produced by a
+        // guard with a computed fall-through: `if (a < 0) return -1; return a + 100;`. mwcc stages
+        // the constant in r0, forward-branches past the computed arm when the condition selects
+        // the constant, evaluates the computed arm into r0, then `mr dest, r0` (the shared epilogue
+        // follows the converged `mr` for a non-leaf): `cmpwi r3,0; li r0,-1; blt skip; addi
+        // r0,r3,100; skip: mr r3,r0`. Placed before the leaf/constant branch selects below, gated
+        // to the computed-arm case so it never intercepts those.
+        if tail && !is_zero_literal(when_true) && !is_zero_literal(when_false) {
+            let is_computed = |arm: &Expression| leaf_name(arm).is_none() && constant_value(arm).is_none();
+            let plan = match (constant_value(when_true), constant_value(when_false)) {
+                (Some(c), None) if is_computed(when_false) => Some((c, when_false, true)),
+                (None, Some(c)) if is_computed(when_true) => Some((c, when_true, false)),
+                _ => None,
+            };
+            if let Some((const_value, computed_arm, const_is_true)) = plan {
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                // Branch (skipping the computed arm) when the condition selects the constant arm:
+                // the negated skip-when-false test for a true-arm constant, the test itself otherwise.
+                let branch_options = if const_is_true { options ^ 8 } else { options };
+                self.load_integer_constant(GENERAL_SCRATCH, const_value);
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: branch_options, condition_bit, target: 0 });
+                self.evaluate_general(computed_arm, GENERAL_SCRATCH)?;
+                let label = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = label;
+                }
+                if destination != GENERAL_SCRATCH {
+                    self.output.instructions.push(Instruction::move_register(destination, GENERAL_SCRATCH));
+                }
+                return Ok(());
+            }
+        }
+
         // `(cond) ? leaf : C` / `(cond) ? C : leaf` — exactly one arm a non-zero
         // constant, the other a register leaf — when materializing the constant into the
         // result register would clobber the leaf before the move could read it. That
