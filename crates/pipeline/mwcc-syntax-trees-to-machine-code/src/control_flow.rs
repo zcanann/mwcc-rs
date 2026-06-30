@@ -557,6 +557,10 @@ impl Generator {
                 } else {
                     self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: register, shift: 31 });
                 }
+                // This branchless sign-mask SELECT (a ternary) advances mwcc's anonymous-`@N`
+                // counter by 3, like the other ternary forms (bool/comparison ternary, float
+                // branch); the instructions already match, so only the frame fn's extab @N differs.
+                self.output.anonymous_label_bump += 3;
                 return Ok(());
             }
         }
