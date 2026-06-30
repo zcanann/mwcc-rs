@@ -497,9 +497,22 @@ impl Generator {
         // `comparison ? 1 : 0` is the comparison; `comparison ? 0 : 1` is its negation.
         if let Expression::Binary { operator, left, right } = condition {
             if is_comparison(*operator) {
+                // The `(cmp) ? 1 : 0` / `? 0 : 1` TERNARY advances mwcc's anonymous-`@N` counter by
+                // 3 (the ternary construct), like the non-comparison `?1:0` path below; a direct
+                // `return a > b` does not. Only observable in a frame function's extab numbering.
+                // A FLOAT comparison condition bumps elsewhere (its own anonymous block), so guard
+                // this to integer comparisons.
                 match (constant_value(when_true), constant_value(when_false)) {
-                    (Some(1), Some(0)) => return self.evaluate_general(condition, destination),
+                    (Some(1), Some(0)) => {
+                        if !self.is_float_value(left) && !self.is_float_value(right) {
+                            self.output.anonymous_label_bump += 3;
+                        }
+                        return self.evaluate_general(condition, destination);
+                    }
                     (Some(0), Some(1)) => {
+                        if !self.is_float_value(left) && !self.is_float_value(right) {
+                            self.output.anonymous_label_bump += 3;
+                        }
                         let flipped = flip_comparison(*operator).unwrap();
                         return self.emit_comparison(flipped, left, right, destination);
                     }
