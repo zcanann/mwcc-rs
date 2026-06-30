@@ -2034,8 +2034,18 @@ impl Generator {
         if !matches!(kind, LoopKind::While) || body.is_empty() {
             return Ok(false);
         }
-        if matches!(condition, Expression::Binary { operator, .. } if crate::analysis::is_comparison(*operator)) {
-            return Ok(false);
+        // A comparison of the loop counter against a loop-invariant bound (`while (p < e)`) lets mwcc
+        // compute the trip count and emit a counted CTR loop, so it is deferred. But a comparison of a
+        // DATA-DEPENDENT value (`while (*p != 0)`, `while (*p > 0)`) has no computable trip count and
+        // stays the rotated form — allow it when one side is a dereference and the other a constant.
+        if let Expression::Binary { operator, left, right } = condition {
+            if crate::analysis::is_comparison(*operator) {
+                let dereference_vs_constant = (matches!(left.as_ref(), Expression::Dereference { .. }) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
+                    || (matches!(right.as_ref(), Expression::Dereference { .. }) && matches!(left.as_ref(), Expression::IntegerLiteral(_)));
+                if !dereference_vs_constant {
+                    return Ok(false);
+                }
+            }
         }
         // Every body statement must be an in-place `var = var +/- const` on a register parameter — the
         // increment/decrement of a scan pointer or index. No stores, calls, loads, or nested control.
