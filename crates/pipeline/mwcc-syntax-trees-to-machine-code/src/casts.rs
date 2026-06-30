@@ -7,6 +7,25 @@ use crate::generator::*;
 
 impl Generator {
 
+    /// The integer width (bits) of a cast's leaf operand, when determinable. Used to
+    /// defer a cast-to-float of a narrow (char/short) value: mwcc first widens it to
+    /// int (extsb/extsh) and reschedules the magic-constant idiom around that extra
+    /// instruction — a sequence not modeled here. `None` (unknown) proceeds as before.
+    fn cast_operand_width(&self, operand: &Expression) -> Option<u32> {
+        match operand {
+            Expression::Variable(name) => self
+                .locations
+                .get(name)
+                .map(|location| location.width as u32)
+                .or_else(|| self.globals.get(name).map(|global_type| global_type.width() as u32)),
+            Expression::Member { member_type, .. } => Some(member_type.width() as u32),
+            Expression::Cast { target_type, .. } => Some(target_type.width() as u32),
+            Expression::Dereference { pointer } => self.pointee_of(pointer).ok().map(|pointee| pointee.element().width() as u32),
+            Expression::Index { base, .. } => self.pointee_of(base).ok().map(|pointee| pointee.element().width() as u32),
+            _ => None,
+        }
+    }
+
     /// Emit a cast of an integer operand to a float in `destination` — mwcc's
     /// magic-constant conversion: bias the integer (flip its sign bit), assemble
     /// the double `0x43300000_<biased int>` on the stack, and subtract the bias
@@ -27,6 +46,13 @@ impl Generator {
             };
             self.output.instructions.push(Instruction::RoundToSingle { d: destination, b: source });
             return Ok(());
+        }
+        // A narrow integer (char/short) cast to float is first widened to int with
+        // extsb/extsh, and mwcc reschedules the magic-constant idiom around that extra
+        // instruction. That sequence is not modeled, so defer rather than emit the
+        // int-width idiom unextended (wrong bytes for a negative char/short).
+        if self.cast_operand_width(operand).map_or(false, |width| width < 32) {
+            return Err(mwcc_core::Diagnostic::error("cast-to-float of a narrow (char/short) value is not modeled (roadmap)"));
         }
         // The conversion assembles `0x43300000_<int>` on the stack and subtracts a
         // magic bias double (pooled in `.sdata2`). A signed value flips its sign bit
