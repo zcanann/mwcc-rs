@@ -395,7 +395,15 @@ impl Generator {
             let is_fitting_mask = matches!(operator, BinaryOperator::BitAnd)
                 && constant > 0
                 && constant < 0xff;
-            if !is_fitting_mask {
+            // Add/Subtract read the sign-extended operand through place_operand (`lbz r0; extsb
+            // d,r0` then the immediate), so they are byte-exact for a real-register destination. The
+            // other operators (multiply/shift/or/xor) take a different operand path that does not
+            // sign-extend yet, and the scratch (value/store) destination uses a different mwcc
+            // layout — both still defer.
+            let handled = is_fitting_mask
+                || (destination != GENERAL_SCRATCH
+                    && matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract));
+            if !handled {
                 return Err(Diagnostic::error("a signed char load promoted to int needs a sign-extension (roadmap)"));
             }
         }

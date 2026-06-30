@@ -2661,12 +2661,19 @@ impl Generator {
         // operand needs the sign-extension its `lbz`/`lbzx` does not carry — `p->x + 1` is
         // `lbz r0; extsb r3,r0; addi`, and every non-truncating operator (`+ - * << >> | ^ /`,
         // unary, compare) miscompiles on the raw zero-extended byte (`0xFF` reads 255, not -1).
-        // mwcc loads it into r0 and sign-extends into the destination, a register choice that
-        // is the keystone allocator's, so defer. A TRUNCATING consumer (a fitting mask) sets
-        // narrow_truncation_context and reads the raw byte — exempt; a SHORT load sign-extends
-        // (`lha`) and the direct `return p->x` uses evaluate_general — both unaffected.
+        // mwcc loads it into the scratch and sign-extends into the destination (`lbz r0;
+        // extsb d,r0`); the consumer then reads the sign-extended value from the destination. A
+        // TRUNCATING consumer (a fitting mask) sets narrow_truncation_context and reads the raw byte
+        // — exempt; a SHORT load sign-extends (`lha`) and the direct `return p->x` uses
+        // evaluate_general — both unaffected. The scratch destination (value/store context) uses a
+        // different mwcc layout, so it still defers there.
         if !self.narrow_truncation_context && self.is_signed_byte_load(operand)? {
-            return Err(Diagnostic::error("a signed char load operand needs a sign-extension (roadmap)"));
+            if destination == GENERAL_SCRATCH {
+                return Err(Diagnostic::error("a signed char load operand needs a sign-extension (roadmap)"));
+            }
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            self.emit_widen(destination, GENERAL_SCRATCH, 8, true);
+            return Ok(Some(destination));
         }
         if let Expression::Variable(name) = operand {
             // A global is loaded into the consumer's register (the destination for
