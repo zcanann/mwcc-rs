@@ -88,7 +88,9 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
     if !matches!(instructions[reload], Instruction::LoadWord { d: 0, a: 1, .. }) {
         return identity;
     }
-    let Some(call) = instructions[..reload].iter().rposition(|instruction| matches!(instruction, Instruction::BranchAndLink { .. })) else {
+    let Some(call) = instructions[..reload].iter().rposition(|instruction| {
+        matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToCountRegisterAndLink)
+    }) else {
         return identity;
     };
     let target = call + 1;
