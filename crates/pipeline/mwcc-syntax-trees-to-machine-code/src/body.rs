@@ -1254,7 +1254,11 @@ impl Generator {
     /// (value live across a branch) is the keystone's and defers.
     pub(crate) fn try_conditional_assign(&mut self, function: &Function) -> Compilation<bool> {
         let [local] = function.locals.as_slice() else { return Ok(false) };
-        if local.initializer.is_some() || local.array_length.is_some() || !function.guards.is_empty() || function_makes_call(function) {
+        // An initializer is DEAD here — both arms reassign the local before it is read (verified
+        // below) and the handler builds the select purely from the arm values — so allow it:
+        // `int b = INIT; if (c) b = A; else b = B; return b;` is the same select as the no-init form,
+        // which mwcc compiles identically. (No-else keeps deferring to the initialized handler.)
+        if local.array_length.is_some() || !function.guards.is_empty() || function_makes_call(function) {
             return Ok(false);
         }
         let returned = match &function.return_expression {
