@@ -58,7 +58,13 @@ impl Generator {
                 }
                 location.register
             }
-            _ => return Err(Diagnostic::error("switch scrutinee must be a simple variable (roadmap)")),
+            // A non-variable scrutinee (`switch(n & 3)`) evaluates into the general scratch
+            // register first, exactly as mwcc does (`clrlwi r0,r3,30`); the comparison tree
+            // then reads that register. evaluate_general defers any scrutinee it cannot lower.
+            _ => {
+                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
+                GENERAL_SCRATCH
+            }
         };
 
         // Sort the arms by value; the dispatch assumes ascending, distinct values.
