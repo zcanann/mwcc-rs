@@ -120,10 +120,15 @@ impl Generator {
                     };
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 } else if let Some(constant) = as_small_integer(right) {
-                    // a == c : (c - a) leading zeros. A narrow operand is extended
-                    // into the scratch first (extsb/clrlwi); a full-word load is
-                    // evaluated into the scratch; a wide leaf stays in its register.
-                    let value = if self.is_word_load(left) {
+                    // a == c : (c - a) leading zeros. A signed byte load comes into the scratch and
+                    // is sign-extended in place (`lbz r0; extsb r0,r0`); a narrow leaf operand is
+                    // extended into the scratch (extsb/clrlwi); a full-word load is evaluated into
+                    // the scratch; a wide leaf stays in its register.
+                    let value = if self.is_signed_byte_load(left)? {
+                        self.evaluate_general(left, GENERAL_SCRATCH)?;
+                        self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+                        GENERAL_SCRATCH
+                    } else if self.is_word_load(left) {
                         self.evaluate_general(left, GENERAL_SCRATCH)?;
                         GENERAL_SCRATCH
                     } else {

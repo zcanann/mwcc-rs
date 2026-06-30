@@ -459,8 +459,13 @@ impl Generator {
                         // `signed_char < 0` is the 1-instruction sign-bit idiom; comparisons.rs loads
                         // the byte into the scratch and sign-extends it in place. The other relations
                         // (and divide) still need per-case handling, so defer them.
-                        let handled = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::NotEqual | BinaryOperator::Equal | BinaryOperator::LessEqual)
-                            && is_zero_literal(right.as_ref())
+                        let against_zero = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::NotEqual | BinaryOperator::Equal | BinaryOperator::LessEqual)
+                            && is_zero_literal(right.as_ref());
+                        // `signed_char == c` (any small constant): `lbz r0; extsb r0,r0; subfic;
+                        // cntlzw; srwi` — handled by the a==c leading-zeros idiom.
+                        let equal_constant = matches!(operator, BinaryOperator::Equal)
+                            && as_small_integer(right.as_ref()).is_some();
+                        let handled = (against_zero || equal_constant)
                             && self.is_signed_byte_load(left.as_ref())?;
                         if !handled {
                             return Err(Diagnostic::error("a signed char load operand of a comparison/divide needs a sign-extension (roadmap)"));
