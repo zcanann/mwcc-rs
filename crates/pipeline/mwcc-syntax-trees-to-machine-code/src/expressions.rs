@@ -255,6 +255,16 @@ impl Generator {
                 {
                     return Err(Diagnostic::error("an arithmetic combine of two comparison values needs the register allocator's interleaving (roadmap)"));
                 }
+                // `(cmp) << k` and `(cmp) & k` — mwcc fuses the comparison's sign-bit extract with
+                // the shift into one `rlwinm`, and drops a `& k` mask that is redundant on a 0/1
+                // value. Neither peephole is modeled, so defer. (Other operators on a comparison —
+                // `| ^ >> + - *` — keep the plain comparison-value shape and stay byte-exact.)
+                if matches!(operator, BinaryOperator::ShiftLeft | BinaryOperator::BitAnd)
+                    && (matches!(left.as_ref(), Expression::Binary { operator: inner, .. } if is_comparison(*inner))
+                        || matches!(right.as_ref(), Expression::Binary { operator: inner, .. } if is_comparison(*inner)))
+                {
+                    return Err(Diagnostic::error("a shift-left or bitwise-and of a comparison value uses a fused rlwinm / dropped mask not modeled (roadmap)"));
+                }
                 // A comma operand with a side-effect-free left is equivalent to its right
                 // value; peel it so the right keeps its natural register (`(a,b)+1` == `b+1`,
                 // no spurious move). Only a flat arithmetic binary of leaves/constants is
