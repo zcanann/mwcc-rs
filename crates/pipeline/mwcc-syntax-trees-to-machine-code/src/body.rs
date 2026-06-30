@@ -2701,17 +2701,19 @@ impl Generator {
             {
                 if first == second {
                     // When the SECOND guard of the pair is the LAST guard, it folds with the final
-                    // return into a select (the `is_last` path below). If that select is a
-                    // branchless sign-mask (`srawi`/`srwi`) it emits NO compare, so the shared key
-                    // produces no redundant compare and no cross-guard CR reuse is needed — mwcc
-                    // emits one compare for the earlier guard and the sign-mask for the folded tail
-                    // (e.g. `if(a>0)return 1; if(a<0)return -1; return 0;` ->
-                    // `cmpwi;ble;li 1;blr; srawi;blr`). Only then is the shared key safe.
+                    // return into a select (the `is_last` path below). If that select lowers
+                    // branchlessly (sign-mask `srawi`/`srwi`, or a consecutive-constant sign select)
+                    // it emits NO compare, so the shared key produces no redundant compare and no
+                    // cross-guard CR reuse is needed — mwcc emits one compare for the earlier guard
+                    // and the branchless tail (e.g. `if(a>0)return 1; if(a<0)return -1; return 0;` ->
+                    // `cmpwi;ble;li 1;blr; srawi;blr`; or a `> 0 ? 2 : 3` tail -> `neg;andc;srawi;
+                    // addi`). Compare-based tails (==0/!=0/<=0/variable) are NOT branchless here and
+                    // keep deferring (they also defer in evaluate_tail), so no DIFF is shipped.
                     let second_is_last = pair_index + 2 == guard_count;
                     if second_is_last && (!final_in_result || constant_value(&pair[1].value).is_some()) {
                         let select = guard_select(&pair[1].condition, &pair[1].value, final_return);
                         if let Expression::Conditional { condition, when_true, when_false } = &select {
-                            if crate::control_flow::sign_mask_select(condition, when_true, when_false).is_some() {
+                            if crate::control_flow::select_folds_branchless(condition, when_true, when_false) {
                                 continue;
                             }
                         }

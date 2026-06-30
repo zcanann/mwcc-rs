@@ -1298,6 +1298,17 @@ fn is_simple_arithmetic_arm(expression: &Expression) -> bool {
 /// Recognize a sign-mask select on `x`, returning `(x, complemented)`:
 ///   `x < 0 ? -1 : 0` / `x >= 0 ? 0 : -1` → `(x, false)` — plain sign mask.
 ///   `x < 0 ? 0 : -1` / `x >= 0 ? -1 : 0` → `(x, true)`  — inverted sign mask.
+/// Whether a `(cond) ? a : b` select lowers to a branchless sequence that emits NO compare —
+/// a sign-mask (`srawi`/`srwi`) or a consecutive-constant sign select (`(x REL 0) ? c1 : c2`,
+/// c1/c2 adjacent). The guard-sequence emitter uses this to know a folded tail won't emit a
+/// redundant compare that would conflict with an earlier guard's compare on the same operand.
+/// Conservative: relations whose select is NOT one of these (==0 / !=0 / <=0 / variable compares)
+/// return false, so the caller keeps deferring — and those tails defer in evaluate_tail anyway.
+pub(crate) fn select_folds_branchless(condition: &Expression, when_true: &Expression, when_false: &Expression) -> bool {
+    sign_mask_select(condition, when_true, when_false).is_some()
+        || sign_consecutive_select(condition, when_true, when_false).is_some()
+}
+
 pub(crate) fn sign_mask_select<'e>(condition: &'e Expression, when_true: &'e Expression, when_false: &'e Expression) -> Option<(&'e Expression, bool)> {
     let Expression::Binary { operator, left, right } = condition else { return None };
     if !is_zero_literal(right) {
