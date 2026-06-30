@@ -11,7 +11,7 @@ impl Generator {
     /// defer a cast-to-float of a narrow (char/short) value: mwcc first widens it to
     /// int (extsb/extsh) and reschedules the magic-constant idiom around that extra
     /// instruction — a sequence not modeled here. `None` (unknown) proceeds as before.
-    fn cast_operand_width(&self, operand: &Expression) -> Option<u32> {
+    pub(crate) fn cast_operand_width(&self, operand: &Expression) -> Option<u32> {
         match operand {
             Expression::Variable(name) => self
                 .locations
@@ -54,10 +54,22 @@ impl Generator {
         if self.cast_operand_width(operand).map_or(false, |width| width < 32) {
             return Err(mwcc_core::Diagnostic::error("cast-to-float of a narrow (char/short) value is not modeled (roadmap)"));
         }
-        // The conversion assembles `0x43300000_<int>` on the stack and subtracts a
-        // magic bias double (pooled in `.sdata2`). A signed value flips its sign bit
-        // first and subtracts `0x43300000_80000000`; an unsigned value skips the
-        // flip and subtracts `0x43300000_00000000`. Either bumps the @N counter.
+        // The magic bias goes in a register distinct from the assembled value's f0
+        // (FLOAT_SCRATCH): the destination when it isn't f0 (a return into f1), else f1
+        // for a value/store into f0 — otherwise the assembled `lfd f0` would overwrite
+        // the bias, leaving `fsub f0,f0,f0` = 0.
+        const FLOAT_FIRST: u8 = 1; // f1
+        let bias_register = if destination != FLOAT_SCRATCH { destination } else { FLOAT_FIRST };
+        self.emit_int_to_float(operand, destination, double, bias_register)
+    }
+
+    /// The magic-constant int->float idiom into `destination`, with the bias double held in
+    /// `bias_register` (caller-chosen so a mixed-arithmetic promotion can place the bias in a
+    /// register that avoids the live float operand). Assembles `0x43300000_<biased int>` on the
+    /// frame and subtracts the `0x4330..` bias. The operand is an int-width GPR leaf.
+    pub(crate) fn emit_int_to_float(&mut self, operand: &Expression, destination: u8, double: bool, bias_register: u8) -> Compilation<()> {
+        // A signed value flips its sign bit first and subtracts `0x43300000_80000000`; an
+        // unsigned value skips the flip and subtracts `0x43300000_00000000`. Bumps the @N counter.
         let signed = self.signedness_of(operand)?;
         let bias: u64 = if signed { 0x4330_0000_8000_0000 } else { 0x4330_0000_0000_0000 };
         let source = self.general_register_of_leaf(operand)?;
@@ -68,14 +80,8 @@ impl Generator {
             self.output.instructions.push(Instruction::XorImmediateShifted { a: source, s: source, immediate: 0x8000 });
         }
         self.output.instructions.push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
-        // The magic bias goes in a register distinct from the assembled value's f0
-        // (FLOAT_SCRATCH): the destination when it isn't f0 (a return into f1), else f1
-        // for a value/store into f0 — otherwise the assembled `lfd f0` would overwrite
-        // the bias, leaving `fsub f0,f0,f0` = 0.
-        const FLOAT_FIRST: u8 = 1; // f1
-        let bias_register = if destination != FLOAT_SCRATCH { destination } else { FLOAT_FIRST };
-        // The bias load and the value store are independent; builds schedule them
-        // in opposite orders (GC/2.0p1 stores first, every other build loads first).
+        // The bias load and the value store are independent; builds schedule them in
+        // opposite orders (GC/2.0p1 stores first, every other build loads first).
         if self.behavior.float_cast_value_store_first {
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
             self.load_double_constant(bias_register, bias);

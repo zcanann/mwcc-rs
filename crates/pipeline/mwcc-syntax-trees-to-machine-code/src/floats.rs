@@ -46,6 +46,10 @@ impl Generator {
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), true),
             Expression::Binary { operator, left, right } => {
                 let double = self.is_double_value(left) || self.is_double_value(right);
+                // Mixed `int OP float` arithmetic: promote the integer operand to float first.
+                if self.try_emit_mixed_promotion(*operator, left, right, destination, double)? {
+                    return Ok(());
+                }
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
                     && self.try_emit_float_fused(*operator, left, right, destination, double)?
                 {
@@ -126,6 +130,53 @@ impl Generator {
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
             Expression::AddressOf { .. } => Err(Diagnostic::error("an address is not a float value")),
         }
+    }
+
+    /// Mixed `int OP float` arithmetic (e.g. `int a + float b`): mwcc promotes the integer
+    /// operand to float with the magic-constant idiom emitted into the scratch fp register
+    /// (with the bias in f2, to avoid the live float operand in f1), then applies the float
+    /// op. Handles only the verified shape — exactly one float-leaf operand and one int-width
+    /// GPR leaf, the float operand already in f1 with the result also into f1 — so the bias
+    /// register and operand placement are byte-exact; defers (`Ok(false)`) for anything else.
+    fn try_emit_mixed_promotion(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8, double: bool) -> Compilation<bool> {
+        const FLOAT_FIRST: u8 = 1; // f1
+        const BIAS_REGISTER: u8 = 2; // f2: avoids the scratch f0 and the operand/result f1
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply | BinaryOperator::Divide) {
+            return Ok(false);
+        }
+        let left_float = self.is_float_leaf(left);
+        let right_float = self.is_float_leaf(right);
+        if left_float == right_float {
+            return Ok(false); // both float or neither: not a mixed promotion
+        }
+        let (integer_operand, float_operand) = if left_float { (right, left) } else { (left, right) };
+        // A narrow (char/short) source is a separate, version-divergent idiom — defer it.
+        if self.cast_operand_width(integer_operand).map_or(false, |width| width < 32) {
+            return Ok(false);
+        }
+        // The integer operand must be a plain int-width GPR leaf.
+        if self.general_register_of_leaf(integer_operand).is_err() {
+            return Ok(false);
+        }
+        // Verified shape only: the float operand in f1 and the result into f1, so the bias
+        // lands in f2 (clear of the scratch f0 and the operand/result f1).
+        let float_register = match self.float_register_of_leaf(float_operand) {
+            Ok(register) => register,
+            Err(_) => return Ok(false),
+        };
+        if float_register != FLOAT_FIRST || destination != FLOAT_FIRST {
+            return Ok(false);
+        }
+        self.emit_int_to_float(integer_operand, FLOAT_SCRATCH, double, BIAS_REGISTER)?;
+        // Operand registers in source order: the converted integer is in the scratch f0.
+        let (left_register, right_register) = if left_float {
+            (float_register, FLOAT_SCRATCH)
+        } else {
+            (FLOAT_SCRATCH, float_register)
+        };
+        let operands = Operands::ordered(left_register, right_register)?;
+        self.output.instructions.push(float_combine(operator, destination, operands, double)?);
+        Ok(true)
     }
 
     /// Try to fuse `left op right` into a multiply-add when one side is a
