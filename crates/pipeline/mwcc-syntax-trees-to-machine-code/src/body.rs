@@ -1317,21 +1317,70 @@ impl Generator {
         if name != &local.name {
             return Ok(false);
         }
-        // Constant arms only — the branch form. Variable arms (the move/staging form) defer.
-        let (Some(init_const), Some(new_const)) = (constant_value(initializer), constant_value(value)) else {
-            return Ok(false);
-        };
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
         let result = Eabi::general_result().number;
-        // emit_condition_test returns the branch-if-FALSE options (as used for a guard's forward
-        // skip); here that is exactly what we want — return the initializer in place when the
-        // condition does not hold, then fall through to the new value.
+        let init_const = constant_value(initializer);
+        let new_const = constant_value(value);
+
+        // Resolve the variable arms' registers BEFORE emitting the compare (so a deferral leaves no
+        // orphaned instructions). Each variable arm must be a leaf already in a register. The MOVE
+        // form stages the initializer in a register (the scratch for a constant init, else the init
+        // variable's own register); that staged register must differ from the result — mwcc uses a
+        // different layout when the init variable already sits in the result — so defer that case.
+        let new_register = match new_const {
+            Some(_) => None,
+            None => match leaf_name(value).and_then(|name| self.lookup_general(name)) {
+                register @ Some(_) => register,
+                None => return Ok(false),
+            },
+        };
+        let stage = if init_const.is_some() && new_const.is_some() {
+            None // both constant -> branch form, no staging register
+        } else {
+            let stage = match init_const {
+                Some(_) => GENERAL_SCRATCH,
+                None => match leaf_name(initializer).and_then(|name| self.lookup_general(name)) {
+                    Some(register) => register,
+                    None => return Ok(false),
+                },
+            };
+            if stage == result {
+                return Ok(false);
+            }
+            Some(stage)
+        };
+
+        // emit_condition_test returns the branch-if-FALSE options (a guard's forward-skip sense),
+        // which is exactly the early-return / forward-skip-on-!c we want.
         let (options, condition_bit) = self.emit_condition_test(condition)?;
-        self.load_integer_constant(result, init_const);
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
-        self.load_integer_constant(result, new_const);
+
+        // Both arms constant: the early-return BRANCH form — return the initializer in place when
+        // the condition does not hold, then fall through to the new value.
+        let Some(stage) = stage else {
+            self.load_integer_constant(result, init_const.unwrap());
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+            self.load_integer_constant(result, new_const.unwrap());
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(true);
+        };
+
+        // A variable arm: the MOVE/staging form.
+        if let Some(init_value) = init_const {
+            self.load_integer_constant(stage, init_value);
+        }
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        match new_register {
+            Some(register) => self.output.instructions.push(Instruction::move_register(stage, register)),
+            None => self.load_integer_constant(stage, new_const.unwrap()),
+        }
+        let after = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = after;
+        }
+        self.output.instructions.push(Instruction::move_register(result, stage));
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
