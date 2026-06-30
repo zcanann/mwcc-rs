@@ -19,8 +19,16 @@ impl Generator {
     /// (a store, d=r0), where the scratch op would clobber it, which defers.
     fn sign_idiom_source(&mut self, value: &Expression, destination: u8) -> Compilation<u8> {
         if let Some(register) = self.leaf_info(value).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
-            Ok(register)
-        } else if destination != GENERAL_SCRATCH {
+            return Ok(register);
+        }
+        // A signed byte load is brought into the scratch and sign-extended into the destination
+        // (`lbz r0; extsb d,r0`), matching mwcc's `> 0` / `!= 0` register choice.
+        if destination != GENERAL_SCRATCH && self.is_signed_byte_load(value)? {
+            self.evaluate_general(value, GENERAL_SCRATCH)?;
+            self.emit_widen(destination, GENERAL_SCRATCH, 8, true);
+            return Ok(destination);
+        }
+        if destination != GENERAL_SCRATCH {
             self.evaluate_general(value, destination)?;
             Ok(destination)
         } else {
@@ -208,9 +216,16 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
                 Ok(())
             }
-            // signed x >= 0 : !(x < 0)
+            // signed x >= 0 : !(x < 0). A signed-char load comes into the scratch, extended in
+            // place (`lbz r0; extsb r0,r0; srwi r0,r0,31; xori r3,r0,1`).
             BinaryOperator::GreaterEqual if is_zero_literal(right) && signed_comparison => {
-                let source = self.place_operand_or_scratch(left, d)?;
+                let source = if self.is_signed_byte_load(left)? {
+                    self.evaluate_general(left, GENERAL_SCRATCH)?;
+                    self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+                    GENERAL_SCRATCH
+                } else {
+                    self.place_operand_or_scratch(left, d)?
+                };
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: source, shift: 31 });
                 self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
                 Ok(())
