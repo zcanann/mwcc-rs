@@ -415,6 +415,72 @@ impl Generator {
         Ok(())
     }
 
+    /// Emit a function involving a long long (64-bit) value, held in a general-register PAIR
+    /// (`r3:r4` = high:low). Only a narrow set of shapes is modeled; the rest defer rather than
+    /// fall through to the 32-bit codegen (which emits a single-register result for a 64-bit value).
+    fn emit_long_long(&mut self, function: &Function) -> Compilation<()> {
+        // Long-long PARAMETERS/LOCALS (which need pair allocation and spills), guards, statements,
+        // or a non-long-long return are not modeled yet — defer them honestly.
+        let has_long_long_parameter = function
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong));
+        if has_long_long_parameter
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || !function.statements.is_empty()
+            || !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong)
+        {
+            return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
+        }
+        let high = Eabi::general_result().number; // r3 — the HIGH word
+        let low = high + 1; //                       r4 — the LOW word
+        let return_expression = function
+            .return_expression
+            .as_ref()
+            .ok_or_else(|| Diagnostic::error("a non-void long long function needs a return value"))?;
+
+        // (a) A 64-bit integer CONSTANT — `li low,LOW ; li high,HIGH` (the LOW word first, as mwcc
+        // emits it). Restricted to words that load with a single `li`; a wider constant needs the
+        // exact lis/ori sequence, which is not modeled.
+        if let Some(value) = crate::analysis::constant_value(return_expression) {
+            let low_word = value as i32 as i64;
+            let high_word = value >> 32;
+            if i16::try_from(low_word).is_err() || i16::try_from(high_word).is_err() {
+                return Err(Diagnostic::error("a wide long long constant needs lis/ori (roadmap)"));
+            }
+            self.load_integer_constant(low, low_word);
+            self.load_integer_constant(high, high_word);
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
+
+        // (b) Widen a 32-bit int/unsigned FIRST PARAMETER to a long long. It arrives in r3 (the
+        // first argument register, which is also the result HIGH register), so copy it to the LOW
+        // word, then fill HIGH with its sign (`srawi`) or zero (`li`). mwcc emits
+        // `mr r4,r3 ; srawi r3,r3,31` (signed) or `mr r4,r3 ; li r3,0` (unsigned). A NARROW source
+        // (short/char) re-extends differently and defers (like the reassigned-narrow-param case).
+        if let Expression::Variable(name) = return_expression {
+            if function.parameters.first().is_some_and(|parameter| &parameter.name == name) {
+                let parameter_type = function.parameters[0].parameter_type;
+                if matches!(parameter_type, Type::Int | Type::UnsignedInt) {
+                    self.output.instructions.push(Instruction::move_register(low, high));
+                    if parameter_type.is_signed() {
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightAlgebraicImmediate { a: high, s: high, shift: 31 });
+                    } else {
+                        self.load_integer_constant(high, 0);
+                    }
+                    self.emit_epilogue_and_return();
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"))
+    }
+
     /// Emit the whole function body, including its `blr`(s).
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
@@ -428,6 +494,16 @@ impl Generator {
         // the caller would read the input pointer / stale registers as the returned struct).
         if matches!(function.return_type, Type::Struct { .. }) {
             return Err(Diagnostic::error("returning a struct by value is not supported yet (roadmap)"));
+        }
+        // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
+        // every long-long-involved function to the dedicated handler so none falls through to the
+        // 32-bit codegen (which would emit a single-register result for a 64-bit value — wrong
+        // bytes). The handler models a narrow set of shapes and defers the rest.
+        if matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong)
+            || function.parameters.iter().any(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong))
+            || function.locals.iter().any(|local| matches!(local.declared_type, Type::LongLong | Type::UnsignedLongLong))
+        {
+            return self.emit_long_long(function);
         }
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,

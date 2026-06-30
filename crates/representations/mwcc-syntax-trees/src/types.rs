@@ -47,6 +47,12 @@ pub enum Type {
     Float,
     /// Double-precision float (8 bytes). Shares the FPR class with `Float`.
     Double,
+    /// A 64-bit signed integer, held in a big-endian general-register PAIR — the
+    /// HIGH word in the lower-numbered register (e.g. `r3:r4` is high:low). Arithmetic
+    /// uses carry-aware pairs (`addc`/`adde`, `subfc`/`sube`).
+    LongLong,
+    /// A 64-bit unsigned integer; same register-pair representation as [`Type::LongLong`].
+    UnsignedLongLong,
     Void,
     /// A pointer to a scalar, e.g. `int*`.
     Pointer(Pointee),
@@ -68,7 +74,7 @@ impl Type {
     /// Whether this is a signed integer (affects e.g. `>>` and narrowing). A
     /// pointer is an unsigned address.
     pub fn is_signed(self) -> bool {
-        matches!(self, Type::Int | Type::Char | Type::Short)
+        matches!(self, Type::Int | Type::Char | Type::Short | Type::LongLong)
     }
 
     /// Width in bits: 8/16/32 for integers and pointers, 64 for a `double` (used
@@ -77,7 +83,7 @@ impl Type {
         match self {
             Type::Char | Type::UnsignedChar => 8,
             Type::Short | Type::UnsignedShort => 16,
-            Type::Double => 64,
+            Type::Double | Type::LongLong | Type::UnsignedLongLong => 64,
             _ => 32,
         }
     }

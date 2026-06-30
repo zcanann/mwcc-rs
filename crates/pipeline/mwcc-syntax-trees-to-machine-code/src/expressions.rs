@@ -57,8 +57,9 @@ pub(crate) fn pointee_of_type(value_type: Type) -> Option<Pointee> {
         Type::Pointer(_) | Type::StructPointer { .. } => Pointee::UnsignedInt,
         // `double` storage (8-byte lfd/stfd) is a later stage.
         Type::Double => Pointee::Double,
-        // A struct value is not a scalar pointee (it has no single load/store).
-        Type::Void | Type::Struct { .. } => return None,
+        // A struct value is not a scalar pointee (it has no single load/store); neither is a
+        // long long (an 8-byte register pair loaded/stored as two words).
+        Type::Void | Type::Struct { .. } | Type::LongLong | Type::UnsignedLongLong => return None,
     })
 }
 

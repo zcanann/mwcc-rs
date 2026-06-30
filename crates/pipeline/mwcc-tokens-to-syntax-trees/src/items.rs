@@ -558,17 +558,14 @@ impl Parser {
                     Type::UnsignedInt
                 }
                 // `unsigned long` / `unsigned long int` — 32-bit unsigned. `unsigned long
-                // long` is 64-bit (a register pair) and defers like its signed counterpart.
+                // long` is the 64-bit register-pair type.
                 Token::Identifier(word) if word == "long" => {
                     let mut long_count = 0;
                     while self.eat_word("long") {
                         long_count += 1;
                     }
-                    if long_count >= 2 {
-                        return Err(Diagnostic::error("unsigned long long (64-bit) is not supported yet (roadmap)"));
-                    }
                     let _ = self.eat_keyword(Token::KeywordInt);
-                    Type::UnsignedInt
+                    if long_count >= 2 { Type::UnsignedLongLong } else { Type::UnsignedInt }
                 }
                 _ => Type::UnsignedInt,
             },
@@ -577,9 +574,7 @@ impl Parser {
             // `double` (and `long double`, which is also 64-bit here).
             Token::Identifier(word) if word == "double" => Type::Double,
             // `long` / `long int` — 32-bit signed on this target; `long double` is a
-            // double. `long long` is 64-bit (a register pair); its codegen is not modeled
-            // (roadmap), so defer rather than collapse it to a 32-bit int and emit 32-bit
-            // arithmetic on a 64-bit value.
+            // double. `long long` is the 64-bit register-pair type.
             Token::Identifier(word) if word == "long" => {
                 // The outer `match self.advance()` already consumed the first `long`, so
                 // seed the count at 1; the loop adds any further `long`s.
@@ -590,7 +585,8 @@ impl Parser {
                 if self.eat_word("double") {
                     Type::Double
                 } else if long_count >= 2 {
-                    return Err(Diagnostic::error("long long (64-bit) is not supported yet (roadmap)"));
+                    let _ = self.eat_keyword(Token::KeywordInt);
+                    Type::LongLong
                 } else {
                     let _ = self.eat_keyword(Token::KeywordInt);
                     Type::Int
