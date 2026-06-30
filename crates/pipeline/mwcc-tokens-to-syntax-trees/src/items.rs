@@ -1429,13 +1429,17 @@ impl Parser {
                     // mwcc INLINES a `const` scalar-int global's value at each read (`return g` ->
                     // `li r3,VALUE`) while still emitting g's read-only `.sdata2` storage. Fold reads
                     // like an enum constant; the global is still pushed below so the writer emits the
-                    // storage. (extern has no initializer; char/short need sign-care so are deferred;
-                    // `&g` then folds to AddressOf{literal} and defers — safe, not a wrong load.)
+                    // storage. A narrow const reads as its value EXTENDED to int per its signedness
+                    // (`const char c=200` reads -56; `const unsigned char=200` reads 200) while the
+                    // storage keeps the raw byte — so fold the value reduced to the declared width.
+                    // (extern has no initializer; `&g` then folds to AddressOf{literal} and defers —
+                    // safe, not a wrong load.)
                     if is_const && !is_extern && dimensions.is_empty()
-                        && matches!(return_type, Type::Int | Type::UnsignedInt)
+                        && matches!(return_type, Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
                         && initializer.as_ref().map_or(false, |values| values.len() == 1)
                     {
-                        self.enum_constants.insert(declarator_name.clone(), initializer.as_ref().unwrap()[0]);
+                        let folded = crate::expressions::truncate_to_integer(initializer.as_ref().unwrap()[0], return_type);
+                        self.enum_constants.insert(declarator_name.clone(), folded);
                     }
                     globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
                     if *self.peek() == Token::Comma {

@@ -76,7 +76,7 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
 
 /// Reduce `value` to `integer_type`'s width, sign-extending a signed type — the
 /// effect of a C integer cast on a constant.
-fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
+pub(crate) fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
     let bits = integer_type.width() as u32;
     if bits >= 64 {
         return value;
