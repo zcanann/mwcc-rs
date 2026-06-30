@@ -459,7 +459,7 @@ impl Generator {
                         // `signed_char < 0` is the 1-instruction sign-bit idiom; comparisons.rs loads
                         // the byte into the scratch and sign-extends it in place. The other relations
                         // (and divide) still need per-case handling, so defer them.
-                        let handled = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::NotEqual)
+                        let handled = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::NotEqual | BinaryOperator::Equal)
                             && is_zero_literal(right.as_ref())
                             && self.is_signed_byte_load(left.as_ref())?;
                         if !handled {

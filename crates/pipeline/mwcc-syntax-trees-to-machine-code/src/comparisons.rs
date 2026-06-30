@@ -106,13 +106,18 @@ impl Generator {
                             return Ok(());
                         }
                     }
-                    let source = self.place_operand_or_scratch(value, d)?;
-                    // A signed byte load is `lbz` (zero-extended); mwcc re-extends it
-                    // with `extsb` before the leading-zero test. Signed halfword loads
-                    // use `lha` (already sign-extended) and unsigned loads need nothing.
-                    if self.is_signed_byte_load(value)? {
-                        self.emit_widen(source, source, 8, true);
-                    }
+                    // A signed byte load is `lbz` (zero-extended); mwcc loads it into the scratch
+                    // and re-extends in place (`lbz r0; extsb r0,r0`) before the leading-zero test,
+                    // keeping the value in the scratch — going through place_operand would extend
+                    // into the destination and double-extend. Signed halfword loads use `lha`
+                    // (already sign-extended) and unsigned loads need nothing.
+                    let source = if self.is_signed_byte_load(value)? {
+                        self.evaluate_general(value, GENERAL_SCRATCH)?;
+                        self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+                        GENERAL_SCRATCH
+                    } else {
+                        self.place_operand_or_scratch(value, d)?
+                    };
                     self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 } else if let Some(constant) = as_small_integer(right) {
                     // a == c : (c - a) leading zeros. A narrow operand is extended
