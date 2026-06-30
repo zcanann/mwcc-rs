@@ -152,8 +152,17 @@ impl Generator {
                         return Ok(());
                     }
                 }
-                // `(-x | x) >> 31`: the top bit is set iff x has any bit set.
-                let source = self.sign_idiom_source(left, d)?;
+                // `(-x | x) >> 31`: the top bit is set iff x has any bit set. A signed-byte load
+                // (`lbz`, zero-extended) is first sign-extended like mwcc — `lbz` into the scratch,
+                // `extsb` into d — then the idiom runs on d. (The `== 0` leading-zero case above
+                // extends the same way; the truthiness path previously skipped it.)
+                let source = if self.is_signed_byte_load(left)? && d != GENERAL_SCRATCH {
+                    self.evaluate_general(left, GENERAL_SCRATCH)?;
+                    self.emit_widen(d, GENERAL_SCRATCH, 8, true);
+                    d
+                } else {
+                    self.sign_idiom_source(left, d)?
+                };
                 self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: source });
                 self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
