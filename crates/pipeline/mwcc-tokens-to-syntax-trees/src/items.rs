@@ -1426,6 +1426,17 @@ impl Parser {
                     if let Some(tag) = &global_struct_tag {
                         self.variable_structs.insert(declarator_name.clone(), tag.clone());
                     }
+                    // mwcc INLINES a `const` scalar-int global's value at each read (`return g` ->
+                    // `li r3,VALUE`) while still emitting g's read-only `.sdata2` storage. Fold reads
+                    // like an enum constant; the global is still pushed below so the writer emits the
+                    // storage. (extern has no initializer; char/short need sign-care so are deferred;
+                    // `&g` then folds to AddressOf{literal} and defers — safe, not a wrong load.)
+                    if is_const && !is_extern && dimensions.is_empty()
+                        && matches!(return_type, Type::Int | Type::UnsignedInt)
+                        && initializer.as_ref().map_or(false, |values| values.len() == 1)
+                    {
+                        self.enum_constants.insert(declarator_name.clone(), initializer.as_ref().unwrap()[0]);
+                    }
                     globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
                     if *self.peek() == Token::Comma {
                         self.advance();
