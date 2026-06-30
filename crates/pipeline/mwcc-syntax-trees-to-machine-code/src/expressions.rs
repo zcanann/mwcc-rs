@@ -2660,6 +2660,22 @@ impl Generator {
         Some(register)
     }
 
+    /// Load a signed-byte operand into the scratch and sign-extend it in place (`lbz r0; extsb
+    /// r0,r0`), returning the scratch — for the unary/shift idioms (`neg`, `not`, `srawi`) that
+    /// read their operand from r0, where mwcc keeps it. (`addi` cannot take r0 as a source — it
+    /// means literal zero — so the Add/Subtract path keeps the value in the destination via
+    /// place_operand instead.) Returns None for a non-signed-byte operand or a scratch destination,
+    /// so the caller falls back to its normal place_operand/place_operand_or_scratch path.
+    pub(crate) fn signed_byte_scratch_source(&mut self, operand: &Expression, destination: u8) -> Compilation<Option<u8>> {
+        if destination != GENERAL_SCRATCH && self.is_signed_byte_load(operand)? {
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+            Ok(Some(GENERAL_SCRATCH))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
         // A same-width 32-bit integer cast (`(unsigned)x` / `(int)u`) is a bit-exact
         // reinterpretation — place its operand directly rather than copying it
@@ -2792,7 +2808,10 @@ impl Generator {
                         return Ok(());
                     }
                 }
-                let source = self.place_operand_or_scratch(operand, d)?;
+                let source = match self.signed_byte_scratch_source(operand, d)? {
+                    Some(scratch) => scratch,
+                    None => self.place_operand_or_scratch(operand, d)?,
+                };
                 self.output.instructions.push(Instruction::Negate { d, a: source });
             }
             UnaryOperator::BitNot => {
@@ -2823,7 +2842,10 @@ impl Generator {
                         return Ok(());
                     }
                 }
-                let source = self.place_operand_or_scratch(operand, d)?;
+                let source = match self.signed_byte_scratch_source(operand, d)? {
+                    Some(scratch) => scratch,
+                    None => self.place_operand_or_scratch(operand, d)?,
+                };
                 self.output.instructions.push(Instruction::Nor { a: d, s: source, b: source });
             }
             UnaryOperator::LogicalNot => {
@@ -2852,7 +2874,10 @@ impl Generator {
                     return self.emit_comparison(BinaryOperator::NotEqual, inner, &zero, d);
                 }
                 // An odd chain is `inner == 0`: cntlzw then srwi by 5.
-                let source = self.place_operand_or_scratch(inner, d)?;
+                let source = match self.signed_byte_scratch_source(inner, d)? {
+                    Some(scratch) => scratch,
+                    None => self.place_operand_or_scratch(inner, d)?,
+                };
                 self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
                 self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
             }

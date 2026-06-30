@@ -283,7 +283,10 @@ impl Generator {
                 }
                 // The shifted value: a leaf stays put, a sub-expression goes to the
                 // scratch (its temporaries are virtuals the allocator places).
-                let source = self.place_operand_or_scratch(left, d)?;
+                let source = match self.signed_byte_scratch_source(left, d)? {
+                    Some(scratch) => scratch,
+                    None => self.place_operand_or_scratch(left, d)?,
+                };
                 let shift = amount as u8;
                 self.output.instructions.push(if signed {
                     Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift }
