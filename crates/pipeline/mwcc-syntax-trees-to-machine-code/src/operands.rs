@@ -58,6 +58,7 @@ pub(crate) fn float_combine(operator: BinaryOperator, destination: u8, operands:
         BinaryOperator::Add => Instruction::FloatAddSingle { d: destination, a: first, b: second },
         BinaryOperator::Subtract => Instruction::FloatSubtractSingle { d: destination, a: operands.left, b: operands.right },
         BinaryOperator::Multiply => Instruction::FloatMultiplySingle { d: destination, a: first, c: second },
+        BinaryOperator::Divide if double => Instruction::FloatDivideDouble { d: destination, a: operands.left, b: operands.right },
         BinaryOperator::Divide => Instruction::FloatDivideSingle { d: destination, a: operands.left, b: operands.right },
         BinaryOperator::BitAnd
         | BinaryOperator::BitOr

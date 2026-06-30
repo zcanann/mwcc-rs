@@ -160,6 +160,8 @@ pub enum Instruction {
     FloatSubtractDouble { d: u8, a: u8, b: u8 },
     /// `fmul frD, frA, frC`
     FloatMultiplyDouble { d: u8, a: u8, c: u8 },
+    /// `fdiv frD, frA, frB` — double-precision divide (vs the single `fdivs`).
+    FloatDivideDouble { d: u8, a: u8, b: u8 },
     /// `fmadd frD, frA, frC, frB` => frD = frA*frC + frB.
     FloatMultiplyAddDouble { d: u8, a: u8, c: u8, b: u8 },
     /// `fmsub frD, frA, frC, frB` => frD = frA*frC - frB.
@@ -301,6 +303,7 @@ impl Instruction {
                 | FloatAddDouble { .. }
                 | FloatSubtractDouble { .. }
                 | FloatMultiplyDouble { .. }
+                | FloatDivideDouble { .. }
                 | FloatMultiplyAddDouble { .. }
                 | FloatMultiplySubtractDouble { .. }
                 | FloatNegativeMultiplySubtractDouble { .. }

@@ -151,7 +151,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         }
         // Float arithmetic — all operands float.
         FloatAddSingle { d, a, b } | FloatSubtractSingle { d, a, b } | FloatDivideSingle { d, a, b }
-        | FloatAddDouble { d, a, b } | FloatSubtractDouble { d, a, b } => {
+        | FloatAddDouble { d, a, b } | FloatSubtractDouble { d, a, b } | FloatDivideDouble { d, a, b } => {
             visit(D, F, d);
             visit(U, F, a);
             visit(U, F, b);

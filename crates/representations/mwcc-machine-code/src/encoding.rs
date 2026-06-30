@@ -102,6 +102,7 @@ impl Instruction {
             Instruction::FloatAddDouble { d, a, b } => a_form(63, d, a, b, 0, 21),
             Instruction::FloatSubtractDouble { d, a, b } => a_form(63, d, a, b, 0, 20),
             Instruction::FloatMultiplyDouble { d, a, c } => a_form(63, d, a, 0, c, 25),
+            Instruction::FloatDivideDouble { d, a, b } => a_form(63, d, a, b, 0, 18),
             Instruction::FloatMultiplyAddDouble { d, a, c, b } => a_form(63, d, a, b, c, 29),
             Instruction::FloatMultiplySubtractDouble { d, a, c, b } => a_form(63, d, a, b, c, 28),
             Instruction::FloatNegativeMultiplySubtractDouble { d, a, c, b } => a_form(63, d, a, b, c, 30),
