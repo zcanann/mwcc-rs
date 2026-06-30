@@ -643,6 +643,29 @@ impl Generator {
             }
         }
 
+        // `(cond) ? <computed> : <computed>` in tail position — both arms computed (neither a
+        // leaf or constant). mwcc stages the FALSE arm in r0, forward-branches past the true arm
+        // when the condition is false (keeping the false arm), evaluates the true arm into r0,
+        // then `mr dest, r0`: `cmpwi r3,0; addi r0,r3,-1; bge skip; addi r0,r3,1; skip: mr r3,r0`.
+        if tail {
+            let is_computed = |arm: &Expression| leaf_name(arm).is_none() && constant_value(arm).is_none();
+            if is_computed(when_true) && is_computed(when_false) {
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                self.evaluate_general(when_false, GENERAL_SCRATCH)?;
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.evaluate_general(when_true, GENERAL_SCRATCH)?;
+                let label = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = label;
+                }
+                if destination != GENERAL_SCRATCH {
+                    self.output.instructions.push(Instruction::move_register(destination, GENERAL_SCRATCH));
+                }
+                return Ok(());
+            }
+        }
+
         // `(cond) ? leaf : C` / `(cond) ? C : leaf` — exactly one arm a non-zero
         // constant, the other a register leaf — when materializing the constant into the
         // result register would clobber the leaf before the move could read it. That
