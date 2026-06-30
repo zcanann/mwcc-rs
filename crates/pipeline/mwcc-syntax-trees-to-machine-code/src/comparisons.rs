@@ -801,6 +801,20 @@ impl Generator {
         Ok(width == Some(8) && self.signedness_of(value)?)
     }
 
+    /// A NARROW (8/16-bit) UNSIGNED load (deref/element/member). It promotes to a SIGNED `int`
+    /// before an arithmetic operator, so `(unsigned char/short) >> n` is an arithmetic `srawi`
+    /// (mwcc), not the unsigned `srwi` ours would pick from the operand's own type — the loaded
+    /// value is non-negative, so the result is identical but the instruction differs.
+    pub(crate) fn is_narrow_unsigned_load(&self, value: &Expression) -> Compilation<bool> {
+        let width = match value {
+            Expression::Dereference { pointer } => self.dereferenced_width(pointer),
+            Expression::Index { base, .. } => self.dereferenced_width(base),
+            Expression::Member { member_type, .. } => Some(member_type.width()),
+            _ => return Ok(false),
+        };
+        Ok(matches!(width, Some(8) | Some(16)) && !self.signedness_of(value)?)
+    }
+
     /// Place two leaf operands for the equality idiom, extending narrow operands
     /// the way mwcc does: when both are narrow the left is extended in its home
     /// register and the right into the scratch; when only one is narrow it goes to

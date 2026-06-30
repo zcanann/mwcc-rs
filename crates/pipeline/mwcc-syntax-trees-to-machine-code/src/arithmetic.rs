@@ -288,7 +288,10 @@ impl Generator {
                     None => self.place_operand_or_scratch(left, d)?,
                 };
                 let shift = amount as u8;
-                self.output.instructions.push(if signed {
+                // A narrow unsigned LOAD promotes to a signed int before the shift, so mwcc emits
+                // the arithmetic `srawi` (the value is non-negative, so the result is the same).
+                let shift_signed = signed || self.is_narrow_unsigned_load(left)?;
+                self.output.instructions.push(if shift_signed {
                     Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift }
                 } else {
                     Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift }
