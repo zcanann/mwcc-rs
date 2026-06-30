@@ -1735,7 +1735,12 @@ impl Parser {
 
         // Zero or more statements: a store `*p = v;` / `p[i] = v;`, or a bare
         // expression evaluated for effect like a call `g();`.
-        let local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
+        // Parameters are register-resident variables just like locals: `a = expr` for a
+        // parameter `a` is a reassignment (an Assign the value tracker can inline), NOT a memory
+        // store. Without this, `int f(int a){ a += 5; return a; }` lowered to a Store{Variable(a)}
+        // the codegen rejected. Globals are not in this set, so they stay Stores (observable).
+        let mut local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
+        local_names.extend(parameters.iter().map(|parameter| parameter.name.as_str()));
         let mut statements = Vec::new();
         while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
             // An empty statement (a lone `;`) produces no code — skip it.

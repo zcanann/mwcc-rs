@@ -58,7 +58,11 @@ impl Generator {
         // path, which cannot read a value-tracked local and emits garbage (it reads an
         // unallocated register) — a silent miscompile for `int x = a+1; gi = x; return x;`.
         let has_store = function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }));
-        if function.locals.is_empty()
+        // A function with no locals but a reassigned PARAMETER (`int f(int a){ a += 5; return a; }`)
+        // is value-tracked too: the param's register is mutated in place and the inlined value
+        // feeds the return. Only `has_assignment` distinguishes this from a plain no-locals body
+        // (a global store is a Store, never an Assign), so it is safe to take over here.
+        if (function.locals.is_empty() && !has_assignment)
             || (function.locals.len() == 1 && !has_assignment && !has_store && !single_conditional_local && !single_alias_local)
         {
             return Ok(false);
