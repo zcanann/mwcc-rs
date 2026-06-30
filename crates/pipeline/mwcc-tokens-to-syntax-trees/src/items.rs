@@ -1062,6 +1062,12 @@ impl Parser {
                 if self.item_is_initialized_definition() {
                     return Err(error);
                 }
+                // An uninitialized tentative definition (`int **g;` — a multi-level pointer the
+                // scalar-only `Pointee` cannot represent) still emits a `.bss`/`.sbss` symbol in
+                // mwcc; skipping it would silently drop that symbol (a whole-object DIFF), so defer.
+                if self.item_is_uninitialized_definition() {
+                    return Err(error);
+                }
                 // A skipped `static inline` function with an inline `asm {}` body
                 // still contributes a local undefined symbol (mwcc cannot inline it).
                 if let Some(name) = self.inline_asm_function_name() {
@@ -1574,6 +1580,37 @@ impl Parser {
                 Token::BracketOpen => bracket += 1,
                 Token::BracketClose => bracket -= 1,
                 Token::Semicolon if brace == 0 && paren == 0 => return false,
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
+    /// Whether the item at the cursor is an uninitialized (tentative) scalar data *definition* — a
+    /// non-`extern` `<scalar type> <name>[…];` with no initializer and no function parentheses
+    /// (e.g. `int **g;`, whose `int **` type the scalar-only `Pointee` cannot represent). mwcc emits
+    /// a `.bss`/`.sbss`/`.comm` symbol for such a tentative definition, so SKIPPING it on a parse
+    /// failure would drop the symbol — a silent whole-object DIFF. Defer instead. Pure lookahead.
+    fn item_is_uninitialized_definition(&self) -> bool {
+        // Must start with a scalar type keyword: a struct/union/enum, a typedef alias, or an
+        // `extern`-led declaration emits no tentative data symbol, so those stay skippable.
+        if !matches!(
+            self.tokens.get(self.position),
+            Some(Token::KeywordInt | Token::KeywordChar | Token::KeywordShort | Token::KeywordUnsigned | Token::KeywordFloat | Token::KeywordVoid)
+        ) {
+            return false;
+        }
+        // A top-level `(` (function/prototype), `=` (initialized — the other detector handles it),
+        // or `{` (a body) means it is not a bare tentative definition; a `;`/`,` after a name is.
+        let mut index = self.position;
+        let mut saw_name = false;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::ParenOpen | Token::Equals | Token::BraceOpen => return false,
+                Token::Identifier(_) => saw_name = true,
+                Token::Semicolon | Token::Comma => return saw_name,
                 Token::EndOfFile => return false,
                 _ => {}
             }
