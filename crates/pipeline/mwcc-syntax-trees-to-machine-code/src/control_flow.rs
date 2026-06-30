@@ -619,11 +619,14 @@ impl Generator {
         // Fires in tail position (`mr dest, r0` then the epilogue) and in a value/store context
         // where the destination is r0 (the store then writes r0) — both stage in r0, only the
         // tail/value `mr` differs and is keyed off `destination != r0`.
+        // The computed arm is restricted to a SIMPLE ARITHMETIC expression (see
+        // is_simple_arithmetic_arm) — that is the only arm shape mwcc materializes with this plain
+        // branch select. A comparison (0/1 idiom), load (deref/member/index), call, or cast arm
+        // uses different codegen and must NOT be intercepted here (it would emit wrong bytes).
         if (tail || destination == GENERAL_SCRATCH) && !is_zero_literal(when_true) && !is_zero_literal(when_false) {
-            let is_computed = |arm: &Expression| leaf_name(arm).is_none() && constant_value(arm).is_none();
             let plan = match (constant_value(when_true), constant_value(when_false)) {
-                (Some(c), None) if is_computed(when_false) => Some((c, when_false, true)),
-                (None, Some(c)) if is_computed(when_true) => Some((c, when_true, false)),
+                (Some(c), None) if is_simple_arithmetic_arm(when_false) => Some((c, when_false, true)),
+                (None, Some(c)) if is_simple_arithmetic_arm(when_true) => Some((c, when_true, false)),
                 _ => None,
             };
             if let Some((const_value, computed_arm, const_is_true)) = plan {
@@ -651,8 +654,7 @@ impl Generator {
         // when the condition is false (keeping the false arm), evaluates the true arm into r0,
         // then `mr dest, r0`: `cmpwi r3,0; addi r0,r3,-1; bge skip; addi r0,r3,1; skip: mr r3,r0`.
         if tail || destination == GENERAL_SCRATCH {
-            let is_computed = |arm: &Expression| leaf_name(arm).is_none() && constant_value(arm).is_none();
-            if is_computed(when_true) && is_computed(when_false) {
+            if is_simple_arithmetic_arm(when_true) && is_simple_arithmetic_arm(when_false) {
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
                 self.evaluate_general(when_false, GENERAL_SCRATCH)?;
                 let branch_index = self.output.instructions.len();
@@ -666,6 +668,28 @@ impl Generator {
                     self.output.instructions.push(Instruction::move_register(destination, GENERAL_SCRATCH));
                 }
                 return Ok(());
+            }
+        }
+
+        // `(cond) ? <leaf> : <arithmetic>` in tail position — the true/early arm is a register
+        // leaf, the false/fall-through arm a SIMPLE ARITHMETIC computation: `if (a < 0) return b;
+        // return a + 1;` (return the cached value, else compute). mwcc computes the false arm into
+        // the destination, returns it on the false branch (`bgelr`), then moves the true leaf over
+        // for the true path: `cmpwi r3,0; addi r3,r3,1; bgelr; mr r3,r4`. Restricted to the simple
+        // arithmetic arm shape (a comparison/load/call/cast false-arm uses different codegen).
+        if tail {
+            if let Some(leaf) = leaf_name(when_true) {
+                if is_simple_arithmetic_arm(when_false) {
+                    if let Some(leaf_register) = self.lookup_general(leaf) {
+                        if leaf_register != destination {
+                            let (options, condition_bit) = self.emit_condition_test(condition)?;
+                            self.evaluate_general(when_false, destination)?;
+                            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                            self.output.instructions.push(Instruction::move_register(destination, leaf_register));
+                            return Ok(());
+                        }
+                    }
+                }
             }
         }
 
@@ -1055,6 +1079,30 @@ impl Generator {
             return Ok(GENERAL_SCRATCH);
         }
         self.general_register_of_leaf(operand)
+    }
+}
+
+/// A select arm that mwcc materializes into a register with a plain arithmetic instruction (or a
+/// short strength-reduced sequence), for which it uses the simple branch select used by the
+/// computed-arm handlers above. Comparisons (0/1 idioms), logicals, loads (deref/member/index),
+/// calls, and casts use different codegen there, so they are EXCLUDED — intercepting them in the
+/// branch select would emit wrong bytes (a latent diff the canary set does not cover). Division
+/// and remainder are excluded too (their magic-number sequences are not validated in this form).
+fn is_simple_arithmetic_arm(expression: &Expression) -> bool {
+    match expression {
+        Expression::Binary { operator, .. } => matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::Multiply
+                | BinaryOperator::ShiftLeft
+                | BinaryOperator::ShiftRight
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitXor
+        ),
+        Expression::Unary { operator, .. } => matches!(operator, UnaryOperator::Negate | UnaryOperator::BitNot),
+        _ => false,
     }
 }
 
