@@ -693,6 +693,33 @@ impl Generator {
             }
         }
 
+        // `(cond) ? <arithmetic> : <leaf>` in tail position — the mirror of the case above: the
+        // true/early arm is a SIMPLE ARITHMETIC computation, the false/fall-through arm a register
+        // leaf, as in `if (a < 0) return a + 1; return b;`. mwcc forward-branches past the computed
+        // arm when the condition is false (keeping the leaf in its register), evaluates the true
+        // arm INTO the leaf's register, then `mr dest, leaf_reg`:
+        // `cmpwi r3,0; bge skip; addi r4,r3,1; skip: mr r3,r4`.
+        if tail {
+            if let Some(leaf) = leaf_name(when_false) {
+                if is_simple_arithmetic_arm(when_true) {
+                    if let Some(leaf_register) = self.lookup_general(leaf) {
+                        if leaf_register != destination {
+                            let (options, condition_bit) = self.emit_condition_test(condition)?;
+                            let branch_index = self.output.instructions.len();
+                            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                            self.evaluate_general(when_true, leaf_register)?;
+                            let label = self.output.instructions.len();
+                            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                                *target = label;
+                            }
+                            self.output.instructions.push(Instruction::move_register(destination, leaf_register));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         // `(cond) ? leaf : C` / `(cond) ? C : leaf` — exactly one arm a non-zero
         // constant, the other a register leaf — when materializing the constant into the
         // result register would clobber the leaf before the move could read it. That
@@ -1089,6 +1116,12 @@ impl Generator {
 /// branch select would emit wrong bytes (a latent diff the canary set does not cover). Division
 /// and remainder are excluded too (their magic-number sequences are not validated in this form).
 fn is_simple_arithmetic_arm(expression: &Expression) -> bool {
+    // A constant-valued expression is NOT a computed arm even when its AST is arithmetic — `-1`
+    // is `Unary{Negate, 1}` and `3 + 4` folds to `7`. Those belong to the constant-arm handlers,
+    // so exclude anything `constant_value` can fold (otherwise `(c) ? -1 : x` is mis-selected).
+    if constant_value(expression).is_some() {
+        return false;
+    }
     match expression {
         Expression::Binary { operator, .. } => matches!(
             operator,
