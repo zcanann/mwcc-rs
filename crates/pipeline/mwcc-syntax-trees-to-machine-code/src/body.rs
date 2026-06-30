@@ -567,6 +567,41 @@ impl Generator {
             }
         }
 
+        // (f) ADD/SUBTRACT a small CONSTANT to a single long-long parameter. mwcc materializes the
+        // 64-bit constant — its LOW word into the next free GPR (r5) and its HIGH word into r0, or
+        // just r0 when both words are equal — then `addc`/`adde`. `a - C` lowers as `a + (-C)`.
+        // Restricted to a single long-long parameter (so a == result == r3:r4 and r5 is free) and
+        // li-sized constant words; a wider constant or a second parameter (dead-register reuse)
+        // defers.
+        if function.parameters.len() == 1 {
+            if let Expression::Binary { operator, left, right } = return_expression {
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+                    if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), crate::analysis::constant_value(right)) {
+                        if param_pair.get(name.as_str()).is_some_and(|&(_, low_word)| low_word.is_some()) {
+                            let value = if *operator == BinaryOperator::Subtract { constant.wrapping_neg() } else { constant };
+                            let low_word = value as i32 as i64;
+                            let high_word = value >> 32;
+                            if i16::try_from(low_word).is_ok() && i16::try_from(high_word).is_ok() {
+                                if low_word == high_word {
+                                    self.load_integer_constant(GENERAL_SCRATCH, low_word);
+                                    self.output.instructions.push(Instruction::AddCarrying { d: low, a: low, b: GENERAL_SCRATCH });
+                                    self.output.instructions.push(Instruction::AddExtended { d: high, a: high, b: GENERAL_SCRATCH });
+                                } else {
+                                    let low_constant_register = high + 2; // r5 — the next free GPR after r3:r4
+                                    self.load_integer_constant(low_constant_register, low_word);
+                                    self.load_integer_constant(GENERAL_SCRATCH, high_word);
+                                    self.output.instructions.push(Instruction::AddCarrying { d: low, a: low, b: low_constant_register });
+                                    self.output.instructions.push(Instruction::AddExtended { d: high, a: high, b: GENERAL_SCRATCH });
+                                }
+                                self.emit_epilogue_and_return();
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"))
     }
 
