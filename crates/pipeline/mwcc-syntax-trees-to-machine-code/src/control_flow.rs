@@ -634,6 +634,16 @@ impl Generator {
                 // Branch (skipping the computed arm) when the condition selects the constant arm:
                 // the negated skip-when-false test for a true-arm constant, the test itself otherwise.
                 let branch_options = if const_is_true { options ^ 8 } else { options };
+                // When the destination is a real register the computed arm does NOT read, stage the
+                // constant directly in it and conditionally return — `li r3,-1; bltlr; addi r3,r4,1`
+                // — no r0 staging or trailing `mr`. (If the arm reads the destination, `li dest,c`
+                // would clobber the value it needs, so the r0-staged form below is used instead.)
+                if tail && destination != GENERAL_SCRATCH && !self.registers_used_by(computed_arm).contains(&destination) {
+                    self.load_integer_constant(destination, const_value);
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: branch_options, condition_bit });
+                    self.evaluate_general(computed_arm, destination)?;
+                    return Ok(());
+                }
                 self.load_integer_constant(GENERAL_SCRATCH, const_value);
                 let branch_index = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options: branch_options, condition_bit, target: 0 });
@@ -656,6 +666,18 @@ impl Generator {
         if tail || destination == GENERAL_SCRATCH {
             if is_simple_arithmetic_arm(when_true) && is_simple_arithmetic_arm(when_false) {
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
+                // When the destination is a real register that NEITHER arm reads, stage the false
+                // arm directly in it and conditionally return — `addi r3,r4,-1; bgelr; addi r3,r4,1`
+                // — no r0 staging or trailing `mr`.
+                if tail && destination != GENERAL_SCRATCH
+                    && !self.registers_used_by(when_true).contains(&destination)
+                    && !self.registers_used_by(when_false).contains(&destination)
+                {
+                    self.evaluate_general(when_false, destination)?;
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                    self.evaluate_general(when_true, destination)?;
+                    return Ok(());
+                }
                 self.evaluate_general(when_false, GENERAL_SCRATCH)?;
                 let branch_index = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
