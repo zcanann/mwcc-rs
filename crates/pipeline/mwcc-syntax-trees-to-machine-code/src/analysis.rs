@@ -296,7 +296,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
 }
 
 /// Whether `expression` reads any register-resident name.
-fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
+pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
     match expression {
         Expression::Variable(name) => registers.contains(name.as_str()),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,

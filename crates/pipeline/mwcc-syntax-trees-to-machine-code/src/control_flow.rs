@@ -12,8 +12,34 @@ impl Generator {
     /// is tested (a leaf against zero, a comparison directly) with an early
     /// conditional return. Each operand may be a leaf or a comparison.
     pub(crate) fn emit_short_circuit(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
-        // If the right operand still reads the result register, the running result
-        // cannot live there; mwcc computes it in r0 and copies it out at the end.
+        // If evaluating the RIGHT operand reads the RESULT register — as a value or through a load
+        // base (`a && a`; `p && p[0]` where p is in `result`) — the accumulator (`li result,…`)
+        // clobbers a value the right operand still needs, and the scratch-register fallback (r0)
+        // then collides with a load through that pointer. mwcc reuses the compare or uses a third
+        // register; neither is modeled, so defer rather than emit wrong bytes. (A `(a==c1)||(a==c2)`
+        // comparison form, whose operands only TEST the register, still uses the scratch path.)
+        let names_in_result: std::collections::HashSet<&str> = self
+            .locations
+            .iter()
+            .filter(|(_, location)| location.register == result)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        // A COMPARISON or nested logical right operand only TESTS the register (`cmpwi`), leaving
+        // the value intact, so the scratch path stays byte-exact; exclude those. A leaf/load right
+        // operand reads the register as a value and is the unsafe case.
+        let right_is_comparison = matches!(
+            right,
+            Expression::Binary { operator, .. }
+                if matches!(
+                    operator,
+                    BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::LessEqual
+                        | BinaryOperator::GreaterEqual | BinaryOperator::Equal | BinaryOperator::NotEqual
+                        | BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr
+                )
+        );
+        if !names_in_result.is_empty() && !right_is_comparison && crate::analysis::reads_register(right, &names_in_result) {
+            return Err(mwcc_core::Diagnostic::error("a short-circuit whose right operand reuses the result register is not modeled yet (roadmap)"));
+        }
         if self.registers_used_by(right).contains(&result) {
             return self.emit_short_circuit_via_scratch(operator, left, right, result);
         }
