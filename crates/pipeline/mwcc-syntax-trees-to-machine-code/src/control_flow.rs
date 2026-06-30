@@ -608,6 +608,28 @@ impl Generator {
             }
         }
 
+        // `(x == 0) ? c1 : c2` with consecutive constants — the cntlzw 0/1-flag idiom (NOT a sign
+        // mask). `cntlzw r0,x` is 32 iff x==0, so the flag `(r0>>5)&1` is `(x==0)?1:0`. When the
+        // true arm is the LOWER constant the flag goes to the scratch (`rlwinm r0,r0,27,31,31`) and
+        // is negated into the destination (`neg d,r0; addi d,c2` -> c2-(x==0)); when it is the
+        // HIGHER constant the flag goes straight to the destination (`srwi d,r0,5; addi d,c2`).
+        // The scratch (store/value) destination uses a different register layout in mwcc (the flag
+        // can't share r0 with cntlzw), so handle only the in-register destination and defer the rest.
+        if destination != GENERAL_SCRATCH {
+            if let Some((value, c1, c2)) = zero_equal_consecutive(condition, when_true, when_false) {
+                let register = self.general_register_of_leaf(value)?;
+                self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: register });
+                if c1 < c2 {
+                    self.output.instructions.push(Instruction::RotateAndMask { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 27, begin: 31, end: 31 });
+                    self.output.instructions.push(Instruction::Negate { d: destination, a: GENERAL_SCRATCH });
+                } else {
+                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: GENERAL_SCRATCH, shift: 5 });
+                }
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: c2 });
+                return Ok(());
+            }
+        }
+
         // `(x REL 0) ? x : 0` (clamp-to-zero): a sign mask of x combined with x.
         if self.try_emit_sign_clamp(condition, when_true, when_false, destination)? {
             return Ok(());
@@ -1318,6 +1340,7 @@ fn is_simple_arithmetic_arm(expression: &Expression) -> bool {
 pub(crate) fn select_folds_branchless(condition: &Expression, when_true: &Expression, when_false: &Expression) -> bool {
     sign_mask_select(condition, when_true, when_false).is_some()
         || sign_consecutive_select(condition, when_true, when_false).is_some()
+        || zero_equal_consecutive(condition, when_true, when_false).is_some()
 }
 
 pub(crate) fn sign_mask_select<'e>(condition: &'e Expression, when_true: &'e Expression, when_false: &'e Expression) -> Option<(&'e Expression, bool)> {
@@ -1397,4 +1420,18 @@ fn sign_consecutive_select<'e>(condition: &'e Expression, when_true: &Expression
         BinaryOperator::LessEqual if c1 < c2 => Some(SignConsecutive { value, preamble: MaskPreamble::Orc, arithmetic: true, offset: i16::try_from(c2).ok()? }),
         _ => None,
     }
+}
+
+/// `(x == 0) ? c1 : c2` with consecutive non-zero constants — the cntlzw 0/1-flag idiom (NOT a
+/// sign-bit mask, which `==` cannot use). Returns `(x, c1, c2)`.
+fn zero_equal_consecutive<'e>(condition: &'e Expression, when_true: &Expression, when_false: &Expression) -> Option<(&'e Expression, i16, i16)> {
+    let Expression::Binary { operator: BinaryOperator::Equal, left, right } = condition else { return None };
+    if !is_zero_literal(right) {
+        return None;
+    }
+    let (c1, c2) = (constant_value(when_true)?, constant_value(when_false)?);
+    if c1 == 0 || c2 == 0 || (c1 - c2).abs() != 1 {
+        return None;
+    }
+    Some((left.as_ref(), i16::try_from(c1).ok()?, i16::try_from(c2).ok()?))
 }
