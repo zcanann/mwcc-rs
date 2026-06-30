@@ -211,9 +211,9 @@ impl Parser {
                 };
                 return Ok(Expression::IntegerLiteral(bytes as i64));
             }
-            // `sizeof expr` / `sizeof(expr)` for a form whose type we can resolve — a plain variable
-            // (parameter or scalar local) of a known type. mwcc folds it to a `size_t` constant
-            // (`li r3,N`), exactly like `sizeof(type)`. Other expression shapes still defer.
+            // `sizeof expr` / `sizeof(expr)` for a resolvable form folds to a `size_t` constant
+            // (`li r3,N`), like `sizeof(type)`: a known variable, a struct member (`s->f`), a cast,
+            // or a pointer deref/subscript (`*p`, `a[i]` -> the pointee size). Other shapes defer.
             let operand = if parenthesized {
                 let inner = self.expression()?;
                 self.expect(Token::ParenClose)?;
@@ -221,15 +221,32 @@ impl Parser {
             } else {
                 self.factor()?
             };
-            if let Expression::Variable(variable) = &operand {
-                if let Some(variable_type) = self.variable_types.get(variable).copied() {
-                    let bytes = match variable_type {
-                        mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
-                        mwcc_syntax_trees::Type::Pointer(_) | mwcc_syntax_trees::Type::StructPointer { .. } => 4,
-                        other => other.width() as u32 / 8,
-                    };
-                    return Ok(Expression::IntegerLiteral(bytes as i64));
+            // The byte size of a type: a struct uses its laid-out size, a pointer is 4, a scalar is
+            // its width/8.
+            let size_of = |value_type: Type| -> u32 {
+                match value_type {
+                    Type::Struct { size, .. } => size as u32,
+                    Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                    other => other.width() as u32 / 8,
                 }
+            };
+            let bytes = match &operand {
+                Expression::Variable(name) => self.variable_types.get(name).map(|variable_type| size_of(*variable_type)),
+                Expression::Member { member_type, .. } => Some(size_of(*member_type)),
+                Expression::Cast { target_type, .. } => Some(size_of(*target_type)),
+                // `*p` / `a[i]`: the size of the pointed-to element of the base pointer variable.
+                Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => match pointer.as_ref() {
+                    Expression::Variable(name) => match self.variable_types.get(name) {
+                        Some(Type::Pointer(pointee)) => Some(size_of(pointee.element())),
+                        Some(Type::StructPointer { element_size }) => Some(*element_size as u32),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(bytes) = bytes {
+                return Ok(Expression::IntegerLiteral(bytes as i64));
             }
             return Err(Diagnostic::error("sizeof of this expression is not supported yet (roadmap)"));
         }
