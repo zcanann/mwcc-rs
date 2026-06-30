@@ -1504,6 +1504,29 @@ impl Generator {
             self.output.instructions.push(displacement_load(pointee, destination, address, offset));
             return Ok(());
         }
+        // `a[i + const]` / `a[i - const]`: scale the variable index, add it to the base, and fold the
+        // constant into the load displacement — mwcc emits `slwi r0,i,k; add base,base,r0; lwz d,off(base)`.
+        // (A bare variable index below uses `lwzx`, which has no displacement field for the constant.)
+        if let Expression::Binary { operator: operator @ (BinaryOperator::Add | BinaryOperator::Subtract), left, right } = index {
+            if constant_value(left).is_none() {
+                if let Some(constant) = constant_value(right) {
+                    let signed = if *operator == BinaryOperator::Subtract { -constant } else { constant };
+                    let offset = signed * pointee.size() as i64;
+                    let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("subscript offset out of range (roadmap)"))?;
+                    let index_register = self.general_register_of_leaf(left)?;
+                    let size = pointee.size();
+                    let scaled = if size == 1 {
+                        index_register
+                    } else {
+                        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: size.trailing_zeros() as u8 });
+                        GENERAL_SCRATCH
+                    };
+                    self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
+                    self.output.instructions.push(displacement_load(pointee, destination, address, offset));
+                    return Ok(());
+                }
+            }
+        }
         let index_register = self.general_register_of_leaf(index)?;
         let size = pointee.size();
         let scaled = if size == 1 {
@@ -2094,6 +2117,27 @@ impl Generator {
                     return Err(Diagnostic::error("store with a variable index needs a simple value (roadmap)"));
                 }
                 let source = self.place_store_value(value, pointee)?;
+                // `a[i + const] = v` / `a[i - const] = v`: scale the variable index, add it to the base,
+                // and fold the constant into the store displacement (`slwi r0,i,k; add a,a,r0; stw v,off(a)`).
+                if let Expression::Binary { operator: operator @ (BinaryOperator::Add | BinaryOperator::Subtract), left, right } = index {
+                    if constant_value(left).is_none() {
+                        if let Some(constant) = constant_value(right) {
+                            let signed = if *operator == BinaryOperator::Subtract { -constant } else { constant };
+                            let offset = i16::try_from(signed * pointee.size() as i64).map_err(|_| Diagnostic::error("store offset out of range (roadmap)"))?;
+                            let index_register = self.general_register_of_leaf(left)?;
+                            let size = pointee.size();
+                            let scaled = if size == 1 {
+                                index_register
+                            } else {
+                                self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: size.trailing_zeros() as u8 });
+                                GENERAL_SCRATCH
+                            };
+                            self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
+                            self.output.instructions.push(displacement_store(pointee, source, address, offset));
+                            return Ok(());
+                        }
+                    }
+                }
                 let index_register = self.general_register_of_leaf(index)?;
                 let size = pointee.size();
                 let scaled = if size == 1 {
