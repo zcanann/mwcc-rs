@@ -189,6 +189,38 @@ pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
     }
 }
 
+/// A constant-amount shift (`a << 2`, `a >> 3`). mwcc keeps such a shift as the FIRST operand of a
+/// commutative op (`(a<<2)+b` -> `add d, shift, b`); our placement swaps it to second (matching the
+/// strength-reduced `(a*4)+b` instead). A variable-amount shift, or a shift on the right, matches.
+fn is_constant_shift(expression: &Expression) -> bool {
+    matches!(expression, Expression::Binary { operator: BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight, right, .. }
+        if constant_value(right).is_some())
+}
+
+/// Whether an integer expression contains a commutative op whose LEFT operand is a constant-shift —
+/// our operand placement orders it backwards from mwcc, so defer rather than emit the swapped bytes.
+pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
+    if let Expression::Binary { operator, left, right } = expression {
+        // A CONSTANT right operand fuses (`(x>>n) & const` -> a single `rlwinm`), which is byte-exact;
+        // only a non-constant right operand takes the swapped add/or/and/xor/mul order that diverges.
+        if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor)
+            && is_constant_shift(left)
+            && constant_value(right).is_none()
+        {
+            return true;
+        }
+    }
+    match expression {
+        Expression::Binary { left, right, .. } => contains_commutative_shift_left(left) || contains_commutative_shift_left(right),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => contains_commutative_shift_left(operand),
+        Expression::Index { base, index } => contains_commutative_shift_left(base) || contains_commutative_shift_left(index),
+        Expression::Conditional { condition, when_true, when_false } => {
+            contains_commutative_shift_left(condition) || contains_commutative_shift_left(when_true) || contains_commutative_shift_left(when_false)
+        }
+        _ => false,
+    }
+}
+
 /// Append (in evaluation order, de-duplicated) every register-resident name read
 /// within `expression`.
 fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, collected: &mut Vec<String>) {

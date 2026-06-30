@@ -181,6 +181,12 @@ impl Generator {
         if crate::analysis::contains_complex_add(expression) {
             return Err(Diagnostic::error("a reassociated integer add-tree needs the keystone allocator (roadmap)"));
         }
+        // mwcc keeps a constant-amount shift as the FIRST operand of a commutative op (`(a<<2)+b` ->
+        // `add d, shift, b`), but our placement swaps it to second (like `(a*4)+b`). Defer the
+        // ordering rather than emit swapped bytes; matching it is the keystone allocator's job.
+        if crate::analysis::contains_commutative_shift_left(expression) {
+            return Err(Diagnostic::error("a commutative op with a constant-shift left operand orders operands differently (roadmap)"));
+        }
         match expression {
             Expression::IntegerLiteral(value) => {
                 self.load_integer_constant(destination, *value);
