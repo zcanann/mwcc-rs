@@ -1251,6 +1251,19 @@ impl Generator {
                         return Err(Diagnostic::error("a guard whose value equals the fall-through return is degenerate (roadmap)"));
                     }
                 }
+                // A guard condition that is a FLOAT comparison against a float CONSTANT (`if (a > 0.0f)
+                // return 1; return 0;`) folds to the branchless `(a OP k) ? v : w` — the .text is
+                // byte-exact — but mwcc allocates the if's (folded-away) branch labels BEFORE the pooled
+                // float constant, so the constant's anonymous `@N` symbol number is offset by 2 from
+                // ours. Modeling that counter is the low-value @N seam, so defer rather than emit a
+                // mismatched `@N` symbol. (A non-guard `return a > 0.0f;` has no phantom labels and
+                // matches; a two-variable float compare `a < b` pools no constant and is unaffected.)
+                if matches!(&guard.condition, Expression::Binary { operator, left, right }
+                    if crate::analysis::is_comparison(*operator)
+                        && (matches!(left.as_ref(), Expression::FloatLiteral(_)) || matches!(right.as_ref(), Expression::FloatLiteral(_))))
+                {
+                    return Err(Diagnostic::error("a float-constant guard condition's pooled @N symbol is offset by mwcc's folded branch labels (roadmap)"));
+                }
                 let select = guard_select(&guard.condition, &guard.value, return_expression);
                 self.evaluate_tail(&select, function.return_type, result)?;
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
