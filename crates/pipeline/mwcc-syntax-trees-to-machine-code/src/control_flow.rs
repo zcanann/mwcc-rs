@@ -1298,7 +1298,7 @@ fn is_simple_arithmetic_arm(expression: &Expression) -> bool {
 /// Recognize a sign-mask select on `x`, returning `(x, complemented)`:
 ///   `x < 0 ? -1 : 0` / `x >= 0 ? 0 : -1` → `(x, false)` — plain sign mask.
 ///   `x < 0 ? 0 : -1` / `x >= 0 ? -1 : 0` → `(x, true)`  — inverted sign mask.
-fn sign_mask_select<'e>(condition: &'e Expression, when_true: &'e Expression, when_false: &'e Expression) -> Option<(&'e Expression, bool)> {
+pub(crate) fn sign_mask_select<'e>(condition: &'e Expression, when_true: &'e Expression, when_false: &'e Expression) -> Option<(&'e Expression, bool)> {
     let Expression::Binary { operator, left, right } = condition else { return None };
     if !is_zero_literal(right) {
         return None;
