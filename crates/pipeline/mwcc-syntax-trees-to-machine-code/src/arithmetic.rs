@@ -386,6 +386,24 @@ impl Generator {
     /// that source directly — `addi` must not take `r0` as its source, which would
     /// silently mean `li`.
     pub(crate) fn emit_constant_form(&mut self, operator: BinaryOperator, variable: &Expression, constant: i64, destination: u8) -> Compilation<bool> {
+        // A SIGNED CHAR load with a fitting constant for `|`, `^`, or `<<`: mwcc loads the byte into
+        // the scratch and sign-extends it in place (`lbz r0; extsb r0,r0`), then the immediate op
+        // reads r0 into the destination (`ori|xori|slwi r3,r0,c`). Unlike `addi`, these ops can
+        // source r0, so the value stays in the scratch. Handled before the defer below (which gates
+        // the operators — multiply, divide, wide ops — that need a different layout).
+        if destination != GENERAL_SCRATCH && self.is_signed_byte_load(variable)? {
+            let immediate = match operator {
+                BinaryOperator::BitOr if fits_unsigned_16(constant) => Some(Instruction::OrImmediate { a: destination, s: GENERAL_SCRATCH, immediate: constant as u16 }),
+                BinaryOperator::BitXor if fits_unsigned_16(constant) => Some(Instruction::XorImmediate { a: destination, s: GENERAL_SCRATCH, immediate: constant as u16 }),
+                BinaryOperator::ShiftLeft if (1..=31).contains(&constant) => Some(Instruction::ShiftLeftImmediate { a: destination, s: GENERAL_SCRATCH, shift: constant as u8 }),
+                _ => None,
+            };
+            if let Some(instruction) = immediate {
+                self.signed_byte_scratch_source(variable, destination)?;
+                self.output.instructions.push(instruction);
+                return Ok(true);
+            }
+        }
         // A SIGNED CHAR load (struct member `p->x`, array element `a[i]`/`a[2]`, or pointer
         // deref `*p`) promoted to int needs the sign-extension its `lbz`/`lbzx` does not carry
         // — `p->x + 1` is `lbz r0; extsb r3,r0; addi`. Nearly every operator (`+ - * << >> | ^
