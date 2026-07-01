@@ -737,25 +737,46 @@ impl Generator {
         if matches!(function.return_type, Type::Struct { .. }) {
             return Err(Diagnostic::error("returning a struct by value is not supported yet (roadmap)"));
         }
-        // Multiple field stores to the SAME global struct VALUE (`g.x = u; g.y = w;`): mwcc
-        // materializes the struct's SDA base ONCE and schedules that `li rB,g@sda21` AHEAD of the
-        // first field store, then addresses each field (offset 0 directly, others via the base). Our
-        // per-store, program-order materialization places the base between the stores, so the bytes
-        // differ. Defer until that shared-base scheduling is modeled — a single field store is
-        // byte-exact and stays.
+        // Multiple stores to global AGGREGATES that address through a base register (a struct value's
+        // non-offset-0 or large field, or any array element): mwcc materializes every such base
+        // (`li rB,g@sda21` / `lis rB,g@ha`) AHEAD of the stores, then does the stores; our per-store,
+        // program-order materialization places each base between the stores, so the bytes differ. Defer
+        // when two-plus aggregate stores are involved and at least one needs a base register — a single
+        // store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, or scalar globals
+        // stay byte-exact.
         {
-            let mut global_struct_field_stores: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+            let mut aggregate_store_count = 0u32;
+            let mut any_needs_base_register = false;
             for statement in &function.statements {
-                if let Statement::Store { target: Expression::Member { base, .. }, .. } = statement {
-                    if let Expression::Variable(name) = base.as_ref() {
-                        if matches!(self.globals.get(name.as_str()), Some(Type::Struct { .. })) {
-                            *global_struct_field_stores.entry(name.as_str()).or_default() += 1;
+                let Statement::Store { target, .. } = statement else { continue };
+                match target {
+                    // A struct VALUE global's field: offset 0 of a SMALL struct is a direct SDA21 store
+                    // (no base register); a non-zero offset or a LARGE (ADDR16) struct needs the base.
+                    Expression::Member { base, offset, .. } => {
+                        if let Expression::Variable(name) = base.as_ref() {
+                            if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()) {
+                                aggregate_store_count += 1;
+                                if *offset != 0 || *size > 8 {
+                                    any_needs_base_register = true;
+                                }
+                            }
                         }
                     }
+                    // An array global's element always addresses through a base register (a pointer base
+                    // is register-resident already, so it is excluded here).
+                    Expression::Index { base, .. } => {
+                        if let Expression::Variable(name) = base.as_ref() {
+                            if self.global_array_sizes.contains_key(name.as_str()) {
+                                aggregate_store_count += 1;
+                                any_needs_base_register = true;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
-            if global_struct_field_stores.values().any(|&count| count >= 2) {
-                return Err(Diagnostic::error("multiple field stores to one global struct need the shared-base schedule (roadmap)"));
+            if aggregate_store_count >= 2 && any_needs_base_register {
+                return Err(Diagnostic::error("multiple base-addressed stores to global aggregates need the shared-base schedule (roadmap)"));
             }
         }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
