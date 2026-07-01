@@ -1662,6 +1662,12 @@ impl Generator {
                 self.output.instructions.push(displacement_load(pointee, destination, 0, 0));
                 return Ok(());
             }
+            // A NON-folded float/double element needs a GPR base distinct from the FPR
+            // destination (`li r,g@sda21; lfs f,off(r)`); this path would misuse the FPR number
+            // as the base GPR, so defer it until a free-GPR base is wired.
+            if matches!(pointee, Pointee::Float | Pointee::Double) {
+                return Err(Diagnostic::error("a non-zero-offset or large float/double global-array element needs a separate base register (roadmap)"));
+            }
             self.emit_global_array_base(name, total_size, destination)?;
             self.output.instructions.push(displacement_load(pointee, destination, destination, offset));
             return Ok(());
@@ -2799,7 +2805,15 @@ impl Generator {
             Expression::FloatLiteral(_) => true,
             Expression::Variable(_) => self.is_float_leaf(expression),
             Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Float | Pointee::Double)),
-            Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Float | Pointee::Double)),
+            Expression::Index { base, .. } => {
+                // A pointer/array element whose pointee is float/double — OR an element of a
+                // file-scope float/double array (whose base is not in `locations`, so `pointee_of`
+                // can't classify it; consult the global's element type directly).
+                matches!(self.pointee_of(base), Ok(Pointee::Float | Pointee::Double))
+                    || matches!(base.as_ref(), Expression::Variable(name)
+                        if self.global_array_sizes.contains_key(name.as_str())
+                            && matches!(self.globals.get(name.as_str()), Some(Type::Float | Type::Double)))
+            }
             Expression::Member { member_type, .. } => *member_type == Type::Float,
             _ => false,
         }
