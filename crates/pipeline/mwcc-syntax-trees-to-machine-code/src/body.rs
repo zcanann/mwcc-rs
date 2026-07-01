@@ -2668,10 +2668,9 @@ impl Generator {
     /// `g(x); return x OP y;` — TWO parameters both live across a single call (the first is passed to
     /// it, the second is only used in the return), combined by a commutative low-latency op. mwcc
     /// preserves BOTH in callee-saved registers — the last parameter in r31, the first in r30 —
-    /// saving them interleaved up front (`stw r31; mr r31,y; stw r30; mr r30,x`); the call finds the
-    /// first parameter still in its incoming register (no move), and the return combines from the
-    /// saved registers (`add r3,r30,r31`). The passed argument is the FIRST parameter, so no argument
-    /// move precedes the call (passing the second — which needs `mr r3,r31` — is a follow-up).
+    /// saving them interleaved up front (`stw r31; mr r31,y; stw r30; mr r30,x`); the return combines
+    /// from the saved registers (`add r3,r30,r31`). The call may pass EITHER parameter: the first stays
+    /// in its incoming register (no move); the second is materialized from its saved r31 (`mr r3,r31`).
     fn try_callee_saved_param_pair_combine(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
             return Ok(false);
@@ -2685,8 +2684,9 @@ impl Generator {
         let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
             return Ok(false);
         };
-        // The call passes exactly the FIRST parameter (still in its incoming register at the call).
-        if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(argument) if argument == &function.parameters[0].name) {
+        // The call passes exactly one of the two parameters (the first stays in its incoming register;
+        // the second is materialized from its callee-saved register — see the save/location logic).
+        if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(argument) if argument == &function.parameters[0].name || argument == &function.parameters[1].name) {
             return Ok(false);
         }
         // The return is `p OP q` reading both parameters, with a commutative low-latency op (the
@@ -2725,14 +2725,15 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
             self.output.instructions.push(Instruction::Or { a: register, s: *incoming_register, b: *incoming_register });
         }
-        // The call finds the first parameter still in its incoming register (no move).
+        // The second parameter is now read from its callee-saved register r31 (its incoming register
+        // is dead), so a call passing it materializes `mr r3,r31`. The first parameter stays in its
+        // incoming register for the call (no move) and moves to r30 only afterward.
+        if let Some(location) = self.locations.get_mut(&function.parameters[1].name) {
+            location.register = 31;
+        }
         self.emit_call(name, arguments, None, false)?;
-        // Afterward both parameters live only in their callee-saved registers.
-        for (rank, (parameter_name, _)) in incoming.iter().rev().enumerate() {
-            let register = 31 - rank as u8;
-            if let Some(location) = self.locations.get_mut(parameter_name) {
-                location.register = register;
-            }
+        if let Some(location) = self.locations.get_mut(&function.parameters[0].name) {
+            location.register = 30;
         }
         let result = Eabi::general_result().number;
         self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
