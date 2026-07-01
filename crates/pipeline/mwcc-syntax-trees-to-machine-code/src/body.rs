@@ -2530,8 +2530,8 @@ impl Generator {
     /// register, so no move precedes it), reloads LR, then combines from the callee-saved register
     /// (`add r3,r31,r3` — the saved value first). The call is argument-free or forwards exactly the
     /// parameter; a computed/constant argument schedules its materialization differently and defers.
-    /// Handles the commutative low-latency ops (`+`, `|`, `&`, `^`), whose `OP r3,r31,r3` operand
-    /// order holds regardless of the source side; non-commutative/heavier ops and multi-parameter
+    /// Handles the low-latency ops `+ | & ^` (commutative — `OP r3,r31,r3` on either source side) and
+    /// `-` (its `subf` operands chosen by the call's side); heavier ops (e.g. `*`) and multi-parameter
     /// shapes are follow-ups.
     fn try_callee_saved_call_combine(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() || !function.statements.is_empty() {
@@ -2554,15 +2554,16 @@ impl Generator {
         let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
             return Ok(false);
         };
-        // Only commutative low-latency ops keep mwcc's `OP r3,r31,r3` operand order (saved value
-        // first) regardless of which source side the call is on.
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        // Low-latency ops mwcc issues as a single register op combining the saved parameter (r31)
+        // and the call result (r3). The commutative ops (`+ | & ^`) use `OP r3,r31,r3` on either
+        // source side; the non-commutative `-` picks its `subf` operands by which side the call is on.
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
             return Ok(false);
         }
         let is_param = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == &param.name);
-        let (call_name, call_arguments) = match (left.as_ref(), right.as_ref()) {
-            (Expression::Call { name, arguments }, other) if is_param(other) => (name, arguments),
-            (other, Expression::Call { name, arguments }) if is_param(other) => (name, arguments),
+        let (call_name, call_arguments, call_on_left) = match (left.as_ref(), right.as_ref()) {
+            (Expression::Call { name, arguments }, other) if is_param(other) => (name, arguments, true),
+            (other, Expression::Call { name, arguments }) if is_param(other) => (name, arguments, false),
             _ => return Ok(false),
         };
         // The call takes no arguments or forwards exactly the parameter (already in its incoming
@@ -2588,6 +2589,10 @@ impl Generator {
             BinaryOperator::BitOr => Instruction::Or { a: result, s: 31, b: result },
             BinaryOperator::BitAnd => Instruction::And { a: result, s: 31, b: result },
             BinaryOperator::BitXor => Instruction::Xor { a: result, s: 31, b: result },
+            // `subf d,a,b` computes `b - a`. `f()-x` (call left) is result-param -> `subf r3,r31,r3`;
+            // `x-f()` (call right) is param-result -> `subf r3,r3,r31`.
+            BinaryOperator::Subtract if call_on_left => Instruction::SubtractFrom { d: result, a: 31, b: result },
+            BinaryOperator::Subtract => Instruction::SubtractFrom { d: result, a: result, b: 31 },
             _ => unreachable!("operator restricted above"),
         });
         self.emit_epilogue_and_return();
