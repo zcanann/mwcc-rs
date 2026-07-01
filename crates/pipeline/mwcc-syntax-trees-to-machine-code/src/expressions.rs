@@ -327,6 +327,29 @@ impl Generator {
                         }
                     }
                 }
+                // `gp->x OP gp->y` — a GLOBAL POINTER dereferenced on BOTH sides (any op, any members):
+                // the pointer is a LOAD, and our per-operand access reloads it each time (`lwz r3,gp;
+                // lwz r3,0(r3); lwz r0,gp; lwz r0,4(r0)`), while mwcc loads the pointer ONCE and reads
+                // both members from it (`lwz r4,gp; lwz r3,0(r4); lwz r0,4(r4)`). Defer — a register-
+                // resident pointer parameter, or two DIFFERENT global pointers, load correctly.
+                {
+                    fn deref_base(operand: &Expression) -> Option<&str> {
+                        let base = match operand {
+                            Expression::Member { base, .. } | Expression::Index { base, .. } => base.as_ref(),
+                            Expression::Dereference { pointer } => pointer.as_ref(),
+                            _ => return None,
+                        };
+                        match base {
+                            Expression::Variable(name) => Some(name.as_str()),
+                            _ => None,
+                        }
+                    }
+                    if let (Some(left_base), Some(right_base)) = (deref_base(left), deref_base(right)) {
+                        if left_base == right_base && self.globals.contains_key(left_base) {
+                            return Err(Diagnostic::error("a global pointer dereferenced on both sides needs load-once reuse (roadmap)"));
+                        }
+                    }
+                }
                 // A comma operand with a side-effect-free left is equivalent to its right
                 // value; peel it so the right keeps its natural register (`(a,b)+1` == `b+1`,
                 // no spurious move). Only a flat arithmetic binary of leaves/constants is
