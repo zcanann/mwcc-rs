@@ -6,9 +6,10 @@
 // (`mr r3,r31`). The return combines from the saved registers (`add r3,r30,r31`, operand order
 // following the source side). Frame 16, saved_gpr_count 2.
 //
-// DEFERS (no wrong bytes): a non-commutative op (`x-y`), multiply (mwcc schedules the mullw before the
-// LR reload — a latency order the shared hoist does not model), and a return not reading both distinct
-// parameters — follow-ups.
+// The commutative ops (`+ | & ^`) and `-` (subf order following the source side) are handled. DEFERS
+// (no wrong bytes): multiply — with two saved GPRs mwcc interleaves the LR reload between the register
+// restores (`mullw; lwz r31; lwz r0; lwz r30`), a register-death epilogue this path does not model —
+// and a return not reading both distinct parameters — follow-ups.
 void g(int);
 int add_xy(int x, int y)  { g(x); return x + y; }   // pass 1st: no arg move; add r3,r30,r31
 int add_yx(int x, int y)  { g(x); return y + x; }   // add r3,r31,r30 (source order)
@@ -16,3 +17,6 @@ int or_xy(int x, int y)   { g(x); return x | y; }   // or  r3,r30,r31
 int and_xy(int x, int y)  { g(x); return x & y; }   // and r3,r30,r31
 int add_pass2(int x, int y) { g(y); return x + y; } // pass 2nd: mr r3,r31; add r3,r30,r31
 int xor_pass2(int x, int y) { g(y); return y ^ x; } // pass 2nd; xor r3,r31,r30
+int sub_xy(int x, int y)  { g(x); return x - y; }   // subf r3,r31,r30 (x - y, source order)
+int sub_yx(int x, int y)  { g(x); return y - x; }   // subf r3,r30,r31 (y - x)
+int sub_pass2(int x, int y) { g(y); return x - y; } // pass 2nd + subtract

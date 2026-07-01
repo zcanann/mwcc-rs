@@ -2666,7 +2666,8 @@ impl Generator {
     }
 
     /// `g(x); return x OP y;` — TWO parameters both live across a single call (the first is passed to
-    /// it, the second is only used in the return), combined by a commutative low-latency op. mwcc
+    /// it, the second is only used in the return), combined by a low-latency op (`+ | & ^`, or `-`
+    /// whose `subf` order `evaluate_tail` reproduces). mwcc
     /// preserves BOTH in callee-saved registers — the last parameter in r31, the first in r30 —
     /// saving them interleaved up front (`stw r31; mr r31,y; stw r30; mr r30,x`); the return combines
     /// from the saved registers (`add r3,r30,r31`). The call may pass EITHER parameter: the first stays
@@ -2689,12 +2690,15 @@ impl Generator {
         if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(argument) if argument == &function.parameters[0].name || argument == &function.parameters[1].name) {
             return Ok(false);
         }
-        // The return is `p OP q` reading both parameters, with a commutative low-latency op (the
-        // operand order follows the source side, which `evaluate_tail` reproduces).
+        // The return is `p OP q` reading both parameters, combined by a low-latency op whose operand
+        // order `evaluate_tail` reproduces (source order for the commutative ops; the correct `subf`
+        // for `-`). `*` is excluded here: with TWO saved GPRs mwcc interleaves the LR reload between
+        // the register restores (`mullw; lwz r31; lwz r0; lwz r30`), a register-death epilogue schedule
+        // this path does not model — the single-saved-GPR combine handles multiply.
         let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
             return Ok(false);
         };
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
             return Ok(false);
         }
         let is_param = |expression: &Expression, index: usize| matches!(expression, Expression::Variable(name) if name == &function.parameters[index].name);
