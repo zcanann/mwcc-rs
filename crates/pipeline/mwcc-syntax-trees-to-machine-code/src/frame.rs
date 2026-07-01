@@ -187,9 +187,17 @@ impl Generator {
                 return Ok(());
             }
         }
-        // `&p[i]` is the element address `p + i` — the same pointer arithmetic as
-        // `p + i`, scaling the index by the pointee size.
         if let Expression::Index { base, index } = operand {
+            // `&a[i]` for a file-scope ARRAY global is the element ADDRESS `&a + i*size` (an
+            // address computation), NOT the pointer arithmetic below — `a` is an array, so
+            // `load(a)+i` would be wrong bytes. Route it to the array-base path.
+            if let Expression::Variable(name) = base.as_ref() {
+                if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+                    return self.emit_global_array_element_address(name, total_size, index, destination);
+                }
+            }
+            // `&p[i]` for a POINTER base is the element address `p + i` — the same pointer
+            // arithmetic as `p + i`, scaling the index by the pointee size.
             let address = Expression::Binary {
                 operator: mwcc_syntax_trees::BinaryOperator::Add,
                 left: base.clone(),

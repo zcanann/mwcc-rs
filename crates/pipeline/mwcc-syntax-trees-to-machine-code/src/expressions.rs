@@ -1633,6 +1633,32 @@ impl Generator {
         Ok(())
     }
 
+    /// `&g[index]` for a file-scope array global `g`: the ELEMENT ADDRESS `&g + index*size`
+    /// — an address computation (`lis;addi;addi` large / `addi;addi` small), NOT the pointer
+    /// arithmetic `load(g)+index` an array-as-pointer read would do. Materialize the base, then
+    /// add the scaled constant offset. A variable index (a runtime scale+add of an address) is
+    /// not modeled yet, so it defers.
+    pub(crate) fn emit_global_array_element_address(&mut self, name: &str, total_size: u32, index: &Expression, destination: u8) -> Compilation<()> {
+        let element_type = self.globals[name];
+        let pointee = pointee_of_type(element_type)
+            .ok_or_else(|| Diagnostic::error("address of a global array of this element type is not supported yet (roadmap)"))?;
+        // The base materializes into `destination` and is then its own `addi` base, so it cannot
+        // be the scratch r0 (an `addi` based on r0 reads literal zero, not the register).
+        if destination == GENERAL_SCRATCH {
+            return Err(Diagnostic::error("a global-array element address into the scratch register is not supported yet (roadmap)"));
+        }
+        let Some(constant) = constant_value(index) else {
+            return Err(Diagnostic::error("the address of a variable-indexed global-array element is not supported yet (roadmap)"));
+        };
+        self.emit_global_array_base(name, total_size, destination)?;
+        let offset = constant * pointee.size() as i64;
+        if offset != 0 {
+            let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("global-array element address offset out of range (roadmap)"))?;
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: offset });
+        }
+        Ok(())
+    }
+
     /// Materialize a file-scope array global's base address into `dest` (never r0):
     /// a small (`.sdata`) array via a single SDA21 `addi`; a large (`.data`/`.bss`)
     /// one via `lis dest, name@ha` then `addi dest, dest, name@l`.
