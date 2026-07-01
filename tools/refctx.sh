@@ -41,9 +41,25 @@ dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"
 trap 'case "$dir" in */refctx.??????) rm -rf "$dir";; esac' EXIT
 
 # 1. Inline includes into a self-contained file (run from the project root). The
-#    include search path defaults to `include`; a project with extra roots (e.g.
-#    include/libc) sets REFCTX_INCLUDES="include include/libc …" in the env.
-read -r -a include_dirs <<< "${REFCTX_INCLUDES:-include}"
+#    include search path comes from (in priority order): an explicit REFCTX_INCLUDES
+#    env; else the project's own `compile_flags.txt` (`-I`/`-isystem` roots — the real
+#    build's include layout); else `include`. Auto-discovery matters: a project whose
+#    headers live outside `include` (e.g. super_smash_brothers_melee under `src`,
+#    `extern/dolphin/include`) would otherwise fail to inline `dolphin.h` and produce
+#    a 36-line STUB (implicit-declaration artifact) instead of the real ~6000-line TU —
+#    yielding false BYTE results. Discovering the real roots feeds decompctx the true
+#    compilation unit.
+if [[ -n "${REFCTX_INCLUDES:-}" ]]; then
+  read -r -a include_dirs <<< "$REFCTX_INCLUDES"
+elif [[ -f "$project/compile_flags.txt" ]]; then
+  include_dirs=()
+  while IFS= read -r inc; do
+    [[ -d "$project/$inc" ]] && include_dirs+=("$inc")
+  done < <(sed -nE 's/^-I//p; s/^-isystem//p' "$project/compile_flags.txt")
+  [[ ${#include_dirs[@]} -gt 0 ]] || include_dirs=(include)
+else
+  include_dirs=(include)
+fi
 include_flags=()
 # NB: not `dir` — that variable holds the mktemp scratch dir the EXIT trap removes.
 for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
