@@ -778,6 +778,29 @@ impl Generator {
                 return Err(Diagnostic::error("a base-addressed global-aggregate store alongside another store needs the shared-base schedule (roadmap)"));
             }
         }
+        // `if (gi) f(gi);` — a global read in BOTH an if-condition and its then-body. mwcc loads the
+        // global ONCE into the argument register, tests it there, and reuses it for the guarded call
+        // (`lwz r3,gi; cmpwi r3,0; beq; bl f`); our codegen loads it into the scratch for the test, then
+        // RELOADS it for the body — wrong bytes. Defer until that value is reused across the branch. (A
+        // parameter condition, or a body that does not read the condition's global, stays byte-exact.)
+        for statement in &function.statements {
+            if let Statement::If { condition, then_body, .. } = statement {
+                let condition_globals: Vec<&str> = self
+                    .globals
+                    .keys()
+                    .filter(|global| expression_reads_name(condition, global))
+                    .map(String::as_str)
+                    .collect();
+                let body_reads_condition_global = then_body.iter().any(|body_statement| match body_statement {
+                    Statement::Expression(expression) => condition_globals.iter().any(|global| expression_reads_name(expression, global)),
+                    Statement::Store { value, .. } => condition_globals.iter().any(|global| expression_reads_name(value, global)),
+                    _ => false,
+                });
+                if body_reads_condition_global {
+                    return Err(Diagnostic::error("a global read in both an if-condition and its body needs value reuse across the branch (roadmap)"));
+                }
+            }
+        }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
         // every long-long-involved function to the dedicated handler so none falls through to the
         // 32-bit codegen (which would emit a single-register result for a 64-bit value — wrong
