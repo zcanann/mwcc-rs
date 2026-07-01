@@ -111,30 +111,7 @@ impl Generator {
         // Emit the comparison tree (pre-order), collecting the branches to patch.
         let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
         let mut patches: Vec<(usize, Target)> = Vec::new();
-        if values.len() == 2 && values[1] == values[0] + 2 {
-            // Two cases separated by a single hole (gap of exactly 2): mwcc pivots on the hole
-            // value at the range centre, sending it to the default, then handles each case as an
-            // adjacent leaf: `cmpwi hole; beq default; bge up; cmpwi lo; bge case_lo; b default;
-            // up: cmpwi hi+1; bge default; b case_hi`. (The median-case tree would instead pivot
-            // on the higher case value — a byte-DIFF.)
-            let lo = values[0];
-            self.emit_switch_compare(register, lo + 1);
-            self.emit_switch_conditional(&mut patches, BEQ, Target::Default);
-            let bge_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options: BGE.0, condition_bit: BGE.1, target: 0 });
-            self.emit_switch_compare(register, lo);
-            self.emit_switch_conditional(&mut patches, BGE, Target::Body(0));
-            self.emit_switch_branch(&mut patches, Target::Default);
-            let upper = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bge_index] {
-                *target = upper;
-            }
-            self.emit_switch_compare(register, lo + 3);
-            self.emit_switch_conditional(&mut patches, BGE, Target::Default);
-            self.emit_switch_branch(&mut patches, Target::Body(1));
-        } else {
-            self.lower_switch_range(register, &values, 0, values.len() - 1, None, None, &mut patches);
-        }
+        self.lower_switch_range(register, &values, 0, values.len() - 1, None, None, &mut patches);
 
         // Case bodies in sorted value order, then the default — each ends in `blr`.
         let mut body_start = vec![0usize; sorted.len()];
@@ -285,6 +262,44 @@ impl Generator {
                 self.emit_switch_branch(patches, Target::Default);
             }
             return entry;
+        }
+
+        // mwcc pivots on the value at the range CENTRE (`ceil((min+max)/2)`). When that centre is
+        // not a case but centre-1 and centre+1 are (a "tight hole": two cases exactly 2 apart
+        // straddling it), mwcc tests the hole and sends it to the default instead of pivoting on a
+        // case: `cmpwi centre; beq default; bge right`, splitting left=[lo..centre-1] /
+        // right=[centre+1..hi]. Every other centre is a case (or a wider hole), for which the
+        // median-case pivot below already matches mwcc.
+        let sum = values[lo] + values[hi];
+        let centre = if sum >= 0 { (sum + 1) / 2 } else { sum / 2 };
+        if values[lo..=hi].binary_search(&centre).is_err() {
+            if let (Ok(left_rel), Ok(right_rel)) = (
+                values[lo..=hi].binary_search(&(centre - 1)),
+                values[lo..=hi].binary_search(&(centre + 1)),
+            ) {
+                let left_hi = lo + left_rel; // index of centre-1
+                let right_lo = lo + right_rel; // index of centre+1 (== left_hi + 1)
+                self.emit_switch_compare(register, centre);
+                self.emit_switch_conditional(patches, BEQ, Target::Default);
+                let bge_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options: BGE.0, condition_bit: BGE.1, target: 0 });
+                // Left [lo, centre-1] (never empty), bounded above by centre-1.
+                if left_hi == lo && klo == Some(values[lo]) {
+                    self.emit_switch_branch(patches, Target::Body(lo));
+                } else {
+                    self.lower_switch_range(register, values, lo, left_hi, klo, Some(centre - 1), patches);
+                }
+                // Right [centre+1, hi] (never empty), bounded below by centre+1: the `bge` target.
+                if right_lo == hi && khi == Some(values[hi]) {
+                    patches.push((bge_index, Target::Body(hi)));
+                } else {
+                    let right_entry = self.lower_switch_range(register, values, right_lo, hi, Some(centre + 1), khi, patches);
+                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bge_index] {
+                        *target = right_entry;
+                    }
+                }
+                return entry;
+            }
         }
 
         // Interior node: pivot lower-middle once the upper bound is closed, else
