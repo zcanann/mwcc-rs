@@ -1837,13 +1837,20 @@ impl Generator {
             self.output.instructions.push(displacement_store(pointee, source, base, offset));
             return Ok(());
         }
-        // Variable index: integer element only (an unscaled byte index can alias the
-        // base register, so it defers).
+        // Variable index: the base reuses the (scaled-away) index register and the value stores
+        // through it — `stwx`/`stfsx`/`stfdx`. A byte element defers (an unscaled byte index can
+        // alias the base register).
         let size = pointee.size();
         if size == 1 {
             return Err(Diagnostic::error("a variable store to a byte global array is not supported yet (roadmap)"));
         }
-        let value_register = self.general_register_of_leaf(value)?;
+        // A float/double value lives in an FPR (stored via stfsx/stfdx); an integer in a GPR. The
+        // base register is the index register either way — a float value doesn't occupy it.
+        let value_register = if matches!(pointee, Pointee::Float | Pointee::Double) {
+            self.float_register_of_leaf(value)?
+        } else {
+            self.general_register_of_leaf(value)?
+        };
         let index_register = self.general_register_of_leaf(index)?;
         let shift = size.trailing_zeros() as u8;
         let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
