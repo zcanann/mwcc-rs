@@ -1991,6 +1991,9 @@ impl Generator {
             let immediate_op = match operator {
                 BitOr if u16::try_from(constant).is_ok() => Instruction::OrImmediate { a: scratch, s: scratch, immediate: constant as u16 },
                 BitXor if u16::try_from(constant).is_ok() => Instruction::XorImmediate { a: scratch, s: scratch, immediate: constant as u16 },
+                // `a[i] *= 2^k` strength-reduces to a left shift, like every other multiply
+                // context (`slwi r0,r0,k`), NOT `mulli`; a non-power-of-two keeps `mulli`.
+                Multiply if constant > 1 && (constant & (constant - 1)) == 0 => Instruction::ShiftLeftImmediate { a: scratch, s: scratch, shift: constant.trailing_zeros() as u8 },
                 Multiply if i16::try_from(constant).is_ok() => Instruction::MultiplyImmediate { d: scratch, a: scratch, immediate: constant as i16 },
                 BitAnd => match rlwinm_mask(constant) {
                     Some((begin, end)) => Instruction::RotateAndMask { a: scratch, s: scratch, shift: 0, begin, end },
