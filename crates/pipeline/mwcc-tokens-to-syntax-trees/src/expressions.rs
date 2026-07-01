@@ -181,6 +181,13 @@ impl Parser {
             let operand = self.factor()?;
             return Ok(Expression::AddressOf { operand: Box::new(operand) });
         }
+        // Unary plus is a no-op: it performs only the integer promotions a read already does, so
+        // `+a` is exactly `a` — parse and discard it (mwcc emits identical code). `++` is a distinct
+        // `PlusPlus` token handled below, so this never intercepts a pre-increment.
+        if *self.peek() == Token::Plus {
+            self.advance();
+            return self.factor();
+        }
         // prefix unary operators
         let unary = match self.peek() {
             Token::Minus => Some(UnaryOperator::Negate),
