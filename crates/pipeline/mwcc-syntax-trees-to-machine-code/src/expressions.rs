@@ -2344,14 +2344,18 @@ impl Generator {
                 return Ok(GENERAL_SCRATCH);
             }
             // A data GLOBAL value is loaded into the scratch — `gi = gj` is `lwz r0,gj; stw r0,gi`
-            // — since a global is not held in a register like a parameter or local. A BYTE global
-            // (char) is excluded: mwcc drops the sign-extension when the value is immediately stored
-            // as a byte (`lbz; stb`), which the general load's `lbz; extsb` does not model, so defer.
-            if !self.locations.contains_key(name)
-                && self.globals.contains_key(name.as_str())
-                && !matches!(self.globals.get(name), Some(Type::Char | Type::UnsignedChar))
-            {
-                self.evaluate_general(value, GENERAL_SCRATCH)?;
+            // — since a global is not held in a register like a parameter or local. A NARROW store
+            // target truncates, so a signed-narrow global source is read RAW under the truncation
+            // context (`char gc,hc; gc = hc;` -> `lbz r0,hc; stb r0,gc`, no redundant `extsb` — mwcc
+            // drops it), like the `var op const` narrow-store path below.
+            if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str()) {
+                let saved = self.narrow_truncation_context;
+                if matches!(pointee, Pointee::Char | Pointee::UnsignedChar | Pointee::Short | Pointee::UnsignedShort) {
+                    self.narrow_truncation_context = true;
+                }
+                let evaluated = self.evaluate_general(value, GENERAL_SCRATCH);
+                self.narrow_truncation_context = saved;
+                evaluated?;
                 return Ok(GENERAL_SCRATCH);
             }
             return self.general_register_of_leaf(value);
