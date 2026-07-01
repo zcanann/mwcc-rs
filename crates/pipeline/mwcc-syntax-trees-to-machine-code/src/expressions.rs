@@ -1782,15 +1782,13 @@ impl Generator {
     /// stores at the element offset. A variable index scales into the scratch, lands
     /// the base in the (now-free) index register, and `stwx`es the value; the large
     /// array's base high half goes to a register that avoids both the index and the
-    /// value. Integer, register-valued stores only — float/double elements, byte
-    /// arrays, and computed/constant values are follow-ups.
+    /// value. A float/double element stores from its FPR through the same GPR base
+    /// (`stfs`/`stfd`); the base register comes from the general pool regardless.
+    /// Register-valued stores only — byte arrays and computed/constant values are follow-ups.
     fn emit_global_array_store(&mut self, name: &str, total_size: u32, index: &Expression, value: &Expression) -> Compilation<()> {
         let element_type = self.globals[name];
         let pointee = pointee_of_type(element_type)
             .ok_or_else(|| Diagnostic::error("a global array of this element type is not supported yet (roadmap)"))?;
-        if matches!(pointee, Pointee::Float | Pointee::Double) {
-            return Err(Diagnostic::error("a store to a float/double global array is not supported yet (roadmap)"));
-        }
         // A non-register (constant/computed) value is materialized with its own
         // instruction, which mwcc's scheduler interleaves into the base
         // materialization (`lis; li value; addi; stw`) — an ordering not modeled
