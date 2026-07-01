@@ -154,6 +154,24 @@ fn is_add_leaf(expression: &Expression) -> bool {
     matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_))
 }
 
+/// The leaves of an all-`+` chain of bare leaves, in source order: `Some([v1, v2, …, vN])` for a
+/// left-associated `(((v1 + v2) + v3) + …) + vN` where every operand is a leaf, else `None`. mwcc
+/// reassociates such a chain to `v1 + left-fold(v2..vN)`, which the codegen reproduces directly.
+pub(crate) fn add_chain_leaves(expression: &Expression) -> Option<Vec<&Expression>> {
+    match expression {
+        Expression::Binary { operator: BinaryOperator::Add, left, right } => {
+            if !is_add_leaf(right) {
+                return None;
+            }
+            let mut leaves = add_chain_leaves(left)?;
+            leaves.push(right);
+            Some(leaves)
+        }
+        _ if is_add_leaf(expression) => Some(vec![expression]),
+        _ => None,
+    }
+}
+
 /// An integer `Add` that mwcc REASSOCIATES and our register allocator does not match byte-for-byte:
 /// a tree of >= 2 additions that is NOT the simple left-associated `(leaf + leaf) + leaf` form.
 /// Byte-exact and kept: `a+b`, `a+b+c`, `a+b*c`, `a*b+c*d`, `(a+b+c)*d`. Diverges: `a+b+c+d`,

@@ -174,10 +174,37 @@ impl Generator {
                 return Ok(());
             }
         }
-        // mwcc REASSOCIATES integer add-trees (`a+b+c+d` -> `a+((b+c)+d)`) and evaluates a nested-add
-        // operand in its own order; our register allocator emits a valid but non-matching sequence.
-        // Only the simple shapes match (`a+b`, the left-assoc `(a+b)+c`, an add with a non-add operand
-        // like `a+b*c`), so defer a reassociated add-tree rather than emit wrong bytes (#20 allocator).
+        // mwcc REASSOCIATES an all-`+` chain of register leaves `v1+v2+…+vN` to `v1 + left-fold(v2..vN)`
+        // and allocates it as `add r0,R2,R3; mr R2,R1; <fold R4..R(N-1) into r0>; add D,r0,RN; add D,R2,D`
+        // (v1 kept in v2's freed register across the folds that would clobber D). Reproduce it directly
+        // for the deferring N>=4 case (N<=3 is byte-exact on the normal path). Each operand must be a
+        // DISTINCT register-resident variable — a repeated one is still live, and a constant/global/
+        // frame leaf has no ready register — so those fall through to the defer below.
+        if let Some(leaves) = crate::analysis::add_chain_leaves(expression) {
+            if leaves.len() >= 4 && destination != GENERAL_SCRATCH {
+                let names: Vec<&str> = leaves.iter().filter_map(|leaf| leaf_name(leaf)).collect();
+                let mut sorted = names.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                let distinct = names.len() == leaves.len() && sorted.len() == names.len();
+                let registers: Option<Vec<u8>> = leaves.iter().map(|leaf| self.general_register_of_leaf(leaf).ok()).collect();
+                if let (true, Some(registers)) = (distinct, registers) {
+                    if !registers.contains(&GENERAL_SCRATCH) {
+                        let last = registers.len() - 1;
+                        self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: registers[1], b: registers[2] });
+                        self.output.instructions.push(Instruction::move_register(registers[1], registers[0]));
+                        for &register in &registers[3..last] {
+                            self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: register });
+                        }
+                        self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: registers[last] });
+                        self.output.instructions.push(Instruction::Add { d: destination, a: registers[1], b: destination });
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        // Other reassociated add-trees (nested non-leaf operands, mixed with `*`) still diverge in
+        // register allocation — defer rather than emit wrong bytes (#20 allocator).
         if crate::analysis::contains_complex_add(expression) {
             return Err(Diagnostic::error("a reassociated integer add-tree needs the keystone allocator (roadmap)"));
         }
