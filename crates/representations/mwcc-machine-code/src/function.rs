@@ -44,6 +44,12 @@ pub struct MachineFunction {
     /// advances its per-function `@N` counter by this at the FRONT of the function's
     /// block (strings precede the function's constants and unwind entries).
     pub new_string_count: u32,
+    /// The `@N` names of the NEW strings this function introduces, in front-of-block
+    /// order — set by the unit's string resolver alongside `new_string_count`. The
+    /// object writer emits a LOCAL symbol for each at the FRONT of the function's `@N`
+    /// block (before its constants and unwind entries), so a second string-bearing
+    /// function interleaves its string symbol per-function the way mwcc does.
+    pub new_string_names: Vec<String>,
     /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol
     /// rather than a global one.
     pub is_static: bool,
@@ -79,6 +85,7 @@ impl MachineFunction {
             constants: Vec::new(),
             string_literals: Vec::new(),
             new_string_count: 0,
+            new_string_names: Vec::new(),
             is_static: false,
             has_conversion: false,
             has_float_branch: false,

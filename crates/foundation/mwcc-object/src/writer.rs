@@ -441,10 +441,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // produced; the parser defers a static global that follows a function.) Their
     // indices are kept so a function relocation that targets one resolves locally.
     let mut local_data_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    // A function-body string's `@N` data object carries its bytes here (for section layout) but its
+    // SYMBOL is emitted per-function in the `@N` run below, interleaved with that function's
+    // constants/unwind entries — so skip those objects in this grouped static run. (A FILE-SCOPE
+    // string — `char *s = "…";` — is not in any function's `string_names`, so it stays here, numbered
+    // ahead of the functions.)
+    let function_string_names: std::collections::HashSet<&str> = functions
+        .iter()
+        .flat_map(|function| function.string_names.iter().map(String::as_str))
+        .collect();
     let is_zero_section = |name: &str| matches!(data_section[name], ".sbss" | ".bss");
     // Initialized statics first, FORWARD declaration order.
     for object in &input.data_objects {
-        if object.is_static && !is_zero_section(object.name) {
+        if object.is_static && !is_zero_section(object.name) && !function_string_names.contains(object.name) {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
@@ -485,6 +494,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // symbol the first function emitted (its `@N` and offset already shared above).
     let mut constant_symbol: HashMap<(u64, u8), u32> = HashMap::new();
     for (index, function) in functions.iter().enumerate() {
+        // This function's NEW strings sit at the FRONT of its `@N` block, before its constants and
+        // unwind entries. Each `@N` name already has a laid-out data object (`.sdata`/`.data`); emit
+        // its LOCAL symbol here and record it so relocations (this function's, and a later function
+        // reusing the same pooled string) resolve to it.
+        for name in &function.string_names {
+            local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+            let section = index_of(data_section[name.as_str()]) as u16;
+            write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+            comment_values.push(data_aligns[name.as_str()]);
+        }
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
             match constant_symbol.get(&(constant.bits, constant.byte_width)) {

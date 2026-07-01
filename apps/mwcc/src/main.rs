@@ -407,18 +407,15 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let mut counter = 5u32 + string_counter;
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> = std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
-    // The per-function `@N` NUMBERING (below) is byte-exact, but the string SYMBOLS are still emitted
-    // grouped in the writer's data run rather than interleaved per-function with each function's
-    // extab/extabindex, so two functions each introducing a NEW string diverge in symbol-table order.
-    // Defer that case for now (a single function's strings — or reuses of one — are byte-exact).
-    let mut functions_with_new_strings = 0u32;
     for machine_function in &mut machine_functions {
         let bump = u32::from(machine_function.has_conversion)
             + if machine_function.has_float_branch { 3 } else { 0 }
             + machine_function.anonymous_label_bump;
         let mut number = counter + bump;
-        // Strings first, in the function's `@N` block.
-        let mut new_strings = 0u32;
+        // Strings first, in the function's `@N` block. The NEW ones (a reuse points at an earlier
+        // pool entry) are recorded by name so the writer emits their symbols at the FRONT of this
+        // function's `@N` block, interleaved per-function with its constants/unwind entries.
+        let mut new_string_names: Vec<String> = Vec::new();
         let resolved: Vec<String> = machine_function
             .string_literals
             .iter()
@@ -428,7 +425,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 }
                 let name = format!("@{number}");
                 number += 1;
-                new_strings += 1;
+                new_string_names.push(name.clone());
                 string_pool.insert(bytes.clone(), name.clone());
                 let mut object_bytes = bytes.clone();
                 object_bytes.push(0);
@@ -444,18 +441,8 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 name
             })
             .collect();
-        machine_function.new_string_count = new_strings;
-        if new_strings > 0 {
-            // The string SYMBOLS are still emitted in the writer's data run rather than interleaved
-            // per-function with this function's pooled-constant / unwind symbols in the local run, so
-            // a string sharing a function with a pooled constant — or a second string-bearing
-            // function — diverges in symbol-table ORDER (the @N numbers are already correct). Defer
-            // those; a lone string-bearing function with no pooled constants is byte-exact.
-            functions_with_new_strings += 1;
-            if functions_with_new_strings > 1 || !machine_function.constants.is_empty() {
-                return Err(Diagnostic::error("string symbols interleaved with per-function constant/unwind symbols are not fully ordered yet (roadmap)"));
-            }
-        }
+        machine_function.new_string_count = new_string_names.len() as u32;
+        machine_function.new_string_names = new_string_names;
         // Then the function's constants (deduped across the unit) and its unwind entries, so the next
         // function's block starts at the right `@N`.
         for constant in &machine_function.constants {

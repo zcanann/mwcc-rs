@@ -1,22 +1,19 @@
-// A string literal becomes an anonymous `@N` object that the referencing instruction addresses by
-// its size. The unit's string resolver numbers each NEW string at the FRONT of its function's `@N`
-// block (before that function's constants and unwind entries) and pools identical strings across the
-// whole unit (`-str reuse`): a reused string consumes no new `@N`.
+// String literals become anonymous `@N` objects, numbered at the FRONT of each function's `@N`
+// block (before that function's constants and unwind entries) and pooled across the whole unit
+// (`-str reuse`): a reused string consumes no new `@N`. A string within the small-data threshold
+// (<= 8 bytes incl. NUL) lands in `.sdata`, reached by a single SDA21 `li`; a larger one lands in
+// `.data`, reached by ADDR16 `lis`/`addi` (`@ha`/`@l`).
 //
-//   - a string within the small-data threshold (<= 8 bytes incl. NUL) lands in `.sdata`, reached by
-//     a single SDA21 `li` (`abcdefg` is 7 chars + NUL = 8 bytes, right at the boundary — still SDA21);
-//   - a larger string lands in `.data`, reached by ADDR16 `lis`/`addi` (`@ha`/`@l`), like a large
-//     global array's base.
+// The string SYMBOLS interleave PER-FUNCTION with each function's constant/unwind symbols the way
+// mwcc lays them out (the writer emits them in its `@N` run, not grouped in the data section). So:
+//   - several functions may each introduce their OWN new string (symbols interleave correctly);
+//   - a string may share a function with a pooled `.sdata2` constant;
+//   - small and large strings mix, and later functions reuse earlier pooled strings.
 //
-// One function here introduces every distinct string; the rest only REUSE those pooled strings, so
-// no second `@N` slot is cut and a lone returned string is byte-exact too. This exercises small +
-// large in one function, cross-function reuse of both, and a returned large string.
-//
-// DEFERS (no wrong bytes, roadmap): a SECOND function that introduces its own NEW string
-// (per-function string-symbol interleaving with unwind entries isn't ordered yet); a string
-// alongside a pooled constant in the same function (same symbol-order seam).
+// DEFERS (no wrong bytes, roadmap — unrelated to strings): a value kept live across the call needs
+// the callee-saved register allocator, so `alpha`/`beta`/`mixed` keep their bodies leaf-simple.
 void  take(char *);
-void  introduce(void)  { take("hi"); take("abcdefg"); take("longer string here"); }  // @5 SDA21, @6 SDA21 (8B), @7 ADDR16
-void  reuse_small(void) { take("hi"); }                             // pooled -> reuses @5
-void  reuse_large(void) { take("longer string here"); }            // pooled -> reuses @7 (ADDR16)
-char *ret_large(void)   { return "longer string here"; }           // pooled -> reuses @7, lis/addi
+void  alpha(void) { take("aa"); take("wide alpha string"); }  // @5 SDA21 (.sdata), @6 ADDR16 (.data)
+void  beta(void)  { take("bb"); }                             // a SECOND function introducing a new string
+void  reuse(void) { take("aa"); take("bb"); }                 // reuses both pooled strings — no new @N
+float mixed(void) { take("cc"); return 1.5f; }                // a string alongside a pooled .sdata2 constant

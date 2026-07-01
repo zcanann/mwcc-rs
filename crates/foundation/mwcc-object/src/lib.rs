@@ -94,6 +94,12 @@ pub struct FunctionObject<'a> {
     /// `@N` string pool. They are numbered at the FRONT of this function's `@N` block
     /// (before its constants and unwind entries), so the writer advances by this first.
     pub string_count: u32,
+    /// The `@N` names of those NEW strings, in front-of-block order. The writer emits a
+    /// LOCAL object symbol for each at the FRONT of this function's `@N` block (its bytes
+    /// and section/offset come from the matching `.sdata`/`.data` data object), so the
+    /// string symbol interleaves per-function with the constants/unwind entries the way
+    /// mwcc lays them out — not grouped in the data run.
+    pub string_names: Vec<String>,
     /// A dense `switch`'s jump table. The writer materializes it as an anonymous
     /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
     /// function, and resolves this function's `JumpTable` `.text` relocations.
