@@ -2834,15 +2834,21 @@ impl Generator {
         if class != ValueClass::General {
             return Ok(false);
         }
-        // A general pointee (a float/double store needs an f-register result and stfd/stfs).
-        if matches!(pointee, Pointee::Float | Pointee::Double) {
+        // The call's result must match the store width: a general (int) pointee needs an
+        // int-returning call (result in r3, stw/stb/sth); a float/double pointee needs a
+        // matching float-returning call (result in f1, stfs/stfd). A mismatch (int call to a
+        // float target, or vice versa) would need a conversion — defer.
+        let float_store = matches!(pointee, Pointee::Float | Pointee::Double);
+        let matched = match pointee {
+            Pointee::Float => self.call_return_types.get(name) == Some(&Type::Float),
+            Pointee::Double => self.call_return_types.get(name) == Some(&Type::Double),
+            _ => !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)),
+        };
+        if !matched {
             return Ok(false);
         }
-        // The call must return a general result, and must NOT pass the saved pointer as an
-        // argument (that keeps it in an argument register across the call — a different shape).
-        if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
-            return Ok(false);
-        }
+        // The call must NOT pass the saved pointer as an argument (that keeps it in an
+        // argument register across the call — a different shape).
         if arguments.iter().any(|argument| expression_reads_name(argument, pointer_name)) {
             return Ok(false);
         }
@@ -2864,8 +2870,14 @@ impl Generator {
         if let Some(location) = self.locations.get_mut(pointer_name) {
             location.register = 31;
         }
-        let result = mwcc_target::Eabi::general_result().number;
-        self.emit_call(name, arguments, None, false)?;
+        // A float-returning call leaves its result in f1 (stfs/stfd); an int call in r3.
+        let result = if float_store {
+            self.emit_call(name, arguments, None, true)?;
+            mwcc_target::Eabi::float_result().number
+        } else {
+            self.emit_call(name, arguments, None, false)?;
+            mwcc_target::Eabi::general_result().number
+        };
         self.output.instructions.push(displacement_store(pointee, result, 31, offset));
         self.emit_epilogue_and_return();
         Ok(true)
