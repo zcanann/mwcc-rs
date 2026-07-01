@@ -2459,6 +2459,11 @@ impl Generator {
             }
         }
         if matches!(pointee, Pointee::Float | Pointee::Double) {
+            // A `(double)` cast of an already-double value is a no-op; when the target
+            // is itself double, see through it so a double leaf/call stores from its own
+            // register (mwcc emits no `frsp`/`fmr`). A single (`float*`) target is a real
+            // narrowing, so it is left to the cast path.
+            let value = if pointee == Pointee::Double { self.peel_redundant_double_cast(value) } else { value };
             if let Expression::Variable(name) = value {
                 // A float parameter/local lives in a register; a float global is not in
                 // `locations`, so it falls through to the general float evaluator, which

@@ -33,18 +33,30 @@ impl Generator {
     /// is byte-correct here, but its `R_PPC_EMB_SDA21` relocation and the constant
     /// pool are the next M3 step. Leaf integer operands only.
     pub(crate) fn emit_cast_to_float(&mut self, operand: &Expression, destination: u8, double: bool) -> Compilation<()> {
+        // A cast between floating types needs an instruction only when it NARROWS:
         // `(float)` of a double rounds it to single precision with `frsp`. A leaf
         // rounds in place from its own register; a sub-expression is computed into
         // the destination first (mwcc keeps that intermediate in the destination,
-        // not the scratch), then rounded `frsp d, d`.
+        // not the scratch), then rounded `frsp d, d`. A same-width `(double)` of a
+        // double is a NO-OP — the value only needs to land in `destination` (mwcc
+        // emits nothing when it is already there, e.g. `return (double)dbl_call()`
+        // whose result is already in the return register); do NOT emit a spurious frsp.
         if self.is_double_value(operand) {
-            let source = if self.is_float_leaf(operand) {
-                self.float_register_of_leaf(operand)?
+            if self.is_float_leaf(operand) {
+                let source = self.float_register_of_leaf(operand)?;
+                if double {
+                    if source != destination {
+                        self.output.instructions.push(Instruction::FloatMove { d: destination, b: source });
+                    }
+                } else {
+                    self.output.instructions.push(Instruction::RoundToSingle { d: destination, b: source });
+                }
             } else {
                 self.evaluate_float(operand, destination)?;
-                destination
-            };
-            self.output.instructions.push(Instruction::RoundToSingle { d: destination, b: source });
+                if !double {
+                    self.output.instructions.push(Instruction::RoundToSingle { d: destination, b: destination });
+                }
+            }
             return Ok(());
         }
         // A narrow integer (char/short) cast to float is first widened to int with

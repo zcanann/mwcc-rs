@@ -196,6 +196,21 @@ impl Generator {
         matches!(expression, Expression::Variable(name) if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::Float))
     }
 
+    /// See through a redundant `(double)` cast of an already-`double` value — a
+    /// semantic no-op mwcc emits nothing for (`(double)dbl_call()`, `(double)dbl_x`).
+    /// Peels every such layer, returning the innermost double operand. A `(float)`
+    /// cast (a real narrowing) and a `(double)` of a non-double value are left intact.
+    pub(crate) fn peel_redundant_double_cast<'a>(&self, mut expression: &'a Expression) -> &'a Expression {
+        while let Expression::Cast { target_type: Type::Double, operand } = expression {
+            if self.is_double_value(operand) {
+                expression = operand;
+            } else {
+                break;
+            }
+        }
+        expression
+    }
+
     /// Whether this expression yields a floating-point value — a float-register leaf,
     /// a float file-scope global, or a float-typed struct member — so a comparison on
     /// it routes to the FPU compare (`fcmpo`/`fcmpu`) path rather than the integer one.
