@@ -1973,61 +1973,86 @@ impl Parser {
         let mut local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
         local_names.extend(parameters.iter().map(|parameter| parameter.name.as_str()));
         let mut statements = Vec::new();
-        while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
-            // An empty statement (a lone `;`) produces no code — skip it.
-            if *self.peek() == Token::Semicolon {
-                self.advance();
-                continue;
-            }
-            // `if (c) { ... }` is a conditional block statement; a trailing
-            // `if (c) return ...` is a guard, handled after the statement list.
-            if *self.peek() == Token::KeywordIf {
-                if self.block_if_ahead() {
-                    let statement = self.parse_if_statement(&local_names)?;
-                    statements.push(statement);
-                    continue;
-                }
-                break;
-            }
-            if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
-                statements.push(self.parse_loop_statement(&local_names)?);
-                continue;
-            }
-            let statement = self.parse_simple_statement(&local_names)?;
-            statements.push(statement);
-        }
-
         // Zero or more guarded early returns: `if (condition) return value;`. An
         // `if (c) return x; else return y;` terminates the function as a single
         // conditional return (the ternary `c ? x : y`).
         let mut guards = Vec::new();
         let mut conditional_return = None;
-        while *self.peek() == Token::KeywordIf {
-            self.advance();
-            self.expect(Token::ParenOpen)?;
-            let condition = self.expression()?;
-            self.expect(Token::ParenClose)?;
-            let value = self.parse_guard_return()?;
-            if self.eat_word("else") {
-                // `else if (…)` chains another guard — since each branch returns, the
-                // `else` is implied, so the loop's next turn parses it as the next
-                // guard. A plain `else return w;` is the chain's default: a lone
-                // if/else is the ternary select; an else ending an else-if chain
-                // supplies the trailing return after the collected guards.
-                if *self.peek() == Token::KeywordIf {
-                    guards.push(GuardedReturn { condition, value });
+        loop {
+            while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
+                // An empty statement (a lone `;`) produces no code — skip it.
+                if *self.peek() == Token::Semicolon {
+                    self.advance();
                     continue;
                 }
-                // `if (c) return v; else return d;` is the guard `if (c) return v;`
-                // with fall-through `d` — routed through the guard codegen (which
-                // normalizes a negated `!c` to keep `v` as the in-place default, as
-                // mwcc does) rather than emitted as a bare `(c) ? v : d` ternary.
-                let otherwise = self.parse_guard_return()?;
+                // `if (c) { ... }` is a conditional block statement; a trailing
+                // `if (c) return ...` is a guard, handled after the statement list.
+                if *self.peek() == Token::KeywordIf {
+                    if self.block_if_ahead() {
+                        let statement = self.parse_if_statement(&local_names)?;
+                        statements.push(statement);
+                        continue;
+                    }
+                    break;
+                }
+                if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
+                    statements.push(self.parse_loop_statement(&local_names)?);
+                    continue;
+                }
+                let statement = self.parse_simple_statement(&local_names)?;
+                statements.push(statement);
+            }
+
+            while *self.peek() == Token::KeywordIf {
+                // A block-if here follows the guards, so the body CONTINUES — it is
+                // parsed by the statement loop after the migration below.
+                if self.block_if_ahead() {
+                    break;
+                }
+                self.advance();
+                self.expect(Token::ParenOpen)?;
+                let condition = self.expression()?;
+                self.expect(Token::ParenClose)?;
+                let value = self.parse_guard_return()?;
+                if self.eat_word("else") {
+                    // `else if (…)` chains another guard — since each branch returns, the
+                    // `else` is implied, so the loop's next turn parses it as the next
+                    // guard. A plain `else return w;` is the chain's default: a lone
+                    // if/else is the ternary select; an else ending an else-if chain
+                    // supplies the trailing return after the collected guards.
+                    if *self.peek() == Token::KeywordIf {
+                        guards.push(GuardedReturn { condition, value });
+                        continue;
+                    }
+                    // `if (c) return v; else return d;` is the guard `if (c) return v;`
+                    // with fall-through `d` — routed through the guard codegen (which
+                    // normalizes a negated `!c` to keep `v` as the in-place default, as
+                    // mwcc does) rather than emitted as a bare `(c) ? v : d` ternary.
+                    let otherwise = self.parse_guard_return()?;
+                    guards.push(GuardedReturn { condition, value });
+                    conditional_return = Some(otherwise);
+                    break;
+                }
                 guards.push(GuardedReturn { condition, value });
-                conditional_return = Some(otherwise);
+            }
+
+            // Trailing guards end the body at the final return or the closing brace.
+            if matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) || conditional_return.is_some() {
                 break;
             }
-            guards.push(GuardedReturn { condition, value });
+            // The body CONTINUES past the guards (`if (c) return -1; x = …;`): the flat
+            // statements→guards split cannot hold that order, so migrate the pending
+            // guards into the ordered statement list as early-return ifs and resume the
+            // statement loop. Source order is preserved — later trailing guards still
+            // follow every statement. The general-control-flow codegen defers these
+            // bodies (emit_statement rejects If/Return), so this never emits wrong bytes.
+            for guard in guards.drain(..) {
+                statements.push(Statement::If {
+                    condition: guard.condition,
+                    then_body: vec![Statement::Return(Some(guard.value))],
+                    else_body: Vec::new(),
+                });
+            }
         }
 
         // The final `return <expr>;` is optional — a `void` function may end after
