@@ -2343,6 +2343,17 @@ impl Generator {
                 self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: high, immediate: 0 });
                 return Ok(GENERAL_SCRATCH);
             }
+            // A data GLOBAL value is loaded into the scratch — `gi = gj` is `lwz r0,gj; stw r0,gi`
+            // — since a global is not held in a register like a parameter or local. A BYTE global
+            // (char) is excluded: mwcc drops the sign-extension when the value is immediately stored
+            // as a byte (`lbz; stb`), which the general load's `lbz; extsb` does not model, so defer.
+            if !self.locations.contains_key(name)
+                && self.globals.contains_key(name.as_str())
+                && !matches!(self.globals.get(name), Some(Type::Char | Type::UnsignedChar))
+            {
+                self.evaluate_general(value, GENERAL_SCRATCH)?;
+                return Ok(GENERAL_SCRATCH);
+            }
             return self.general_register_of_leaf(value);
         }
         // A chained assignment `g = h = a` stores the same source to each target. Emit
