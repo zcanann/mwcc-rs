@@ -191,13 +191,20 @@ impl Generator {
                 if let (true, Some(registers)) = (distinct, registers) {
                     if !registers.contains(&GENERAL_SCRATCH) {
                         let last = registers.len() - 1;
+                        // v1 must survive the folds, whose last step clobbers the destination. Only
+                        // when v1 already sits in the destination register does mwcc move it aside
+                        // first (into v2's freed register); otherwise it stays put and is added last.
+                        let save_v1 = registers[0] == destination;
+                        let v1_register = if save_v1 { registers[1] } else { registers[0] };
                         self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: registers[1], b: registers[2] });
-                        self.output.instructions.push(Instruction::move_register(registers[1], registers[0]));
+                        if save_v1 {
+                            self.output.instructions.push(Instruction::move_register(registers[1], registers[0]));
+                        }
                         for &register in &registers[3..last] {
                             self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: register });
                         }
                         self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: registers[last] });
-                        self.output.instructions.push(Instruction::Add { d: destination, a: registers[1], b: destination });
+                        self.output.instructions.push(Instruction::Add { d: destination, a: v1_register, b: destination });
                         return Ok(());
                     }
                 }
