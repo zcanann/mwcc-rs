@@ -199,7 +199,13 @@ impl Generator {
         // assigned local in a register and mutates it in place (`add r3,r3,r4; add
         // r3,r3,r5`), so the two disagree. Defer rather than emit the reassociated
         // form; the register allocator will materialize the local and make it exact.
-        if has_additive_chain(&inlined) {
+        // The in-place-mutation disagreement only arises when a COMPUTED local (kept in a
+        // register by mwcc) is folded into the chain. When every tracked value is a
+        // constant, the inlined chain (`int k=3; int m=4; return x+k+m` -> `x+3+4`) is
+        // exactly the direct multi-term-with-constants form our codegen already folds
+        // (`addi r3,r3,7`), and mwcc folds it identically — so it is safe to proceed.
+        let all_values_constant = values.values().all(|value| matches!(value, Expression::IntegerLiteral(_)));
+        if has_additive_chain(&inlined) && !all_values_constant {
             return Err(Diagnostic::error("a value-tracked local folded into a multi-term sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
         }
         let result = match function.return_type {
