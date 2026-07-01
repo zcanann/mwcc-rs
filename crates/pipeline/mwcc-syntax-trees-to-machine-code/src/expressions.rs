@@ -314,6 +314,19 @@ impl Generator {
                 if crate::analysis::has_repeated_nonleaf_subexpression(expression) {
                     return Err(Diagnostic::error("a repeated common sub-expression needs the register allocator's CSE (roadmap)"));
                 }
+                // A repeated GLOBAL variable leaf (`gi + gi`, `gi * gi`) is a common sub-expression
+                // too: unlike a register-resident parameter/local (a free re-read), a global read is a
+                // LOAD, and mwcc loads it ONCE, reusing the register (`lwz r0,gi; mullw r3,r0,r0`),
+                // while our codegen loads each side. The self-folding ops (`& | ^ - / %` and the
+                // comparisons: `g OP g` -> `g`, `0`, or `1`) collapse before this; the non-folding
+                // `+ * << >>` reach here — defer them.
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply | BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight) {
+                    if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
+                        if left_name == right_name && self.globals.contains_key(left_name.as_str()) {
+                            return Err(Diagnostic::error("a repeated global read (`g OP g`) needs the register allocator's CSE (roadmap)"));
+                        }
+                    }
+                }
                 // A comma operand with a side-effect-free left is equivalent to its right
                 // value; peel it so the right keeps its natural register (`(a,b)+1` == `b+1`,
                 // no spurious move). Only a flat arithmetic binary of leaves/constants is
