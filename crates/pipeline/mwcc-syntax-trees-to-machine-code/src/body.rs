@@ -1319,6 +1319,22 @@ impl Generator {
                         continue;
                     }
                     if else_body.is_empty() {
+                        // A conditional store to a global that the very NEXT statement
+                        // unconditionally overwrites is a DEAD store: mwcc drops the whole `if`
+                        // (the condition has no side effect here — this branch is call-free) and
+                        // emits only the final store. We do not do that dead-store elimination, so
+                        // emitting both stores faithfully would diverge — defer instead.
+                        fn store_target(statement: &Statement) -> Option<&str> {
+                            match statement {
+                                Statement::Store { target: Expression::Variable(name), .. } => Some(name.as_str()),
+                                _ => None,
+                            }
+                        }
+                        if let Some(dead) = store_target(&then_body[0]) {
+                            if function.statements.get(index + 1).and_then(store_target) == Some(dead) {
+                                return Err(Diagnostic::error("a dead conditional store (overwritten by the next statement) needs dead-store elimination (roadmap)"));
+                            }
+                        }
                         // The false path skips the body: forward branch.
                         self.emit_if_forward(condition, then_body)?;
                         continue;
