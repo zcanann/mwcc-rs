@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use mwcc_core::{Compilation, Diagnostic};
+use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type};
 use mwcc_target::Eabi;
 use crate::analysis::{constant_value, expression_reads_name, function_makes_call};
@@ -164,14 +165,17 @@ impl Generator {
                 .chain(function.locals.iter().map(|local| local.name.as_str()))
                 .collect();
             let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
-            // Only CONSTANT guard values are verified to fold identically regardless of
-            // where the reassignments sit; a register-valued guard folds differently in
-            // the ordered source (a real forward branch), so it stays deferred.
-            let order_independent = function.return_type != Type::Void
+            // A guard value must be a constant or a plain variable (the fold / temp-fold
+            // forms below); a guard reading an assigned name or a local joins through r0
+            // (not modeled), and calls or a void function defer as before.
+            let supportable = function.return_type != Type::Void
                 && !function_makes_call(function)
-                && function.guards.iter().all(|guard| constant_value(&guard.value).is_some())
+                && function
+                    .guards
+                    .iter()
+                    .all(|guard| constant_value(&guard.value).is_some() || matches!(&guard.value, Expression::Variable(_)))
                 && !function.guards.iter().any(|guard| reads_written(&guard.condition) || reads_written(&guard.value));
-            if !order_independent {
+            if !supportable {
                 return Err(Diagnostic::error("value tracking combined with guards is not supported yet (roadmap)"));
             }
         }
@@ -238,12 +242,20 @@ impl Generator {
             Type::Float => Eabi::float_result().number,
             _ => Eabi::general_result().number,
         };
-        // Order-independent guards (validated above) emit ahead of the inlined return —
-        // the trailing-guard machinery folds the last guard with it into a select
-        // (`cmpwi; li r3,V; bnelr; <tail>`). The fold clobbers the result register with
-        // the constant BEFORE the conditional return, so it only matches mwcc when the
-        // inlined tail no longer reads the parameter living there (`b - a` reading r3 →
-        // mwcc keeps a real early-return branch instead, not modeled — defer).
+        // Guards emit ahead of the inlined return in one of two verified forms.
+        //
+        // DIRECT FOLD (`cmpwi; li r3,V; bnelr; <tail into r3>`): constant guard values,
+        // a tail that neither reads the result register's parameter (the `li` clobbers
+        // it) nor reads two-plus distinct parameters (mwcc schedules such a tail into
+        // the local's home register instead).
+        //
+        // TEMP-FOLD (a single guard over a simple two-leaf tail): the tail computes into
+        // its home r0 first — `cmpwi; add r0,r4,r5; li r3,V; bnelr; mr r3,r0` for a
+        // constant guard value (branch on the guard TAKEN), or `cmpwi; add r0,r4,r5;
+        // mr r3,r0; beqlr; mr r3,v` for a register value (branch on the guard NOT
+        // taken). Ordered sources never reach this path — the hoist keeps their
+        // order-dependent shapes as If statements for the branch-form handler — so this
+        // is exactly the FLAT form mwcc emits for these bodies.
         if function.guards.is_empty() {
             self.evaluate_tail(&inlined, function.return_type, result)?;
             self.emit_epilogue_and_return();
@@ -253,12 +265,72 @@ impl Generator {
                     && location.class == ValueClass::General
                     && expression_reads_name(&inlined, name)
             });
-            if tail_reads_result_register {
+            let all_constant = function.guards.iter().all(|guard| constant_value(&guard.value).is_some());
+            let distinct_parameter_reads = function
+                .parameters
+                .iter()
+                .filter(|parameter| expression_reads_name(&inlined, &parameter.name))
+                .count();
+            let simple_binary_tail = matches!(&inlined, Expression::Binary { left, right, .. }
+                if matches!(left.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
+                    && matches!(right.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_)));
+            if all_constant && !tail_reads_result_register && distinct_parameter_reads <= 1 {
+                self.emit_guard_sequence(&function.guards, &inlined, function.return_type, result)?;
+            } else if function.guards.len() == 1
+                && !all_constant
+                && !tail_reads_result_register
+                && distinct_parameter_reads <= 1
+                && matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            {
+                // INVERTED FOLD — a register-valued guard over a one-parameter tail:
+                // the tail computes directly into the result register, the conditional
+                // return fires when the guard is NOT taken, and the guard value follows
+                // (`cmpwi; addi r3,r4,1; beqlr; mr r3,c`). Verified identical in both
+                // source orders.
+                let guard = &function.guards[0];
+                let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+                self.evaluate_tail(&inlined, function.return_type, result)?;
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                let Expression::Variable(name) = &guard.value else {
+                    return Err(Diagnostic::error("a computed guard value is not supported yet (roadmap)"));
+                };
+                let Some(register) = self.lookup_general(name) else {
+                    return Err(Diagnostic::error("a non-general guard value is not supported yet (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
+                self.emit_epilogue_and_return();
+            } else if function.guards.len() == 1
+                && matches!(function.return_type, Type::Int | Type::UnsignedInt)
+                && simple_binary_tail
+            {
+                let guard = &function.guards[0];
+                let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+                self.evaluate_general(&inlined, GENERAL_SCRATCH)?;
+                if let Some(constant) = constant_value(&guard.value) {
+                    let immediate = i16::try_from(constant)
+                        .map_err(|_| Diagnostic::error("a guard constant outside the li range is not supported yet (roadmap)"))?;
+                    self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate });
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                } else {
+                    let Expression::Variable(name) = &guard.value else {
+                        return Err(Diagnostic::error("a computed guard value is not supported yet (roadmap)"));
+                    };
+                    let Some(register) = self.lookup_general(name) else {
+                        return Err(Diagnostic::error("a non-general guard value is not supported yet (roadmap)"));
+                    };
+                    self.output.instructions.push(Instruction::Or { a: result, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                    self.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
+                    self.emit_epilogue_and_return();
+                    return Ok(true);
+                }
+                self.output.instructions.push(Instruction::Or { a: result, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                self.emit_epilogue_and_return();
+            } else {
                 return Err(Diagnostic::error(
-                    "a guard folded over a tail that reads the result register needs early-return branch codegen (roadmap)",
+                    "a flat early-return form outside the fold/temp-fold shapes is not supported yet (roadmap)",
                 ));
             }
-            self.emit_guard_sequence(&function.guards, &inlined, function.return_type, result)?;
         }
         Ok(true)
     }

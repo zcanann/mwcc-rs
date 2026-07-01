@@ -780,7 +780,13 @@ impl Generator {
         if hoisted.iter().any(|guard| reads_written(&guard.condition) || reads_written(&guard.value)) {
             return None;
         }
-        if hoisted.iter().any(|guard| constant_value(&guard.value).is_none()) {
+        // A guard value must be a constant (the direct fold) or a plain variable (the
+        // inverted fold: `cmpwi; addi r3,r4,1; beqlr; mr r3,c` — verified identical in
+        // both orders for one-parameter tails). Computed values stay ordered.
+        if hoisted
+            .iter()
+            .any(|guard| constant_value(&guard.value).is_none() && !matches!(&guard.value, Expression::Variable(_)))
+        {
             return None;
         }
         // The tail (any reassigned value, or the return expression) must not read the
@@ -797,6 +803,19 @@ impl Generator {
             if tail_reads_occupant {
                 return None;
             }
+        }
+        // A tail reading TWO OR MORE distinct parameters does not fold directly either:
+        // mwcc schedules it into the local's home register ahead of the guard value
+        // (`add r0,r4,r5; li r3,5; bnelr; mr r3,r0` flat, a real branch ordered) — an
+        // order-dependent form, so it too stays ordered for the branch-form handler.
+        let tail_reads_parameter = |name: &str| {
+            rest.iter().any(|statement| match statement {
+                Statement::Assign { value, .. } => expression_reads_name(value, name),
+                _ => false,
+            }) || function.return_expression.as_ref().is_some_and(|ret| expression_reads_name(ret, name))
+        };
+        if function.parameters.iter().filter(|parameter| tail_reads_parameter(&parameter.name)).count() > 1 {
+            return None;
         }
         let mut guards = hoisted;
         guards.extend(function.guards.iter().cloned());
@@ -822,7 +841,9 @@ impl Generator {
         let [Statement::Return(Some(value))] = then_body.as_slice() else {
             return Ok(false);
         };
-        if !else_body.is_empty() || rest.is_empty() || !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+        // A single reassignment is the verified continuation shape; longer tails are
+        // unverified against mwcc (they may fold or reschedule differently) — defer.
+        if !else_body.is_empty() || rest.len() != 1 || !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
             return Ok(false);
         }
         if function_makes_call(function) {
@@ -838,6 +859,19 @@ impl Generator {
             .collect();
         let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
         if reads_written(condition) || reads_written(value) {
+            return Ok(false);
+        }
+        // The branch form is mwcc's shape for a tail reading TWO-plus distinct parameters
+        // (`add r3,r4,r5` after the branch). A one-parameter tail folds instead — the
+        // hoist routes those through the guard machinery — and an unhoistable
+        // one-parameter shape (e.g. reads-r3 with a register value) is unverified: defer.
+        let tail_reads_parameter = |name: &str| {
+            rest.iter().any(|statement| match statement {
+                Statement::Assign { value, .. } => expression_reads_name(value, name),
+                _ => false,
+            }) || function.return_expression.as_ref().is_some_and(|ret| expression_reads_name(ret, name))
+        };
+        if function.parameters.iter().filter(|parameter| tail_reads_parameter(&parameter.name)).count() < 2 {
             return Ok(false);
         }
 
