@@ -31,28 +31,51 @@ fn guard_comparison_key(condition: &Expression) -> Option<(String, i64)> {
     None
 }
 
-/// `(!p) ? CONST : *p` — a null-guarded dereference: the guard condition is `!p` for a register
-/// pointer p, the guard value is a constant, and the fall-through dereferences that same p (`*p`).
-/// Returns the pointer's name. mwcc emits a real branch for this (dereferencing null is unsafe), not
-/// the branchless select a safe fall-through would use.
-fn guarded_null_dereference<'a>(condition: &'a Expression, value: &Expression, default: &Expression, return_type: Type) -> Option<&'a str> {
-    // Only an int-width return stays byte-exact: a narrow (char/short) return sign-extends even the
-    // cold constant (`li r0,0; extsb r3,r0`) where mwcc just `li r3,0`s, so defer those.
+/// A safe-when-nonzero access of a register pointer `p` — `*p`, `p[const]`, or `p->field` — the kind
+/// of dereference a null guard protects. (A variable index `p[i]` needs its scaled register live, so
+/// it is excluded.)
+fn accesses_pointer(expression: &Expression, pointer: &str) -> bool {
+    let is_pointer = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == pointer);
+    match expression {
+        Expression::Dereference { pointer: inner } => is_pointer(inner.as_ref()),
+        Expression::Index { base, index } => is_pointer(base.as_ref()) && constant_value(index).is_some(),
+        Expression::Member { base, .. } => {
+            is_pointer(base.as_ref())
+                || matches!(base.as_ref(), Expression::Dereference { pointer: inner } if is_pointer(inner.as_ref()))
+        }
+        _ => false,
+    }
+}
+
+/// A null-guarded dereference: a guard `!p` / `p` for a register pointer p, with one arm a CONSTANT
+/// and the other a safe-when-nonzero access of that p (`*p`, `p[const]`, `p->field`). Returns
+/// `(pointer, hot_access, cold_constant)`. mwcc branches on `p == 0` to the cold constant and puts the
+/// access in the fall-through — it cannot fold to a branchless select because dereferencing null is
+/// unsafe. Int-width return only (a narrow return sign-extends even the cold constant, a byte diff).
+fn guarded_null_dereference<'a>(condition: &'a Expression, value: &'a Expression, default: &'a Expression, return_type: Type) -> Option<(&'a str, &'a Expression, &'a Expression)> {
     if !matches!(return_type, Type::Int | Type::UnsignedInt) {
         return None;
     }
-    let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition else {
-        return None;
-    };
-    let Expression::Variable(pointer) = operand.as_ref() else {
-        return None;
-    };
-    if constant_value(value).is_none() {
-        return None;
+    match condition {
+        // `if (!p) return VALUE; return DEFAULT;` — p == 0 yields the constant VALUE (cold), p != 0
+        // yields the DEFAULT access of p (hot).
+        Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => {
+            if let Expression::Variable(pointer) = operand.as_ref() {
+                if constant_value(value).is_some() && accesses_pointer(default, pointer) {
+                    return Some((pointer.as_str(), default, value));
+                }
+            }
+        }
+        // `if (p) return VALUE; return DEFAULT;` — p != 0 yields the VALUE access of p (hot), p == 0
+        // yields the constant DEFAULT (cold).
+        Expression::Variable(pointer) => {
+            if accesses_pointer(value, pointer) && constant_value(default).is_some() {
+                return Some((pointer.as_str(), value, default));
+            }
+        }
+        _ => {}
     }
-    matches!(default, Expression::Dereference { pointer: inner }
-        if matches!(inner.as_ref(), Expression::Variable(name) if name == pointer))
-        .then_some(pointer.as_str())
+    None
 }
 
 /// The branchless select for a guard `if (cond) return value;` with fall-through
@@ -1294,22 +1317,22 @@ impl Generator {
                 {
                     return Err(Diagnostic::error("a float-constant guard condition's pooled @N symbol is offset by mwcc's folded branch labels (roadmap)"));
                 }
-                // A null-guarded dereference `if (!p) return CONST; return *p;` cannot fold
-                // branchless (dereferencing null is unsafe); mwcc emits a real branch with the deref
-                // in the fall-through and the constant as the cold tail: `cmplwi p,0; beq COLD; <*p>;
-                // blr; COLD: li CONST; blr`.
-                if let Some(pointer) = guarded_null_dereference(&guard.condition, &guard.value, return_expression, function.return_type) {
+                // A null-guarded dereference (`if (!p) return CONST; return *p;` or the mirror
+                // `if (p) return *p; return CONST;`) cannot fold branchless — dereferencing null is
+                // unsafe — so mwcc branches on `p == 0` to the cold constant with the access in the
+                // fall-through: `cmplwi p,0; beq COLD; <hot access>; blr; COLD: li CONST; blr`.
+                if let Some((pointer, hot, cold)) = guarded_null_dereference(&guard.condition, &guard.value, return_expression, function.return_type) {
                     if let Some(pointer_register) = self.lookup_general(pointer) {
                         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: pointer_register, immediate: 0 });
                         let branch_index = self.output.instructions.len();
                         self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
-                        self.evaluate_tail(return_expression, function.return_type, result)?;
+                        self.evaluate_tail(hot, function.return_type, result)?;
                         self.output.instructions.push(Instruction::BranchToLinkRegister);
-                        let cold = self.output.instructions.len();
+                        let cold_label = self.output.instructions.len();
                         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-                            *target = cold;
+                            *target = cold_label;
                         }
-                        self.evaluate_tail(&guard.value, function.return_type, result)?;
+                        self.evaluate_tail(cold, function.return_type, result)?;
                         self.output.instructions.push(Instruction::BranchToLinkRegister);
                         return Ok(());
                     }
@@ -3092,18 +3115,18 @@ impl Generator {
             // fall-through and the constant as the cold tail: `cmplwi p,0; beq COLD; <*p>; blr;
             // COLD: li CONST; blr`.
             if is_last {
-                if let Some(pointer) = guarded_null_dereference(&guard.condition, &guard.value, final_return, return_type) {
+                if let Some((pointer, hot, cold)) = guarded_null_dereference(&guard.condition, &guard.value, final_return, return_type) {
                     if let Some(pointer_register) = self.lookup_general(pointer) {
                         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: pointer_register, immediate: 0 });
                         let branch_index = self.output.instructions.len();
                         self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
-                        self.evaluate_tail(final_return, return_type, result)?;
+                        self.evaluate_tail(hot, return_type, result)?;
                         self.output.instructions.push(Instruction::BranchToLinkRegister);
-                        let cold = self.output.instructions.len();
+                        let cold_label = self.output.instructions.len();
                         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-                            *target = cold;
+                            *target = cold_label;
                         }
-                        self.evaluate_tail(&guard.value, return_type, result)?;
+                        self.evaluate_tail(cold, return_type, result)?;
                         self.output.instructions.push(Instruction::BranchToLinkRegister);
                         return Ok(());
                     }
