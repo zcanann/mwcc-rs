@@ -181,7 +181,7 @@ impl Generator {
         // DISTINCT register-resident variable — a repeated one is still live, and a constant/global/
         // frame leaf has no ready register — so those fall through to the defer below.
         if let Some(leaves) = crate::analysis::add_chain_leaves(expression) {
-            if leaves.len() >= 4 && destination != GENERAL_SCRATCH {
+            if leaves.len() >= 4 {
                 let names: Vec<&str> = leaves.iter().filter_map(|leaf| leaf_name(leaf)).collect();
                 let mut sorted = names.clone();
                 sorted.sort_unstable();

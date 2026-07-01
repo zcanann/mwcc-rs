@@ -13,3 +13,9 @@ int acbd(int a, int b, int c, int d)               { return a + c + b + d; }   /
 int sum5(int a, int b, int c, int d, int e)        { return a + b + c + d + e; }
 int shuffle5(int a, int b, int c, int d, int e)    { return b + c + a + d + e; }
 int sum6(int a, int b, int c, int d, int e, int f) { return a + b + c + d + e + f; }
+
+struct Pt { int x, y; };
+int  gsum;
+void store_global(int a, int b, int c, int d)        { gsum = a + b + c + d; }        // dest=r0
+void store_member(struct Pt *p, int a, int b, int c, int d) { p->x = a + b + c + d; }
+void store_deref(int *p, int a, int b, int c, int d) { *p = a + b + c + d; }
