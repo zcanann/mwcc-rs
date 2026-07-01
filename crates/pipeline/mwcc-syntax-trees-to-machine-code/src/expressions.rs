@@ -1684,36 +1684,36 @@ impl Generator {
             self.output.instructions.push(displacement_load(pointee, destination, destination, offset));
             return Ok(());
         }
-        // A variable index: scale it, materialize the base, and `lwzx`. mwcc orders
-        // these so the scale runs before the base lands in `destination` (the index
-        // register often IS `destination`); for a large array the base's high half
-        // goes to a register the scale won't clobber. Integer elements only — a
-        // float/double element loads to an FPR (a separate base GPR), and an
-        // unscaled `char` element risks clobbering the index, so both defer.
-        if matches!(pointee, Pointee::Float | Pointee::Double) {
-            return Err(Diagnostic::error("a variable subscript of a float/double global array is not supported yet (roadmap)"));
-        }
+        // A variable index: scale it, materialize the base, and `lwzx`/`lfsx`. mwcc orders these so
+        // the scale runs before the base lands in the base register; for a large array the base's
+        // high half goes to a register the scale won't clobber. An INTEGER element's base IS the
+        // result register (`destination`). A FLOAT/DOUBLE element loads into the FPR `destination`,
+        // whose number cannot be a GPR base — its base is the lowest free GPR (the integer-result
+        // register r3, unused by a float function), regardless of which register holds the index
+        // (mwcc: `slwi r0,r4,2; lis r3,g@ha; addi r3,r3,g@l; lfsx f1,r3,r0`).
         let size = pointee.size();
         if size == 1 {
+            // An unscaled `char` element risks clobbering the index — defer.
             return Err(Diagnostic::error("a variable subscript of a byte global array is not supported yet (roadmap)"));
         }
         let index_register = self.general_register_of_leaf(index)?;
         let shift = size.trailing_zeros() as u8;
+        let base_gpr = if matches!(pointee, Pointee::Float | Pointee::Double) { self.free_general_excluding(GENERAL_SCRATCH)? } else { destination };
         let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
         if small {
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
             self.record_relocation(RelocationKind::EmbSda21, name);
-            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: base_gpr, a: 0, immediate: 0 });
         } else {
-            // The high half goes to `destination` when it does not hold the index;
-            // otherwise to a free register the scale will read before it is reused.
-            let high = if destination != index_register { destination } else { self.free_general_excluding(index_register)? };
+            // The high half goes to the base register when it does not hold the index; otherwise to
+            // a free register the scale will read before it is reused.
+            let high = if base_gpr != index_register { base_gpr } else { self.free_general_excluding(index_register)? };
             self.emit_address_high(high, name);
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
             self.record_relocation(RelocationKind::Addr16Lo, name);
-            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: high, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: base_gpr, a: high, immediate: 0 });
         }
-        self.output.instructions.push(indexed_load(pointee, destination, destination, GENERAL_SCRATCH));
+        self.output.instructions.push(indexed_load(pointee, destination, base_gpr, GENERAL_SCRATCH));
         Ok(())
     }
 
