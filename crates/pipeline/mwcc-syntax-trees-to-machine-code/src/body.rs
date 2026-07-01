@@ -1557,6 +1557,16 @@ impl Generator {
         let (Some(when_true), Some(when_false)) = (arm_value(then_body), arm_value(else_body)) else {
             return Ok(false);
         };
+        // guard_select's early-return / in-place layout matches mwcc only when the fall-through
+        // (else) arm is itself a leaf. With an initializer present, a LEAF then-arm and a COMPUTED
+        // else-arm (`int y=a; if(c) y=b; else y=a+1;`) drive mwcc to a SCRATCH-select
+        // (`<test>; <else into r0>; b<!c>; <then into r0>; mr result,r0`) that this path does not
+        // reproduce — it would emit the conditional-return form and ship wrong bytes. Defer that
+        // exact shape (the no-initializer variant already defers downstream).
+        let arm_is_leaf = |expr: &Expression| leaf_name(expr).is_some() || constant_value(expr).is_some();
+        if local.initializer.is_some() && arm_is_leaf(&when_true) && !arm_is_leaf(&when_false) {
+            return Ok(false);
+        }
         let result = match function.return_type {
             Type::Float | Type::Double => Eabi::float_result().number,
             _ => Eabi::general_result().number,
