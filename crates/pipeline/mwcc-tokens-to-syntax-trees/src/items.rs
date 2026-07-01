@@ -1976,9 +1976,9 @@ impl Parser {
         // Zero or more guarded early returns: `if (condition) return value;`. An
         // `if (c) return x; else return y;` terminates the function as a single
         // conditional return (the ternary `c ? x : y`).
-        let mut guards = Vec::new();
+        let mut guards: Vec<GuardedReturn> = Vec::new();
         let mut conditional_return = None;
-        loop {
+        'body: loop {
             while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
                 // An empty statement (a lone `;`) produces no code — skip it.
                 if *self.peek() == Token::Semicolon {
@@ -2013,7 +2013,25 @@ impl Parser {
                 self.expect(Token::ParenOpen)?;
                 let condition = self.expression()?;
                 self.expect(Token::ParenClose)?;
-                let value = self.parse_guard_return()?;
+                let Some(value) = self.parse_guard_return()? else {
+                    // A bare `if (c) return;` (a void early return) has no guard value —
+                    // migrate the pending guards and this if into the ordered statement
+                    // list (as the continuation migration below does) and resume the
+                    // statement loop for whatever follows.
+                    for guard in guards.drain(..) {
+                        statements.push(Statement::If {
+                            condition: guard.condition,
+                            then_body: vec![Statement::Return(Some(guard.value))],
+                            else_body: Vec::new(),
+                        });
+                    }
+                    statements.push(Statement::If {
+                        condition,
+                        then_body: vec![Statement::Return(None)],
+                        else_body: Vec::new(),
+                    });
+                    continue 'body;
+                };
                 if self.eat_word("else") {
                     // `else if (…)` chains another guard — since each branch returns, the
                     // `else` is implied, so the loop's next turn parses it as the next
@@ -2028,7 +2046,9 @@ impl Parser {
                     // with fall-through `d` — routed through the guard codegen (which
                     // normalizes a negated `!c` to keep `v` as the in-place default, as
                     // mwcc does) rather than emitted as a bare `(c) ? v : d` ternary.
-                    let otherwise = self.parse_guard_return()?;
+                    let Some(otherwise) = self.parse_guard_return()? else {
+                        return Err(Diagnostic::error("a bare `return;` in an else branch is not supported yet (roadmap)"));
+                    };
                     guards.push(GuardedReturn { condition, value });
                     conditional_return = Some(otherwise);
                     break;
@@ -2213,16 +2233,25 @@ impl Parser {
 
     /// Parse a guard's return body: `return <expr>;`, optionally wrapped in a
     /// single-statement block `{ return <expr>; }`. The braces are syntactic — the
-    /// guard codegen is identical either way.
-    fn parse_guard_return(&mut self) -> Compilation<Expression> {
+    /// guard codegen is identical either way. A bare `return;` (a void early return)
+    /// yields `None` — it cannot become a `GuardedReturn` (whose value is required),
+    /// so the caller routes it into the ordered statement list instead.
+    fn parse_guard_return(&mut self) -> Compilation<Option<Expression>> {
         let braced = self.eat_keyword(Token::BraceOpen);
         self.expect(Token::KeywordReturn)?;
+        if *self.peek() == Token::Semicolon {
+            self.advance();
+            if braced {
+                self.expect(Token::BraceClose)?;
+            }
+            return Ok(None);
+        }
         let value = self.expression()?;
         self.expect(Token::Semicolon)?;
         if braced {
             self.expect(Token::BraceClose)?;
         }
-        Ok(value)
+        Ok(Some(value))
     }
 
     /// `return [value];` as a body statement (an early return), with an optional

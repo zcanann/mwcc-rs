@@ -832,6 +832,30 @@ impl Generator {
     /// tracking; a continuation it cannot compile defers the whole body (the guard block is
     /// already emitted, so a bare `Ok(false)` would leave partial output).
     fn try_ordered_early_return_branch(&mut self, function: &Function) -> Compilation<bool> {
+        // A VOID early return over a single-store continuation: `if (a) return; *p = 5;`
+        // is a conditional RETURN (the void exit needs no value), then the plain store
+        // body — `cmpwi; bnelr; li r0,5; stw r0,0(r4); blr`. The store emission is the
+        // standalone sequential form (no return value to schedule around).
+        if function.return_type == Type::Void
+            && function.guards.is_empty()
+            && function.return_expression.is_none()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+        {
+            if let [Statement::If { condition, then_body, else_body }, rest @ ..] = function.statements.as_slice() {
+                if matches!(then_body.as_slice(), [Statement::Return(None)])
+                    && else_body.is_empty()
+                    && matches!(rest, [Statement::Store { .. }])
+                {
+                    let (options, condition_bit) = self.emit_condition_test(condition)?;
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                    self.emit_statement(&rest[0])?;
+                    self.emit_epilogue_and_return();
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
         if !function.guards.is_empty() || function.return_type == Type::Void || function.return_expression.is_none() {
             return Ok(false);
         }
