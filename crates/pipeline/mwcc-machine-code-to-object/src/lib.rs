@@ -24,6 +24,10 @@ pub struct DefinedGlobal {
     pub is_const: bool,
     /// A `static` global binds as a LOCAL symbol (file-scope, not exported).
     pub is_static: bool,
+    /// An EXPLICITLY zero-initialized global (`int a = 0;`) rather than an
+    /// uninitialized one (`int a;`). Both land in `.sbss`/`.bss`, but the writer lays
+    /// the explicit-zero ones in declaration order ahead of the reversed uninitialized run.
+    pub is_explicit_zero: bool,
     /// `ADDR32` data relocations the global's bytes carry (a pointer to a symbol).
     pub relocations: Vec<mwcc_object::DataRelocation>,
 }
@@ -88,7 +92,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, relocations: global.relocations.clone() })
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone() })
         .collect();
     mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data, inline_asm_symbols })
 }

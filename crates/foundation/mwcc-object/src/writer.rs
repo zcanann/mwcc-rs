@@ -187,8 +187,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".sdata") {
         place(object, ".sdata", &mut sdata_size);
     }
+    // mwcc lays `.sbss` out as: EXPLICITLY zero-initialized globals (`int a = 0;`) in
+    // DECLARATION order, then UNINITIALIZED globals (`int a;`) in REVERSE declaration order.
+    // (An all-uninitialized `.sbss` therefore just reverses, as before.)
     let mut sbss_size = 0u32;
-    for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".sbss") {
+    for object in input.data_objects.iter().filter(|object| section_of(object) == ".sbss" && object.is_explicit_zero) {
+        place(object, ".sbss", &mut sbss_size);
+    }
+    for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".sbss" && !object.is_explicit_zero) {
         place(object, ".sbss", &mut sbss_size);
     }
     // `.sdata`/`.rodata`/`.data` file bytes: each initialized object's bytes at its
@@ -451,18 +457,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .flat_map(|function| function.string_names.iter().map(String::as_str))
         .collect();
     let is_zero_section = |name: &str| matches!(data_section[name], ".sbss" | ".bss");
-    // Initialized statics first, FORWARD declaration order.
+    // Initialized statics — plus EXPLICITLY zero-initialized small `.sbss` ones — first, in
+    // FORWARD declaration order (same interleaving mwcc uses for exported globals).
+    let static_forward = |object: &DataObject| {
+        !is_zero_section(object.name) || (data_section[object.name] == ".sbss" && object.is_explicit_zero)
+    };
     for object in &input.data_objects {
-        if object.is_static && !is_zero_section(object.name) && !function_string_names.contains(object.name) {
+        if object.is_static && static_forward(object) && !function_string_names.contains(object.name) {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
             comment_values.push(data_aligns[object.name]);
         }
     }
-    // Then zero statics, REVERSE declaration order.
+    // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`), REVERSE order.
     for object in input.data_objects.iter().rev() {
-        if object.is_static && is_zero_section(object.name) {
+        if object.is_static && is_zero_section(object.name) && !static_forward(object) {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
@@ -562,7 +572,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         let section_name = data_section[object.name];
-        if matches!(section_name, ".sdata" | ".data" | ".sdata2" | ".rodata") {
+        // The initialized sections AND the EXPLICITLY zero-initialized small `.sbss` globals
+        // (`int a = 0;`) emit their symbols up front in DECLARATION order, interleaved (mwcc:
+        // `int a=0; int s=5;` -> symbols `a, s`). Only the UNINITIALIZED zero globals trail the
+        // functions in reverse (handled below). (Large `.bss` follows its own reference-order rule,
+        // untouched here.)
+        if matches!(section_name, ".sdata" | ".data" | ".sdata2" | ".rodata") || (section_name == ".sbss" && object.is_explicit_zero) {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(section_name) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);

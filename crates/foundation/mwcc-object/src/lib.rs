@@ -54,6 +54,12 @@ pub struct DataObject<'a> {
     /// A `static` global is file-local: same section routing, but its symbol binds
     /// LOCAL (and is emitted among the local symbols, not the global run).
     pub is_static: bool,
+    /// True when the object is an EXPLICITLY zero-initialized global (`int a = 0;`,
+    /// `int *p = 0;`) as opposed to an uninitialized one (`int a;`). Both live in
+    /// `.sbss`/`.bss` with no file bytes, but mwcc lays the explicit-zero ones out in
+    /// DECLARATION order ahead of the uninitialized ones (which reverse). See the
+    /// `.sbss` placement in the writer.
+    pub is_explicit_zero: bool,
     /// `R_PPC_ADDR32` relocations this object's bytes carry — a pointer global
     /// initialized with the address of another symbol (`int *p = &g;`). Each patches
     /// 4 bytes at `offset` to `target + addend`.

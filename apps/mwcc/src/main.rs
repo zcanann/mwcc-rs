@@ -267,6 +267,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                                 initial_bytes: Some(object_bytes),
                                 is_const: false,
                                 is_static: true,
+                                is_explicit_zero: false,
                                 relocations: Vec::new(),
                             });
                             name
@@ -278,6 +279,9 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // Relocated or non-zero bytes are initialized data (`.sdata`/`.data`); an
             // all-zero, unrelocated object (only null pointers) belongs in `.sbss`/`.bss`.
             let initial_bytes = (!relocations.is_empty() || bytes.iter().any(|&byte| byte != 0)).then_some(bytes);
+            // An address initializer that resolved to no bytes is an all-null pointer
+            // (`int *p = 0;`) — an EXPLICIT zero, so it orders ahead of the uninitialized run.
+            let is_explicit_zero = initial_bytes.is_none();
             defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
                 name: global.name.clone(),
                 size,
@@ -285,6 +289,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 initial_bytes,
                 is_const: false,
                 is_static: false,
+                is_explicit_zero,
                 relocations,
             });
             continue;
@@ -333,6 +338,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                     initial_bytes: Some(bytes.clone()),
                     is_const: true,
                     is_static: global.is_static,
+                    is_explicit_zero: false,
                     relocations: Vec::new(),
                 });
                 continue;
@@ -357,6 +363,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 initial_bytes: Some(initial_bytes),
                 is_const: true,
                 is_static: global.is_static,
+                is_explicit_zero: false,
                 relocations: Vec::new(),
             });
             continue;
@@ -382,6 +389,12 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 .filter(|values| values.iter().any(|&value| value != 0))
                 .map(|values| serialize(values, serialize_stride, size))
         };
+        // A global that HAD an initializer which serialized to no bytes is an EXPLICIT zero
+        // (`int a = 0;`); one with no initializer at all is uninitialized (`int a;`). Both go
+        // to `.sbss`/`.bss`, but the explicit-zeros lay out in declaration order ahead of the
+        // reversed uninitialized run.
+        let had_initializer = global.initializer.is_some() || global.data_bytes.is_some();
+        let is_explicit_zero = initial_bytes.is_none() && had_initializer;
         defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
             name: global.name.clone(),
             size,
@@ -389,6 +402,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             initial_bytes,
             is_const: false,
             is_static: global.is_static,
+            is_explicit_zero,
             relocations: Vec::new(),
         });
     }
@@ -436,6 +450,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                     initial_bytes: Some(object_bytes),
                     is_const: false,
                     is_static: true,
+                    is_explicit_zero: false,
                     relocations: Vec::new(),
                 });
                 name
