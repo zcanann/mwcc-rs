@@ -3987,6 +3987,23 @@ impl Generator {
                 if self.is_integer_leaf(expression) {
                     return self.emit_cast_to_float(expression, destination, value_type == Type::Double);
                 }
+                // A call returning int — or an implicitly-declared callee (defaults to int),
+                // the libm `w_*` wrappers `double acos(double x){ return __ieee754_acos(x); }`
+                // — leaves its result in r3. Convert it to the CONTEXT precision (this branch
+                // knows `value_type`, which evaluate_float does not) via the magic-bias
+                // sequence, reusing the non-leaf call prologue's frame (no second stwu). mwcc
+                // schedules the call-result conversion value-store-first: the call->xoris->stw
+                // value chain is the critical path, so the independent bias load fills the slot
+                // after. An intrinsic (`__fabs`) is not a real call and is left to evaluate_float.
+                if let Expression::Call { name, arguments } = expression {
+                    if !is_intrinsic_call(name) && !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+                        let source = Eabi::general_result().number;
+                        self.emit_call(name, arguments, None, false)?;
+                        let bias_register = if destination != FLOAT_SCRATCH { destination } else { Eabi::float_result().number };
+                        self.emit_int_to_float_body(source, destination, value_type == Type::Double, true, bias_register, true);
+                        return Ok(());
+                    }
+                }
                 // An integer memory load (`*p`, `a[i]`, `s.member` of integer type) in a
                 // float context needs the loaded value run through the int->float conversion.
                 // That path is not wired, so defer rather than hand it to evaluate_float,

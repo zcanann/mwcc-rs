@@ -83,18 +83,31 @@ impl Generator {
         // A signed value flips its sign bit first and subtracts `0x43300000_80000000`; an
         // unsigned value skips the flip and subtracts `0x43300000_00000000`. Bumps the @N counter.
         let signed = self.signedness_of(operand)?;
-        let bias: u64 = if signed { 0x4330_0000_8000_0000 } else { 0x4330_0000_0000_0000 };
         let source = self.general_register_of_leaf(operand)?;
-        self.output.has_conversion = true;
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        // A leaf value is already in its register, so the build's usual order applies
+        // (GC/2.0p1 stores first, every other build loads the bias first).
+        self.emit_int_to_float_body(source, destination, double, signed, bias_register, self.behavior.float_cast_value_store_first);
+        Ok(())
+    }
+
+    /// The int->float magic body — everything after the `stwu` frame push — for an int
+    /// value already in `source` (a GPR). `value_store_first` picks whether the biased
+    /// value store precedes the bias load (they are independent; the caller decides the
+    /// schedule). Assumes a 16-byte frame is already established (a leaf's own `stwu`, or
+    /// a non-leaf call prologue) and uses its `r1+8`/`r1+12` scratch.
+    pub(crate) fn emit_int_to_float_body(&mut self, source: u8, destination: u8, double: bool, signed: bool, bias_register: u8, value_store_first: bool) {
+        let bias: u64 = if signed { 0x4330_0000_8000_0000 } else { 0x4330_0000_0000_0000 };
+        self.output.has_conversion = true;
+        if self.frame_size < 16 {
+            self.frame_size = 16;
+        }
         if signed {
             self.output.instructions.push(Instruction::XorImmediateShifted { a: source, s: source, immediate: 0x8000 });
         }
         self.output.instructions.push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
-        // The bias load and the value store are independent; builds schedule them in
-        // opposite orders (GC/2.0p1 stores first, every other build loads first).
-        if self.behavior.float_cast_value_store_first {
+        if value_store_first {
             self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
             self.load_double_constant(bias_register, bias);
         } else {
@@ -110,7 +123,6 @@ impl Generator {
         } else {
             Instruction::FloatSubtractSingle { d: destination, a: FLOAT_SCRATCH, b: bias_register }
         });
-        Ok(())
     }
 
     /// Emit a cast of a float operand to an integer in `destination`. mwcc
