@@ -109,6 +109,7 @@ impl Instruction {
             Instruction::RoundToSingle { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (12 << 1),
             Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
             Instruction::FloatNegate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (40 << 1),
+            Instruction::FloatAbsolute { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (264 << 1),
             Instruction::ConvertToIntegerWordZero { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (15 << 1),
             Instruction::StoreWordWithUpdate { s, a, offset } => d_form(37, s, a, offset as u16),
             Instruction::LoadWord { d, a, offset } => d_form(32, d, a, offset as u16),

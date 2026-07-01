@@ -174,6 +174,8 @@ pub enum Instruction {
     FloatMove { d: u8, b: u8 },
     /// `fneg frD, frB`
     FloatNegate { d: u8, b: u8 },
+    /// `fabs frD, frB` — floating absolute value.
+    FloatAbsolute { d: u8, b: u8 },
     /// `fctiwz frD, frB` — convert float to integer, round toward zero.
     ConvertToIntegerWordZero { d: u8, b: u8 },
     /// `stwu rS, offset(rA)` — store word with base update (stack frame push).
@@ -310,6 +312,7 @@ impl Instruction {
                 | RoundToSingle { .. }
                 | FloatMove { .. }
                 | FloatNegate { .. }
+                | FloatAbsolute { .. }
                 | ConvertToIntegerWordZero { .. }
         )
     }

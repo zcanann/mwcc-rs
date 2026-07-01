@@ -43,6 +43,27 @@ impl Generator {
                 self.evaluate_float(right, destination)
             }
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),
+            // `__fabs(x)` is an mwcc intrinsic that lowers to the single `fabs` instruction,
+            // NOT an out-of-line call: `f64 fabs(f64 x) { return __fabs(x); }` -> `fabs f1,f1`.
+            // A register leaf abs's in place from its own register; a memory load / sub-
+            // expression goes through the scratch — the same operand placement as fneg.
+            Expression::Call { name, arguments } if name == "__fabs" && arguments.len() == 1 => {
+                let operand = &arguments[0];
+                let source = if self.is_float_located(operand) {
+                    self.emit_located_operand(operand, FLOAT_SCRATCH)?;
+                    FLOAT_SCRATCH
+                } else if is_complex(operand) {
+                    if !fits_single_scratch(operand, true) {
+                        return Err(Diagnostic::error("__fabs operand needs the full register allocator (roadmap M1)"));
+                    }
+                    self.evaluate_float(operand, FLOAT_SCRATCH)?;
+                    FLOAT_SCRATCH
+                } else {
+                    self.float_register_of_leaf(operand)?
+                };
+                self.output.instructions.push(Instruction::FloatAbsolute { d: destination, b: source });
+                Ok(())
+            }
             Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), true),
             Expression::Binary { operator, left, right } => {
                 let double = self.is_double_value(left) || self.is_double_value(right);

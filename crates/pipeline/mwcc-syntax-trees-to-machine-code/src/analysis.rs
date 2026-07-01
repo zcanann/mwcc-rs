@@ -427,9 +427,18 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
     }
 }
 
+/// Names mwcc lowers to a single instruction rather than an out-of-line call, so
+/// they do NOT make a function non-leaf: the `__fabs` floating absolute-value intrinsic.
+pub(crate) fn is_intrinsic_call(name: &str) -> bool {
+    name == "__fabs"
+}
+
 /// Whether an expression contains a call anywhere.
 pub(crate) fn expression_has_call(expression: &Expression) -> bool {
     match expression {
+        // An intrinsic (`__fabs`) is not a real call, but a real call in its ARGUMENT
+        // still makes the function non-leaf, so recurse into the arguments.
+        Expression::Call { name, arguments } if is_intrinsic_call(name) => arguments.iter().any(expression_has_call),
         Expression::Call { .. } => true,
         Expression::Binary { left, right, .. } => expression_has_call(left) || expression_has_call(right),
         Expression::Unary { operand, .. } => expression_has_call(operand),

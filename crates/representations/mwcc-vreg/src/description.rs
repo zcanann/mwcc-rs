@@ -170,7 +170,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, F, c);
             visit(U, F, b);
         }
-        FloatMove { d, b } | FloatNegate { d, b } | ConvertToIntegerWordZero { d, b } | RoundToSingle { d, b } => {
+        FloatMove { d, b } | FloatNegate { d, b } | FloatAbsolute { d, b } | ConvertToIntegerWordZero { d, b } | RoundToSingle { d, b } => {
             visit(D, F, d);
             visit(U, F, b);
         }
