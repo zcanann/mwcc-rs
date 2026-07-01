@@ -31,6 +31,30 @@ fn guard_comparison_key(condition: &Expression) -> Option<(String, i64)> {
     None
 }
 
+/// `(!p) ? CONST : *p` — a null-guarded dereference: the guard condition is `!p` for a register
+/// pointer p, the guard value is a constant, and the fall-through dereferences that same p (`*p`).
+/// Returns the pointer's name. mwcc emits a real branch for this (dereferencing null is unsafe), not
+/// the branchless select a safe fall-through would use.
+fn guarded_null_dereference<'a>(condition: &'a Expression, value: &Expression, default: &Expression, return_type: Type) -> Option<&'a str> {
+    // Only an int-width return stays byte-exact: a narrow (char/short) return sign-extends even the
+    // cold constant (`li r0,0; extsb r3,r0`) where mwcc just `li r3,0`s, so defer those.
+    if !matches!(return_type, Type::Int | Type::UnsignedInt) {
+        return None;
+    }
+    let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition else {
+        return None;
+    };
+    let Expression::Variable(pointer) = operand.as_ref() else {
+        return None;
+    };
+    if constant_value(value).is_none() {
+        return None;
+    }
+    matches!(default, Expression::Dereference { pointer: inner }
+        if matches!(inner.as_ref(), Expression::Variable(name) if name == pointer))
+        .then_some(pointer.as_str())
+}
+
 /// The branchless select for a guard `if (cond) return value;` with fall-through
 /// `default`. mwcc keeps the *guard value* as the in-place default, so a negated
 /// guard `if (!c) ...` is compiled by stripping the `!` and swapping the arms —
@@ -1269,6 +1293,26 @@ impl Generator {
                         && (matches!(left.as_ref(), Expression::FloatLiteral(_)) || matches!(right.as_ref(), Expression::FloatLiteral(_))))
                 {
                     return Err(Diagnostic::error("a float-constant guard condition's pooled @N symbol is offset by mwcc's folded branch labels (roadmap)"));
+                }
+                // A null-guarded dereference `if (!p) return CONST; return *p;` cannot fold
+                // branchless (dereferencing null is unsafe); mwcc emits a real branch with the deref
+                // in the fall-through and the constant as the cold tail: `cmplwi p,0; beq COLD; <*p>;
+                // blr; COLD: li CONST; blr`.
+                if let Some(pointer) = guarded_null_dereference(&guard.condition, &guard.value, return_expression, function.return_type) {
+                    if let Some(pointer_register) = self.lookup_general(pointer) {
+                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: pointer_register, immediate: 0 });
+                        let branch_index = self.output.instructions.len();
+                        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
+                        self.evaluate_tail(return_expression, function.return_type, result)?;
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        let cold = self.output.instructions.len();
+                        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                            *target = cold;
+                        }
+                        self.evaluate_tail(&guard.value, function.return_type, result)?;
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
                 }
                 let select = guard_select(&guard.condition, &guard.value, return_expression);
                 self.evaluate_tail(&select, function.return_type, result)?;
@@ -3042,6 +3086,29 @@ impl Generator {
 
         for (index, guard) in guards.iter().enumerate() {
             let is_last = index + 1 == guards.len();
+
+            // A null-guarded dereference `if (!p) return CONST; return *p;` cannot fold branchless
+            // (dereferencing null is unsafe); mwcc emits a real branch with the deref in the
+            // fall-through and the constant as the cold tail: `cmplwi p,0; beq COLD; <*p>; blr;
+            // COLD: li CONST; blr`.
+            if is_last {
+                if let Some(pointer) = guarded_null_dereference(&guard.condition, &guard.value, final_return, return_type) {
+                    if let Some(pointer_register) = self.lookup_general(pointer) {
+                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: pointer_register, immediate: 0 });
+                        let branch_index = self.output.instructions.len();
+                        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
+                        self.evaluate_tail(final_return, return_type, result)?;
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        let cold = self.output.instructions.len();
+                        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                            *target = cold;
+                        }
+                        self.evaluate_tail(&guard.value, return_type, result)?;
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                }
+            }
 
             // mwcc compiles the final guard together with the fall-through return as
             // one branchless select `(cond) ? value : final` — the same form as a
