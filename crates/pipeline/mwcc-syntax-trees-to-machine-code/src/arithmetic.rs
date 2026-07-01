@@ -253,6 +253,17 @@ impl Generator {
                 if !(1..=31).contains(&shift) {
                     return Ok(None);
                 }
+                // `(x << k) >> n` (LOGICAL) collapses two shifts to one rotate-and-mask:
+                //   rotate = (32 + k - n) mod 32, surviving field [n, 31] narrowed from the
+                //   top by (k - n) when k >= n. `k==n` is the zero-extend `clrlwi x,n`.
+                // `needs_unsigned=true` restricts it to an unsigned outer shift; the SIGNED
+                // form sign-extends (`slwi;srawi` / `extsb`) and is left to the shift path.
+                if let Some((value, true, k)) = self.constant_shift_placeable(left) {
+                    let n = shift as u8;
+                    let rotate = ((32 + k as i32 - n as i32) % 32) as u8;
+                    let end = if k >= n { 31 - (k - n) } else { 31 };
+                    return Ok(Some((value, rotate, n, end, true)));
+                }
                 // `x & m` for a leaf x, or `(p[0] & m)` / `(s->a & m)` for a load.
                 let Some((value, mask)) = as_masked_leaf(left).or_else(|| as_masked_load(left)) else { return Ok(None) };
                 let Some((begin, end)) = mask_to_run(mask >> shift) else { return Ok(None) };
