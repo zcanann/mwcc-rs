@@ -4,7 +4,7 @@
 //! reproducing mwcceppc's output byte-for-byte. `lib.rs` only wires the theme
 //! modules together and exposes the entry point; the work lives in them.
 
-use mwcc_core::Compilation;
+use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{FrameInfo, MachineFunction};
 use mwcc_syntax_trees::{Function, GlobalDeclaration};
 use mwcc_versions::{Behavior, CompilerConfig};
@@ -35,6 +35,13 @@ use generator::Generator;
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
 pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, config: CompilerConfig) -> Compilation<MachineFunction> {
+    // A `static` local has STATIC storage — an anonymous `<name>$N` object in `.sdata`/`.sbss`,
+    // codegen'd like a file-scope global, not a frame slot. That path (the `$N = @N-1` numbering, the
+    // per-function symbol, global-style access) is not built yet, so defer rather than mis-treat it as
+    // an automatic local (`register`/`auto` hints, in contrast, are ordinary automatics and proceed).
+    if function.locals.iter().any(|local| local.is_static) {
+        return Err(Diagnostic::error("a static local variable is not supported yet (roadmap)"));
+    }
     let mut generator = Generator {
         output: MachineFunction::new(function.name.clone()),
         locations: HashMap::new(),

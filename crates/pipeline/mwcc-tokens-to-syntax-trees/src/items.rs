@@ -1749,7 +1749,23 @@ impl Parser {
         // statement that begins with a type keyword is a local declaration;
         // `return` ends the body.
         let mut locals = Vec::new();
-        while self.peek_is_type() {
+        // A local declaration may open with a storage-class keyword: `static` gives the variable
+        // static storage (codegen'd like a global, so recorded and deferred for now), while
+        // `register`/`auto` are ordinary-automatic hints with no codegen effect. These are
+        // `Identifier` tokens, so peek past them before the type test below.
+        loop {
+            let mut is_static = false;
+            while let Token::Identifier(word) = self.peek() {
+                match word.as_str() {
+                    "static" => is_static = true,
+                    "register" | "auto" => {}
+                    _ => break,
+                }
+                self.advance();
+            }
+            if !self.peek_is_type() {
+                break;
+            }
             let declared_type = self.parse_type()?;
             // A volatile local's accesses must not be elided or folded (the straight-
             // line/value-tracking paths would, e.g. `volatile int x = 5; return x;` ->
@@ -1806,7 +1822,7 @@ impl Parser {
                     };
                     self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
                 }
-                locals.push(LocalDeclaration { declared_type, name, initializer, array_length });
+                locals.push(LocalDeclaration { declared_type, name, initializer, array_length, is_static });
                 if *self.peek() == Token::Comma {
                     self.advance();
                 } else {

@@ -22,6 +22,11 @@ pub struct LocalDeclaration {
     /// is a frame slot of `N * sizeof(element)` bytes; `None` for a scalar. The
     /// `declared_type` is the element type.
     pub array_length: Option<u16>,
+    /// A `static` (function-local) variable: it has STATIC storage (an anonymous
+    /// `<name>$N` object in `.sdata`/`.sbss`, persisting across calls) rather than a
+    /// frame slot, so it is codegen'd like a file-scope global, not a local. The
+    /// `register`/`auto` hints do not set this — they are ordinary automatic locals.
+    pub is_static: bool,
 }
 
 /// A guarded early return: `if (condition) return value;`.
