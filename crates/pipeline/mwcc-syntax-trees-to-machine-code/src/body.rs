@@ -1153,6 +1153,10 @@ impl Generator {
             if self.try_callee_saved_call_combine(function)? {
                 return Ok(());
             }
+            // `p(x); q(y);` — two params passed to two calls in turn; the later param is preserved.
+            if self.try_callee_saved_call_sequence(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -2595,6 +2599,61 @@ impl Generator {
             BinaryOperator::Subtract => Instruction::SubtractFrom { d: result, a: result, b: 31 },
             _ => unreachable!("operator restricted above"),
         });
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// `p(x); q(y);` — two single-argument calls passing two distinct parameters in order (a `void`
+    /// body). The second parameter is live across the first call, so mwcc saves it in r31 up front
+    /// (`mr r31,r4`), runs the first call (the first parameter is still in its incoming register), then
+    /// moves the saved second parameter into place for the second call (`mr r3,r31; bl`). The epilogue
+    /// reloads LR (hoisted right after the last call) then restores r31. Exactly two parameters/two
+    /// calls for now — longer sequences assign further callee-saved registers and are a follow-up.
+    fn try_callee_saved_call_sequence(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void || function.return_expression.is_some() {
+            return Ok(false);
+        }
+        if function.parameters.len() != 2 {
+            return Ok(false);
+        }
+        let [Statement::Expression(Expression::Call { name: name0, arguments: args0 }), Statement::Expression(Expression::Call { name: name1, arguments: args1 })] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let is_param = |expression: &Expression, index: usize| matches!(expression, Expression::Variable(name) if name == &function.parameters[index].name);
+        if args0.len() != 1 || !is_param(&args0[0], 0) || args1.len() != 1 || !is_param(&args1[0], 1) {
+            return Ok(false);
+        }
+        // Both parameters must be general-class (a float parameter is passed/saved differently).
+        let mut param_registers = Vec::new();
+        for parameter in &function.parameters {
+            match self.locations.get(&parameter.name) {
+                Some(location) if location.class == ValueClass::General => param_registers.push(location.register),
+                _ => return Ok(false),
+            }
+        }
+        // Prologue: a 16-byte frame saving the link register and r31.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![31];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        // Save the second parameter (live across the first call) into r31, and record it there so the
+        // second call materializes its argument from r31 (`mr r3,r31`).
+        self.output.instructions.push(Instruction::Or { a: 31, s: param_registers[1], b: param_registers[1] });
+        if let Some(location) = self.locations.get_mut(&function.parameters[1].name) {
+            location.register = 31;
+        }
+        // First call: the first parameter is still in its incoming register (no move).
+        self.emit_call(name0, args0, None, false)?;
+        // Second call: the second parameter now lives in r31.
+        self.emit_call(name1, args1, None, false)?;
         self.emit_epilogue_and_return();
         Ok(true)
     }
