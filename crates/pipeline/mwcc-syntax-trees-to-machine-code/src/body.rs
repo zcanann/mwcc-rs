@@ -2,9 +2,9 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Statement, Type, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Pointee, Statement, Type, UnaryOperator};
 use mwcc_versions::GlobalAddressing;
-use crate::expressions::pointee_of_type;
+use crate::expressions::{displacement_store, pointee_of_type};
 
 /// How a run of constant stores materializes its values (see `constant_store_run_plan`). `AllSame`
 /// reuses the scratch register for one repeated `li`; `Distinct` gives each store's value its own
@@ -1233,6 +1233,10 @@ impl Generator {
                 return Ok(());
             }
             if self.try_callee_saved_call_result(function)? {
+                return Ok(());
+            }
+            // `*p = g();` — a call's result stored through a pointer parameter saved in r31.
+            if self.try_store_call_through_pointer(function)? {
                 return Ok(());
             }
             if self.try_callee_saved_computed_local(function)? {
@@ -2780,6 +2784,89 @@ impl Generator {
                 .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
             self.evaluate_tail(return_expression, function.return_type, result)?;
         }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// `void s(T *p, …) { *p = g(args); }` — a call's result stored through a pointer
+    /// PARAMETER that must survive the call. mwcc saves the pointer in r31 (`mr r31,r3`),
+    /// runs the call, then stores the result through r31 (`stw r3,0(r31)`); the store-sink
+    /// epilogue reloads LR before r31. Restricted to a general (int/pointer/narrow) pointee,
+    /// a general-returning call, and arguments that do not reference the saved pointer.
+    fn try_store_call_through_pointer(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void {
+            return Ok(false);
+        }
+        let [Statement::Store { target, value }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        let Expression::Call { name, arguments } = value else { return Ok(false) };
+        // A store target through a pointer PARAMETER: `*p`, `p[const]`, or `p->m` — each
+        // resolves to (the pointer variable, a byte offset, the stored width's pointee).
+        let (pointer_name, byte_offset, pointee): (&str, i64, Pointee) = match target {
+            Expression::Dereference { pointer } => {
+                let Expression::Variable(name) = pointer.as_ref() else { return Ok(false) };
+                (name, 0, self.pointee_of(pointer)?)
+            }
+            Expression::Index { base, index } => {
+                let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
+                let Some(constant) = constant_value(index) else { return Ok(false) };
+                let pointee = self.pointee_of(base)?;
+                (name, constant * pointee.size() as i64, pointee)
+            }
+            Expression::Member { base, offset, member_type, index_stride: None } => {
+                let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
+                let Some(pointee) = pointee_of_type(*member_type) else { return Ok(false) };
+                (name, *offset as i64, pointee)
+            }
+            _ => return Ok(false),
+        };
+        if !function.parameters.iter().any(|parameter| parameter.name == pointer_name) {
+            return Ok(false);
+        }
+        let (class, incoming) = match self.locations.get(pointer_name) {
+            Some(location) => (location.class, location.register),
+            None => return Ok(false),
+        };
+        if class != ValueClass::General {
+            return Ok(false);
+        }
+        // A general pointee (a float/double store needs an f-register result and stfd/stfs).
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            return Ok(false);
+        }
+        // The call must return a general result, and must NOT pass the saved pointer as an
+        // argument (that keeps it in an argument register across the call — a different shape).
+        if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+            return Ok(false);
+        }
+        if arguments.iter().any(|argument| expression_reads_name(argument, pointer_name)) {
+            return Ok(false);
+        }
+        let offset = i16::try_from(byte_offset)
+            .map_err(|_| Diagnostic::error("store-through-saved-pointer offset out of range (roadmap)"))?;
+
+        // Callee-saved frame: r31 holds the pointer across the call; the store-sink epilogue
+        // reloads LR before r31.
+        let frame_size: i16 = 16;
+        self.non_leaf = true;
+        self.frame_size = frame_size;
+        self.callee_saved = vec![31];
+        self.epilogue_lr_first = true;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: frame_size - 4 });
+        self.output.instructions.push(Instruction::Or { a: 31, s: incoming, b: incoming });
+        if let Some(location) = self.locations.get_mut(pointer_name) {
+            location.register = 31;
+        }
+        let result = mwcc_target::Eabi::general_result().number;
+        self.emit_call(name, arguments, None, false)?;
+        self.output.instructions.push(displacement_store(pointee, result, 31, offset));
         self.emit_epilogue_and_return();
         Ok(true)
     }

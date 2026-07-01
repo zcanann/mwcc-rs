@@ -75,7 +75,7 @@ pub(crate) fn pointer_stride(value_type: Type) -> Option<u16> {
 }
 
 /// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
-fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instruction {
+pub(crate) fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instruction {
     match pointee {
         Pointee::Int | Pointee::UnsignedInt => Instruction::StoreWord { s, a, offset },
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByte { s, a, offset },
