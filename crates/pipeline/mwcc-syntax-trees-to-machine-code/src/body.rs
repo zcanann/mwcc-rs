@@ -1260,6 +1260,18 @@ impl Generator {
             lr_store_index = Some(self.output.instructions.len() - 1);
         }
 
+        // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
+        // scheduler: it hoists the if's condition test as early as possible — into the leading
+        // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the
+        // front. The sequential emission below instead emits the store fully, then the test — a
+        // DIFFERS — so defer this shape. (A whole-body store run, or a whole-body trailing `if`,
+        // are handled byte-exactly by the store-fill matchers above.)
+        if let [leading @ .., Statement::If { .. }] = function.statements.as_slice() {
+            if !leading.is_empty() && leading.iter().all(|statement| matches!(statement, Statement::Store { .. })) {
+                return Err(Diagnostic::error("a leading store before a trailing if needs the cross-statement scheduler (roadmap)"));
+            }
+        }
+
         // Body statements (stores, calls) run first.
         let statement_count = function.statements.len();
         for (index, statement) in function.statements.iter().enumerate() {
