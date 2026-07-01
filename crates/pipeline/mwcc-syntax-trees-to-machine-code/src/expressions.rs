@@ -2493,7 +2493,15 @@ impl Generator {
             if let Expression::Call { name, arguments } = value {
                 if !is_intrinsic_call(name) {
                     if !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
-                        return Err(Diagnostic::error("an integer call result stored to a float global needs an int->float conversion (roadmap)"));
+                        // An int-returning (or implicitly-declared -> int) call result stored to
+                        // a float target: convert its r3 to the target precision via the magic-
+                        // bias sequence (value-store-first for a call result, like the return
+                        // case), leaving the result in the scratch f0 for the caller's store.
+                        let source = Eabi::general_result().number;
+                        self.emit_call(name, arguments, None, false)?;
+                        let double = matches!(pointee, Pointee::Double);
+                        self.emit_int_to_float_body(source, FLOAT_SCRATCH, double, true, Eabi::float_result().number, true);
+                        return Ok(FLOAT_SCRATCH);
                     }
                     let result = Eabi::float_result().number;
                     self.emit_call(name, arguments, Some(result), true)?;

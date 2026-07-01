@@ -9,3 +9,10 @@
 double acos(double x)  { return __ieee754_acos(x); }   // -> double (fsub)
 float  acosf(float x)  { return __ieee754_acosf(x); }  // -> float  (fsubs)
 double from_int_arg(int n) { return __compute(n); }    // int arg, implicit int result
+
+// The same conversion when the int call result is STORED to a float target: result
+// lands in the scratch f0, then `stfs/stfd f0` (mwcc: `... fsubs f0,f0,f1; stfs f0`).
+float  g_f;
+double g_d;
+void store_int_call_float(void)  { g_f = __compute_f(); }
+void store_int_call_double(void) { g_d = __compute_d(); }
