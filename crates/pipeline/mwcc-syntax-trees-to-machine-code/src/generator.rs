@@ -135,6 +135,11 @@ pub(crate) struct Generator {
     /// is stored after the call, then `lwz r0,20; lwz r31,12; mtlr`), as opposed to the
     /// return sink where the LR-reload hoist issues it right after the last call.
     pub(crate) epilogue_lr_first: bool,
+    /// Emit the saved-LR reload BEFORE *all* callee-saved GPR reloads (highest-first), for a
+    /// multi-pointer store sink: `void s(int*a,int*b){ *a=g(); *b=h(); }` saves both pointers
+    /// (r31,r30), runs the calls, then `lwz r0,20; lwz r31,12; lwz r30,8; mtlr`. Distinct from
+    /// `epilogue_lr_first`, whose two-GPR form interleaves the LR reload between the GPRs.
+    pub(crate) epilogue_lr_before_gprs: bool,
     /// Set while evaluating a narrow-return expression whose result is truncated, so a
     /// narrow leaf operand is read raw (no leading sign/zero extension) — the final
     /// truncation makes the extension redundant. Only enabled for truncation-safe

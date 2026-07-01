@@ -87,6 +87,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         prematerialized_constants: Vec::new(),
         callee_saved: Vec::new(),
         epilogue_lr_first: false,
+        epilogue_lr_before_gprs: false,
         narrow_truncation_context: false,
         call_return_types: call_return_types.clone(),
         call_parameter_types: call_parameter_types.clone(),

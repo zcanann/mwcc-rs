@@ -1227,6 +1227,12 @@ impl Generator {
             if !function.guards.is_empty() {
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
             }
+            // `*a = g(); *b = h();` — two output pointers saved in r31/r30 across their calls.
+            // Runs before the general callee-saved path, which would otherwise emit the stores
+            // through the raw (clobbered) argument registers and defer/miscompile.
+            if self.try_two_stores_through_pointers(function)? {
+                return Ok(());
+            }
             // Parameters live across the call go in callee-saved registers (r31
             // descending), saved in the prologue and reloaded in the epilogue.
             if self.try_callee_saved(function)? {
@@ -2894,6 +2900,117 @@ impl Generator {
         Ok(true)
     }
 
+    /// Decode `*p = call()` / `p[const] = call()` / `p->m = call()` where the call is an
+    /// integer-returning, zero-argument call and `p` is a General-class pointer variable —
+    /// yielding (pointer name, byte offset, stored pointee, call name). Shared by the
+    /// two-output-pointer store sink.
+    fn decode_pointer_call_store(&self, statement: &Statement) -> Option<(String, i16, Pointee, String)> {
+        let Statement::Store { target, value } = statement else { return None };
+        let Expression::Call { name, arguments } = value else { return None };
+        if !arguments.is_empty() {
+            return None;
+        }
+        if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+            return None;
+        }
+        let (pointer_name, byte_offset, pointee): (&str, i64, Pointee) = match target {
+            Expression::Dereference { pointer } => {
+                let Expression::Variable(name) = pointer.as_ref() else { return None };
+                (name, 0, self.pointee_of(pointer).ok()?)
+            }
+            Expression::Index { base, index } => {
+                let Expression::Variable(name) = base.as_ref() else { return None };
+                let constant = constant_value(index)?;
+                let pointee = self.pointee_of(base).ok()?;
+                (name, constant * pointee.size() as i64, pointee)
+            }
+            Expression::Member { base, offset, member_type, index_stride: None } => {
+                let Expression::Variable(name) = base.as_ref() else { return None };
+                let pointee = pointee_of_type(*member_type)?;
+                (name, *offset as i64, pointee)
+            }
+            _ => return None,
+        };
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            return None;
+        }
+        let offset = i16::try_from(byte_offset).ok()?;
+        Some((pointer_name.to_string(), offset, pointee, name.clone()))
+    }
+
+    /// Two output pointers, each receiving a call result: `void s(int*a,int*b){ *a=g(); *b=h(); }`.
+    /// Both pointers must survive their calls, so mwcc parks them in callee-saved registers —
+    /// the pointer arriving in the HIGHER incoming register in r31, the lower in r30 (positional,
+    /// independent of which store runs first) — runs each call, stores its result, then reloads
+    /// LR before both GPRs. The single-pointer case is `try_store_call_through_pointer`.
+    fn try_two_stores_through_pointers(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void || function.return_expression.is_some() {
+            return Ok(false);
+        }
+        let [first, second] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        let (Some((ptr0, off0, pointee0, call0)), Some((ptr1, off1, pointee1, call1))) =
+            (self.decode_pointer_call_store(first), self.decode_pointer_call_store(second))
+        else {
+            return Ok(false);
+        };
+        // Two DISTINCT pointer parameters, each already resident in a General register.
+        if ptr0 == ptr1 {
+            return Ok(false);
+        }
+        if !function.parameters.iter().any(|parameter| parameter.name == ptr0)
+            || !function.parameters.iter().any(|parameter| parameter.name == ptr1)
+        {
+            return Ok(false);
+        }
+        let in0 = match self.locations.get(&ptr0) {
+            Some(location) if location.class == ValueClass::General => location.register,
+            _ => return Ok(false),
+        };
+        let in1 = match self.locations.get(&ptr1) {
+            Some(location) if location.class == ValueClass::General => location.register,
+            _ => return Ok(false),
+        };
+        // The pointer arriving in the higher register takes r31; the lower takes r30.
+        let reg0 = if in0 > in1 { 31 } else { 30 };
+        let reg1 = if in1 > in0 { 31 } else { 30 };
+        let (high_in, low_in) = if in0 > in1 { (in0, in1) } else { (in1, in0) };
+
+        let frame_size: i16 = 16;
+        self.non_leaf = true;
+        self.frame_size = frame_size;
+        self.callee_saved = vec![31, 30];
+        self.epilogue_lr_before_gprs = true;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
+        // Save each callee-saved register then move its pointer in, highest first:
+        // `stw r31,12; mr r31,<high>; stw r30,8; mr r30,<low>`.
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: frame_size - 4 });
+        self.output.instructions.push(Instruction::Or { a: 31, s: high_in, b: high_in });
+        self.output.instructions.push(Instruction::StoreWord { s: 30, a: 1, offset: frame_size - 8 });
+        self.output.instructions.push(Instruction::Or { a: 30, s: low_in, b: low_in });
+        if let Some(location) = self.locations.get_mut(&ptr0) {
+            location.register = reg0;
+        }
+        if let Some(location) = self.locations.get_mut(&ptr1) {
+            location.register = reg1;
+        }
+
+        // Each call in source order, storing its result through the saved pointer.
+        let result = mwcc_target::Eabi::general_result().number;
+        self.emit_call(&call0, &[], None, false)?;
+        self.output.instructions.push(displacement_store(pointee0, result, reg0, off0));
+        self.emit_call(&call1, &[], None, false)?;
+        self.output.instructions.push(displacement_store(pointee1, result, reg1, off1));
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// A void function whose body is two or more calls that each pass the SAME argument
     /// list — all the parameters, in order — `f(a,b){ g(a,b); h(a,b); }` (the single-
     /// parameter `f(x){ g(x); h(x); }` is the common case). Each parameter is live across
@@ -3463,7 +3580,13 @@ impl Generator {
                 generator.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
             }
         };
-        if self.epilogue_lr_first && self.non_leaf {
+        if self.epilogue_lr_before_gprs && self.non_leaf {
+            // Multi-pointer store sink: the saved LR reloads FIRST, then every callee-saved
+            // GPR highest-first, then `mtlr` (`lwz r0,20; lwz r31,12; lwz r30,8; mtlr`).
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+            reload_saved_gprs(self);
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        } else if self.epilogue_lr_first && self.non_leaf {
             // Store-sink callee-saved: mwcc reloads all saved GPRs except the LOWEST, then
             // the saved LR, then the lowest GPR (count==1: `lwz r0; lwz r31`; count==2: `lwz
             // r31; lwz r0; lwz r30`). A register-death schedule this reproduces for one or
