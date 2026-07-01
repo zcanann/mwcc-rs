@@ -1073,6 +1073,14 @@ impl Parser {
                 if let Some(name) = self.inline_asm_function_name() {
                     self.inline_asm_symbols.push(name);
                 }
+                // A skipped inline function whose body declares a `static` local still
+                // emits that static's data (`.sdata2`/`.sdata`/`.sbss`) in mwcc, even
+                // though the inline body itself is never emitted out-of-line. We don't
+                // model function-scope static data yet, so defer the unit rather than
+                // drop it — leaving a partial object is a silent whole-object DIFF.
+                if self.inline_function_has_static_local() {
+                    return Err(Diagnostic::error("a static local in an inline function is not supported yet (emits .sdata2/.sdata data)"));
+                }
                 // A skipped `typedef` still registers its alias name, so function
                 // bodies that use the type as a pointer (`FILE *fp`) still parse.
                 self.capture_skipped_typedef();
@@ -1153,6 +1161,73 @@ impl Parser {
             index += 1;
         }
         has_asm.then_some(name)
+    }
+
+    /// True if the item at the cursor is an `inline`/`static inline` function whose
+    /// body declares a `static` local. mwcc emits that static's data (`.sdata2` for a
+    /// `const` scalar, `.sdata`/`.sbss` otherwise) even though the inline body is never
+    /// emitted out-of-line when the function is uncalled — every variant tested emits
+    /// extra data beyond the baseline. We don't model function-scope static data yet,
+    /// so the caller defers the unit rather than silently drop that data (a whole-object
+    /// DIFF). Pure lookahead — consumes nothing.
+    fn inline_function_has_static_local(&self) -> bool {
+        let mut index = self.position;
+        let mut is_inline = false;
+        // Signature up to the first `(`: note `inline` (an `extern`/`static` qualifier
+        // may precede it). A `;`/`{`/EOF before the `(` means this is not a function.
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::Identifier(word) if word == "inline" || word == "__inline" => is_inline = true,
+                Token::ParenOpen => break,
+                Token::Semicolon | Token::BraceOpen | Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        if !is_inline {
+            return false;
+        }
+        // Skip the (balanced) parameter list.
+        let mut parens = 0;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::ParenOpen => parens += 1,
+                Token::ParenClose => {
+                    parens -= 1;
+                    if parens == 0 {
+                        index += 1;
+                        break;
+                    }
+                }
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        // The body must be a `{...}` block; scan just this body for a `static` local
+        // (brace-matching stops at the function's own close brace, so a later function's
+        // statics are not misattributed). A `static` identifier token inside a function
+        // body is only ever a static-local storage class.
+        if self.tokens.get(index) != Some(&Token::BraceOpen) {
+            return false;
+        }
+        let mut braces = 0;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::BraceOpen => braces += 1,
+                Token::BraceClose => {
+                    braces -= 1;
+                    if braces == 0 {
+                        break;
+                    }
+                }
+                Token::Identifier(word) if word == "static" => return true,
+                Token::EndOfFile => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
     }
 
     /// Parse one top-level item — a typedef, struct definition, global declaration,
