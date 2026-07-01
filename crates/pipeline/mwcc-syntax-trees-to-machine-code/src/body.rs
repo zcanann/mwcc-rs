@@ -1149,6 +1149,10 @@ impl Generator {
             if self.try_callee_saved_call_args(function)? {
                 return Ok(());
             }
+            // `return f(...) + x;` — a live parameter combined with a call's result in the return.
+            if self.try_callee_saved_call_combine(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -2516,6 +2520,64 @@ impl Generator {
             let return_expression = function.return_expression.as_ref().unwrap();
             self.evaluate_tail(return_expression, function.return_type, result)?;
         }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// `return f(...) + x;` — a single general parameter `x` kept live across a call that sits INSIDE
+    /// the return expression, then combined with the call's result. mwcc saves `x` in r31 before the
+    /// call (`mr r31,r3`), runs the call (whose argument, when it is `x`, is already in the incoming
+    /// register, so no move precedes it), reloads LR, then combines from the callee-saved register
+    /// (`add r3,r31,r3` — the saved value first). The call is argument-free or forwards exactly the
+    /// parameter; a computed/constant argument schedules its materialization differently and defers.
+    /// Only `+` for now (a commutative low-latency op whose `OP r3,r31,r3` order holds either source
+    /// side); other ops and multi-parameter shapes are follow-ups.
+    fn try_callee_saved_call_combine(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() || !function.statements.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        if function.parameters.len() != 1 {
+            return Ok(false);
+        }
+        let param = &function.parameters[0];
+        let (class, param_register) = match self.locations.get(&param.name) {
+            Some(location) => (location.class, location.register),
+            None => return Ok(false),
+        };
+        if class != ValueClass::General {
+            return Ok(false);
+        }
+        let Some(Expression::Binary { operator: BinaryOperator::Add, left, right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        let is_param = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == &param.name);
+        let (call_name, call_arguments) = match (left.as_ref(), right.as_ref()) {
+            (Expression::Call { name, arguments }, other) if is_param(other) => (name, arguments),
+            (other, Expression::Call { name, arguments }) if is_param(other) => (name, arguments),
+            _ => return Ok(false),
+        };
+        // The call takes no arguments or forwards exactly the parameter (already in its incoming
+        // register); anything else materializes an argument on a different schedule.
+        if !(call_arguments.is_empty() || (call_arguments.len() == 1 && is_param(&call_arguments[0]))) {
+            return Ok(false);
+        }
+        // Prologue: a 16-byte frame saving the link register and r31.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![31];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        // Save the live parameter into r31 before the call clobbers its incoming register.
+        self.output.instructions.push(Instruction::Or { a: 31, s: param_register, b: param_register });
+        self.emit_call(call_name, call_arguments, None, false)?;
+        // Combine the saved parameter (r31) with the call result (r3) — the saved value first.
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(Instruction::Add { d: result, a: 31, b: result });
         self.emit_epilogue_and_return();
         Ok(true)
     }
