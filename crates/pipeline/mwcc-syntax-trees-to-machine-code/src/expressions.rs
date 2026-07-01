@@ -2558,6 +2558,16 @@ impl Generator {
     /// evaluated into its positional register; passthrough parameters are already
     /// in place, so this is a no-op for them.
     fn emit_arguments(&mut self, arguments: &[Expression], name: &str) -> Compilation<()> {
+        // A CALL in a non-first argument clobbers the argument registers already holding earlier
+        // arguments (a call returns in r3 and clobbers r3–r12), and its own result lands in r3 rather
+        // than the argument's positional register. mwcc evaluates such arguments RIGHT-first, preserving
+        // the earlier results in callee-saved registers — a schedule not modeled here. Evaluating them
+        // left-to-right would overwrite the earlier arguments (`s(5, f())`, `s(f(), g())`), so defer.
+        // (A call in the FIRST argument alone is fine: later constant/in-place arguments do not clobber
+        // its r3 result, e.g. `s(f(), 5)`.)
+        if arguments.iter().skip(1).any(expression_has_call) {
+            return Err(Diagnostic::error("a call in a non-first argument needs the callee-saved argument scheduler (roadmap)"));
+        }
         // A `&global + n` argument materializes as `li rD,0; addi rD,rD,k`. Alongside
         // other arguments mwcc reorders the leading `li`s (the offset arg's base first)
         // in a way not yet modeled, so defer rather than mis-schedule. A lone such
