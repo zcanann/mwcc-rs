@@ -1662,11 +1662,23 @@ impl Generator {
                 self.output.instructions.push(displacement_load(pointee, destination, 0, 0));
                 return Ok(());
             }
-            // A NON-folded float/double element needs a GPR base distinct from the FPR
-            // destination (`li r,g@sda21; lfs f,off(r)`); this path would misuse the FPR number
-            // as the base GPR, so defer it until a free-GPR base is wired.
+            // A float/double element loads into the FPR `destination` from a GPR base, so the base
+            // needs its OWN free GPR (the FPR number cannot be the base register). Materialize it,
+            // then the float load: a LARGE offset-0 element folds `@l` into the load
+            // (`lis b,g@ha; lfs f,g@l(b)`); every other case materializes the full base
+            // (`li b,g@sda21; lfs f,off(b)` small, `lis b,g@ha; addi b,b,g@l; lfs f,off(b)` large).
             if matches!(pointee, Pointee::Float | Pointee::Double) {
-                return Err(Diagnostic::error("a non-zero-offset or large float/double global-array element needs a separate base register (roadmap)"));
+                let base = self.free_general_excluding(GENERAL_SCRATCH)?;
+                if offset == 0 {
+                    // The small offset-0 case folded above, so this is the large ADDR16 element.
+                    self.emit_address_high(base, name);
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                    self.output.instructions.push(displacement_load(pointee, destination, base, 0));
+                } else {
+                    self.emit_global_array_base(name, total_size, base)?;
+                    self.output.instructions.push(displacement_load(pointee, destination, base, offset));
+                }
+                return Ok(());
             }
             self.emit_global_array_base(name, total_size, destination)?;
             self.output.instructions.push(displacement_load(pointee, destination, destination, offset));
