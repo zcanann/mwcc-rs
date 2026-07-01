@@ -475,6 +475,15 @@ fn inline_single_call_result(function: &Function) -> Option<Function> {
             if occurrences(return_expression) != 1 {
                 return None;
             }
+            // If the return also reads a PARAMETER, the call result is combined with a value live
+            // ACROSS the call. mwcc keeps the result in its register and the parameter in a callee-
+            // saved register, combining in SOURCE order (`int y=f(x); return y+x` -> `add r3,r3,r31`)
+            // — different bytes from the inlined call-expression form (`return f(x)+x` -> the callee-
+            // saved combine's `add r3,r31,r3`). So do NOT fold it away; leave the local for the
+            // callee-saved dispatch (or a clean defer), never a wrong-bytes inline.
+            if function.parameters.iter().any(|parameter| expression_reads_name(return_expression, &parameter.name)) {
+                return None;
+            }
             (Vec::new(), Some(crate::value_tracking::substitute(return_expression, &values)))
         }
         _ => return None,
