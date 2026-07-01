@@ -2304,6 +2304,16 @@ impl Generator {
             Expression::Index { base, index } => (base.as_ref(), Some(index.as_ref())),
             _ => return Err(Diagnostic::error("store target must be `*p`, `p[i]`, a member, or a global")),
         };
+        // The store's pointer address (a param/local pointer) is resolved into a volatile
+        // register BEFORE the value is placed. A call in the value clobbers every volatile
+        // register, including that address — mwcc preserves it in a callee-saved register
+        // across the call (`mr r31,r3; bl; stw r3,0(r31)`). We do not save callee registers
+        // yet, so storing through the clobbered address would miscompile; defer instead. A
+        // re-materializable address (a global/constant pointer) is handled by an earlier
+        // branch and never reaches here, so this cannot regress a byte-exact case.
+        if expression_has_call(value) {
+            return Err(Diagnostic::error("a store through a register pointer whose value contains a call needs callee-saved preservation (roadmap)"));
+        }
         let (pointee, address) = self.resolve_pointer(base)?;
         // The address register is live for the store; reserve it while the value is
         // placed so a value needing a temporary (e.g. a magic-number divide) can't pick
@@ -2477,13 +2487,18 @@ impl Generator {
             // The store-only LR-reload-hoist barrier keeps the reload after the stfs. An
             // INTEGER-returning call stored to a float global needs an int->float conversion
             // of its r3 result (not yet modeled), so defer rather than mis-store r3 as f1.
+            // An intrinsic (`__fabs`) is not a real call: fall through to evaluate_float,
+            // which lowers it to the `fabs` instruction in the scratch (mwcc: `fabs f0,f1;
+            // stfd f0`). Only a REAL call stores its result from the float return register.
             if let Expression::Call { name, arguments } = value {
-                if !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
-                    return Err(Diagnostic::error("an integer call result stored to a float global needs an int->float conversion (roadmap)"));
+                if !is_intrinsic_call(name) {
+                    if !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+                        return Err(Diagnostic::error("an integer call result stored to a float global needs an int->float conversion (roadmap)"));
+                    }
+                    let result = Eabi::float_result().number;
+                    self.emit_call(name, arguments, Some(result), true)?;
+                    return Ok(result);
                 }
-                let result = Eabi::float_result().number;
-                self.emit_call(name, arguments, Some(result), true)?;
-                return Ok(result);
             }
             self.evaluate_float(value, FLOAT_SCRATCH)?;
             return Ok(FLOAT_SCRATCH);

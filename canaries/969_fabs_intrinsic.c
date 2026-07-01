@@ -12,3 +12,7 @@ double abs_float_leaf(float x)       { return __fabs(x); }
 double abs_sum(double x, double y)   { return __fabs(x + y); }
 double gd;
 double abs_global(void)              { return __fabs(gd); }
+
+// A store of __fabs stays an intrinsic too (mwcc: `fabs f0,f1; stfd f0`), NOT a call.
+void   abs_store_deref(double *p, double x)  { *p = __fabs(x); }
+void   abs_store_global(double x)            { gd = __fabs(x); }
