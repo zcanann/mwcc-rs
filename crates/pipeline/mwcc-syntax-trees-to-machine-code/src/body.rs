@@ -2565,10 +2565,9 @@ impl Generator {
         // Low-latency ops mwcc issues as a single register op combining the saved parameter (r31)
         // and the call result (r3). The commutative ops (`+ | & ^`) use `OP r3,r31,r3` on either
         // source side; the non-commutative `-` picks its `subf` operands by which side the call is on.
-        // `*` also combines to a single `mullw r3,r31,r3`, but mwcc issues it BEFORE the LR reload
-        // (overlapping the multiply latency with the load) rather than after — a latency-aware order
-        // the shared LR-reload hoist does not model, so it stays deferred for now.
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        // `*` combines to a single `mullw r3,r31,r3`; mwcc issues it BEFORE the LR reload (overlapping
+        // the multiply latency with the load), which the LR-reload hoist now models.
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
             return Ok(false);
         }
         let is_param = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == &param.name);
@@ -2604,6 +2603,7 @@ impl Generator {
             // `x-f()` (call right) is param-result -> `subf r3,r3,r31`.
             BinaryOperator::Subtract if call_on_left => Instruction::SubtractFrom { d: result, a: 31, b: result },
             BinaryOperator::Subtract => Instruction::SubtractFrom { d: result, a: result, b: 31 },
+            BinaryOperator::Multiply => Instruction::MultiplyLow { d: result, a: 31, b: result },
             _ => unreachable!("operator restricted above"),
         });
         self.emit_epilogue_and_return();

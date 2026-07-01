@@ -93,7 +93,14 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
     }) else {
         return identity;
     };
-    let target = call + 1;
+    // mwcc issues a high-latency op that depends on the call result — a `mullw` combining the result
+    // with a saved value — right after the call, overlapping its multi-cycle latency with the LR-reload
+    // load. So the reload sits AFTER such a multiply, not before it. (Only a multiply whose destination
+    // is not r0, so the reload does not clobber its result.)
+    let mut target = call + 1;
+    while target < reload && matches!(&instructions[target], Instruction::MultiplyLow { d, .. } if *d != 0) {
+        target += 1;
+    }
     if target >= reload {
         return identity; // the reload already sits right after the call
     }
