@@ -2607,7 +2607,16 @@ impl Generator {
                 // arguments (multiple trailing moves) or a computed trailing argument
                 // need the full argument scheduler, so this still defers for now to
                 // avoid emitting their unscheduled form.
-                if arguments[index + 1..].iter().any(|later| self.registers_used_by(later).contains(&next_general)) {
+                // A leaf argument already in its target register is a passthrough — no evaluation, so
+                // it clobbers nothing and stays live for a later repeat's `mr` (`g(a, a)` is a in r3,
+                // then `mr r4,r3`, the pre-copy hoisted into the prologue slot). Only for a 2-argument
+                // call: 3+ arguments produce multiple trailing moves that need the full argument
+                // scheduler, so those still defer via the clobber guard below.
+                let passthrough_in_place = arguments.len() == 2
+                    && self.leaf_info(argument).map(|(register, _, _)| register == next_general).unwrap_or(false);
+                if !passthrough_in_place
+                    && arguments[index + 1..].iter().any(|later| self.registers_used_by(later).contains(&next_general))
+                {
                     return Err(Diagnostic::error("argument would clobber a register a later argument needs (roadmap)"));
                 }
                 self.evaluate_general(argument, next_general)?;
