@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type};
 use mwcc_target::Eabi;
-use crate::analysis::function_makes_call;
+use crate::analysis::{constant_value, expression_reads_name, function_makes_call};
 use crate::generator::*;
 
 impl Generator {
@@ -146,8 +146,34 @@ impl Generator {
         }
 
         // Constraints — anything outside the pure-local-arithmetic shape defers.
+        // Guards are allowed only when ORDER-INDEPENDENT: each guard reads names the
+        // statements never assign (and no tracked local), so it sees the same pristine
+        // registers whether it runs before or after the (virtual) reassignments — mwcc
+        // compiles `b=b+1; if(a) return 1; return b;` and `if(a) return 1; b=b+1;
+        // return b;` to identical bytes (`cmpwi; li r3,1; bnelr; addi r3,r4,1`). The
+        // guard sequence then emits ahead of the inlined return below. A guard reading
+        // an assigned name or a local, a call anywhere, or a void function defers.
         if !function.guards.is_empty() {
-            return Err(Diagnostic::error("value tracking combined with guards is not supported yet (roadmap)"));
+            let written: Vec<&str> = function
+                .statements
+                .iter()
+                .filter_map(|statement| match statement {
+                    Statement::Assign { name, .. } => Some(name.as_str()),
+                    _ => None,
+                })
+                .chain(function.locals.iter().map(|local| local.name.as_str()))
+                .collect();
+            let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
+            // Only CONSTANT guard values are verified to fold identically regardless of
+            // where the reassignments sit; a register-valued guard folds differently in
+            // the ordered source (a real forward branch), so it stays deferred.
+            let order_independent = function.return_type != Type::Void
+                && !function_makes_call(function)
+                && function.guards.iter().all(|guard| constant_value(&guard.value).is_some())
+                && !function.guards.iter().any(|guard| reads_written(&guard.condition) || reads_written(&guard.value));
+            if !order_independent {
+                return Err(Diagnostic::error("value tracking combined with guards is not supported yet (roadmap)"));
+            }
         }
         if function.return_type == Type::Void {
             // A void function whose body is only local reassignments has no observable
@@ -212,8 +238,28 @@ impl Generator {
             Type::Float => Eabi::float_result().number,
             _ => Eabi::general_result().number,
         };
-        self.evaluate_tail(&inlined, function.return_type, result)?;
-        self.emit_epilogue_and_return();
+        // Order-independent guards (validated above) emit ahead of the inlined return —
+        // the trailing-guard machinery folds the last guard with it into a select
+        // (`cmpwi; li r3,V; bnelr; <tail>`). The fold clobbers the result register with
+        // the constant BEFORE the conditional return, so it only matches mwcc when the
+        // inlined tail no longer reads the parameter living there (`b - a` reading r3 →
+        // mwcc keeps a real early-return branch instead, not modeled — defer).
+        if function.guards.is_empty() {
+            self.evaluate_tail(&inlined, function.return_type, result)?;
+            self.emit_epilogue_and_return();
+        } else {
+            let tail_reads_result_register = self.locations.iter().any(|(name, location)| {
+                location.register == result
+                    && location.class == ValueClass::General
+                    && expression_reads_name(&inlined, name)
+            });
+            if tail_reads_result_register {
+                return Err(Diagnostic::error(
+                    "a guard folded over a tail that reads the result register needs early-return branch codegen (roadmap)",
+                ));
+            }
+            self.emit_guard_sequence(&function.guards, &inlined, function.return_type, result)?;
+        }
         Ok(true)
     }
 }

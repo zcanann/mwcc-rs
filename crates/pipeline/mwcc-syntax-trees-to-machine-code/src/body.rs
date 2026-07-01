@@ -154,6 +154,62 @@ fn remove_dead_locals(function: &Function) -> Option<Function> {
     Some(Function { locals: kept, ..function.clone() })
 }
 
+/// A body that continued past its early-return guards parses them into the ordered
+/// statement list as `If { then_body: [Return(Some(v))] }` entries. When every such
+/// leading guard reads only names the remaining statements never assign (and no local,
+/// whose tracked value the guard would need substituted), the guard reads the same
+/// pristine registers whether emitted before or after the (virtual, value-tracked)
+/// reassignments — mwcc compiles both source orders identically — so it moves back into
+/// `guards` for the trailing-guard machinery. The rest must be pure reassignments (the
+/// value-tracking shape); any other statement keeps the ordered form (which defers).
+fn hoist_order_independent_leading_guards(function: &Function) -> Option<Function> {
+    if !matches!(function.statements.first(), Some(Statement::If { .. })) {
+        return None;
+    }
+    let mut hoisted: Vec<GuardedReturn> = Vec::new();
+    let mut rest: Vec<Statement> = Vec::new();
+    let mut in_prefix = true;
+    for statement in &function.statements {
+        if in_prefix {
+            if let Statement::If { condition, then_body, else_body } = statement {
+                if else_body.is_empty() {
+                    if let [Statement::Return(Some(value))] = then_body.as_slice() {
+                        hoisted.push(GuardedReturn { condition: condition.clone(), value: value.clone() });
+                        continue;
+                    }
+                }
+            }
+            in_prefix = false;
+        }
+        rest.push(statement.clone());
+    }
+    if hoisted.is_empty() || !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+        return None;
+    }
+    let written: Vec<&str> = rest
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::Assign { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .collect();
+    let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
+    if hoisted.iter().any(|guard| reads_written(&guard.condition) || reads_written(&guard.value)) {
+        return None;
+    }
+    // Only a CONSTANT guard value folds identically in both orders (`cmpwi; li r3,V;
+    // bnelr; <rest>`). A register-valued guard keeps a real forward branch in the
+    // ordered source (`cmpwi; beq REST; mr r3,c; blr; REST: …`) where the flat source
+    // folds inverted (`add; beqlr; mr`) — hoisting would ship the wrong form.
+    if hoisted.iter().any(|guard| constant_value(&guard.value).is_none()) {
+        return None;
+    }
+    let mut guards = hoisted;
+    guards.extend(function.guards.iter().cloned());
+    Some(Function { statements: rest, guards, ..function.clone() })
+}
+
 /// Fold single-assignment, return-only locals (whose initializers make no call) into
 /// the return expression, dropping them — so `int z = x + 1; g(); return z;` becomes
 /// the equivalent `g(); return x + 1;`, which the parameter-preservation path compiles.
@@ -738,6 +794,14 @@ impl Generator {
         // emits nothing for them — then recompile the cleaned function.
         if let Some(cleaned) = remove_dead_locals(function) {
             return self.evaluate_body(&cleaned);
+        }
+        // A body that CONTINUES past an early-return guard parses the guard into the ordered
+        // statement list (`if (c) return v; b = b + 1; return b;` → statements [If, Assign]).
+        // When the guard reads only names the rest never writes, guard-first and guard-last
+        // emission read the same registers — mwcc compiles both orders identically — so hoist
+        // it back into `guards` and let the trailing-guard machinery emit it.
+        if let Some(hoisted) = hoist_order_independent_leading_guards(function) {
+            return self.evaluate_body(&hoisted);
         }
         // Returning a struct BY VALUE (`struct S f(...) { return s; }`) uses the struct-return
         // ABI — a small struct in r3:r4, a larger one via a hidden pointer argument — which is
