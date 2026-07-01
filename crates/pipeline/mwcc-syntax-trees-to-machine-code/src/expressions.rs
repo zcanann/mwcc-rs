@@ -314,16 +314,35 @@ impl Generator {
                 if crate::analysis::has_repeated_nonleaf_subexpression(expression) {
                     return Err(Diagnostic::error("a repeated common sub-expression needs the register allocator's CSE (roadmap)"));
                 }
-                // A repeated GLOBAL variable leaf (`gi + gi`, `gi * gi`) is a common sub-expression
-                // too: unlike a register-resident parameter/local (a free re-read), a global read is a
-                // LOAD, and mwcc loads it ONCE, reusing the register (`lwz r0,gi; mullw r3,r0,r0`),
-                // while our codegen loads each side. The self-folding ops (`& | ^ - / %` and the
-                // comparisons: `g OP g` -> `g`, `0`, or `1`) collapse before this; the non-folding
-                // `+ * << >>` reach here — defer them.
+                // A repeated GLOBAL variable leaf (`gi + gi`, `gi * gi`): unlike a register-resident
+                // parameter/local (a free re-read), a global read is a LOAD, and mwcc loads it ONCE,
+                // reusing the register (`lwz r0,gi; mullw r3,r0,r0`). The self-folding ops (`& | ^ - / %`
+                // and comparisons: `g OP g` -> `g`, `0`, or `1`) collapse before this; the non-folding
+                // `+ * << >>` reach here. Reproduce mwcc's load-once for `+`/`*` (load into the scratch,
+                // then the op twice); the shifts' `slw`/`sraw` operand handling for this shape isn't
+                // modeled, so they defer.
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply | BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight) {
                     if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
                         if left_name == right_name && self.globals.contains_key(left_name.as_str()) {
-                            return Err(Diagnostic::error("a repeated global read (`g OP g`) needs the register allocator's CSE (roadmap)"));
+                            // A signed plain `char` global reads with `lbz` then a trailing `extsb` that
+                            // this load-once path does not emit (`lha`/`lwz` and the unsigned loads
+                            // self-extend, so they are fine). Defer the signed-char case — rare.
+                            if matches!(self.globals.get(left_name.as_str()), Some(Type::Char)) {
+                                return Err(Diagnostic::error("a repeated signed-char global read needs the sign-extended load-once (roadmap)"));
+                            }
+                            match operator {
+                                BinaryOperator::Add => {
+                                    self.emit_global_load_value(left_name, GENERAL_SCRATCH)?;
+                                    self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                                    return Ok(());
+                                }
+                                BinaryOperator::Multiply => {
+                                    self.emit_global_load_value(left_name, GENERAL_SCRATCH)?;
+                                    self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                                    return Ok(());
+                                }
+                                _ => return Err(Diagnostic::error("a repeated global read under a shift needs load-once reuse (roadmap)")),
+                            }
                         }
                     }
                 }
