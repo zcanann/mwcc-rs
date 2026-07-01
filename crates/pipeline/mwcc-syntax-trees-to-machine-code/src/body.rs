@@ -1899,9 +1899,17 @@ impl Generator {
         Ok(())
     }
 
-    /// A whole-body `if (c) { <constant run> } else { <constant run> }` (both arms two-plus constant
-    /// stores): `cmpwi; beq else; <then run>; blr; else: <else run>; blr`. Each arm reuses the
-    /// batched constant materialization; the no-else form is handled by try_constant_store_fill.
+    /// Whether an if-else arm is a run of two-plus REGISTER-VALUED stores (each value a param/local
+    /// already in a register) — emitted sequentially, no value to materialize.
+    fn store_run_arm_registers(&self, statements: &[Statement]) -> bool {
+        statements.len() >= 2 && statements.iter().all(|statement| matches!(statement,
+            Statement::Store { value: Expression::Variable(name), .. } if self.locations.contains_key(name.as_str())))
+    }
+
+    /// A whole-body `if (c) { <store run> } else { <store run> }` where each arm is two-plus stores
+    /// whose values are either all REGISTER-valued (emitted sequentially) or all CONSTANT (the
+    /// batched materialization): `cmpwi; beq else; <then run>; blr; else: <else run>; blr`. The
+    /// no-else form is handled by try_constant_store_fill / the register-valued trailing-if path.
     pub(crate) fn try_constant_store_if_else(&mut self, function: &Function) -> Compilation<bool> {
         if function_makes_call(function)
             || function.return_type != Type::Void
@@ -1913,19 +1921,31 @@ impl Generator {
         let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
             return Ok(false);
         };
-        let (Some(then_plan), Some(else_plan)) = (self.constant_store_run_plan(then_body), self.constant_store_run_plan(else_body)) else {
+        // Each arm is handleable when it is a register-valued run or a constant run; pre-check both
+        // (no emission) so a non-run arm leaves no orphaned branch.
+        let then_plan = self.constant_store_run_plan(then_body);
+        let else_plan = self.constant_store_run_plan(else_body);
+        let then_registers = self.store_run_arm_registers(then_body);
+        let else_registers = self.store_run_arm_registers(else_body);
+        if !(then_plan.is_some() || then_registers) || !(else_plan.is_some() || else_registers) {
             return Ok(false);
-        };
+        }
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let branch_index = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-        self.emit_constant_store_run(then_body, then_plan)?;
+        match then_plan {
+            Some(plan) => self.emit_constant_store_run(then_body, plan)?,
+            None => for statement in then_body { self.emit_statement(statement)?; },
+        }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         let else_label = self.output.instructions.len();
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
             *target = else_label;
         }
-        self.emit_constant_store_run(else_body, else_plan)?;
+        match else_plan {
+            Some(plan) => self.emit_constant_store_run(else_body, plan)?,
+            None => for statement in else_body { self.emit_statement(statement)?; },
+        }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
