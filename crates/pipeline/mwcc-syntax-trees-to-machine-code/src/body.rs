@@ -1290,6 +1290,21 @@ impl Generator {
                     self.emit_trailing_if(condition, &then_body[..1], else_body)?;
                     continue;
                 }
+                // A trailing-void, no-else if-BLOCK of two-plus REGISTER-VALUED stores (each value
+                // already in a register — nothing to materialize or schedule): the conditional
+                // return then the stores in source order. A constant/global/computed value needs the
+                // batch scheduler, so emit_trailing_if defers those.
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && index + 1 == statement_count
+                    && function.return_type == Type::Void
+                    && then_body.len() >= 2
+                    && then_body.iter().all(|inner| matches!(inner,
+                        Statement::Store { value: Expression::Variable(name), .. } if self.locations.contains_key(name.as_str())))
+                {
+                    self.emit_trailing_if(condition, then_body, else_body)?;
+                    continue;
+                }
                 if !function_makes_call(function)
                     && else_body.is_empty()
                     && then_body.len() <= 2
@@ -3270,6 +3285,22 @@ impl Generator {
                 };
                 return self.emit_store(then_target, &select);
             }
+        }
+        // A no-else block of two-plus REGISTER-VALUED stores: the conditional return, then the
+        // stores in source order. mwcc emits them sequentially — the values are already in
+        // registers, so there is nothing to materialize or schedule (`cmpwi;beqlr;stw;stw;blr`). A
+        // constant/global/computed store value needs the batch value scheduler and falls through.
+        if then_body.len() > 1
+            && else_body.is_empty()
+            && then_body.iter().all(|statement| matches!(statement,
+                Statement::Store { value: Expression::Variable(name), .. } if self.locations.contains_key(name.as_str())))
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+            for statement in then_body {
+                self.emit_statement(statement)?;
+            }
+            return Ok(());
         }
         if then_body.len() != 1 {
             return Err(Diagnostic::error("a multi-statement if-body needs the scheduler (roadmap)"));
