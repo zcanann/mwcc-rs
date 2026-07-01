@@ -1227,10 +1227,10 @@ impl Generator {
             if !function.guards.is_empty() {
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
             }
-            // `*a = g(); *b = h();` — two output pointers saved in r31/r30 across their calls.
+            // `*a = g(); *b = h();` — 2–4 output pointers saved in r31/r30/… across their calls.
             // Runs before the general callee-saved path, which would otherwise emit the stores
             // through the raw (clobbered) argument registers and defer/miscompile.
-            if self.try_two_stores_through_pointers(function)? {
+            if self.try_stores_through_pointers(function)? {
                 return Ok(());
             }
             // Parameters live across the call go in callee-saved registers (r31
@@ -2938,75 +2938,88 @@ impl Generator {
         Some((pointer_name.to_string(), offset, pointee, name.clone()))
     }
 
-    /// Two output pointers, each receiving a call result: `void s(int*a,int*b){ *a=g(); *b=h(); }`.
-    /// Both pointers must survive their calls, so mwcc parks them in callee-saved registers —
-    /// the pointer arriving in the HIGHER incoming register in r31, the lower in r30 (positional,
-    /// independent of which store runs first) — runs each call, stores its result, then reloads
-    /// LR before both GPRs. The single-pointer case is `try_store_call_through_pointer`.
-    fn try_two_stores_through_pointers(&mut self, function: &Function) -> Compilation<bool> {
+    /// Two to four output pointers, each receiving a call result: `void s(int*a,int*b){ *a=g();
+    /// *b=h(); }`. Every pointer must survive its call, so mwcc parks them in callee-saved
+    /// registers — the pointer arriving in the HIGHEST incoming register in r31, the next in r30,
+    /// and so on descending (positional, independent of store order) — runs each call, stores its
+    /// result, then reloads LR before all the saved GPRs. The single-pointer case is
+    /// `try_store_call_through_pointer`.
+    fn try_stores_through_pointers(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
             return Ok(false);
         }
         if function.return_type != Type::Void || function.return_expression.is_some() {
             return Ok(false);
         }
-        let [first, second] = function.statements.as_slice() else {
-            return Ok(false);
-        };
-        let (Some((ptr0, off0, pointee0, call0)), Some((ptr1, off1, pointee1, call1))) =
-            (self.decode_pointer_call_store(first), self.decode_pointer_call_store(second))
-        else {
-            return Ok(false);
-        };
-        // Two DISTINCT pointer parameters, each already resident in a General register.
-        if ptr0 == ptr1 {
+        let count = function.statements.len();
+        if !(2..=4).contains(&count) {
             return Ok(false);
         }
-        if !function.parameters.iter().any(|parameter| parameter.name == ptr0)
-            || !function.parameters.iter().any(|parameter| parameter.name == ptr1)
-        {
+        // Every statement is `*p = call()` through a distinct General-class pointer parameter.
+        let mut decoded = Vec::with_capacity(count);
+        for statement in &function.statements {
+            match self.decode_pointer_call_store(statement) {
+                Some(store) => decoded.push(store),
+                None => return Ok(false),
+            }
+        }
+        let mut incoming = Vec::with_capacity(count);
+        for (pointer_name, _, _, _) in &decoded {
+            if !function.parameters.iter().any(|parameter| &parameter.name == pointer_name) {
+                return Ok(false);
+            }
+            match self.locations.get(pointer_name) {
+                Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                _ => return Ok(false),
+            }
+        }
+        let mut distinct = incoming.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        if distinct.len() != count {
             return Ok(false);
         }
-        let in0 = match self.locations.get(&ptr0) {
-            Some(location) if location.class == ValueClass::General => location.register,
-            _ => return Ok(false),
-        };
-        let in1 = match self.locations.get(&ptr1) {
-            Some(location) if location.class == ValueClass::General => location.register,
-            _ => return Ok(false),
-        };
-        // The pointer arriving in the higher register takes r31; the lower takes r30.
-        let reg0 = if in0 > in1 { 31 } else { 30 };
-        let reg1 = if in1 > in0 { 31 } else { 30 };
-        let (high_in, low_in) = if in0 > in1 { (in0, in1) } else { (in1, in0) };
 
-        let frame_size: i16 = 16;
+        // Assign r31, r30, … to the pointers by DESCENDING incoming register (highest -> r31).
+        let mut order: Vec<usize> = (0..count).collect();
+        order.sort_by(|&i, &j| incoming[j].cmp(&incoming[i]));
+        let mut saved_reg = vec![0u8; count];
+        let mut callee_saved = Vec::with_capacity(count);
+        for (slot, &index) in order.iter().enumerate() {
+            let register = 31 - slot as u8;
+            saved_reg[index] = register;
+            callee_saved.push(register);
+        }
+
+        // 8-byte linkage + one word per saved GPR, rounded up to a 16-byte frame.
+        let frame_size: i16 = ((8 + 4 * count as i16 + 15) / 16) * 16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        self.callee_saved = vec![31, 30];
+        self.callee_saved = callee_saved;
         self.epilogue_lr_before_gprs = true;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        // Save each callee-saved register then move its pointer in, highest first:
-        // `stw r31,12; mr r31,<high>; stw r30,8; mr r30,<low>`.
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: frame_size - 4 });
-        self.output.instructions.push(Instruction::Or { a: 31, s: high_in, b: high_in });
-        self.output.instructions.push(Instruction::StoreWord { s: 30, a: 1, offset: frame_size - 8 });
-        self.output.instructions.push(Instruction::Or { a: 30, s: low_in, b: low_in });
-        if let Some(location) = self.locations.get_mut(&ptr0) {
-            location.register = reg0;
+        // Save each callee-saved register then move its pointer in, highest register first:
+        // `stw r31,fs-4; mr r31,<highest>; stw r30,fs-8; mr r30,<next>; …`.
+        for (slot, &index) in order.iter().enumerate() {
+            let register = 31 - slot as u8;
+            let offset = frame_size - 4 * (slot as i16 + 1);
+            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
+            self.output.instructions.push(Instruction::Or { a: register, s: incoming[index], b: incoming[index] });
         }
-        if let Some(location) = self.locations.get_mut(&ptr1) {
-            location.register = reg1;
+        for (index, (pointer_name, _, _, _)) in decoded.iter().enumerate() {
+            if let Some(location) = self.locations.get_mut(pointer_name) {
+                location.register = saved_reg[index];
+            }
         }
 
-        // Each call in source order, storing its result through the saved pointer.
+        // Each call in source order, its result stored through the saved pointer.
         let result = mwcc_target::Eabi::general_result().number;
-        self.emit_call(&call0, &[], None, false)?;
-        self.output.instructions.push(displacement_store(pointee0, result, reg0, off0));
-        self.emit_call(&call1, &[], None, false)?;
-        self.output.instructions.push(displacement_store(pointee1, result, reg1, off1));
+        for (index, (_, offset, pointee, call)) in decoded.iter().enumerate() {
+            self.emit_call(call, &[], None, false)?;
+            self.output.instructions.push(displacement_store(*pointee, result, saved_reg[index], *offset));
+        }
         self.emit_epilogue_and_return();
         Ok(true)
     }
