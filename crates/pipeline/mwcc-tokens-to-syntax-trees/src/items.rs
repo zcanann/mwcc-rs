@@ -1461,6 +1461,19 @@ impl Parser {
                     globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
                     if *self.peek() == Token::Comma {
                         self.advance();
+                        // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type
+                        // is already the pointer type formed by the first declarator, so consume the `*`
+                        // and reuse it. A MIXED list (`int *a, b;`) or a MULTI-LEVEL one (`int *a, **b;`)
+                        // needs a per-declarator type, so defer rather than mis-type a declarator.
+                        if *self.peek() == Token::Star {
+                            if !matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                                return Err(Diagnostic::error("a mixed pointer/non-pointer global declarator list is not supported yet (roadmap)"));
+                            }
+                            self.advance();
+                            if *self.peek() == Token::Star {
+                                return Err(Diagnostic::error("a multi-level pointer global declarator list is not supported yet (roadmap)"));
+                            }
+                        }
                         declarator_name = self.parse_identifier()?;
                     } else {
                         break;
