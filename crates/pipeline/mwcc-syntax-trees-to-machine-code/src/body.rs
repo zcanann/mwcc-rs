@@ -737,27 +737,27 @@ impl Generator {
         if matches!(function.return_type, Type::Struct { .. }) {
             return Err(Diagnostic::error("returning a struct by value is not supported yet (roadmap)"));
         }
-        // Multiple stores to global AGGREGATES that address through a base register (a struct value's
-        // non-offset-0 or large field, or any array element): mwcc materializes every such base
-        // (`li rB,g@sda21` / `lis rB,g@ha`) AHEAD of the stores, then does the stores; our per-store,
-        // program-order materialization places each base between the stores, so the bytes differ. Defer
-        // when two-plus aggregate stores are involved and at least one needs a base register — a single
-        // store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, or scalar globals
-        // stay byte-exact.
+        // A store to a global AGGREGATE that addresses through a base register (a struct value's
+        // non-offset-0 or large field, or any array element) alongside ANOTHER store: mwcc materializes
+        // that base (`li rB,g@sda21` / `lis rB,g@ha`) AHEAD of all the stores; our program-order
+        // materialization emits it between the stores, so the bytes differ. Defer when such a
+        // base-addressed aggregate store is present and the function has two-plus stores of any kind —
+        // a lone store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, and scalar
+        // globals (no base register) stay byte-exact.
         {
-            let mut aggregate_store_count = 0u32;
-            let mut any_needs_base_register = false;
+            let mut total_store_count = 0u32;
+            let mut has_base_addressed_aggregate_store = false;
             for statement in &function.statements {
                 let Statement::Store { target, .. } = statement else { continue };
+                total_store_count += 1;
                 match target {
                     // A struct VALUE global's field: offset 0 of a SMALL struct is a direct SDA21 store
                     // (no base register); a non-zero offset or a LARGE (ADDR16) struct needs the base.
                     Expression::Member { base, offset, .. } => {
                         if let Expression::Variable(name) = base.as_ref() {
                             if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()) {
-                                aggregate_store_count += 1;
                                 if *offset != 0 || *size > 8 {
-                                    any_needs_base_register = true;
+                                    has_base_addressed_aggregate_store = true;
                                 }
                             }
                         }
@@ -767,16 +767,15 @@ impl Generator {
                     Expression::Index { base, .. } => {
                         if let Expression::Variable(name) = base.as_ref() {
                             if self.global_array_sizes.contains_key(name.as_str()) {
-                                aggregate_store_count += 1;
-                                any_needs_base_register = true;
+                                has_base_addressed_aggregate_store = true;
                             }
                         }
                     }
                     _ => {}
                 }
             }
-            if aggregate_store_count >= 2 && any_needs_base_register {
-                return Err(Diagnostic::error("multiple base-addressed stores to global aggregates need the shared-base schedule (roadmap)"));
+            if has_base_addressed_aggregate_store && total_store_count >= 2 {
+                return Err(Diagnostic::error("a base-addressed global-aggregate store alongside another store needs the shared-base schedule (roadmap)"));
             }
         }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
