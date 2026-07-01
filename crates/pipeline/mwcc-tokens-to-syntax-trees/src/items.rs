@@ -344,18 +344,13 @@ impl Parser {
     fn parse_scalar_constant(&mut self, element_type: Type) -> Compilation<i64> {
         match element_type {
             Type::Float | Type::Double => {
-                let negative = self.eat_keyword(Token::Minus);
-                match self.advance() {
-                    Token::IntegerLiteral(value) => {
-                        let value = if negative { -(value as i64) } else { value as i64 };
-                        Ok(if element_type == Type::Float { (value as f32).to_bits() as i64 } else { (value as f64).to_bits() as i64 })
-                    }
-                    Token::FloatLiteral(value) => {
-                        let value = if negative { -value } else { value };
-                        Ok(if element_type == Type::Float { (value as f32).to_bits() as i64 } else { value.to_bits() as i64 })
-                    }
-                    other => Err(Diagnostic::error(format!("a float global initializer must be a literal, found {other}"))),
-                }
+                // A float/double initializer is a constant EXPRESSION evaluated in double
+                // (`M_PI / 180`, `1.0f / 3.0f`, a bare literal, `-1.5f`), then narrowed to
+                // the element width. Parse and fold it rather than accepting only a single
+                // literal.
+                let expression = self.expression()?;
+                let value = crate::expressions::fold_constant_float(&expression)?;
+                Ok(if element_type == Type::Float { (value as f32).to_bits() as i64 } else { value.to_bits() as i64 })
             }
             _ => {
                 let expression = self.expression()?;

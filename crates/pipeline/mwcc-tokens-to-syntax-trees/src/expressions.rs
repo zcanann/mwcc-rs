@@ -74,6 +74,32 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
     })
 }
 
+/// Fold a constant expression to an `f64` for a `float`/`double` global initializer —
+/// the arithmetic C evaluates in `double`, and the caller narrows to the global's width
+/// (`static float const deg_to_rad = M_PI / 180;`, `1.0f / 3.0f`). Integer literals
+/// promote to `f64` (mixed `double / int`); only the operators mwcc constant-folds in a
+/// float initializer are handled.
+pub(crate) fn fold_constant_float(expression: &Expression) -> Compilation<f64> {
+    use BinaryOperator::*;
+    Ok(match expression {
+        Expression::FloatLiteral(value) => *value,
+        Expression::IntegerLiteral(value) => *value as f64,
+        Expression::Unary { operator: UnaryOperator::Negate, operand } => -fold_constant_float(operand)?,
+        Expression::Binary { operator, left, right } => {
+            let left = fold_constant_float(left)?;
+            let right = fold_constant_float(right)?;
+            match operator {
+                Add => left + right,
+                Subtract => left - right,
+                Multiply => left * right,
+                Divide => left / right,
+                _ => return Err(Diagnostic::error("unsupported operator in a float constant initializer (roadmap)")),
+            }
+        }
+        _ => return Err(Diagnostic::error("a non-constant float global initializer is not supported yet (roadmap)")),
+    })
+}
+
 /// Reduce `value` to `integer_type`'s width, sign-extending a signed type — the
 /// effect of a C integer cast on a constant.
 pub(crate) fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
