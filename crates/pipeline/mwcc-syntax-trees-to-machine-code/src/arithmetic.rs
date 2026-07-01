@@ -58,12 +58,17 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // The two fields must cover the whole word with no overlap.
+        // The two fields must be disjoint. If they also tile the whole word (full
+        // coverage) the base is moved raw and `rlwimi` overwrites the other field; with
+        // PARTIAL coverage the bits outside both fields must be zeroed, so a MASK base is
+        // masked to its field first (a shift base already zeros outside its field), then
+        // `rlwimi` inserts the other — `(a&0xff00)|(b&0xff)` -> `clrlwi b; rlwimi a`.
         let insert_mask = run_mask(insert_begin, insert_end);
         let base_mask = run_mask(base_begin, base_end);
-        if insert_mask & base_mask != 0 || insert_mask | base_mask != 0xFFFF_FFFF {
+        if insert_mask & base_mask != 0 {
             return Ok(false);
         }
+        let full_coverage = insert_mask | base_mask == 0xFFFF_FFFF;
         // A `srwi` (the base's logical right shift) needs an unsigned operand; the
         // inserted `>>` reduces to a sign-agnostic rlwimi, but require it too to be safe.
         if matches!(insert_kind, FieldSource::ShiftRight(_)) && self.signedness_of(insert_value)? {
@@ -78,9 +83,10 @@ impl Generator {
         ) else {
             return Ok(false);
         };
-        // Computing the base writes the destination, except an unshifted mask whose
-        // value already sits there.
-        let base_writes_destination = !(matches!(base_kind, FieldSource::Mask) && base_register == destination);
+        // Computing the base writes the destination, except a FULL-COVERAGE unshifted
+        // mask whose value already sits there (a partial-coverage mask must be masked in
+        // place, which writes it).
+        let base_writes_destination = !(matches!(base_kind, FieldSource::Mask) && base_register == destination && full_coverage);
         // Preserve the inserted value when the base computation would overwrite it.
         let insert_source = if base_writes_destination && insert_register == destination {
             self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, insert_register));
@@ -93,8 +99,14 @@ impl Generator {
             FieldSource::ShiftLeft(n) => self.output.instructions.push(Instruction::ShiftLeftImmediate { a: destination, s: base_register, shift: n }),
             FieldSource::ShiftRight(n) => self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: base_register, shift: n }),
             FieldSource::Mask => {
-                if base_register != destination {
-                    self.output.instructions.push(Instruction::move_register(destination, base_register));
+                if full_coverage {
+                    if base_register != destination {
+                        self.output.instructions.push(Instruction::move_register(destination, base_register));
+                    }
+                } else {
+                    // Partial coverage: clear the bits outside the base's field (rlwimi
+                    // will not touch them) — mwcc's `clrlwi`/`rlwinm` base.
+                    self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: base_register, shift: 0, begin: base_begin, end: base_end });
                 }
             }
         }
