@@ -1785,9 +1785,20 @@ impl Generator {
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
             let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
+            let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+            // The offset-0 element of a SMALL (SDA21-addressed) array folds to a single direct SDA21
+            // store — `stw v, g@sda21(r0)` — like a scalar global; no base register is materialized
+            // (mwcc does not materialize the base for `g[0] = v`). A nonzero element offset (below) or
+            // a large ADDR16 array keeps the base.
+            if offset == 0 && small {
+                let source = self.place_store_value(value, pointee)?;
+                self.record_relocation(RelocationKind::EmbSda21, name);
+                self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                return Ok(());
+            }
             let base = self.free_register_avoiding(&[value])?;
             let restore = self.reserved.insert(base);
-            let large = !(self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8);
+            let large = !small;
             if offset == 0 && large {
                 // At a zero offset mwcc folds `@l` into the store rather than
                 // materializing the whole base: `lis base,a@ha; stw v,a@l(base)`. (A
