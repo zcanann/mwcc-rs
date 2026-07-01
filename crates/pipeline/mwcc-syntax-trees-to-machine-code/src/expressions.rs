@@ -980,19 +980,21 @@ impl Generator {
     fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
+                // A string larger than the small-data threshold (8 bytes including the NUL) is
+                // addressed with ADDR16 `lis`/`addi`, not the SDA21 `li` this emits — defer it.
+                if bytes.len() + 1 > 8 {
+                    return Err(Diagnostic::error("a string literal larger than the small-data threshold needs ADDR16 addressing (roadmap)"));
+                }
                 let index = self.intern_string_literal(bytes);
                 self.record_relocation(RelocationKind::EmbSda21, &format!("@@str{index}"));
                 self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
-                // Single-function string args are byte-exact, but the @N numbering of
-                // function-body strings is PER-FUNCTION (each function's strings sit in
-                // its own anonymous block before its extab/extabindex, with mwcc's
-                // per-function +4 gap), whereas the main.rs resolver numbers them
-                // unit-sequentially — so a multi-function TU diverges in the symbol
-                // table / .sdata layout. Defer until the @N numbering moves into the
-                // writer's per-function counter. (The prologue arg scheduler that this
-                // needed is now in place — `foo(const)` is byte-exact.)
+                // The `@@str{index}` placeholder is resolved to the function's per-function `@N`
+                // string symbol by the unit's string resolver (apps/mwcc), which places each
+                // function's strings at the FRONT of its anonymous-`@N` block (before its constants
+                // and unwind entries) and defers the not-yet-modeled cases (file-scope strings, or a
+                // function that also has a jump table).
                 let _ = index;
-                Err(Diagnostic::error("a string-literal argument needs per-function @N numbering (multi-function TUs) (roadmap)"))
+                Ok(())
             }
             GlobalAddressing::Absolute => Err(Diagnostic::error("a string literal under absolute addressing is not supported yet (roadmap)")),
         }

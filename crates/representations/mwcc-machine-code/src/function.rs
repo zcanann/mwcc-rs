@@ -39,6 +39,11 @@ pub struct MachineFunction {
     /// NUL), in first-use order. The unit resolver pools these into anonymous `@N`
     /// `.sdata` objects and rewrites the placeholder `@@strN` relocations.
     pub string_literals: Vec<Vec<u8>>,
+    /// The count of NEW (non-reused) strings this function contributes to the unit's
+    /// anonymous-`@N` pool — set by the unit's string resolver. The object writer
+    /// advances its per-function `@N` counter by this at the FRONT of the function's
+    /// block (strings precede the function's constants and unwind entries).
+    pub new_string_count: u32,
     /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol
     /// rather than a global one.
     pub is_static: bool,
@@ -73,6 +78,7 @@ impl MachineFunction {
             relocations: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),
+            new_string_count: 0,
             is_static: false,
             has_conversion: false,
             has_float_branch: false,

@@ -280,17 +280,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut jump_table_numbers: Vec<Option<u32>> = Vec::new();
     let mut extab_payload_offset = 0u32;
     let mut extabindex_payload_offset = 0u32;
-    // The functions' anonymous `@N` numbering starts at 5, raised by one per pooled
-    // string literal (an anonymous `@N` `.sdata` object): a string is `@1..`, so a
-    // function's first constant moves from `@5` to `@(5 + strings)`.
+    // The functions' anonymous `@N` numbering starts at 5, past any FILE-SCOPE anonymous objects
+    // (their strings/jump tables). A function's own strings are numbered PER-FUNCTION at the front of
+    // its `@N` block (below), so they are excluded from this base: `pooled - per-function strings` is
+    // the file-scope remainder, and each function then advances by `string_count` before its
+    // constants. (A non-string unit has `string_count = 0` throughout, so this is unchanged.)
     let pooled_string_count = input.data_objects.iter().filter(|object| object.is_static && object.name.starts_with('@')).count() as u32;
-    let mut counter = 5u32 + pooled_string_count;
+    let function_string_total: u32 = functions.iter().map(|function| function.string_count).sum();
+    let mut counter = 5u32 + pooled_string_count - function_string_total;
     // The `@N` of a pooled constant a later function reuses is the one the first
     // function got — a deduped reuse consumes no new number, so the reusing
     // function's subsequent unwind `@N` shift down accordingly.
     let mut numbered_constant: HashMap<(u64, u8), u32> = HashMap::new();
     for function in functions {
         let mut number = counter + function.anonymous_bump;
+        // This function's own strings sit at the front of its `@N` block, before its constants.
+        number += function.string_count;
         let mut numbers = Vec::new();
         for constant in &function.constants {
             match numbered_constant.get(&(constant.bits, constant.byte_width)) {

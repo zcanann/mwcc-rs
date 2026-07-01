@@ -392,14 +392,33 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             relocations: Vec::new(),
         });
     }
-    // Resolve each function's pooled string literals to anonymous `@N` `.sdata`
-    // objects. A function string reuses an identical earlier string (global or
-    // function — mwcc `-str reuse`); a new one is numbered `@(5 + global_strings + j)`
-    // (the function anonymous base of 5, raised past the global string pool), emitted
-    // after the file-scope data, and its placeholder `@@strN` relocations are rewritten.
-    let mut function_string_number = 5 + string_counter;
+    // Resolve each function's pooled string literals to anonymous `@N` `.sdata` objects, numbered at
+    // the FRONT of that function's per-function `@N` block (before its constants and unwind entries),
+    // matching mwcc's per-function counter walk (see mwcc-object's writer). A string reuses an
+    // identical earlier one (`-str reuse`); a new one advances the counter. The counter starts at
+    // `5 + global_strings` and advances per function by [its new strings + its new deduped constants
+    // + its unwind entries] plus a fixed +4 gap. A jump table interleaves its own `@N` here in a way
+    // not yet modeled, so a unit that mixes a string with a jump table defers wholesale.
+    let has_string = machine_functions.iter().any(|function| !function.string_literals.is_empty());
+    let has_jump_table = machine_functions.iter().any(|function| function.jump_table.is_some());
+    if has_string && has_jump_table {
+        return Err(Diagnostic::error("a string literal alongside a jump table is not supported yet (roadmap)"));
+    }
+    let mut counter = 5u32 + string_counter;
+    let mut numbered_constant: std::collections::HashSet<(u64, u8)> = std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    // The per-function `@N` NUMBERING (below) is byte-exact, but the string SYMBOLS are still emitted
+    // grouped in the writer's data run rather than interleaved per-function with each function's
+    // extab/extabindex, so two functions each introducing a NEW string diverge in symbol-table order.
+    // Defer that case for now (a single function's strings — or reuses of one — are byte-exact).
+    let mut functions_with_new_strings = 0u32;
     for machine_function in &mut machine_functions {
+        let bump = u32::from(machine_function.has_conversion)
+            + if machine_function.has_float_branch { 3 } else { 0 }
+            + machine_function.anonymous_label_bump;
+        let mut number = counter + bump;
+        // Strings first, in the function's `@N` block.
+        let mut new_strings = 0u32;
         let resolved: Vec<String> = machine_function
             .string_literals
             .iter()
@@ -407,8 +426,9 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 if let Some(name) = string_pool.get(bytes) {
                     return name.clone();
                 }
-                let name = format!("@{function_string_number}");
-                function_string_number += 1;
+                let name = format!("@{number}");
+                number += 1;
+                new_strings += 1;
                 string_pool.insert(bytes.clone(), name.clone());
                 let mut object_bytes = bytes.clone();
                 object_bytes.push(0);
@@ -424,6 +444,29 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 name
             })
             .collect();
+        machine_function.new_string_count = new_strings;
+        if new_strings > 0 {
+            // The string SYMBOLS are still emitted in the writer's data run rather than interleaved
+            // per-function with this function's pooled-constant / unwind symbols in the local run, so
+            // a string sharing a function with a pooled constant — or a second string-bearing
+            // function — diverges in symbol-table ORDER (the @N numbers are already correct). Defer
+            // those; a lone string-bearing function with no pooled constants is byte-exact.
+            functions_with_new_strings += 1;
+            if functions_with_new_strings > 1 || !machine_function.constants.is_empty() {
+                return Err(Diagnostic::error("string symbols interleaved with per-function constant/unwind symbols are not fully ordered yet (roadmap)"));
+            }
+        }
+        // Then the function's constants (deduped across the unit) and its unwind entries, so the next
+        // function's block starts at the right `@N`.
+        for constant in &machine_function.constants {
+            if numbered_constant.insert((constant.bits, constant.byte_width)) {
+                number += 1;
+            }
+        }
+        if machine_function.frame.is_some() {
+            number += 2;
+        }
+        counter = number + 4;
         for relocation in &mut machine_function.relocations {
             let resolved_target = if let mwcc_machine_code::RelocationTarget::External(name) = &relocation.target {
                 name.strip_prefix("@@str").and_then(|rest| rest.parse::<usize>().ok()).map(|index| resolved[index].clone())

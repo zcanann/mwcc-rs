@@ -90,6 +90,10 @@ pub struct FunctionObject<'a> {
     /// conditional branch. mwcceppc consumes these counter slots for the
     /// function's internal labels.
     pub anonymous_bump: u32,
+    /// The count of NEW (non-reused) strings this function contributes to the unit's
+    /// `@N` string pool. They are numbered at the FRONT of this function's `@N` block
+    /// (before its constants and unwind entries), so the writer advances by this first.
+    pub string_count: u32,
     /// A dense `switch`'s jump table. The writer materializes it as an anonymous
     /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
     /// function, and resolves this function's `JumpTable` `.text` relocations.

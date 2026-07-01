@@ -74,6 +74,9 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             anonymous_bump: (if function.has_conversion { 1 } else { 0 })
                 + (if function.has_float_branch { 3 } else { 0 })
                 + function.anonymous_label_bump,
+            // The unit's string resolver set this to the function's NEW-string count; the writer
+            // numbers those at the front of the function's `@N` block.
+            string_count: function.new_string_count,
             jump_table: function.jump_table.as_ref().map(|table| JumpTable {
                 entries: table.entries.clone(),
                 anonymous_offset: table.anonymous_offset,
