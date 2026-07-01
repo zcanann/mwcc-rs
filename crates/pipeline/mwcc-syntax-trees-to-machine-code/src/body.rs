@@ -53,7 +53,9 @@ fn accesses_pointer(expression: &Expression, pointer: &str) -> bool {
 /// access in the fall-through — it cannot fold to a branchless select because dereferencing null is
 /// unsafe. Int-width return only (a narrow return sign-extends even the cold constant, a byte diff).
 fn guarded_null_dereference<'a>(condition: &'a Expression, value: &'a Expression, default: &'a Expression, return_type: Type) -> Option<(&'a str, &'a Expression, &'a Expression)> {
-    if !matches!(return_type, Type::Int | Type::UnsignedInt) {
+    // int/unsigned or a narrow int (char/short): the cold constant is truncated and loaded directly
+    // (no over-extension) and each hot access loads at its natural width (lbz/lha/lwz).
+    if !matches!(return_type, Type::Int | Type::UnsignedInt) && !is_narrow_int(return_type) {
         return None;
     }
     match condition {

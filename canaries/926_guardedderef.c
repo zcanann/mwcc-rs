@@ -7,9 +7,10 @@
 // variable — folds to a branchless select instead (e.g. `if(!p) return 0; return b;` ->
 // `neg;or;srawi;and`), which ours already matched.
 //
-// DEFERS (no wrong bytes): a char/short return (the cold constant would sign-extend, `li r0,0;
-// extsb r3,r0`, where mwcc just `li r3,0`s), a dereference of a DIFFERENT pointer than the one guarded
-// (`if(!p) return 0; return *q;`), and a variable index (`p[i]`, which needs the scaled register live).
+// A char/short return works too (the hot access loads at its natural width, `lbz`/`lha`, and the cold
+// constant loads directly, `li` — see canary 927). DEFERS (no wrong bytes): a dereference of a
+// DIFFERENT pointer than the one guarded (`if(!p) return 0; return *q;`), and a variable index
+// (`p[i]`, which needs the scaled register live).
 struct S { int a, b; };
 int      deref_or_zero (int *p)      { if (!p) return 0;  return *p; }     // cmplwi r3,0; beq 10; lwz r3,0(r3); blr; li r3,0; blr
 int      deref_or_neg1 (int *p)      { if (!p) return -1; return *p; }     // ... ; li r3,-1; blr
@@ -18,3 +19,4 @@ int      mirror        (int *p)      { if (p)  return *p; return 0; }      // fo
 int      next_or_zero  (int *p)      { if (!p) return 0;  return p[1]; }   // p[const] tail: lwz r3,4(r3)
 int      field_or_zero (struct S *p) { if (!p) return 0;  return p->b; }   // p->field tail: lwz r3,4(r3)
 int      mirror_field  (struct S *p) { if (p)  return p->a; return -1; }   // form B member
+char     cderef        (char *p)     { if (!p) return 0;  return *p; }     // char: lbz r3,0(r3); cold li r3,0

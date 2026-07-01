@@ -80,6 +80,20 @@ impl Generator {
         let width = return_type.width();
         let signed = self.signed_of(return_type);
 
+        // A CONSTANT narrow return is truncated to the return type at COMPILE time and loaded
+        // directly — mwcc emits `li r3, (type)const`, not a runtime `li r0,const; extsb r3,r0`.
+        if let Some(constant) = crate::analysis::constant_value(expression) {
+            let truncated = match (width, signed) {
+                (8, true) => constant as i8 as i64,
+                (8, false) => constant as u8 as i64,
+                (16, true) => constant as i16 as i64,
+                (16, false) => constant as u16 as i64,
+                _ => constant,
+            };
+            self.load_integer_constant(result, truncated);
+            return Ok(());
+        }
+
         if let Expression::Variable(_) = expression {
             let (register, variable_width, _) = self.leaf_info(expression)?;
             if register != result {
