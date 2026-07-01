@@ -11,6 +11,11 @@ impl Generator {
     /// The natural width of a value loaded by dereferencing `pointer` — through a
     /// leaf pointer variable or a pointer-typed struct member (`*p->cq`).
     pub(crate) fn dereferenced_width(&self, pointer: &Expression) -> Option<u8> {
+        // `*(T*)p` — a pointer cast: the dereferenced width is the cast's target pointee width, so a
+        // narrow cast-deref return loads at its natural width (`*(short*)p` -> lha) without re-extending.
+        if let Expression::Cast { target_type: Type::Pointer(pointee), .. } = pointer {
+            return Some(pointee.element().width());
+        }
         if let Some((_, _, Type::Pointer(pointee))) = as_member(pointer) {
             return Some(pointee.element().width());
         }

@@ -2751,6 +2751,14 @@ impl Generator {
     /// nothing; a pointer-typed struct member (`*p->q`) loads the pointer value
     /// into the base's register first, reusing it as mwcc does.
     fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u8)> {
+        // `*(T*)p` — a pointer cast reinterprets the address; the load/store type is the cast's
+        // target POINTEE (`*(int*)p` -> lwz, `*(short*)p` -> lha, `*(char*)p` -> lbz), the address a
+        // leaf pointer operand (whose own pointee, e.g. `void*`, is irrelevant to the access).
+        if let Expression::Cast { target_type: Type::Pointer(pointee), operand } = base {
+            if let Some(register) = leaf_name(operand).and_then(|name| self.lookup_general(name)) {
+                return Ok((*pointee, register));
+            }
+        }
         if let Some((member_base, offset, member_type)) = as_member(base) {
             let pointee = match member_type {
                 Type::Pointer(pointee) => pointee,
