@@ -2581,6 +2581,35 @@ impl Generator {
         if arguments.iter().skip(1).any(expression_has_call) {
             return Err(Diagnostic::error("a call in a non-first argument needs the callee-saved argument scheduler (roadmap)"));
         }
+        // The SAME global read in two argument positions loads once in mwcc, which copies it to the
+        // second register (`lwz r3,g; mr r4,r3`); our per-argument evaluation loads it in each — wrong
+        // bytes. Defer a global variable that appears as two arguments. (A register-resident parameter
+        // passed twice is a free re-read and stays byte-exact; two DIFFERENT globals load independently.)
+        for (index, argument) in arguments.iter().enumerate() {
+            if let Expression::Variable(name) = argument {
+                if self.globals.contains_key(name.as_str())
+                    && arguments[index + 1..].iter().any(|other| matches!(other, Expression::Variable(other_name) if other_name == name))
+                {
+                    return Err(Diagnostic::error("the same global read in two arguments needs load-once reuse (roadmap)"));
+                }
+            }
+        }
+        // A CONSTANT argument that follows a GLOBAL-LOAD argument: mwcc hoists the constant's `li` into
+        // the mflr->LR-store latency slot of the non-leaf prologue (ahead of the global load), a
+        // schedule our left-to-right emission (load, then `li`) does not reproduce. Defer. (A constant
+        // BEFORE the global load — `s(5, gi)` — is already early and stays byte-exact.)
+        {
+            let mut seen_global_load = false;
+            for argument in arguments {
+                match argument {
+                    Expression::Variable(name) if self.globals.contains_key(name.as_str()) => seen_global_load = true,
+                    Expression::IntegerLiteral(_) if seen_global_load => {
+                        return Err(Diagnostic::error("a constant argument after a global load needs the LR-store-latency schedule (roadmap)"));
+                    }
+                    _ => {}
+                }
+            }
+        }
         // A `&global + n` argument materializes as `li rD,0; addi rD,rD,k`. Alongside
         // other arguments mwcc reorders the leading `li`s (the offset arg's base first)
         // in a way not yet modeled, so defer rather than mis-schedule. A lone such

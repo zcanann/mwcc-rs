@@ -83,12 +83,15 @@ impl Generator {
                         }
                     }
                 }
-                // `f op f` for the identical side-effect-free MEMORY load (`*p + *p`, `a[i]*a[i]`):
-                // load ONCE into the scratch, then apply the op to that register twice
-                // (`lfs f0,(p); fadds d,f0,f0`), like the integer identical-load idiom — not two loads.
+                // `f op f` for the identical side-effect-free MEMORY load (`*p + *p`, `a[i]*a[i]`, a
+                // float global `gf * gf`): load ONCE into the scratch, then apply the op to that
+                // register twice (`lfs f0,(p); fadds d,f0,f0`), like the integer identical-load idiom —
+                // not two loads. A register-resident float parameter/local (`x + x`) is a free re-read,
+                // so it is not routed here (only a global variable is a load).
                 if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply)
                     && same_operand(left, right)
-                    && matches!(left.as_ref(), Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. })
+                    && (matches!(left.as_ref(), Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. })
+                        || matches!(left.as_ref(), Expression::Variable(name) if self.globals.contains_key(name.as_str())))
                 {
                     self.evaluate_float(left, FLOAT_SCRATCH)?;
                     let r = FLOAT_SCRATCH;
