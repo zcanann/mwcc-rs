@@ -64,7 +64,20 @@ impl Generator {
                 self.output.instructions.push(Instruction::FloatAbsolute { d: destination, b: source });
                 Ok(())
             }
-            Expression::Call { name, arguments } => self.emit_call(name, arguments, Some(destination), true),
+            // A call whose result is used as a float/double must actually RETURN float/double
+            // (result in f1). A call returning int — or an implicitly-declared callee, which
+            // defaults to `int` (the libm `w_*` wrappers: `double acos(double x){ return
+            // __ieee754_acos(x); }` with no prototype) — leaves its result in r3, and mwcc
+            // converts that r3 to double with the magic-bias sequence. That conversion of a
+            // call RESULT (reusing the non-leaf frame, source already in r3) is not wired yet,
+            // so defer rather than return the unconverted (garbage) float register. The
+            // symmetric store case already defers this way in place_store_value.
+            Expression::Call { name, arguments } => {
+                if !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+                    return Err(Diagnostic::error("a call returning int used as a float needs an int->float conversion of the result (roadmap)"));
+                }
+                self.emit_call(name, arguments, Some(destination), true)
+            }
             Expression::Binary { operator, left, right } => {
                 let double = self.is_double_value(left) || self.is_double_value(right);
                 // Mixed `int OP float` arithmetic: promote the integer operand to float first.
