@@ -78,6 +78,13 @@ impl Generator {
                 return Err(Diagnostic::error("duplicate switch case values"));
             }
         }
+        // mwcc lays the case bodies out in SOURCE order (and elides the fall-through branch when
+        // the leading body is the last-tested case). The body layout below emits them in sorted
+        // value order, which only matches when the arms are already written ascending — so defer
+        // out-of-order arms rather than ship a mis-ordered (miscompiled) body layout.
+        if arms.windows(2).any(|pair| pair[0].value >= pair[1].value) {
+            return Err(Diagnostic::error("switch arms not in ascending source order (roadmap)"));
+        }
         // A switch whose case values span at most 6 (so a jump table would hold at
         // most 6 entries) is *always* the comparison tree; mwcc never tables a span
         // that small. A wider span is sometimes a jump table — a
