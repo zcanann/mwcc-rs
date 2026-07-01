@@ -18,3 +18,7 @@ extern float  gf(void);
 extern double gd(void);
 void store_float(float *p)   { *p = gf(); }           // stfs f1,0(r31)
 void store_double(double *p) { *p = gd(); }           // stfd f1,0(r31)
+
+// A non-void function returning a constant: materialized in r3 after the store.
+int store_ret0(int *p)   { *p = g(); return 0; }      // stw r3,0(r31); li r3,0
+int store_retn(int *p)   { *p = g(); return -1; }     // stw r3,0(r31); li r3,-1

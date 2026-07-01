@@ -2797,7 +2797,14 @@ impl Generator {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
             return Ok(false);
         }
-        if function.return_type != Type::Void {
+        // Void, or a non-void function returning a CONSTANT — materialized in r3 after the
+        // store, before the epilogue (`*p=g(); return 0;` -> `stw r3,0(r31); li r3,0; …`). A
+        // non-constant return (`return *p` re-reads the saved pointer with an interleaved
+        // epilogue; `return x` reads a call-clobbered parameter) defers.
+        let returns_constant = function.return_type != Type::Void
+            && matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            && function.return_expression.as_ref().map_or(false, |expression| constant_value(expression).is_some());
+        if function.return_type != Type::Void && !returns_constant {
             return Ok(false);
         }
         let [Statement::Store { target, value }] = function.statements.as_slice() else {
@@ -2879,6 +2886,10 @@ impl Generator {
             mwcc_target::Eabi::general_result().number
         };
         self.output.instructions.push(displacement_store(pointee, result, 31, offset));
+        // A non-void function materializes its constant return value in r3 after the store.
+        if let Some(return_expression) = function.return_expression.as_ref() {
+            self.evaluate_tail(return_expression, function.return_type, mwcc_target::Eabi::general_result().number)?;
+        }
         self.emit_epilogue_and_return();
         Ok(true)
     }
