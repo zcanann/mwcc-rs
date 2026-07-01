@@ -980,20 +980,25 @@ impl Generator {
     fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
-                // A string larger than the small-data threshold (8 bytes including the NUL) is
-                // addressed with ADDR16 `lis`/`addi`, not the SDA21 `li` this emits — defer it.
-                if bytes.len() + 1 > 8 {
-                    return Err(Diagnostic::error("a string literal larger than the small-data threshold needs ADDR16 addressing (roadmap)"));
-                }
                 let index = self.intern_string_literal(bytes);
-                self.record_relocation(RelocationKind::EmbSda21, &format!("@@str{index}"));
-                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+                let placeholder = format!("@@str{index}");
+                // A string within the small-data threshold (≤ 8 bytes incl. the NUL) lands in
+                // `.sdata` and is reached with a single SDA21 `li`; a larger one lands in `.data`
+                // (the writer routes by size) and is reached with ADDR16 `lis`/`addi` (`@ha`/`@l`),
+                // exactly like a large global array's base.
+                if bytes.len() + 1 > 8 {
+                    self.emit_address_high(destination, &placeholder);
+                    self.record_relocation(RelocationKind::Addr16Lo, &placeholder);
+                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: 0 });
+                } else {
+                    self.record_relocation(RelocationKind::EmbSda21, &placeholder);
+                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+                }
                 // The `@@str{index}` placeholder is resolved to the function's per-function `@N`
                 // string symbol by the unit's string resolver (apps/mwcc), which places each
                 // function's strings at the FRONT of its anonymous-`@N` block (before its constants
                 // and unwind entries) and defers the not-yet-modeled cases (file-scope strings, or a
                 // function that also has a jump table).
-                let _ = index;
                 Ok(())
             }
             GlobalAddressing::Absolute => Err(Diagnostic::error("a string literal under absolute addressing is not supported yet (roadmap)")),
