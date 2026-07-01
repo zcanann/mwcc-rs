@@ -1651,6 +1651,17 @@ impl Generator {
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
             let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
+            // The offset-0 element of a SMALL (SDA21-addressed) array folds to a single direct SDA21
+            // load — `lwz d, g@sda21(r0)` — exactly like a scalar global or an offset-0 struct member;
+            // mwcc does not materialize the base for `g[0]`. A NON-zero element offset can't fold (an
+            // SDA21 relocation carries no addend), so it materializes the base and loads at the
+            // displacement; a LARGE array is ADDR16 and always materializes the base.
+            let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+            if offset == 0 && small {
+                self.record_relocation(RelocationKind::EmbSda21, name);
+                self.output.instructions.push(displacement_load(pointee, destination, 0, 0));
+                return Ok(());
+            }
             self.emit_global_array_base(name, total_size, destination)?;
             self.output.instructions.push(displacement_load(pointee, destination, destination, offset));
             return Ok(());
