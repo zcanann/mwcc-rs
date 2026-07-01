@@ -6,6 +6,15 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, Loc
 use mwcc_versions::GlobalAddressing;
 use crate::expressions::pointee_of_type;
 
+/// How a run of constant stores materializes its values (see `constant_store_run_plan`). `AllSame`
+/// reuses the scratch register for one repeated `li`; `Distinct` gives each store's value its own
+/// register (materialized up front, r(N+1) descending to r3 with the last in r0), stored in source
+/// order.
+enum ConstStoreRun {
+    AllSame,
+    Distinct(Vec<(i32, u8)>),
+}
+
 /// The `(operand, constant)` a guard condition compares against, when it is `<var> OP <const>`
 /// (or the commuted `<const> OP <var>`). Two consecutive guards with the same key share one
 /// `cmpwi` in mwcc, which emit_guard_sequence does not model (so it defers such a pair).
@@ -919,6 +928,11 @@ impl Generator {
         if self.try_constant_store_fill(function)? {
             return Ok(());
         }
+        // A whole-body `if (c) { <constant run> } else { <constant run> }`: branch over the then-arm
+        // to the else, each arm the batched constant store run then its own `blr`.
+        if self.try_constant_store_if_else(function)? {
+            return Ok(());
+        }
         // Two computed-value stores to distinct SDA globals: mwcc overlaps the two value
         // computations (both into registers, then both stores), which the sequential path
         // does not. The allocator places the first value off the scratch (live across the
@@ -1795,66 +1809,74 @@ impl Generator {
             [Statement::If { condition, then_body, else_body }] if else_body.is_empty() => (then_body.as_slice(), Some(condition)),
             other => (other, None),
         };
-        if statements.len() < 2 {
+        let Some(plan) = self.constant_store_run_plan(statements) else {
             return Ok(false);
-        }
-        let mut constants = Vec::new();
-        for statement in statements {
-            let Statement::Store { target, value } = statement else { return Ok(false) };
-            if !self.is_scratch_safe_store_target(target) {
-                return Ok(false);
-            }
-            match constant_value(value) {
-                Some(constant) => constants.push(constant as i32),
-                None => return Ok(false),
-            }
-        }
-        // Plan the register assignment (no emission yet, so a can't-handle case leaves no orphan).
-        // `None` => the all-same-constant reuse-scratch form; `Some(list)` => materialize each
-        // (constant, register) up front, then store in source order.
-        let all_same = constants.iter().all(|constant| *constant == constants[0]);
-        let plan: Option<Vec<(i32, u8)>> = if all_same {
-            None
-        } else if constants.len() == 2 {
-            // Two distinct constants: the first into a free register, the second into the scratch —
-            // `li r4,v1; li r0,v2; stw r4; stw r0`.
-            let base_registers: Vec<u8> = statements.iter()
-                .filter_map(|statement| match statement {
-                    Statement::Store { target, .. } => self.store_base_register(target),
-                    _ => None,
-                })
-                .collect();
-            let Some(first_register) = (3u8..=12).find(|r| *r != GENERAL_SCRATCH && !base_registers.contains(r) && !self.reserved.contains(r)) else {
-                return Err(Diagnostic::error("no free register for the two-constant store run"));
-            };
-            Some(vec![(constants[0], first_register), (constants[1], GENERAL_SCRATCH)])
-        } else {
-            // 3+ distinct constants to small-data globals: r(N+1) descending to r3 and the last into
-            // the scratch r0, then stores in source order. Member/dereference targets reschedule with
-            // their base register, and a duplicate constant shares one register — both defer.
-            let all_globals = statements.iter().all(|statement| {
-                matches!(statement, Statement::Store { target: Expression::Variable(_), .. })
-            });
-            let count = constants.len();
-            let mut distinct = constants.clone();
-            distinct.sort_unstable();
-            distinct.dedup();
-            if !all_globals || distinct.len() != count || count + 1 > 12 {
-                return Err(Diagnostic::error("a run of 3+ differing constant stores needs the scheduler (roadmap)"));
-            }
-            let assignments = constants.iter().enumerate().map(|(index, &constant)| {
-                let register = if index + 1 < count { (count + 1 - index) as u8 } else { GENERAL_SCRATCH };
-                (constant, register)
-            }).collect();
-            Some(assignments)
         };
         // Commit. Emit the conditional-return guard first (for the trailing-if form), then the run.
         if let Some(condition) = guard {
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
         }
+        self.emit_constant_store_run(statements, plan)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// The register plan for a run of two-or-more constant stores to scratch-safe targets, or
+    /// `None` when the statements are not such a run (a non-store, a non-constant value, an unsafe
+    /// target) or cannot be scheduled here (3+ distinct constants with a non-global or duplicate
+    /// value, or no free register). Pure — used both to emit a run and to pre-check an if-else arm.
+    fn constant_store_run_plan(&self, statements: &[Statement]) -> Option<ConstStoreRun> {
+        if statements.len() < 2 {
+            return None;
+        }
+        let mut constants = Vec::new();
+        for statement in statements {
+            let Statement::Store { target, value } = statement else { return None };
+            if !self.is_scratch_safe_store_target(target) {
+                return None;
+            }
+            constants.push(constant_value(value)? as i32);
+        }
+        if constants.iter().all(|constant| *constant == constants[0]) {
+            return Some(ConstStoreRun::AllSame);
+        }
+        if constants.len() == 2 {
+            // Two distinct constants: the first into a free register, the second into the scratch.
+            let base_registers: Vec<u8> = statements.iter()
+                .filter_map(|statement| match statement {
+                    Statement::Store { target, .. } => self.store_base_register(target),
+                    _ => None,
+                })
+                .collect();
+            let first_register = (3u8..=12).find(|r| *r != GENERAL_SCRATCH && !base_registers.contains(r) && !self.reserved.contains(r))?;
+            return Some(ConstStoreRun::Distinct(vec![(constants[0], first_register), (constants[1], GENERAL_SCRATCH)]));
+        }
+        // 3+ distinct constants to small-data globals: r(N+1) descending to r3 and the last into r0.
+        // Member/dereference targets reschedule with their base register, and a duplicate constant
+        // shares one register — both fall out of this plan.
+        let all_globals = statements.iter().all(|statement| {
+            matches!(statement, Statement::Store { target: Expression::Variable(_), .. })
+        });
+        let count = constants.len();
+        let mut distinct = constants.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        if !all_globals || distinct.len() != count || count + 1 > 12 {
+            return None;
+        }
+        let assignments = constants.iter().enumerate().map(|(index, &constant)| {
+            let register = if index + 1 < count { (count + 1 - index) as u8 } else { GENERAL_SCRATCH };
+            (constant, register)
+        }).collect();
+        Some(ConstStoreRun::Distinct(assignments))
+    }
+
+    /// Emit a planned constant store run: materialize the values (all up front for `Distinct`, or
+    /// once into the reused scratch for `AllSame`), then the stores in source order. No epilogue.
+    fn emit_constant_store_run(&mut self, statements: &[Statement], plan: ConstStoreRun) -> Compilation<()> {
         match plan {
-            Some(assignments) => {
+            ConstStoreRun::Distinct(assignments) => {
                 for &(constant, register) in &assignments {
                     self.load_integer_constant(register, constant as i64);
                 }
@@ -1864,7 +1886,7 @@ impl Generator {
                 }
                 self.prematerialized_constants.clear();
             }
-            None => {
+            ConstStoreRun::AllSame => {
                 self.reuse_scratch_constant = true;
                 self.scratch_constant = None;
                 for statement in statements {
@@ -1874,7 +1896,37 @@ impl Generator {
                 self.scratch_constant = None;
             }
         }
-        self.emit_epilogue_and_return();
+        Ok(())
+    }
+
+    /// A whole-body `if (c) { <constant run> } else { <constant run> }` (both arms two-plus constant
+    /// stores): `cmpwi; beq else; <then run>; blr; else: <else run>; blr`. Each arm reuses the
+    /// batched constant materialization; the no-else form is handled by try_constant_store_fill.
+    pub(crate) fn try_constant_store_if_else(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        let (Some(then_plan), Some(else_plan)) = (self.constant_store_run_plan(then_body), self.constant_store_run_plan(else_body)) else {
+            return Ok(false);
+        };
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.emit_constant_store_run(then_body, then_plan)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        let else_label = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = else_label;
+        }
+        self.emit_constant_store_run(else_body, else_plan)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 
