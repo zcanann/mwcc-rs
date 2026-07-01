@@ -1879,16 +1879,25 @@ impl Generator {
             || function.return_type != Type::Void
             || !function.guards.is_empty()
             || !function.locals.is_empty()
-            || function.statements.len() != 2
             || self.behavior.global_addressing != GlobalAddressing::SmallData
         {
+            return Ok(false);
+        }
+        // The two-store run is either the whole body, or the body of a single trailing `if (c) { … }`
+        // with no else — the same latency-scheduled value overlap, wrapped in a conditional return.
+        // Detection is emission-free, so the guard is emitted just before the value evaluations.
+        let (statements, guard): (&[Statement], Option<&Expression>) = match function.statements.as_slice() {
+            [Statement::If { condition, then_body, else_body }] if else_body.is_empty() => (then_body.as_slice(), Some(condition)),
+            other => (other, None),
+        };
+        if statements.len() != 2 {
             return Ok(false);
         }
         // Both statements must store to a distinct SDA global. Each value is a single-op
         // computation or a constant; a bare register leaf needs no overlap and goes through
         // try_mixed_store_fill / the normal path.
         let mut stores = Vec::new();
-        for statement in &function.statements {
+        for statement in statements {
             let Statement::Store { target, value } = statement else { return Ok(false) };
             let Expression::Variable(name) = target else { return Ok(false) };
             let Some(&global_type) = self.globals.get(name.as_str()) else { return Ok(false) };
@@ -1935,6 +1944,12 @@ impl Generator {
             weight(high[0], constant_value(&stores[0].2).is_some()),
             weight(high[1], constant_value(&stores[1].2).is_some()),
         ];
+        // For the trailing-if form, the conditional return precedes the value overlap
+        // (`cmpwi;beqlr; <two values>; <two stores>`).
+        if let Some(condition) = guard {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+        }
         let first_register = self.fresh_virtual_general();
         if weights[1] > weights[0] {
             // The second value is the heavier op: compute it (into r0) first.
@@ -1968,13 +1983,21 @@ impl Generator {
             || function.return_type != Type::Void
             || !function.guards.is_empty()
             || !function.locals.is_empty()
-            || function.statements.len() != 2
             || self.behavior.global_addressing != GlobalAddressing::SmallData
         {
             return Ok(false);
         }
+        // Either the whole body, or a single trailing `if (c) { … }` (no else) — the same
+        // leaf/filler pairing, wrapped in a conditional return emitted just before the filler.
+        let (statements, guard): (&[Statement], Option<&Expression>) = match function.statements.as_slice() {
+            [Statement::If { condition, then_body, else_body }] if else_body.is_empty() => (then_body.as_slice(), Some(condition)),
+            other => (other, None),
+        };
+        if statements.len() != 2 {
+            return Ok(false);
+        }
         let mut stores = Vec::new();
-        for statement in &function.statements {
+        for statement in statements {
             let Statement::Store { target: Expression::Variable(name), value } = statement else { return Ok(false) };
             let Some(&global_type) = self.globals.get(name.as_str()) else { return Ok(false) };
             if matches!(global_type, Type::Float | Type::Double) {
@@ -2006,8 +2029,12 @@ impl Generator {
             return Ok(false);
         };
         // The filler goes into the scratch; the leaf is already in its register, so store it
-        // first, then the filler.
+        // first, then the filler. For the trailing-if form the conditional return precedes them.
         let leaf_register = self.general_register_of_leaf(&stores[leaf].2)?;
+        if let Some(condition) = guard {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+        }
         self.evaluate_general(&stores[filler].2, GENERAL_SCRATCH)?;
         self.emit_sda_global_store_from(&stores[leaf].0, stores[leaf].1, leaf_register);
         self.emit_sda_global_store_from(&stores[filler].0, stores[filler].1, GENERAL_SCRATCH);
