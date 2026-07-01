@@ -209,15 +209,30 @@ impl Generator {
         if let Expression::Dereference { pointer } = operand {
             return self.evaluate_general(pointer, destination);
         }
-        // `&g.field` where `g` is a file-scope struct VALUE global: the field address `&g + offset`
-        // (an address computation), like `&a[i]` — NOT `load(g)+offset` (that is the struct-POINTER
-        // case). A local/frame struct member address is a different lvalue and still defers.
         if let Expression::Member { base, offset, index_stride: None, .. } = operand {
             if let Expression::Variable(name) = base.as_ref() {
+                // `&g.field` where `g` is a file-scope struct VALUE global: the field address
+                // `&g + offset` (an address computation), like `&a[i]` — NOT `load(g)+offset`.
                 if !self.locations.contains_key(name.as_str()) {
                     if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()).copied() {
                         return self.emit_global_struct_member_address(name, size as u32, *offset, destination);
                     }
+                } else {
+                    // `&p->field` where `p` is a register-resident struct POINTER: the pointer value
+                    // plus the member offset (`addi dest,p,offset`, or `mr` at offset 0) — the same
+                    // shape as the `MemberAddress` value path. `general_register_of` errors (so the
+                    // whole address-of defers) when `name` is not a register-resident integer/pointer
+                    // — e.g. a frame-resident struct VALUE — so `&s.field` stays deferred, not wrong.
+                    let base_register = self.general_register_of(name)?;
+                    if *offset == 0 {
+                        if base_register != destination {
+                            self.output.instructions.push(Instruction::move_register(destination, base_register));
+                        }
+                    } else {
+                        let offset = i16::try_from(*offset).map_err(|_| Diagnostic::error("member address offset out of range (roadmap)"))?;
+                        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: base_register, immediate: offset });
+                    }
+                    return Ok(());
                 }
             }
         }
