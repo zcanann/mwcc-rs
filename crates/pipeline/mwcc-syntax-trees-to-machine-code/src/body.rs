@@ -870,6 +870,13 @@ impl Generator {
         if self.try_conditional_assign(function)? {
             return Ok(());
         }
+        // `T y = INIT; if (c) y = NEW; return y;` (no else) where INIT is a variable ALREADY
+        // resident in the result register (the common param-0 case): the clean in-place branch
+        // form `<test c>; b<!c>lr; <NEW into result>; blr` (min/max/abs/clamp). NEW may be any
+        // evaluable expression (neg/mr/li/add/…), unlike the leaf-only initialized handler below.
+        if self.try_conditional_overwrite_inplace(function)? {
+            return Ok(());
+        }
         // `T y = INIT; if (c) y = NEW; return y;` (no else), constant arms — mwcc lowers the
         // conditional ASSIGN as an early-return branch form (NOT the select/branchless idiom).
         if self.try_conditional_assign_initialized(function)? {
@@ -1656,6 +1663,64 @@ impl Generator {
             *target = after;
         }
         self.output.instructions.push(Instruction::move_register(result, stage));
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// `T y = v; if (c) y = NEW; return y;` (no else) where the initializer `v` is a variable
+    /// ALREADY resident in the result register — the param-0 min/max/abs/clamp idiom. mwcc keeps
+    /// the initializer in the result register (no move), tests the condition, and issues a
+    /// conditional RETURN on the inverse (`b<!c>lr`) that returns the initializer in place; the
+    /// taken path falls through to `<NEW into result>; blr`. Every observed NEW shape — `neg`,
+    /// `mr` (a variable), `li` (a constant), `add` (a computed value) — is exactly what the general
+    /// tail evaluator emits into the result register, so route NEW through it rather than
+    /// re-deriving a per-shape layout. This fills the `stage == result` case the initialized
+    /// handler above defers (init already in the result register). Only emits after the last
+    /// deferral check, so a deferred NEW (an Err from the evaluator) fails the whole function
+    /// rather than leaving orphaned instructions.
+    pub(crate) fn try_conditional_overwrite_inplace(&mut self, function: &Function) -> Compilation<bool> {
+        let [local] = function.locals.as_slice() else { return Ok(false) };
+        if local.array_length.is_some() || !function.guards.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        // Match the initialized handler's scope: the branch-with-conditional-return form is the
+        // int lowering; other widths/types use different staging, so defer them.
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // The initializer must be a plain variable already living in the result register — then
+        // materializing it costs no instruction and the condition test reads it in place. A
+        // constant / elsewhere-resident / computed initializer is a different layout (left to the
+        // initialized handler or beyond).
+        let Some(Expression::Variable(init_name)) = &local.initializer else { return Ok(false) };
+        let result = Eabi::general_result().number;
+        if self.lookup_general(init_name) != Some(result) {
+            return Ok(false);
+        }
+        // The whole body is `if (c) y = NEW;` (no else) returning y.
+        let Some(Expression::Variable(returned)) = &function.return_expression else { return Ok(false) };
+        if returned != &local.name {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name, value }] = then_body.as_slice() else {
+            return Ok(false);
+        };
+        if name != &local.name {
+            return Ok(false);
+        }
+        // <test c> — emit_condition_test returns the branch-if-FALSE options (a guard's
+        // forward-skip / early-return-on-!c sense), which is exactly what we want here.
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        // b<!c>lr — return the initializer, already in the result register, when c is false.
+        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+        // The taken path computes NEW into the result register, then returns.
+        self.evaluate_tail(value, function.return_type, result)?;
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
