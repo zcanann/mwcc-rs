@@ -845,27 +845,38 @@ impl Generator {
             return Ok(false);
         }
 
-        // A store continuation: `if (a) return -1; *p = 5; return 0;`. A CONSTANT store
-        // value materializes into r0 with the return value scheduled BETWEEN the `li` and
-        // the store — `li r0,5; li r3,0; stw r0,0(r4); blr` (or `mr r3,x` for a register
-        // return). A register-valued store needs no materialization and stays with the
-        // sequential path (store, then the return move — verified byte-exact there); two
-        // or more stores interleave through the batch scheduler and defer.
+        // A store continuation: `if (a) return -1; *p = 5; return 0;`. A MATERIALIZED store
+        // value (a constant, or a simple two-leaf computation) lands in r0 with the return
+        // value scheduled BETWEEN the materialization and the store — `li r0,5; li r3,0;
+        // stw r0,0(r4); blr` / `addi r0,r5,1; li r3,0; stw r0,0(r4)` (or `mr r3,x` for a
+        // register return). Covers `*p`, `p[const]`, and `p->member` targets. A register-
+        // valued store needs no materialization and stays with the sequential path (store,
+        // then the return move — verified byte-exact there); two or more stores interleave
+        // through the batch scheduler and defer.
         if let [Statement::Store { target, value: stored }] = rest {
             if function.guards.is_empty() && function.locals.is_empty() {
-                let Some(stored_constant) = constant_value(stored).and_then(|constant| i16::try_from(constant).ok()) else {
+                let stored_is_constant = constant_value(stored).and_then(|constant| i16::try_from(constant).ok()).is_some();
+                let stored_is_two_leaf = matches!(stored, Expression::Binary { left, right, .. }
+                    if matches!(left.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
+                        && matches!(right.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_)));
+                if !stored_is_constant && !stored_is_two_leaf {
                     return Ok(false);
-                };
-                let (pointer_name, byte_offset) = match target {
+                }
+                let (pointer_name, byte_offset, pointee): (&String, i64, Pointee) = match target {
                     Expression::Dereference { pointer } => {
                         let Expression::Variable(name) = pointer.as_ref() else { return Ok(false) };
-                        (name, 0i64)
+                        (name, 0, self.pointee_of(pointer)?)
                     }
                     Expression::Index { base, index } => {
                         let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
                         let Some(constant) = constant_value(index) else { return Ok(false) };
                         let pointee = self.pointee_of(base)?;
-                        (name, constant * pointee.size() as i64)
+                        (name, constant * pointee.size() as i64, pointee)
+                    }
+                    Expression::Member { base, offset, member_type, index_stride: None } => {
+                        let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
+                        let Some(pointee) = pointee_of_type(*member_type) else { return Ok(false) };
+                        (name, *offset as i64, pointee)
                     }
                     _ => return Ok(false),
                 };
@@ -874,11 +885,6 @@ impl Generator {
                 }
                 let Some(pointer_register) = self.lookup_general(pointer_name) else {
                     return Ok(false);
-                };
-                let pointee = match target {
-                    Expression::Dereference { pointer } => self.pointee_of(pointer)?,
-                    Expression::Index { base, .. } => self.pointee_of(base)?,
-                    _ => return Ok(false),
                 };
                 if matches!(pointee, Pointee::Float | Pointee::Double) {
                     return Ok(false);
@@ -920,7 +926,7 @@ impl Generator {
                 if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
                     *target = continuation;
                 }
-                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: 0, immediate: stored_constant });
+                self.evaluate_general(stored, GENERAL_SCRATCH)?;
                 match return_value {
                     ReturnValue::Constant(constant) => {
                         self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: constant });
