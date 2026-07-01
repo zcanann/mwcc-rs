@@ -613,12 +613,40 @@ impl Parser {
             },
             other => return Err(Diagnostic::error(format!("expected a type, found {other}"))),
         };
-        // A trailing `*` makes it a pointer to that scalar.
+        // East-const/volatile: a qualifier may TRAIL the base type (`float const`, the
+        // mirror of the leading `const float` — dolphin/MSL headers use both). Fold
+        // `const` into `last_type_was_const` so the global path still sees it as read-only.
+        self.consume_trailing_qualifiers();
+        // A trailing `*` makes it a pointer to that scalar; a qualifier after the `*`
+        // is a const/volatile POINTER (`int *const p`), also transparent to codegen.
         if *self.peek() == Token::Star {
             self.advance();
+            self.consume_trailing_qualifiers();
             return Ok(Type::Pointer(pointee_of(base)?));
         }
         Ok(base)
+    }
+
+    /// Consume a run of `const`/`volatile`/`register` qualifiers that TRAIL a type (east
+    /// const), noting `const`/`volatile` in the same flags the leading `skip_type_qualifiers`
+    /// sets — but never resetting them, so a leading qualifier already seen is preserved.
+    pub(crate) fn consume_trailing_qualifiers(&mut self) {
+        loop {
+            match self.peek() {
+                Token::Identifier(word) if word == "const" => {
+                    self.last_type_was_const = true;
+                    self.advance();
+                }
+                Token::Identifier(word) if word == "volatile" => {
+                    self.last_type_was_volatile = true;
+                    self.advance();
+                }
+                Token::Identifier(word) if word == "register" => {
+                    self.advance();
+                }
+                _ => return,
+            }
+        }
     }
 
     /// Parse `struct Name { type field; ... };`, laying members out with natural

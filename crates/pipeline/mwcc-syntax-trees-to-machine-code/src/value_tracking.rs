@@ -53,6 +53,18 @@ impl Generator {
                 function.locals.first().and_then(|local| local.initializer.as_ref()),
                 Some(Expression::Variable(_))
             );
+        // A single local initialized to a CONSTANT must inline too: the straight-line
+        // path materializes the constant in the scratch and treats it as a leaf (`int
+        // k=3; return x+k` -> `li r0,3; add r3,r3,r0`), but mwcc folds the constant into
+        // the use (`return x+3` -> `addi r3,r3,3`). Inlining substitutes `k`'s value away,
+        // matching the direct-literal form. A narrow const local is excluded (its width
+        // coercion is handled by the narrow-local guards below).
+        let single_constant_local = function.locals.len() == 1
+            && function.locals.first().is_some_and(|local| local.declared_type.width() >= 32)
+            && matches!(
+                function.locals.first().and_then(|local| local.initializer.as_ref()),
+                Some(Expression::IntegerLiteral(_))
+            );
         // A single local read by a store (not just an assignment) still belongs here: the
         // statement loop below defers stores honestly. Declining would drop it to the normal
         // path, which cannot read a value-tracked local and emits garbage (it reads an
@@ -63,7 +75,7 @@ impl Generator {
         // feeds the return. Only `has_assignment` distinguishes this from a plain no-locals body
         // (a global store is a Store, never an Assign), so it is safe to take over here.
         if (function.locals.is_empty() && !has_assignment)
-            || (function.locals.len() == 1 && !has_assignment && !has_store && !single_conditional_local && !single_alias_local)
+            || (function.locals.len() == 1 && !has_assignment && !has_store && !single_conditional_local && !single_alias_local && !single_constant_local)
         {
             return Ok(false);
         }
