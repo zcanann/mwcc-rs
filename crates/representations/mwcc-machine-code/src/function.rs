@@ -74,6 +74,13 @@ pub struct MachineFunction {
     /// function's external/global symbol indices in this order (see the codegen's
     /// `symbol_order`), falling back to relocation order for anything not listed.
     pub symbol_order: Vec<String>,
+    /// Callee names this function references that were IMPLICITLY declared (called with
+    /// no prior prototype — K&R style). mwcc creates an implicit callee's symbol at its
+    /// first call site, INSIDE the function body, so it is emitted AFTER the function's
+    /// own symbol (a prototyped/explicit external is created at its file-scope declaration
+    /// and precedes the function). The writer uses this to place such callees after the
+    /// function symbol instead of before.
+    pub implicit_external_callees: Vec<String>,
 }
 
 impl MachineFunction {
@@ -93,6 +100,7 @@ impl MachineFunction {
             frame: None,
             jump_table: None,
             symbol_order: Vec::new(),
+            implicit_external_callees: Vec::new(),
         }
     }
 

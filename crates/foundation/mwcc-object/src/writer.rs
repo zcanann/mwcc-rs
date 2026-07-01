@@ -630,22 +630,34 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
         }
-        for name in ordered {
-            // A reference to a `static` object or function resolves to its existing
-            // LOCAL symbol; it is not (re)emitted in the global run.
-            if global_symbols.contains_key(name) || local_data_symbols.contains_key(name) || local_function_symbols.contains_key(name) {
-                continue;
-            }
-            global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
-            if let Some(&offset) = data_offsets.get(name) {
-                let section = index_of(data_section[name]) as u16;
-                write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name], STB_GLOBAL_OBJECT, 0, section);
-                comment_values.push(data_aligns[name]);
-            } else {
-                write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
-                comment_values.push(0); // an undefined external has no alignment
-            }
+        // An IMPLICITLY-declared callee's symbol is created by mwcc at its call site inside
+        // the body, so it is emitted AFTER the function symbol; an explicitly-declared
+        // (prototyped) external precedes it. Partition preserving order within each group.
+        let implicit: std::collections::HashSet<&str> = function.implicit_external_callees.iter().map(|name| name.as_str()).collect();
+        let (implicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = ordered.into_iter().partition(|name| implicit.contains(name));
+        // Emit one external/global symbol (skipping a name that already resolves to an
+        // existing global or LOCAL `static` symbol). A `macro_rules!` keeps the shared body
+        // in one place while avoiding a closure over the many `&mut` writer collections.
+        macro_rules! emit_referenced {
+            ($names:expr) => {
+                for name in $names {
+                    if global_symbols.contains_key(name) || local_data_symbols.contains_key(name) || local_function_symbols.contains_key(name) {
+                        continue;
+                    }
+                    global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+                    if let Some(&offset) = data_offsets.get(name) {
+                        let section = index_of(data_section[name]) as u16;
+                        write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name], STB_GLOBAL_OBJECT, 0, section);
+                        comment_values.push(data_aligns[name]);
+                    } else {
+                        write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+                        comment_values.push(0); // an undefined external has no alignment
+                    }
+                }
+            };
         }
+        // Prototyped externals first, then the function's own symbol, then implicit callees.
+        emit_referenced!(explicit_ordered);
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
         if !function.is_static {
@@ -653,6 +665,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
             comment_values.push(4); // a function is 4-aligned
         }
+        emit_referenced!(implicit_ordered);
     }
     // Still-unreferenced (.sbss/.bss) defined globals trail the functions, in
     // REVERSE declaration order (verified: `int a;b;c;d;e;` -> `e d c b a`, and a

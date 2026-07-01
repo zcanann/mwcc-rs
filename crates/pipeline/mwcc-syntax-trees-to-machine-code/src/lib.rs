@@ -96,6 +96,22 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // The names this function references, in mwcc's symbol-table order (an AST
     // traversal); the writer assigns its external/global symbols in this order.
     generator.output.symbol_order = symbol_order::referenced_names(function);
+    // A call target with no prototype/definition (absent from `call_return_types`) was
+    // IMPLICITLY declared — K&R first-use. mwcc creates its symbol at the call site inside
+    // the body, so the writer emits it AFTER the function symbol (a prototyped external,
+    // created at its file-scope declaration, precedes the function). Collected from the
+    // call (Rel24) relocations, in first-call order, deduplicated.
+    {
+        use mwcc_machine_code::{RelocationKind, RelocationTarget};
+        let mut seen = HashSet::new();
+        for relocation in &generator.output.relocations {
+            if let (RelocationKind::Rel24, RelocationTarget::External(name)) = (&relocation.kind, &relocation.target) {
+                if !call_return_types.contains_key(name.as_str()) && seen.insert(name.clone()) {
+                    generator.output.implicit_external_callees.push(name.clone());
+                }
+            }
+        }
+    }
     generator.output.is_static = function.is_static;
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false

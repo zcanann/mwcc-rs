@@ -115,6 +115,10 @@ pub struct FunctionObject<'a> {
     /// this function's external/global symbols in this order, with a relocation-
     /// order fallback for anything not listed.
     pub symbol_order: Vec<String>,
+    /// Callees this function references that were IMPLICITLY declared (K&R first-use, no
+    /// prototype). mwcc creates their symbols at the call site inside the body, so the
+    /// writer emits them AFTER this function's own symbol rather than before it.
+    pub implicit_external_callees: Vec<String>,
 }
 
 /// A dense `switch`'s jump table — one `.text` body offset per index, plus how far
