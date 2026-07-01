@@ -40,3 +40,10 @@ int branch_const_two_param(int a, int b, int c) { if (a) return 5; b = b + c; re
 // guard is NOT taken, the guard value follows (`cmpwi; addi r3,r4,1; beqlr; mr r3,c`).
 int inverted_fold_ordered(int a, int b, int c) { if (a) return c; b = b + 1; return b; }
 int inverted_fold_flat(int a, int b, int c)    { b = b + 1; if (a) return c; return b; }
+
+// The inverted fold also applies when the condition reads the name the tail REASSIGNS
+// (ordered only -- the compare tests the original value before the in-place clobber):
+// `cmpwi r3,0; addi r3,r3,1; beqlr; mr r3,r4`. A CONSTANT guard value in this position
+// instead joins through a temp register chosen by the allocator (deferred).
+int inverted_fold_self(int a, int b)        { if (a) return b; a = a + 1; return a; }
+int inverted_fold_self_cmp(int a, int b)    { if (a > 2) return b; a = a * 4; return a; }

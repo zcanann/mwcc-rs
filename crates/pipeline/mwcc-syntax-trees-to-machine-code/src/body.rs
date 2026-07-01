@@ -858,43 +858,84 @@ impl Generator {
             .chain(function.locals.iter().map(|local| local.name.as_str()))
             .collect();
         let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
-        if reads_written(condition) || reads_written(value) {
+        // A guard VALUE reading a reassigned name is unverified — defer.
+        if reads_written(value) {
             return Ok(false);
         }
-        // The branch form is mwcc's shape for a tail reading TWO-plus distinct parameters
-        // (`add r3,r4,r5` after the branch). A one-parameter tail folds instead — the
-        // hoist routes those through the guard machinery — and an unhoistable
-        // one-parameter shape (e.g. reads-r3 with a register value) is unverified: defer.
         let tail_reads_parameter = |name: &str| {
             rest.iter().any(|statement| match statement {
                 Statement::Assign { value, .. } => expression_reads_name(value, name),
                 _ => false,
             }) || function.return_expression.as_ref().is_some_and(|ret| expression_reads_name(ret, name))
         };
-        if function.parameters.iter().filter(|parameter| tail_reads_parameter(&parameter.name)).count() < 2 {
-            return Ok(false);
+        let distinct_parameter_reads =
+            function.parameters.iter().filter(|parameter| tail_reads_parameter(&parameter.name)).count();
+
+        // The branch form is mwcc's shape for a tail reading TWO-plus distinct parameters
+        // (`add r3,r4,r5` after the branch), with a condition reading no reassigned name.
+        if distinct_parameter_reads >= 2 && !reads_written(condition) {
+            // The guard block: branch past it when the condition is false, else the value and
+            // return. emit_condition_test yields the skip-when-false encoding directly.
+            let result = mwcc_target::Eabi::general_result().number;
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let branch_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.evaluate_tail(value, function.return_type, result)?;
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            let continuation = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = continuation;
+            }
+
+            // The continuation is a pure value-tracking body; anything it cannot compile must
+            // DEFER (the guard block is already in the output).
+            let reduced = Function { statements: rest.to_vec(), ..function.clone() };
+            if !self.try_value_tracking(&reduced)? {
+                return Err(Diagnostic::error("an early-return continuation outside the value-tracking shape is not supported yet (roadmap)"));
+            }
+            return Ok(true);
         }
 
-        // The guard block: branch past it when the condition is false, else the value and
-        // return. emit_condition_test yields the skip-when-false encoding directly.
-        let result = mwcc_target::Eabi::general_result().number;
-        let (options, condition_bit) = self.emit_condition_test(condition)?;
-        let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-        self.evaluate_tail(value, function.return_type, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
-        let continuation = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-            *target = continuation;
+        // A ONE-parameter tail with a register guard value takes the INVERTED FOLD even when
+        // the condition reads the reassigned name — the compare tests the ORIGINAL value
+        // before the tail clobbers it in place: `if (a) return b; a = a + 1; return a;` →
+        // `cmpwi r3,0; addi r3,r3,1; beqlr; mr r3,r4`. Kept to the exactly-verified shape: a
+        // single `x = <two-leaf expr>; return x;` alias continuation, an unwritten plain-
+        // variable guard value. (The order-independent variant without reassigned-name reads
+        // is hoisted before this handler runs; a constant guard value here joins through a
+        // temp register whose choice needs the register allocator — defer.)
+        if distinct_parameter_reads < 2
+            && matches!(value, Expression::Variable(_))
+            && matches!(function.return_type, Type::Int | Type::UnsignedInt)
+        {
+            let [Statement::Assign { name: assigned, value: assigned_value }] = rest else {
+                return Ok(false);
+            };
+            let Some(Expression::Variable(returned)) = function.return_expression.as_ref() else {
+                return Ok(false);
+            };
+            if returned != assigned {
+                return Ok(false);
+            }
+            let two_leaf = matches!(assigned_value, Expression::Binary { left, right, .. }
+                if matches!(left.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
+                    && matches!(right.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_)));
+            if !two_leaf {
+                return Ok(false);
+            }
+            let Expression::Variable(value_name) = value else { return Ok(false) };
+            let Some(value_register) = self.lookup_general(value_name) else {
+                return Ok(false);
+            };
+            let result = mwcc_target::Eabi::general_result().number;
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.evaluate_tail(assigned_value, function.return_type, result)?;
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+            self.output.instructions.push(Instruction::Or { a: result, s: value_register, b: value_register });
+            self.emit_epilogue_and_return();
+            return Ok(true);
         }
-
-        // The continuation is a pure value-tracking body; anything it cannot compile must
-        // DEFER (the guard block is already in the output).
-        let reduced = Function { statements: rest.to_vec(), ..function.clone() };
-        if !self.try_value_tracking(&reduced)? {
-            return Err(Diagnostic::error("an early-return continuation outside the value-tracking shape is not supported yet (roadmap)"));
-        }
-        Ok(true)
+        Ok(false)
     }
 
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
