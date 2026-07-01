@@ -1917,6 +1917,11 @@ impl Parser {
         } else {
             None
         };
+        // Stray empty statements (`;`) may trail the return before the closing brace
+        // (`return x;;` or a lone `;`) — they produce no code, so skip them.
+        while *self.peek() == Token::Semicolon {
+            self.advance();
+        }
         self.expect(Token::BraceClose)?;
 
         Ok(Function { return_type, name, is_static, parameters, locals, statements, guards, return_expression })
