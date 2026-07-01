@@ -737,6 +737,27 @@ impl Generator {
         if matches!(function.return_type, Type::Struct { .. }) {
             return Err(Diagnostic::error("returning a struct by value is not supported yet (roadmap)"));
         }
+        // Multiple field stores to the SAME global struct VALUE (`g.x = u; g.y = w;`): mwcc
+        // materializes the struct's SDA base ONCE and schedules that `li rB,g@sda21` AHEAD of the
+        // first field store, then addresses each field (offset 0 directly, others via the base). Our
+        // per-store, program-order materialization places the base between the stores, so the bytes
+        // differ. Defer until that shared-base scheduling is modeled — a single field store is
+        // byte-exact and stays.
+        {
+            let mut global_struct_field_stores: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+            for statement in &function.statements {
+                if let Statement::Store { target: Expression::Member { base, .. }, .. } = statement {
+                    if let Expression::Variable(name) = base.as_ref() {
+                        if matches!(self.globals.get(name.as_str()), Some(Type::Struct { .. })) {
+                            *global_struct_field_stores.entry(name.as_str()).or_default() += 1;
+                        }
+                    }
+                }
+            }
+            if global_struct_field_stores.values().any(|&count| count >= 2) {
+                return Err(Diagnostic::error("multiple field stores to one global struct need the shared-base schedule (roadmap)"));
+            }
+        }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
         // every long-long-involved function to the dedicated handler so none falls through to the
         // 32-bit codegen (which would emit a single-register result for a 64-bit value — wrong
