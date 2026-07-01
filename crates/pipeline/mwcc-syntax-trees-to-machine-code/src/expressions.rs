@@ -1659,6 +1659,24 @@ impl Generator {
         Ok(())
     }
 
+    /// `&g.field` where `g` is a file-scope struct VALUE global: the field ADDRESS `&g + offset`
+    /// — materialize g's base (SDA21 small / ADDR16 large, by the struct's size) then add the
+    /// member offset, the same address computation as `&a[i]`. Not the `load(g)+offset` a struct
+    /// POINTER would use — `g` is the struct itself, so its address is taken, not loaded.
+    pub(crate) fn emit_global_struct_member_address(&mut self, name: &str, size: u32, offset: u16, destination: u8) -> Compilation<()> {
+        // The base materializes into `destination` and is then its own `addi` base, so it cannot
+        // be the scratch r0 (an `addi` based on r0 reads literal zero, not the register).
+        if destination == GENERAL_SCRATCH {
+            return Err(Diagnostic::error("a global struct member address into the scratch register is not supported yet (roadmap)"));
+        }
+        self.emit_global_array_base(name, size, destination)?;
+        if offset != 0 {
+            let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("global struct member address offset out of range (roadmap)"))?;
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: offset });
+        }
+        Ok(())
+    }
+
     /// Materialize a file-scope array global's base address into `dest` (never r0):
     /// a small (`.sdata`) array via a single SDA21 `addi`; a large (`.data`/`.bss`)
     /// one via `lis dest, name@ha` then `addi dest, dest, name@l`.

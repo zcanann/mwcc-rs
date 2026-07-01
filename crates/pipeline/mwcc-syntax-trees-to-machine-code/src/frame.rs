@@ -209,6 +209,18 @@ impl Generator {
         if let Expression::Dereference { pointer } = operand {
             return self.evaluate_general(pointer, destination);
         }
+        // `&g.field` where `g` is a file-scope struct VALUE global: the field address `&g + offset`
+        // (an address computation), like `&a[i]` — NOT `load(g)+offset` (that is the struct-POINTER
+        // case). A local/frame struct member address is a different lvalue and still defers.
+        if let Expression::Member { base, offset, index_stride: None, .. } = operand {
+            if let Expression::Variable(name) = base.as_ref() {
+                if !self.locations.contains_key(name.as_str()) {
+                    if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()).copied() {
+                        return self.emit_global_struct_member_address(name, size as u32, *offset, destination);
+                    }
+                }
+            }
+        }
         Err(Diagnostic::error("address-of a non-frame-resident lvalue is not supported yet (roadmap)"))
     }
 }
