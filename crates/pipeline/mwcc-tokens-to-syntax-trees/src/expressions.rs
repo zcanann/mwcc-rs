@@ -257,18 +257,27 @@ impl Parser {
                 }
             };
             let bytes = match &operand {
-                Expression::Variable(name) => self.variable_array_bytes.get(name).copied().or_else(|| self.variable_types.get(name).map(|variable_type| size_of(*variable_type))),
+                // A local (parameter/scalar/array) shadows a global of the same name, so consult the
+                // per-function maps first, then the file-scope `global_sizes` (total byte size).
+                Expression::Variable(name) => self
+                    .variable_array_bytes
+                    .get(name)
+                    .copied()
+                    .or_else(|| self.variable_types.get(name).map(|variable_type| size_of(*variable_type)))
+                    .or_else(|| self.global_sizes.get(name).map(|&(total, _)| total)),
                 Expression::Member { member_type, .. } => Some(size_of(*member_type)),
                 Expression::Cast { target_type, .. } => Some(size_of(*target_type)),
                 // `*p` / `a[i]`: the size of the pointed-to element. For an ARRAY base the element
-                // type is in variable_types; for a POINTER base it is the pointee.
+                // type is in variable_types (local) or global_sizes (file-scope); for a POINTER base
+                // it is the pointee.
                 Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => match pointer.as_ref() {
                     Expression::Variable(name) if self.variable_array_bytes.contains_key(name) => self.variable_types.get(name).map(|element_type| size_of(*element_type)),
-                    Expression::Variable(name) => match self.variable_types.get(name) {
+                    Expression::Variable(name) if self.variable_types.contains_key(name) => match self.variable_types.get(name) {
                         Some(Type::Pointer(pointee)) => Some(size_of(pointee.element())),
                         Some(Type::StructPointer { element_size }) => Some(*element_size as u32),
                         _ => None,
                     },
+                    Expression::Variable(name) => self.global_sizes.get(name).and_then(|&(_, array_element)| array_element),
                     _ => None,
                 },
                 _ => None,

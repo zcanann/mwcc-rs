@@ -1447,6 +1447,17 @@ impl Parser {
                         let folded = crate::expressions::truncate_to_integer(initializer.as_ref().unwrap()[0], return_type);
                         self.enum_constants.insert(declarator_name.clone(), folded);
                     }
+                    // Record the global's total byte size so `sizeof(g)` folds to a constant, plus its
+                    // array element size (Some only for an array) so `sizeof(g[0])` folds too — the
+                    // classic `sizeof(a)/sizeof(a[0])` element count.
+                    let element_bytes = match return_type {
+                        Type::Struct { size, .. } => size as u32,
+                        Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                        other => other.width() as u32 / 8,
+                    };
+                    let total_bytes = element_bytes * array_length.map_or(1, u32::from);
+                    let array_element = array_length.map(|_| element_bytes);
+                    self.global_sizes.insert(declarator_name.clone(), (total_bytes, array_element));
                     globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
                     if *self.peek() == Token::Comma {
                         self.advance();

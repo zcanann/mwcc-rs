@@ -47,6 +47,12 @@ pub(crate) struct Parser {
     /// Local array variables mapped to their total byte size (element size * length), so
     /// `sizeof(arr)` folds to a constant. Cleared per function.
     pub(crate) variable_array_bytes: HashMap<String, u32>,
+    /// File-scope variables mapped to `(total byte size, array element size)`, so `sizeof(g)`
+    /// (total) and `sizeof(g[0])` (element) fold to constants. The element size is `Some` ONLY
+    /// for an ARRAY global — for a pointer global `sizeof(*p)`/`sizeof(p[0])` wants the pointee,
+    /// not the 4-byte pointer, so a non-array keeps element `None` and those forms defer. NOT
+    /// cleared per function — globals stay in scope for every function's body.
+    pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
     /// Set by [`Parser::parse_type`] when it just parsed a `struct Name*`, so the
