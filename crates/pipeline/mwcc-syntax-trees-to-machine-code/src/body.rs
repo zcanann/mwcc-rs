@@ -1771,12 +1771,23 @@ impl Generator {
             || function.return_type != Type::Void
             || !function.guards.is_empty()
             || !function.locals.is_empty()
-            || function.statements.len() < 2
         {
             return Ok(false);
         }
+        // The store run is either the whole body, or the body of a single trailing `if (c) { … }`
+        // with no else — the same batched constant materialization, wrapped in a conditional return
+        // (`cmpwi;beqlr; <run>`). Everything below (detection, register plan) works on `statements`;
+        // the conditional-return guard is emitted just before materializing, so a non-run body
+        // returns Ok(false) without leaving orphaned instructions.
+        let (statements, guard): (&[Statement], Option<&Expression>) = match function.statements.as_slice() {
+            [Statement::If { condition, then_body, else_body }] if else_body.is_empty() => (then_body.as_slice(), Some(condition)),
+            other => (other, None),
+        };
+        if statements.len() < 2 {
+            return Ok(false);
+        }
         let mut constants = Vec::new();
-        for statement in &function.statements {
+        for statement in statements {
             let Statement::Store { target, value } = statement else { return Ok(false) };
             if !self.is_scratch_safe_store_target(target) {
                 return Ok(false);
@@ -1786,41 +1797,16 @@ impl Generator {
                 None => return Ok(false),
             }
         }
-        if constants.iter().any(|constant| *constant != constants[0]) {
-            // Two distinct constants: mwcc materializes both up front (the first
-            // into a free register, the second into the scratch), then stores both
-            // — `li r4,v1; li r0,v2; stw r4; stw r0`. Three or more interleave on a
-            // sliding window the scheduler models; defer those.
-            if constants.len() != 2 {
-                // 3+ distinct constants to small-data globals: mwcc materializes them into
-                // r(N+1) descending to r3 and the last into the scratch r0, then stores all
-                // in source order. Member/dereference targets reschedule with their base
-                // register, and a duplicate constant shares one register — both defer.
-                let all_globals = function.statements.iter().all(|statement| {
-                    matches!(statement, Statement::Store { target: Expression::Variable(_), .. })
-                });
-                let count = constants.len();
-                let mut distinct = constants.clone();
-                distinct.sort_unstable();
-                distinct.dedup();
-                if !all_globals || distinct.len() != count || count + 1 > 12 {
-                    return Err(Diagnostic::error("a run of 3+ differing constant stores needs the scheduler (roadmap)"));
-                }
-                let mut prematerialized = Vec::new();
-                for (index, &constant) in constants.iter().enumerate() {
-                    let register = if index + 1 < count { (count + 1 - index) as u8 } else { GENERAL_SCRATCH };
-                    self.load_integer_constant(register, constant as i64);
-                    prematerialized.push((constant, register));
-                }
-                self.prematerialized_constants = prematerialized;
-                for statement in &function.statements {
-                    self.emit_statement(statement)?;
-                }
-                self.prematerialized_constants.clear();
-                self.emit_epilogue_and_return();
-                return Ok(true);
-            }
-            let base_registers: Vec<u8> = function.statements.iter()
+        // Plan the register assignment (no emission yet, so a can't-handle case leaves no orphan).
+        // `None` => the all-same-constant reuse-scratch form; `Some(list)` => materialize each
+        // (constant, register) up front, then store in source order.
+        let all_same = constants.iter().all(|constant| *constant == constants[0]);
+        let plan: Option<Vec<(i32, u8)>> = if all_same {
+            None
+        } else if constants.len() == 2 {
+            // Two distinct constants: the first into a free register, the second into the scratch —
+            // `li r4,v1; li r0,v2; stw r4; stw r0`.
+            let base_registers: Vec<u8> = statements.iter()
                 .filter_map(|statement| match statement {
                     Statement::Store { target, .. } => self.store_base_register(target),
                     _ => None,
@@ -1829,23 +1815,53 @@ impl Generator {
             let Some(first_register) = (3u8..=12).find(|r| *r != GENERAL_SCRATCH && !base_registers.contains(r) && !self.reserved.contains(r)) else {
                 return Err(Diagnostic::error("no free register for the two-constant store run"));
             };
-            self.load_integer_constant(first_register, constants[0] as i64);
-            self.load_integer_constant(GENERAL_SCRATCH, constants[1] as i64);
-            self.prematerialized_constants = vec![(constants[0], first_register), (constants[1], GENERAL_SCRATCH)];
-            for statement in &function.statements {
-                self.emit_statement(statement)?;
+            Some(vec![(constants[0], first_register), (constants[1], GENERAL_SCRATCH)])
+        } else {
+            // 3+ distinct constants to small-data globals: r(N+1) descending to r3 and the last into
+            // the scratch r0, then stores in source order. Member/dereference targets reschedule with
+            // their base register, and a duplicate constant shares one register — both defer.
+            let all_globals = statements.iter().all(|statement| {
+                matches!(statement, Statement::Store { target: Expression::Variable(_), .. })
+            });
+            let count = constants.len();
+            let mut distinct = constants.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            if !all_globals || distinct.len() != count || count + 1 > 12 {
+                return Err(Diagnostic::error("a run of 3+ differing constant stores needs the scheduler (roadmap)"));
             }
-            self.prematerialized_constants.clear();
-            self.emit_epilogue_and_return();
-            return Ok(true);
+            let assignments = constants.iter().enumerate().map(|(index, &constant)| {
+                let register = if index + 1 < count { (count + 1 - index) as u8 } else { GENERAL_SCRATCH };
+                (constant, register)
+            }).collect();
+            Some(assignments)
+        };
+        // Commit. Emit the conditional-return guard first (for the trailing-if form), then the run.
+        if let Some(condition) = guard {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
         }
-        self.reuse_scratch_constant = true;
-        self.scratch_constant = None;
-        for statement in &function.statements {
-            self.emit_statement(statement)?;
+        match plan {
+            Some(assignments) => {
+                for &(constant, register) in &assignments {
+                    self.load_integer_constant(register, constant as i64);
+                }
+                self.prematerialized_constants = assignments;
+                for statement in statements {
+                    self.emit_statement(statement)?;
+                }
+                self.prematerialized_constants.clear();
+            }
+            None => {
+                self.reuse_scratch_constant = true;
+                self.scratch_constant = None;
+                for statement in statements {
+                    self.emit_statement(statement)?;
+                }
+                self.reuse_scratch_constant = false;
+                self.scratch_constant = None;
+            }
         }
-        self.reuse_scratch_constant = false;
-        self.scratch_constant = None;
         self.emit_epilogue_and_return();
         Ok(true)
     }
