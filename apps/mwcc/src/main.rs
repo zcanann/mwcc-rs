@@ -376,25 +376,30 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if size > 8 && (!small_data || has_jump_table) {
             continue;
         }
-        // A non-zero initializer becomes initialized `.sdata`/`.data` bytes;
-        // zero/absent stays in `.sbss`/`.bss`. A struct value/array uses the parser's
-        // pre-serialized field bytes (exact for sub-word/nested/padded fields); a
-        // scalar/array serializes its word-stride values.
-        let initial_bytes = if let Some(bytes) = &global.data_bytes {
-            bytes.iter().any(|&value| value != 0).then(|| bytes.clone())
+        // Materialize the initializer's bytes if there is one (a struct value/array uses the
+        // parser's pre-serialized field bytes — exact for sub-word/nested/padded fields; a
+        // scalar/array serializes its word-stride values). `None` means uninitialized.
+        let materialized: Option<Vec<u8>> = if let Some(bytes) = &global.data_bytes {
+            Some(bytes.clone())
         } else {
-            global
-                .initializer
-                .as_ref()
-                .filter(|values| values.iter().any(|&value| value != 0))
-                .map(|values| serialize(values, serialize_stride, size))
+            global.initializer.as_ref().map(|values| serialize(values, serialize_stride, size))
         };
-        // A global that HAD an initializer which serialized to no bytes is an EXPLICIT zero
-        // (`int a = 0;`); one with no initializer at all is uninitialized (`int a;`). Both go
-        // to `.sbss`/`.bss`, but the explicit-zeros lay out in declaration order ahead of the
-        // reversed uninitialized run.
-        let had_initializer = global.initializer.is_some() || global.data_bytes.is_some();
-        let is_explicit_zero = initial_bytes.is_none() && had_initializer;
+        // Section routing for a writable global:
+        //   * a NON-zero initializer is always initialized data (`.sdata`/`.data`);
+        //   * an all-zero ARRAY initializer stays MATERIALIZED zero bytes in `.sdata`/`.data` — mwcc
+        //     does NOT coalesce a zeroed array into `.sbss`/`.bss` (`int a[2]={0,0};` -> `.sdata`,
+        //     `int a[3]={0,0,0};` -> `.data`), regardless of size;
+        //   * an all-zero SCALAR initializer coalesces to `.sbss` with no file bytes — an EXPLICIT
+        //     zero, laid out in declaration order ahead of the reversed uninitialized run
+        //     (`int a=0;`, `double d=0;`);
+        //   * no initializer at all is uninitialized (`.sbss`/`.bss`).
+        let is_array = global.array_length.is_some();
+        let (initial_bytes, is_explicit_zero) = match materialized {
+            Some(bytes) if bytes.iter().any(|&value| value != 0) => (Some(bytes), false),
+            Some(bytes) if is_array => (Some(bytes), false),
+            Some(_) => (None, true),
+            None => (None, false),
+        };
         defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
             name: global.name.clone(),
             size,
