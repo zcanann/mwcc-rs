@@ -1157,6 +1157,10 @@ impl Generator {
             if self.try_callee_saved_call_sequence(function)? {
                 return Ok(());
             }
+            // `g(x); return x OP y;` — two params both live across one call, combined in the return.
+            if self.try_callee_saved_param_pair_combine(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -2561,6 +2565,9 @@ impl Generator {
         // Low-latency ops mwcc issues as a single register op combining the saved parameter (r31)
         // and the call result (r3). The commutative ops (`+ | & ^`) use `OP r3,r31,r3` on either
         // source side; the non-commutative `-` picks its `subf` operands by which side the call is on.
+        // `*` also combines to a single `mullw r3,r31,r3`, but mwcc issues it BEFORE the LR reload
+        // (overlapping the multiply latency with the load) rather than after — a latency-aware order
+        // the shared LR-reload hoist does not model, so it stays deferred for now.
         if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
             return Ok(false);
         }
@@ -2654,6 +2661,81 @@ impl Generator {
         self.emit_call(name0, args0, None, false)?;
         // Second call: the second parameter now lives in r31.
         self.emit_call(name1, args1, None, false)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// `g(x); return x OP y;` — TWO parameters both live across a single call (the first is passed to
+    /// it, the second is only used in the return), combined by a commutative low-latency op. mwcc
+    /// preserves BOTH in callee-saved registers — the last parameter in r31, the first in r30 —
+    /// saving them interleaved up front (`stw r31; mr r31,y; stw r30; mr r30,x`); the call finds the
+    /// first parameter still in its incoming register (no move), and the return combines from the
+    /// saved registers (`add r3,r30,r31`). The passed argument is the FIRST parameter, so no argument
+    /// move precedes the call (passing the second — which needs `mr r3,r31` — is a follow-up).
+    fn try_callee_saved_param_pair_combine(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        if function.parameters.len() != 2 {
+            return Ok(false);
+        }
+        let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        // The call passes exactly the FIRST parameter (still in its incoming register at the call).
+        if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(argument) if argument == &function.parameters[0].name) {
+            return Ok(false);
+        }
+        // The return is `p OP q` reading both parameters, with a commutative low-latency op (the
+        // operand order follows the source side, which `evaluate_tail` reproduces).
+        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+            return Ok(false);
+        }
+        let is_param = |expression: &Expression, index: usize| matches!(expression, Expression::Variable(name) if name == &function.parameters[index].name);
+        if !((is_param(left, 0) && is_param(right, 1)) || (is_param(left, 1) && is_param(right, 0))) {
+            return Ok(false);
+        }
+        // Both parameters general-class; keep them in incoming (parameter) order for the save loop.
+        let mut incoming = Vec::new();
+        for parameter in &function.parameters {
+            match self.locations.get(&parameter.name) {
+                Some(location) if location.class == ValueClass::General => incoming.push((parameter.name.clone(), location.register)),
+                _ => return Ok(false),
+            }
+        }
+        // Prologue: a 16-byte frame saving the link register and r31 + r30.
+        let frame_size = 16i16;
+        self.non_leaf = true;
+        self.frame_size = frame_size;
+        self.callee_saved = vec![31, 30];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
+        // Save each parameter — the LAST to r31 (top of the frame), the first to r30 — interleaving
+        // the store with the move, as mwcc emits.
+        for (rank, (_, incoming_register)) in incoming.iter().rev().enumerate() {
+            let register = 31 - rank as u8;
+            let offset = frame_size - 4 * (rank as i16 + 1);
+            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
+            self.output.instructions.push(Instruction::Or { a: register, s: *incoming_register, b: *incoming_register });
+        }
+        // The call finds the first parameter still in its incoming register (no move).
+        self.emit_call(name, arguments, None, false)?;
+        // Afterward both parameters live only in their callee-saved registers.
+        for (rank, (parameter_name, _)) in incoming.iter().rev().enumerate() {
+            let register = 31 - rank as u8;
+            if let Some(location) = self.locations.get_mut(parameter_name) {
+                location.register = register;
+            }
+        }
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
         self.emit_epilogue_and_return();
         Ok(true)
     }
