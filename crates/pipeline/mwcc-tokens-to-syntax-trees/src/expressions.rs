@@ -168,6 +168,11 @@ impl Parser {
         if *self.peek() == Token::Star {
             self.advance();
             let pointer = self.factor()?;
+            // `*&x` cancels to `x` — the dereference of an address-of is the operand itself (the C
+            // identity). So `**&p` is `*p` and `*&*p = v` is `*p = v`, as mwcc emits.
+            if let Expression::AddressOf { operand } = pointer {
+                return Ok(*operand);
+            }
             return Ok(Expression::Dereference { pointer: Box::new(pointer) });
         }
         // prefix address-of: `&lvalue`
