@@ -1491,6 +1491,18 @@ impl Parser {
                     } else if self.eat_keyword(Token::Equals) {
                         // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
                         initializer = Some(self.parse_constant_initializer(return_type)?);
+                    } else if *self.peek() == Token::Colon {
+                        // A MWERKS absolute-placement declaration `T name[dims] : <address>;`
+                        // binds the name to a FIXED address (memory-mapped hardware registers —
+                        // dolphin/hw_regs.h's `volatile u16 __VIRegs[59] : 0xCC002000;`). mwcc
+                        // emits NO symbol or data for it (references resolve to the absolute
+                        // address). We don't model those references yet, so skip the declaration
+                        // entirely rather than emit it as a `.bss` object (a whole-object DIFF for
+                        // every dolphin.h-including TU); a reference to the name then defers.
+                        self.advance();
+                        self.parse_integer_constant()?; // the absolute address
+                        self.expect(Token::Semicolon)?;
+                        return Ok(());
                     }
                     let array_length = if dimensions.is_empty() {
                         None
