@@ -1170,6 +1170,10 @@ impl Generator {
             if self.try_callee_saved_param_pair_combine(function)? {
                 return Ok(());
             }
+            // `return f() OP g();` — two call results combined in the return.
+            if self.try_callee_saved_two_call_combine(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -2670,6 +2674,53 @@ impl Generator {
         self.emit_call(name0, args0, None, false)?;
         // Second call: the second parameter now lives in r31.
         self.emit_call(name1, args1, None, false)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// `return f() - g();` — two argument-free calls whose results are subtracted in the return. mwcc
+    /// runs the first call, saves its result in r31 (`mr r31,r3`, live across the second call), runs
+    /// the second call (its result in r3), reloads LR, then `subf r3,r3,r31` (= r31 - r3 = f() - g()).
+    /// Only `-` for now: a COMMUTATIVE op evaluates its operands right-first in mwcc, reordering the
+    /// symbol table, which the left-first `symbol_order` does not reproduce (a `referenced_names`
+    /// change — deferred). Argument-bearing calls are a follow-up.
+    fn try_callee_saved_two_call_combine(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() || !function.statements.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // Only `-` for now. A commutative `+`/`|`/… evaluates its operands RIGHT-first in mwcc (so the
+        // symbol/relocation order is right-then-left), which our left-first `symbol_order` does not
+        // reproduce — that needs a `referenced_names` change and defers. `-` is natural left-then-right.
+        let Some(Expression::Binary { operator: BinaryOperator::Subtract, left, right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        // Both operands are argument-free calls (an argument would interleave its materialization with
+        // the saves on a schedule not modeled here).
+        let (Expression::Call { name: first_name, arguments: first_arguments }, Expression::Call { name: second_name, arguments: second_arguments }) = (left.as_ref(), right.as_ref()) else {
+            return Ok(false);
+        };
+        if !first_arguments.is_empty() || !second_arguments.is_empty() {
+            return Ok(false);
+        }
+        // Prologue: a 16-byte frame saving the link register and r31.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![31];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        // First call; its result is saved in r31 across the second call.
+        self.emit_call(first_name, first_arguments, None, false)?;
+        self.output.instructions.push(Instruction::Or { a: 31, s: 3, b: 3 });
+        // Second call; its result lands in r3.
+        self.emit_call(second_name, second_arguments, None, false)?;
+        // `subf d,a,b` = `b - a`; first result in r31, second in r3, so `subf r3,r3,r31` = r31 - r3 =
+        // first - second (`f() - g()`).
+        self.output.instructions.push(Instruction::SubtractFrom { d: 3, a: 3, b: 31 });
         self.emit_epilogue_and_return();
         Ok(true)
     }
