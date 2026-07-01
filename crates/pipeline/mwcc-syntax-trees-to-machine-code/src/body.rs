@@ -154,62 +154,6 @@ fn remove_dead_locals(function: &Function) -> Option<Function> {
     Some(Function { locals: kept, ..function.clone() })
 }
 
-/// A body that continued past its early-return guards parses them into the ordered
-/// statement list as `If { then_body: [Return(Some(v))] }` entries. When every such
-/// leading guard reads only names the remaining statements never assign (and no local,
-/// whose tracked value the guard would need substituted), the guard reads the same
-/// pristine registers whether emitted before or after the (virtual, value-tracked)
-/// reassignments — mwcc compiles both source orders identically — so it moves back into
-/// `guards` for the trailing-guard machinery. The rest must be pure reassignments (the
-/// value-tracking shape); any other statement keeps the ordered form (which defers).
-fn hoist_order_independent_leading_guards(function: &Function) -> Option<Function> {
-    if !matches!(function.statements.first(), Some(Statement::If { .. })) {
-        return None;
-    }
-    let mut hoisted: Vec<GuardedReturn> = Vec::new();
-    let mut rest: Vec<Statement> = Vec::new();
-    let mut in_prefix = true;
-    for statement in &function.statements {
-        if in_prefix {
-            if let Statement::If { condition, then_body, else_body } = statement {
-                if else_body.is_empty() {
-                    if let [Statement::Return(Some(value))] = then_body.as_slice() {
-                        hoisted.push(GuardedReturn { condition: condition.clone(), value: value.clone() });
-                        continue;
-                    }
-                }
-            }
-            in_prefix = false;
-        }
-        rest.push(statement.clone());
-    }
-    if hoisted.is_empty() || !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
-        return None;
-    }
-    let written: Vec<&str> = rest
-        .iter()
-        .filter_map(|statement| match statement {
-            Statement::Assign { name, .. } => Some(name.as_str()),
-            _ => None,
-        })
-        .chain(function.locals.iter().map(|local| local.name.as_str()))
-        .collect();
-    let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
-    if hoisted.iter().any(|guard| reads_written(&guard.condition) || reads_written(&guard.value)) {
-        return None;
-    }
-    // Only a CONSTANT guard value folds identically in both orders (`cmpwi; li r3,V;
-    // bnelr; <rest>`). A register-valued guard keeps a real forward branch in the
-    // ordered source (`cmpwi; beq REST; mr r3,c; blr; REST: …`) where the flat source
-    // folds inverted (`add; beqlr; mr`) — hoisting would ship the wrong form.
-    if hoisted.iter().any(|guard| constant_value(&guard.value).is_none()) {
-        return None;
-    }
-    let mut guards = hoisted;
-    guards.extend(function.guards.iter().cloned());
-    Some(Function { statements: rest, guards, ..function.clone() })
-}
-
 /// Fold single-assignment, return-only locals (whose initializers make no call) into
 /// the return expression, dropping them — so `int z = x + 1; g(); return z;` becomes
 /// the equivalent `g(); return x + 1;`, which the parameter-preservation path compiles.
@@ -789,6 +733,136 @@ impl Generator {
     }
 
     /// Emit the whole function body, including its `blr`(s).
+    /// A body that continued past its early-return guards parses them into the ordered
+    /// statement list as `If { then_body: [Return(Some(v))] }` entries. When every such
+    /// leading guard reads only names the remaining statements never assign (and no local,
+    /// whose tracked value the guard would need substituted), the guard reads the same
+    /// pristine registers whether emitted before or after the (virtual, value-tracked)
+    /// reassignments — so it moves back into `guards` for the trailing-guard machinery.
+    /// Only shapes where mwcc compiles both orders IDENTICALLY hoist: the guard value must
+    /// be a CONSTANT (a register value branches in the ordered source but folds inverted in
+    /// the flat one) and the tail must not read the result register's parameter (the fold's
+    /// `li r3,V` clobbers it — mwcc branches in the ordered source, folds through a temp in
+    /// the flat one). The rest must be pure reassignments (the value-tracking shape).
+    fn hoist_order_independent_leading_guards(&self, function: &Function) -> Option<Function> {
+        if !matches!(function.statements.first(), Some(Statement::If { .. })) {
+            return None;
+        }
+        let mut hoisted: Vec<GuardedReturn> = Vec::new();
+        let mut rest: Vec<Statement> = Vec::new();
+        let mut in_prefix = true;
+        for statement in &function.statements {
+            if in_prefix {
+                if let Statement::If { condition, then_body, else_body } = statement {
+                    if else_body.is_empty() {
+                        if let [Statement::Return(Some(value))] = then_body.as_slice() {
+                            hoisted.push(GuardedReturn { condition: condition.clone(), value: value.clone() });
+                            continue;
+                        }
+                    }
+                }
+                in_prefix = false;
+            }
+            rest.push(statement.clone());
+        }
+        if hoisted.is_empty() || !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+            return None;
+        }
+        let written: Vec<&str> = rest
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Assign { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .chain(function.locals.iter().map(|local| local.name.as_str()))
+            .collect();
+        let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
+        if hoisted.iter().any(|guard| reads_written(&guard.condition) || reads_written(&guard.value)) {
+            return None;
+        }
+        if hoisted.iter().any(|guard| constant_value(&guard.value).is_none()) {
+            return None;
+        }
+        // The tail (any reassigned value, or the return expression) must not read the
+        // parameter living in the result register — the fold clobbers it. Such bodies
+        // stay ordered for the branch-form handler.
+        if let Some(occupant) = self.locations.iter().find_map(|(name, location)| {
+            (location.register == mwcc_target::Eabi::general_result().number && location.class == ValueClass::General)
+                .then_some(name.as_str())
+        }) {
+            let tail_reads_occupant = rest.iter().any(|statement| match statement {
+                Statement::Assign { value, .. } => expression_reads_name(value, occupant),
+                _ => false,
+            }) || function.return_expression.as_ref().is_some_and(|ret| expression_reads_name(ret, occupant));
+            if tail_reads_occupant {
+                return None;
+            }
+        }
+        let mut guards = hoisted;
+        guards.extend(function.guards.iter().cloned());
+        Some(Function { statements: rest, guards, ..function.clone() })
+    }
+
+    /// The ordered early-return BRANCH form: a single leading `if (c) return v;` whose body
+    /// continues with pure reassignments. Where the constant fold does not apply (a register
+    /// guard value, or a tail still reading the result register's parameter), mwcc emits a
+    /// real forward branch — `<condition>; b<false> CONT; <value into r3>; blr; CONT: <tail>`
+    /// (`if (a) return c; b = b + c; return b;` → `cmpwi; beq +8; mr r3,r5; blr; add; blr`).
+    /// The guard must read only names the rest never assigns (a guard reading an assigned
+    /// name joins through r0 instead — not modeled). The continuation is delegated to value
+    /// tracking; a continuation it cannot compile defers the whole body (the guard block is
+    /// already emitted, so a bare `Ok(false)` would leave partial output).
+    fn try_ordered_early_return_branch(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function.return_type == Type::Void || function.return_expression.is_none() {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }, rest @ ..] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        let [Statement::Return(Some(value))] = then_body.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() || rest.is_empty() || !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+            return Ok(false);
+        }
+        if function_makes_call(function) {
+            return Ok(false);
+        }
+        let written: Vec<&str> = rest
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Assign { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .chain(function.locals.iter().map(|local| local.name.as_str()))
+            .collect();
+        let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
+        if reads_written(condition) || reads_written(value) {
+            return Ok(false);
+        }
+
+        // The guard block: branch past it when the condition is false, else the value and
+        // return. emit_condition_test yields the skip-when-false encoding directly.
+        let result = mwcc_target::Eabi::general_result().number;
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.evaluate_tail(value, function.return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        let continuation = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = continuation;
+        }
+
+        // The continuation is a pure value-tracking body; anything it cannot compile must
+        // DEFER (the guard block is already in the output).
+        let reduced = Function { statements: rest.to_vec(), ..function.clone() };
+        if !self.try_value_tracking(&reduced)? {
+            return Err(Diagnostic::error("an early-return continuation outside the value-tracking shape is not supported yet (roadmap)"));
+        }
+        Ok(true)
+    }
+
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
         // emits nothing for them — then recompile the cleaned function.
@@ -799,8 +873,11 @@ impl Generator {
         // statement list (`if (c) return v; b = b + 1; return b;` → statements [If, Assign]).
         // When the guard reads only names the rest never writes, guard-first and guard-last
         // emission read the same registers — mwcc compiles both orders identically — so hoist
-        // it back into `guards` and let the trailing-guard machinery emit it.
-        if let Some(hoisted) = hoist_order_independent_leading_guards(function) {
+        // it back into `guards` and let the trailing-guard machinery emit it. A tail that
+        // still reads the result register's parameter does NOT fold (mwcc branches in the
+        // ordered source but folds through a temp in the flat one — order matters), so it
+        // stays ordered for try_ordered_early_return_branch.
+        if let Some(hoisted) = self.hoist_order_independent_leading_guards(function) {
             return self.evaluate_body(&hoisted);
         }
         // Returning a struct BY VALUE (`struct S f(...) { return s; }`) uses the struct-return
@@ -973,6 +1050,11 @@ impl Generator {
         // Value-tracked locals (reassignment, multiple locals) are inlined into the
         // return expression and compiled there; this takes over the whole body when
         // it applies, leaving the straight-line paths below byte-identical.
+        // A single ordered early-return guard over a value-tracked continuation, where the
+        // constant fold does not apply — the real forward-branch form.
+        if self.try_ordered_early_return_branch(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }

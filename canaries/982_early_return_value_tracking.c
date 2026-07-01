@@ -13,6 +13,12 @@ int compare_guard(int a, int b)      { if (a > 3) return -1; b = b + 4; return b
 // early-return branch there. Deferred until early-return branch codegen.
 
 // A REGISTER-valued guard does NOT fold order-independently (mwcc keeps a real forward
-// branch in the ordered source, an inverted select in the flat one) -- both defer; only
-// the assignment-free flat form is byte-exact today.
+// branch in the ordered source, an inverted select in the flat one).
 int flat_register_guard(int a, int b, int c) { if (a) return c; return b + c; }
+
+// The ordered early-return BRANCH form: where the fold does not apply (a register guard
+// value, or a tail still reading the result register's parameter), the ORDERED source
+// emits a real forward branch -- `cmpwi; beq CONT; mr r3,c; blr; CONT: add r3,r4,r5` --
+// while the flat order folds through a temp (still deferred).
+int branch_register_value(int a, int b, int c) { if (a) return c; b = b + c; return b; }
+int branch_reads_r3_tail(int a, int b)         { if (a > 3) return -1; b = b - a; return b; }
