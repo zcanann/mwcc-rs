@@ -841,12 +841,104 @@ impl Generator {
         let [Statement::Return(Some(value))] = then_body.as_slice() else {
             return Ok(false);
         };
-        // A single reassignment is the verified continuation shape; longer tails are
-        // unverified against mwcc (they may fold or reschedule differently) — defer.
-        if !else_body.is_empty() || rest.len() != 1 || !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+        if !else_body.is_empty() || rest.len() != 1 || function_makes_call(function) {
             return Ok(false);
         }
-        if function_makes_call(function) {
+
+        // A store continuation: `if (a) return -1; *p = 5; return 0;`. A CONSTANT store
+        // value materializes into r0 with the return value scheduled BETWEEN the `li` and
+        // the store — `li r0,5; li r3,0; stw r0,0(r4); blr` (or `mr r3,x` for a register
+        // return). A register-valued store needs no materialization and stays with the
+        // sequential path (store, then the return move — verified byte-exact there); two
+        // or more stores interleave through the batch scheduler and defer.
+        if let [Statement::Store { target, value: stored }] = rest {
+            if function.guards.is_empty() && function.locals.is_empty() {
+                let Some(stored_constant) = constant_value(stored).and_then(|constant| i16::try_from(constant).ok()) else {
+                    return Ok(false);
+                };
+                let (pointer_name, byte_offset) = match target {
+                    Expression::Dereference { pointer } => {
+                        let Expression::Variable(name) = pointer.as_ref() else { return Ok(false) };
+                        (name, 0i64)
+                    }
+                    Expression::Index { base, index } => {
+                        let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
+                        let Some(constant) = constant_value(index) else { return Ok(false) };
+                        let pointee = self.pointee_of(base)?;
+                        (name, constant * pointee.size() as i64)
+                    }
+                    _ => return Ok(false),
+                };
+                if !function.parameters.iter().any(|parameter| &parameter.name == pointer_name) {
+                    return Ok(false);
+                }
+                let Some(pointer_register) = self.lookup_general(pointer_name) else {
+                    return Ok(false);
+                };
+                let pointee = match target {
+                    Expression::Dereference { pointer } => self.pointee_of(pointer)?,
+                    Expression::Index { base, .. } => self.pointee_of(base)?,
+                    _ => return Ok(false),
+                };
+                if matches!(pointee, Pointee::Float | Pointee::Double) {
+                    return Ok(false);
+                }
+                let Ok(offset) = i16::try_from(byte_offset) else {
+                    return Ok(false);
+                };
+                // The return value: a constant `li`, or a General register `mr`.
+                enum ReturnValue {
+                    Constant(i16),
+                    Register(u8),
+                }
+                let return_value = match function.return_expression.as_ref() {
+                    Some(expression) => {
+                        if let Some(constant) = constant_value(expression).and_then(|constant| i16::try_from(constant).ok()) {
+                            ReturnValue::Constant(constant)
+                        } else if let Expression::Variable(name) = expression {
+                            match self.lookup_general(name) {
+                                Some(register) => ReturnValue::Register(register),
+                                None => return Ok(false),
+                            }
+                        } else {
+                            return Ok(false);
+                        }
+                    }
+                    None => return Ok(false),
+                };
+                if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+                    return Ok(false);
+                }
+
+                let result = mwcc_target::Eabi::general_result().number;
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.evaluate_tail(value, function.return_type, result)?;
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                let continuation = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = continuation;
+                }
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: 0, immediate: stored_constant });
+                match return_value {
+                    ReturnValue::Constant(constant) => {
+                        self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: constant });
+                    }
+                    ReturnValue::Register(register) => {
+                        self.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
+                    }
+                }
+                self.output.instructions.push(displacement_store(pointee, GENERAL_SCRATCH, pointer_register, offset));
+                self.emit_epilogue_and_return();
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+
+        // A single reassignment is the verified continuation shape; longer tails are
+        // unverified against mwcc (they may fold or reschedule differently) — defer.
+        if !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
             return Ok(false);
         }
         let written: Vec<&str> = rest
@@ -1514,6 +1606,31 @@ impl Generator {
         if let [leading @ .., Statement::If { .. }] = function.statements.as_slice() {
             if !leading.is_empty() && leading.iter().all(|statement| matches!(statement, Statement::Store { .. })) {
                 return Err(Diagnostic::error("a leading store before a trailing if needs the cross-statement scheduler (roadmap)"));
+            }
+        }
+
+        // A leading early-return if whose continuation MATERIALIZES store values (a
+        // constant/computed value, or several stores) schedules the return value between
+        // the materialization and the store (`li r0,5; li r3,0; stw r0`), or interleaves
+        // a store batch — the sequential emission below would emit the store first, a
+        // byte-DIFF. The verified single-constant-store form is handled by
+        // try_ordered_early_return_branch; everything else here defers. (A store of a
+        // plain register value needs no materialization and stays — verified.)
+        if let [Statement::If { then_body, .. }, continuation @ ..] = function.statements.as_slice() {
+            if matches!(then_body.as_slice(), [Statement::Return(_)]) {
+                let store_count = continuation
+                    .iter()
+                    .filter(|statement| matches!(statement, Statement::Store { .. }))
+                    .count();
+                let materializing_store = continuation.iter().any(|statement| {
+                    matches!(statement, Statement::Store { value, .. }
+                        if !matches!(value, Expression::Variable(name) if self.locations.contains_key(name.as_str())))
+                });
+                if store_count >= 2 || materializing_store {
+                    return Err(Diagnostic::error(
+                        "an early-return continuation that materializes store values needs the store/return scheduler (roadmap)",
+                    ));
+                }
             }
         }
 
