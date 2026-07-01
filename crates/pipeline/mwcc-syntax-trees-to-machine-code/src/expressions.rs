@@ -2481,6 +2481,13 @@ impl Generator {
                 if self.locations.contains_key(name.as_str()) {
                     return self.float_register_of_leaf(value);
                 }
+                // An INT (non-float) global stored to a float target — `gf = gi` — needs an
+                // int->float conversion of the loaded value; evaluate_float would mis-load it
+                // as a float (a miscompile). Defer until that conversion is wired (its schedule
+                // differs from the leaf/call cases).
+                if matches!(self.globals.get(name.as_str()), Some(global_type) if !matches!(global_type, Type::Float | Type::Double)) {
+                    return Err(Diagnostic::error("an integer global stored to a float target needs an int->float conversion (roadmap)"));
+                }
             }
             // A float call result lands in the float return register (f1); store from there
             // directly rather than moving it to f0 first (mwcc emits no `fmr f0,f1`).

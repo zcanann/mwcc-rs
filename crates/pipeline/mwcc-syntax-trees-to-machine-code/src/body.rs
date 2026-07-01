@@ -4022,6 +4022,15 @@ impl Generator {
                         matches!(base.as_ref(), Expression::Variable(_)) && !self.is_float_value(expression)
                     }
                     Expression::Member { member_type, .. } => !matches!(member_type, Type::Float | Type::Double),
+                    // A plain file-scope global of INT (non-float) type read in a float context —
+                    // `double f(){ return gi; }` — is an integer memory load too. Without this,
+                    // evaluate_float treats it as a float global and loads it (`lwz`) into the GPR
+                    // whose number matches the float destination: f1 -> r1, CLOBBERING the stack
+                    // pointer. A local/param is not a memory load (excluded via `locations`).
+                    Expression::Variable(name) => {
+                        !self.locations.contains_key(name.as_str())
+                            && matches!(self.globals.get(name.as_str()), Some(global_type) if !matches!(global_type, Type::Float | Type::Double))
+                    }
                     _ => false,
                 };
                 if integer_memory_load {
