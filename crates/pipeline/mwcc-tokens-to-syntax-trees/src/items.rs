@@ -1337,8 +1337,17 @@ impl Parser {
                         _ => {}
                     }
                 }
+                // Optional initializer: `= 0` (a NULL pointer — an all-null address initializer,
+                // which the object writer lands in `.sbss` as an EXPLICIT zero) or `= func` / `= &func`
+                // (an ADDR32 relocation to that symbol in `.sdata`). Both flow through the same
+                // address-initializer path the data-pointer globals use.
+                let address_initializer = if self.eat_keyword(Token::Equals) {
+                    Some(self.parse_address_initializer()?)
+                } else {
+                    None
+                };
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None });
+                globals.push(GlobalDeclaration { declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer, data_bytes: None });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
