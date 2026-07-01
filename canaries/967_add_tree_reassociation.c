@@ -9,6 +9,7 @@ int sum4(int a, int b, int c, int d)               { return a + b + c + d; }   /
 int reorder1(int a, int b, int c, int d)           { return b + a + c + d; }   // v1 != destination
 int reorder2(int a, int b, int c, int d)           { return c + d + a + b; }
 int reorder3(int a, int b, int c, int d)           { return d + c + b + a; }
+int acbd(int a, int b, int c, int d)               { return a + c + b + d; }   // mr target = min(R2,R3)
 int sum5(int a, int b, int c, int d, int e)        { return a + b + c + d + e; }
 int shuffle5(int a, int b, int c, int d, int e)    { return b + c + a + d + e; }
 int sum6(int a, int b, int c, int d, int e, int f) { return a + b + c + d + e + f; }
