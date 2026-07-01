@@ -1381,6 +1381,35 @@ impl Generator {
                         continue;
                     }
                 }
+                // A non-trailing multi-store if-BLOCK that is the FIRST statement of a void body and
+                // is followed by exactly one trailing store: `cmpwi; beq cont; <then run>; cont:
+                // <trailing store>; blr`. The if-first restriction avoids the leading-store-before-if
+                // scheduler; the single trailing store is what the loop emits byte-exactly next. A
+                // register-valued then-run stores sequentially, a constant one materializes batched.
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && function.return_type == Type::Void
+                    && index == 0
+                    && statement_count == 2
+                    && matches!(function.statements.get(1), Some(Statement::Store { .. }))
+                    && then_body.len() >= 2
+                {
+                    let then_plan = self.constant_store_run_plan(then_body);
+                    if then_plan.is_some() || self.store_run_arm_registers(then_body) {
+                        let (options, condition_bit) = self.emit_condition_test(condition)?;
+                        let branch_index = self.output.instructions.len();
+                        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                        match then_plan {
+                            Some(plan) => self.emit_constant_store_run(then_body, plan)?,
+                            None => for statement in then_body { self.emit_statement(statement)?; },
+                        }
+                        let label = self.output.instructions.len();
+                        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                            *target = label;
+                        }
+                        continue;
+                    }
+                }
             }
             self.emit_statement(statement)?;
         }
