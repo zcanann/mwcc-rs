@@ -111,7 +111,30 @@ impl Generator {
         // Emit the comparison tree (pre-order), collecting the branches to patch.
         let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
         let mut patches: Vec<(usize, Target)> = Vec::new();
-        self.lower_switch_range(register, &values, 0, values.len() - 1, None, None, &mut patches);
+        if values.len() == 2 && values[1] == values[0] + 2 {
+            // Two cases separated by a single hole (gap of exactly 2): mwcc pivots on the hole
+            // value at the range centre, sending it to the default, then handles each case as an
+            // adjacent leaf: `cmpwi hole; beq default; bge up; cmpwi lo; bge case_lo; b default;
+            // up: cmpwi hi+1; bge default; b case_hi`. (The median-case tree would instead pivot
+            // on the higher case value — a byte-DIFF.)
+            let lo = values[0];
+            self.emit_switch_compare(register, lo + 1);
+            self.emit_switch_conditional(&mut patches, BEQ, Target::Default);
+            let bge_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options: BGE.0, condition_bit: BGE.1, target: 0 });
+            self.emit_switch_compare(register, lo);
+            self.emit_switch_conditional(&mut patches, BGE, Target::Body(0));
+            self.emit_switch_branch(&mut patches, Target::Default);
+            let upper = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bge_index] {
+                *target = upper;
+            }
+            self.emit_switch_compare(register, lo + 3);
+            self.emit_switch_conditional(&mut patches, BGE, Target::Default);
+            self.emit_switch_branch(&mut patches, Target::Body(1));
+        } else {
+            self.lower_switch_range(register, &values, 0, values.len() - 1, None, None, &mut patches);
+        }
 
         // Case bodies in sorted value order, then the default — each ends in `blr`.
         let mut body_start = vec![0usize; sorted.len()];
