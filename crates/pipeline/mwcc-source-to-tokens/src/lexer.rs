@@ -133,8 +133,9 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             tokens.push(Token::IntegerLiteral(value));
             continue;
         }
-        // decimal integer or float literal
-        if character.is_ascii_digit() {
+        // decimal integer or float literal (a leading-dot float `.5` counts:
+        // C allows the omitted integer part).
+        if character.is_ascii_digit() || (character == '.' && peek(bytes, position + 1).is_some_and(|byte| byte.is_ascii_digit())) {
             let start = position;
             let mut is_float = false;
             while position < bytes.len() {
