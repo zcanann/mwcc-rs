@@ -1826,6 +1826,12 @@ impl Generator {
         if self.try_leaf_constant_fill(function)? {
             return Ok(());
         }
+        // Leaf multi-store bodies of COMPUTED int values through the measured
+        // models — the DAG emitter (linearize + assign_registers). Runs after
+        // the proven store-fill arms, catching what they defer.
+        if self.try_dag_store_fill(function)? {
+            return Ok(());
+        }
         // Multiple stores where a value loads a float/double global reschedule the loads
         // (mwcc loads the global once and reuses it across the stores); not modeled, so
         // DEFER rather than emit a redundant load per store. A single such store (`gf =

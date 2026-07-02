@@ -64,6 +64,9 @@ pub struct MachineFunction {
     /// function's unwind `@N` entries. Measured per construct — a non-leaf `if` adds
     /// 2, a `do … while` loop adds 6.
     pub anonymous_label_bump: u32,
+    /// Emitted by the DAG emitter: the order IS the schedule — the legacy
+    /// post-allocation scheduling passes must not touch it.
+    pub pre_scheduled: bool,
     /// Frame metadata for the unwind tables; `None` for a leaf with no frame.
     pub frame: Option<FrameInfo>,
     /// A dense `switch`'s jump table; `None` unless the function dispatches through
@@ -97,6 +100,7 @@ impl MachineFunction {
             has_conversion: false,
             has_float_branch: false,
             anonymous_label_bump: 0,
+            pre_scheduled: false,
             frame: None,
             jump_table: None,
             symbol_order: Vec::new(),

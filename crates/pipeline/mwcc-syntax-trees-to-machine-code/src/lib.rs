@@ -19,6 +19,7 @@ mod arithmetic;
 mod division;
 mod comparisons;
 mod control_flow;
+mod dag_emitter;
 mod narrow;
 mod casts;
 mod placement;
@@ -226,7 +227,11 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
 /// scheduler's identity policy this is a no-op; it becomes active as the policy
 /// is tuned against the oracle.
 fn schedule_instructions(generator: &mut Generator) {
-    let permutation = mwcc_vreg::schedule(&mut generator.output.instructions);
+    let permutation = if generator.output.pre_scheduled {
+        (0..generator.output.instructions.len()).collect()
+    } else {
+        mwcc_vreg::schedule(&mut generator.output.instructions)
+    };
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
