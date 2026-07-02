@@ -19,11 +19,21 @@
 //! This module is UNWIRED: it exists to be A/B'd against the dataset before
 //! any emitter consumes it.
 
+/// The operation class, for kind-ranked priority components.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpKind {
+    Alu,
+    Load,
+    Store,
+}
+
 /// One abstract operation in a block's dependence DAG.
 #[derive(Debug, Clone)]
 pub struct DagNode {
     /// For test assertions and diagnostics.
     pub label: &'static str,
+    /// The operation class.
+    pub kind: OpKind,
     /// Issue-to-result steps (see the module table).
     pub latency: u32,
     /// Value ids this op reads (RAW edges come from these).
@@ -38,7 +48,15 @@ pub struct DagNode {
 
 impl DagNode {
     pub fn new(label: &'static str, latency: u32) -> DagNode {
-        DagNode { label, latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new() }
+        let kind = match latency {
+            2 => OpKind::Load,
+            _ => OpKind::Alu,
+        };
+        DagNode { label, kind, latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new() }
+    }
+    pub fn kind(mut self, kind: OpKind) -> DagNode {
+        self.kind = kind;
+        self
     }
     pub fn reads(mut self, values: &[u32]) -> DagNode {
         self.reads = values.to_vec();
@@ -58,8 +76,40 @@ impl DagNode {
     }
 }
 
-/// Linearize the DAG: the returned indices are the emission order.
+/// A candidate scheduling model: the fitter enumerates these against the
+/// dataset; `linearize` uses the frozen best.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Model {
+    /// Ops issued per step (Gekko dual-issue = 2).
+    pub issue_width: usize,
+    /// Ready requires operand COMPLETION (vs mere issue).
+    pub gate_on_complete: bool,
+    /// LOAD-GATED demotion: ops whose downstream join also waits on a load
+    /// through a different operand sort after un-gated ops.
+    pub gated_last: bool,
+    /// Kind rank in the priority key (lower issues first), by [alu, load, store].
+    pub kind_rank: [u8; 3],
+    /// Weight (critical path) position: true = before kind in the key.
+    pub weight_before_kind: bool,
+}
+
+/// The frozen model (v3): dual-issue, completion-gated, critical-path first.
+pub const FROZEN: Model = Model {
+    issue_width: 2,
+    gate_on_complete: true,
+    gated_last: false,
+    kind_rank: [0, 0, 0],
+    weight_before_kind: true,
+};
+
+/// Linearize the DAG with the frozen model.
 pub fn linearize(nodes: &[DagNode]) -> Vec<usize> {
+    linearize_with(nodes, FROZEN)
+}
+
+/// Linearize the DAG under a candidate model: the returned indices are the
+/// emission order.
+pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
     let count = nodes.len();
     // Dependence edges: RAW (a read of a value written earlier in the list),
     // same-alias-group program order, and the explicit extras.
@@ -89,16 +139,55 @@ pub fn linearize(nodes: &[DagNode]) -> Vec<usize> {
         weight[index] = nodes[index].latency + downstream;
     }
 
+    // LOAD-GATED: reachable joins (2+ reads) that also wait on a load through a
+    // different operand path. Reachability over the dep edges.
+    let mut reaches: Vec<Vec<bool>> = vec![vec![false; count]; count];
+    for from in (0..count).rev() {
+        for later in from + 1..count {
+            if deps[later].contains(&from) {
+                reaches[from][later] = true;
+                for target in 0..count {
+                    if reaches[later][target] {
+                        reaches[from][target] = true;
+                    }
+                }
+            }
+        }
+    }
+    let gated: Vec<bool> = (0..count)
+        .map(|node| {
+            (0..count).any(|join| {
+                deps[join].len() >= 2
+                    && (node == join || reaches[node][join])
+                    && deps[join].iter().any(|&side| {
+                        // Another operand path of the join that carries a load
+                        // NOT through this node.
+                        side != node
+                            && !reaches[node][side]
+                            && ((nodes[side].kind == OpKind::Load)
+                                || (0..count).any(|load| {
+                                    nodes[load].kind == OpKind::Load && load != node && reaches[load][side]
+                                }))
+                    })
+            })
+        })
+        .collect();
+
     let mut order = Vec::with_capacity(count);
     let mut issued_at: Vec<Option<u32>> = vec![None; count];
     let mut time = 0u32;
     while order.len() < count {
-        // Ops whose deps have all ISSUED and whose operands are COMPLETE.
         let mut ready: Vec<usize> = (0..count)
             .filter(|&candidate| issued_at[candidate].is_none())
             .filter(|&candidate| {
                 deps[candidate].iter().all(|&dependency| {
-                    issued_at[dependency].is_some_and(|at| at + nodes[dependency].latency <= time)
+                    issued_at[dependency].is_some_and(|at| {
+                        if model.gate_on_complete {
+                            at + nodes[dependency].latency <= time
+                        } else {
+                            at < time
+                        }
+                    })
                 })
             })
             .collect();
@@ -106,9 +195,22 @@ pub fn linearize(nodes: &[DagNode]) -> Vec<usize> {
             time += 1;
             continue;
         }
-        // Highest critical-path weight first; source order breaks ties.
-        ready.sort_by_key(|&candidate| (std::cmp::Reverse(weight[candidate]), candidate));
-        for &pick in ready.iter().take(2) {
+        let rank = |candidate: usize| -> (u8, u32, u32, usize) {
+            let gate = if model.gated_last && gated[candidate] { 1 } else { 0 };
+            let kind = model.kind_rank[match nodes[candidate].kind {
+                OpKind::Alu => 0,
+                OpKind::Load => 1,
+                OpKind::Store => 2,
+            }] as u32;
+            let inverse_weight = u32::MAX - weight[candidate];
+            if model.weight_before_kind {
+                (gate, inverse_weight, kind, candidate)
+            } else {
+                (gate, kind, inverse_weight, candidate)
+            }
+        };
+        ready.sort_by_key(|&candidate| rank(candidate));
+        for &pick in ready.iter().take(model.issue_width) {
             issued_at[pick] = Some(time);
             order.push(pick);
         }
@@ -130,6 +232,171 @@ mod tests {
 
     fn labels(nodes: &[DagNode]) -> Vec<&'static str> {
         linearize(nodes).into_iter().map(|index| nodes[index].label).collect()
+    }
+
+    /// The dataset as (name, DAG, expected order) — the fitter's ground truth.
+    /// Stores carry their kind so kind-ranked keys can act on them.
+    fn fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<&'static str>)> {
+        use OpKind::Store as St;
+        vec![
+            (
+                "mult_vs_shift",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("slwi_g", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("mulli_h", MUL).reads(&[20]).writes(&[21]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec!["addi_h", "addi_g", "mulli_h", "slwi_g", "stw_g", "stw_h"],
+            ),
+            (
+                "three_deep_vs_shallow",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("slwi_g", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("addi3_g", ALU).reads(&[11]).writes(&[12]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[12]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[20]),
+                ],
+                vec!["addi_g", "addi_h", "slwi_g", "stw_h", "addi3_g", "stw_g"],
+            ),
+            (
+                "divide_chain",
+                vec![
+                    DagNode::new("divw", DIV).reads(&[1, 2]).writes(&[10]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("add", ALU).reads(&[1, 2]).writes(&[20]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[20]),
+                ],
+                vec!["divw", "add", "stw_h", "stw_g"],
+            ),
+            (
+                "mult_in_expr",
+                vec![
+                    DagNode::new("lwz", LOAD).reads(&[1]).writes(&[10]),
+                    DagNode::new("mulli", MUL).reads(&[2]).writes(&[20]),
+                    DagNode::new("add", ALU).reads(&[10, 20]).writes(&[30]),
+                ],
+                vec!["mulli", "lwz", "add"],
+            ),
+            (
+                "load_vs_mult",
+                vec![
+                    DagNode::new("lwz", LOAD).reads(&[1]).writes(&[10]),
+                    DagNode::new("addi5_g", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("mulli_h", MUL).reads(&[20]).writes(&[21]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec!["addi_h", "lwz", "mulli_h", "addi5_g", "stw_g", "stw_h"],
+            ),
+            (
+                "alu_tie_three",
+                vec![
+                    DagNode::new("a1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st1", STORE).kind(St).reads(&[10]),
+                    DagNode::new("a2", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("st2", STORE).kind(St).reads(&[20]),
+                    DagNode::new("a3", ALU).reads(&[3]).writes(&[30]),
+                    DagNode::new("st3", STORE).kind(St).reads(&[30]),
+                ],
+                vec!["a1", "a2", "a3", "st1", "st2", "st3"],
+            ),
+            (
+                "tail_pair",
+                vec![
+                    DagNode::new("srawi", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("lwz_e", LOAD).reads(&[2]).writes(&[11]),
+                    DagNode::new("add", ALU).reads(&[10, 11]).writes(&[12]),
+                    DagNode::new("addi", ALU).reads(&[12]).writes(&[13]),
+                    DagNode::new("stw_eptr", STORE).kind(St).reads(&[13]).alias(1),
+                    DagNode::new("rlwinm", ALU).reads(&[3]).writes(&[20]),
+                    DagNode::new("oris", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("stfd_spill", STORE).kind(St).alias(2),
+                    DagNode::new("stw_slot", STORE).kind(St).reads(&[21]).alias(2),
+                ],
+                vec!["rlwinm", "srawi", "lwz_e", "oris", "stfd_spill", "add", "addi", "stw_slot", "stw_eptr"],
+            ),
+            (
+                "tail_pair_equal3",
+                vec![
+                    DagNode::new("srawi", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("addi", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("stw_eptr", STORE).kind(St).reads(&[11]).alias(1),
+                    DagNode::new("rlwinm", ALU).reads(&[3]).writes(&[20]),
+                    DagNode::new("oris", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("stfd_spill", STORE).kind(St).alias(2),
+                    DagNode::new("stw_slot", STORE).kind(St).reads(&[21]).alias(2),
+                ],
+                // capture: srawi rlwinm stfd addi oris stw_eptr stw_slot
+                vec!["srawi", "rlwinm", "stfd_spill", "addi", "oris", "stw_eptr", "stw_slot"],
+            ),
+        ]
+    }
+
+    /// THE FITTER: enumerate candidate models, report every one that matches
+    /// all fixtures. Run manually: `cargo test -p mwcc-vreg fitter -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "the model-search instrument; run with --nocapture"]
+    fn fitter() {
+        let shapes = fixtures();
+        let mut winners = Vec::new();
+        let mut best: (usize, Option<Model>) = (0, None);
+        for issue_width in [1usize, 2] {
+            for gate_on_complete in [true, false] {
+                for gated_last in [false, true] {
+                    for weight_before_kind in [true, false] {
+                        for kind_rank in [
+                            [0u8, 0, 0],
+                            [0, 1, 1],
+                            [0, 1, 2],
+                            [0, 2, 1],
+                            [1, 0, 2],
+                            [1, 2, 0],
+                            [0, 0, 1],
+                            [1, 0, 0],
+                        ] {
+                            let model = Model { issue_width, gate_on_complete, gated_last, kind_rank, weight_before_kind };
+                            let passed = shapes
+                                .iter()
+                                .filter(|(_, nodes, expected)| {
+                                    let order: Vec<&str> =
+                                        linearize_with(nodes, model).into_iter().map(|index| nodes[index].label).collect();
+                                    order == *expected
+                                })
+                                .count();
+                            if passed == shapes.len() {
+                                winners.push(model);
+                            }
+                            if passed > best.0 {
+                                best = (passed, Some(model));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("fixtures: {}", shapes.len());
+        println!("winners ({}):", winners.len());
+        for model in &winners {
+            println!("  {model:?}");
+        }
+        if winners.is_empty() {
+            println!("best: {}/{} with {:?}", best.0, shapes.len(), best.1);
+            if let Some(model) = best.1 {
+                for (name, nodes, expected) in &shapes {
+                    let order: Vec<&str> =
+                        linearize_with(nodes, model).into_iter().map(|index| nodes[index].label).collect();
+                    if order != *expected {
+                        println!("  FAIL {name}: got {order:?}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
