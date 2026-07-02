@@ -341,6 +341,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         } else {
             jump_table_numbers.push(None);
         }
+        number += function.post_constant_bump;
         if function.frame.is_some() {
             let frame = FrameNumbers {
                 extab: number,

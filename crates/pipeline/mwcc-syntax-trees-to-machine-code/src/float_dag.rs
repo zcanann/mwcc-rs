@@ -40,6 +40,8 @@ enum Tree {
 /// convention: a CONSTANT factor takes the A slot, otherwise source order).
 enum FloatOp {
     Const(u64),
+    /// x reloaded from its frame slot (no relocation).
+    FrameLoad(i16),
     Madd { a: Operand, c: Operand, b: Operand },
     Fnmsub { a: Operand, c: Operand, b: Operand },
     Fmsub { a: Operand, c: Operand, b: Operand },
@@ -158,7 +160,8 @@ impl Generator {
         // the guard conditions and never enter the DAG.
         let mut params: Vec<(u32, u8)> = Vec::new();
         let mut param_ids: Vec<(String, u32)> = Vec::new();
-        for parameter in &function.parameters {
+        let reload_mode = self.float_reload_x.is_some();
+        for (index, parameter) in function.parameters.iter().enumerate() {
             let Some(location) = self.locations.get(&parameter.name) else {
                 return Ok(false);
             };
@@ -166,6 +169,12 @@ impl Generator {
                 Type::Double => {
                     if location.class != ValueClass::Float || location.width != 64 {
                         return Ok(false);
+                    }
+                    if reload_mode && index == 0 {
+                        // x maps to the reload node (value id 9); its f1 is
+                        // NOT a live param in the tail.
+                        param_ids.push((parameter.name.clone(), 9));
+                        continue;
                     }
                     let value = (params.len() + 1) as u32;
                     params.push((value, location.register));
@@ -277,12 +286,23 @@ impl Generator {
         let mut ops: Vec<FloatOp> = Vec::new();
         // Map from each arith Tree's address to its node operand.
         let mut built: Vec<(*const Tree, Operand)> = Vec::new();
+        // The fctiwz composition: x lives in the FRAME — its references
+        // become a reload node (lfd from r1) and f1 frees for the chain.
+        let mut reload_operand: Option<Operand> = None;
+        if let Some(offset) = self.float_reload_x {
+            let index = nodes.len();
+            nodes.push(DagNode::new("lfd_x", LOAD_LATENCY).writes(&[9]));
+            ops.push(FloatOp::FrameLoad(offset));
+            reload_operand = Some(Operand::Node(index));
+            let _ = reload_operand;
+        }
         // The locals' shared nodes, in declaration order (their arith emits
         // ahead of the loads: measured, z's fmul is slot 0).
         let mut local_operands: Vec<Operand> = Vec::new();
         for local_tree in &local_trees {
             let resolve_leaf = |leaf: &Tree| -> Option<Operand> {
                 match leaf {
+                    Tree::Param(9) => reload_operand,
                     Tree::Param(value) => Some(Operand::Param(*value)),
                     Tree::LocalRef(local) => local_operands.get(*local).copied(),
                     _ => None,
@@ -356,6 +376,7 @@ impl Generator {
         for &(arith, _) in &arith_refs {
             let resolve = |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
                 match subtree {
+                    Tree::Param(9) => reload_operand,
                     Tree::Param(value) => Some(Operand::Param(*value)),
                     Tree::LocalRef(local) => local_operands.get(*local).copied(),
                     _ => built
@@ -491,6 +512,9 @@ impl Generator {
             let d = registers[node].expect("checked above");
             match &ops[node] {
                 FloatOp::Const(bits) => self.load_double_constant(d, *bits),
+                FloatOp::FrameLoad(offset) => {
+                    self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 1, offset: *offset })
+                }
                 FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
                     d,
                     a: register_of(*a),
@@ -715,13 +739,40 @@ impl Generator {
     /// the SHARED addi/blr epilogue.
     pub(crate) fn try_punned_guard_float_return(&mut self, function: &Function) -> Compilation<bool> {
         use mwcc_syntax_trees::Statement;
+        // The NESTED inner guard (k_sin): `if (ix < C) { if ((int)x == 0)
+        // return x; }` arrives as one statement — followed by the C89 local
+        // assigns the leading normalizer could not reach past the if. The
+        // flat form arrives as a hoisted guard. Exactly one of the two.
+        let nested = matches!(
+            function.statements.first(),
+            Some(Statement::If { .. }) if function.guards.is_empty()
+        );
+        // Trailing `z = x*x;`-style assigns behind the nested if become
+        // initializers (each target a declared, uninitialized local,
+        // assigned once).
+        let mut trailing_inits: Vec<(String, Expression)> = Vec::new();
+        if nested {
+            for statement in &function.statements[1..] {
+                let Statement::Assign { name, value } = statement else {
+                    return Ok(false);
+                };
+                let declared_uninit = function
+                    .locals
+                    .iter()
+                    .any(|local| &local.name == name && local.initializer.is_none() && local.array_length.is_none());
+                if !declared_uninit || trailing_inits.iter().any(|(seen, _)| seen == name) {
+                    return Ok(false);
+                }
+                trailing_inits.push((name.clone(), value.clone()));
+            }
+        }
         if function.return_type != Type::Double
-            || !function.statements.is_empty()
-            || function.guards.is_empty()
             || function.locals.is_empty()
+            || (!nested && (!function.statements.is_empty() || function.guards.is_empty()))
         {
             return Ok(false);
         }
+        let _ = &trailing_inits;
         let Some(first_param) = function.parameters.first() else {
             return Ok(false);
         };
@@ -757,13 +808,41 @@ impl Generator {
             return Ok(false);
         }
         let ix = ix_local.name.as_str();
-        // guards[0] = `if (ix < C) return x;` (Less only — the measured k_sin
-        // family); C either cmpwi-able or lis-able (low half zero).
-        let first_guard = &function.guards[0];
-        if !matches!(&first_guard.value, Expression::Variable(name) if name == x) {
-            return Ok(false);
-        }
-        let Expression::Binary { operator: BinaryOperator::Less, left, right } = &first_guard.condition else {
+        // The ix compare: `ix < C` from guards[0] (flat) or the outer nested
+        // if; C either cmpwi-able or lis-able (low half zero). The nested
+        // inner body must be exactly `if ((int)x == 0) return x;`.
+        let outer_condition: &Expression = if nested {
+            let Some(Statement::If { condition, then_body, else_body }) = function.statements.first() else {
+                return Ok(false);
+            };
+            if !else_body.is_empty() {
+                return Ok(false);
+            }
+            let [Statement::If { condition: inner, then_body: inner_then, else_body: inner_else }] = then_body.as_slice() else {
+                return Ok(false);
+            };
+            if !inner_else.is_empty()
+                || !matches!(inner_then.as_slice(), [Statement::Return(Some(Expression::Variable(name)))] if name == x)
+            {
+                return Ok(false);
+            }
+            let Expression::Binary { operator: BinaryOperator::Equal, left, right } = inner else {
+                return Ok(false);
+            };
+            let cast_of_x = matches!(left.as_ref(), Expression::Cast { operand, target_type: Type::Int }
+                if matches!(operand.as_ref(), Expression::Variable(name) if name == x));
+            if !cast_of_x || crate::analysis::constant_value(right) != Some(0) {
+                return Ok(false);
+            }
+            condition
+        } else {
+            let first_guard = &function.guards[0];
+            if !matches!(&first_guard.value, Expression::Variable(name) if name == x) {
+                return Ok(false);
+            }
+            &first_guard.condition
+        };
+        let Expression::Binary { operator: BinaryOperator::Less, left, right } = outer_condition else {
             return Ok(false);
         };
         if !matches!(left.as_ref(), Expression::Variable(name) if name == ix) {
@@ -806,7 +885,8 @@ impl Generator {
             return Ok(false);
         }
         // Extra guards: int-param leaf conditions returning x (branch form).
-        for guard in &function.guards[1..] {
+        let extra_guards = if nested { &function.guards[0..0] } else { &function.guards[1..] };
+        for guard in extra_guards {
             if !matches!(&guard.value, Expression::Variable(name) if name == x) {
                 return Ok(false);
             }
@@ -821,14 +901,32 @@ impl Generator {
                 return Ok(false);
             }
         }
-        // The synthetic tail: the double locals + return, no guards.
+        // The synthetic tail: the double locals + return, no guards; the
+        // nested form's trailing assigns become initializers in ASSIGNMENT
+        // order (the tier's definition order).
+        let mut synthetic_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = Vec::new();
+        for (name, value) in &trailing_inits {
+            let declared = function
+                .locals
+                .iter()
+                .find(|local| &local.name == name)
+                .expect("checked above");
+            let mut normalized = declared.clone();
+            normalized.initializer = Some(value.clone());
+            synthetic_locals.push(normalized);
+        }
+        for local in &function.locals[1..] {
+            if !trailing_inits.iter().any(|(name, _)| name == &local.name) {
+                synthetic_locals.push(local.clone());
+            }
+        }
         let synthetic = Function {
             return_type: function.return_type,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,
             parameters: function.parameters.clone(),
-            locals: function.locals[1..].to_vec(),
+            locals: synthetic_locals,
             statements: Vec::new(),
             guards: Vec::new(),
             return_expression: function.return_expression.clone(),
@@ -840,9 +938,11 @@ impl Generator {
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
         let frame_before = self.frame_size;
-        // The frame drives the extab/extabindex sections.
-        self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        // The frame drives the extab/extabindex sections; the nested fctiwz
+        // form needs a second conversion slot.
+        let frame_size: i16 = if nested { 32 } else { 16 };
+        self.frame_size = frame_size;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         if let Some(high) = lis_high {
             self.output.instructions.push(Instruction::load_immediate_shifted(0, high));
         }
@@ -865,14 +965,36 @@ impl Generator {
                 immediate: small_compare.expect("checked above"),
             });
         }
-        // bge +8 skips the epilogue branch (Less guard: skip on the inverse).
         let mut epilogue_branches: Vec<usize> = Vec::new();
-        let skip_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: skip_index + 2 });
-        epilogue_branches.push(self.output.instructions.len());
-        self.output.instructions.push(Instruction::Branch { target: 0 });
-        self.output.anonymous_label_bump += 2;
-        for guard in &function.guards[1..] {
+        let mut tail_branches: Vec<usize> = Vec::new();
+        if nested {
+            // bge TAIL; fctiwz f0,f1; stfd f0,16; lwz r0,20; cmpwi; bne TAIL;
+            // b EPILOGUE (measured).
+            tail_branches.push(self.output.instructions.len());
+            self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 });
+            self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: 0, b: 1 });
+            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 16 });
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+            tail_branches.push(self.output.instructions.len());
+            self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 0 });
+            epilogue_branches.push(self.output.instructions.len());
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            // Two folded ifs + the epilogue block; the fctiwz is an
+            // int<->float conversion (its own pre-pool label).
+            self.output.anonymous_label_bump += 4;
+            self.output.has_conversion = true;
+            // The inner block consumes one more number AFTER the pools.
+            self.output.post_constant_label_bump += 1;
+        } else {
+            // bge +8 skips the epilogue branch (Less: skip on the inverse).
+            let skip_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: skip_index + 2 });
+            epilogue_branches.push(self.output.instructions.len());
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output.anonymous_label_bump += 2;
+        }
+        for guard in extra_guards {
             let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
             let skip_index = self.output.instructions.len();
             self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: skip_index + 2 });
@@ -884,9 +1006,21 @@ impl Generator {
         // pooled constants (measured: the one-guard shape pools at @8/@9
         // with 2 if-labels + this 1).
         self.output.anonymous_label_bump += 1;
-        // The float tail treats x as its f1 param (the spill stays valid).
+        // Flat mode: the tail reads x from f1 (the spill stays valid).
+        // Nested mode: x RELOADS from the frame (measured — f1 frees for
+        // the chain).
+        let tail_start = self.output.instructions.len();
+        for branch in &tail_branches {
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[*branch] {
+                *target = tail_start;
+            }
+        }
         let saved_frame_slots = std::mem::take(&mut self.frame_slots);
+        if nested {
+            self.float_reload_x = Some(8);
+        }
         let claimed = self.try_float_dag_return(&synthetic);
+        self.float_reload_x = None;
         self.frame_slots = saved_frame_slots;
         match claimed {
             Ok(true) => {}
@@ -904,7 +1038,7 @@ impl Generator {
                 *target = epilogue;
             }
         }
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: frame_size });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }

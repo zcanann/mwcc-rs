@@ -86,6 +86,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             anonymous_bump: (if function.has_conversion { 1 } else { 0 })
                 + (if function.has_float_branch { 3 } else { 0 })
                 + function.anonymous_label_bump,
+            post_constant_bump: function.post_constant_label_bump,
             // The unit's string resolver set these: the function's NEW-string count and the `@N`
             // names of those strings. The writer numbers/emits them at the front of the function's
             // `@N` block (interleaved per-function with its constants and unwind entries).

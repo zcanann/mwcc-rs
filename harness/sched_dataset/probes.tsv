@@ -86,3 +86,6 @@ float_local_fadd_z4	double f(double x) { double z = x+x; return z * (1.5 + z * (
 float_local_z4_wfactor	double f(double x, double w) { double z = x*x; return z * (1.5 + z * (2.5 + z * (3.5 + z * w))); }
 float_ksin_tail	double f(double x) { double z = x*x; double v = z*x; double r = 1.5 + z*(2.5 + z*(3.5 + z*(4.5 + z*5.5))); return x + v*(6.5 + z*r); }
 float_fctiwz_guard	double f(double x) { int ix; double z; ix = *(int*)&x & 0x7fffffff; if (ix < 0x3e400000) { if ((int)x == 0) return x; } z = x*x; return z * (1.5 + z * 2.5); }
+float_reload_flat	(fctiwz tail a)
+float_reload_zv	(fctiwz tail b)
+float_reload_z3	(fctiwz tail c)

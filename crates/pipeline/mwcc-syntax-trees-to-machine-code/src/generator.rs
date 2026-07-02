@@ -71,6 +71,10 @@ pub(crate) struct Generator {
     /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
     /// operation needs scratch stack space (e.g. an int/float conversion).
     pub(crate) frame_size: i16,
+    /// The float DAG tail reloads x from this frame offset (the fctiwz
+    /// punned-guard composition): x's references become a frame lfd node
+    /// and f1 frees for the chain.
+    pub(crate) float_reload_x: Option<i16>,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in

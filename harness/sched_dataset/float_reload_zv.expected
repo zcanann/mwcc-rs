@@ -1,0 +1,7 @@
+lfd f3,8(r1)
+lfd f1,0(0)
+fmul f4,f3,f3
+lfd f0,0(0)
+fmul f2,f4,f3
+fmadd f0,f1,f4,f0
+fmadd f1,f2,f0,f3

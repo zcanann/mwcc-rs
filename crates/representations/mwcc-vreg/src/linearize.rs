@@ -490,10 +490,11 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                     if !lift_pending {
                         return false;
                     }
-                    // A dep-free local (z, params only) leads the schedule
-                    // and never defers; a dependent local (v = z*x) yields.
+                    // A local depending only on params/LOADS (z = x*x, or
+                    // z over the frame reload) leads the schedule and never
+                    // defers; a local depending on ARITH (v = z*x) yields.
                     if nodes[candidate].local_home {
-                        return !deps[candidate].is_empty();
+                        return deps[candidate].iter().any(|&dep| nodes[dep].kind != OpKind::Load);
                     }
                     deps[candidate].iter().any(|&dep| nodes[dep].local_home) && fresh(candidate)
                 };
@@ -1438,17 +1439,29 @@ pub fn assign_float_registers(
         // >= 2 other arith defs) take descending homes from the window top,
         // in definition order, before everything else.
         if model.local_top_tier {
+            let consumer_count = |node: usize| -> usize {
+                nodes[node]
+                    .writes
+                    .first()
+                    .map(|value| {
+                        (0..count)
+                            .filter(|&reader| nodes[reader].reads.contains(value))
+                            .count()
+                    })
+                    .unwrap_or(0)
+            };
             let mut tier: Vec<usize> = (0..count)
                 .filter(|&node| is_value(node) && result[node].is_none())
                 .filter(|&node| {
                     if nodes[node].local_home {
                         return true;
                     }
-                    // Structural membership is for ARITH cross-chain values
-                    // only (the deep mul-of-mul's fmul); a long-lived LOAD
-                    // stays in the death-order pass (horner5's coefficients).
                     if nodes[node].kind == OpKind::Load {
-                        return false;
+                        // A MULTI-CONSUMER load joins the tier (the frame
+                        // reload of x, the duplicated pool literal); the
+                        // single-consumer coefficients stay in the load pass
+                        // (horner5's canary pinned that exclusion).
+                        return consumer_count(node) >= 2;
                     }
                     let start = position[node];
                     let end = value_end(node);
@@ -1459,7 +1472,9 @@ pub fn assign_float_registers(
                     inside_arith >= 2
                 })
                 .collect();
-            tier.sort_by_key(|&node| position[node]);
+            // Death ASCENDING (position tiebreak): the reload slots BETWEEN
+            // the locals (z f7, XR f6, v f5 in the real k_sin).
+            tier.sort_by_key(|&node| (value_end(node), position[node]));
             let tier_members: Vec<usize> = tier.clone();
             let mut next_top = window.saturating_sub(1);
             for node in tier {
@@ -1521,6 +1536,13 @@ pub fn assign_float_registers(
                                 })
                         })
                         .min();
+                    // A load consumed by a TIER member (the single-consumer
+                    // frame reload feeding z) allocates ASCENDING; the
+                    // coefficient loads DESCEND from the window top.
+                    let feeds_tier = nodes[node].kind == OpKind::Load
+                        && nodes[node].writes.first().is_some_and(|value| {
+                            tier_members.iter().any(|&member| nodes[member].reads.contains(value))
+                        });
                     let register = if nodes[node].kind != OpKind::Load {
                         match min_dying {
                             Some(register) => register,
@@ -1528,6 +1550,11 @@ pub fn assign_float_registers(
                                 Some(register) => register,
                                 None => return vec![None; count],
                             },
+                        }
+                    } else if feeds_tier {
+                        match (0..window).find(|&register| free(register, &occupied)) {
+                            Some(register) => register,
+                            None => return vec![None; count],
                         }
                     } else {
                         match (0..window).rev().find(|&register| free(register, &occupied)) {
@@ -2651,6 +2678,55 @@ mod tests {
                     Some(0),
                     Some(1),
                 ],
+            ),
+            (
+                // FIRE-348 — the fctiwz frame-reload, flat tail: the
+                // MULTI-CONSUMER reload joins the tier (top f2); f1 is free
+                // (x lives in the frame).
+                "reg_reload_flat",
+                vec![
+                    DagNode::new("lfd_x", LOAD).writes(&[30]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 30, 11]).writes(&[20]),
+                    DagNode::new("fmul_root", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[30, 20]).writes(&[21]),
+                ],
+                vec![],
+                vec![Some(2), Some(1), Some(0), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-348 — reload + z/v: the tier orders by DEATH ASC
+                // (z f4, XR f3, v f2 — the real k_sin's f7/f6/f5 pattern).
+                "reg_reload_zv",
+                vec![
+                    DagNode::new("lfd_x", LOAD).writes(&[30]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[30, 30]).writes(&[20]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fmul_v", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[20, 30]).writes(&[21]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[22]),
+                    DagNode::new("fmadd_root", FARITH).hazard(HAZARD_FPU).reads(&[21, 22, 30]).writes(&[23]),
+                ],
+                vec![],
+                vec![Some(3), Some(1), Some(4), Some(0), Some(2), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-348 — reload + z3: the SINGLE-consumer reload feeds
+                // the tier and allocates ASCENDING (f0) while the
+                // coefficients descend f2, f1, f0.
+                "reg_reload_z3",
+                vec![
+                    DagNode::new("lfd_x", LOAD).writes(&[30]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[30, 30]).writes(&[20]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[21]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[20, 21, 12]).writes(&[22]),
+                    DagNode::new("fmul_root", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[20, 22]).writes(&[23]),
+                ],
+                vec![],
+                vec![Some(0), Some(2), Some(3), Some(1), Some(0), Some(1), Some(0), Some(1)],
             ),
             (
                 // FIRE-336 PROBE C — w*(h3 inner): window 5; loads f4 f3 f0.

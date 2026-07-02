@@ -147,6 +147,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
             .collect(),
         reserved: HashSet::new(),
         frame_size: 0,
+        float_reload_x: None,
         behavior: Behavior::resolve(&config),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,

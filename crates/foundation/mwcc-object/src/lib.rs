@@ -104,6 +104,8 @@ pub struct FunctionObject<'a> {
     /// conditional branch. mwcceppc consumes these counter slots for the
     /// function's internal labels.
     pub anonymous_bump: u32,
+    /// `@N` numbers consumed after the constants, before the extab pair.
+    pub post_constant_bump: u32,
     /// The count of NEW (non-reused) strings this function contributes to the unit's
     /// `@N` string pool. They are numbered at the FRONT of this function's `@N` block
     /// (before its constants and unwind entries), so the writer advances by this first.

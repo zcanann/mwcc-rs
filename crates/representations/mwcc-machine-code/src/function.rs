@@ -69,6 +69,9 @@ pub struct MachineFunction {
     /// function's unwind `@N` entries. Measured per construct — a non-leaf `if` adds
     /// 2, a `do … while` loop adds 6.
     pub anonymous_label_bump: u32,
+    /// Extra `@N` numbers consumed AFTER this function's pooled constants
+    /// and before its extab pair (the nested punned-guard's inner block).
+    pub post_constant_label_bump: u32,
     /// Emitted by the DAG emitter: the order IS the schedule — the legacy
     /// post-allocation scheduling passes must not touch it.
     pub pre_scheduled: bool,
@@ -107,6 +110,7 @@ impl MachineFunction {
             has_conversion: false,
             has_float_branch: false,
             anonymous_label_bump: 0,
+            post_constant_label_bump: 0,
             pre_scheduled: false,
             frame: None,
             jump_table: None,
