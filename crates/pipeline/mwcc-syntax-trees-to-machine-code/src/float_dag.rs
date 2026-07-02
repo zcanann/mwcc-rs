@@ -27,6 +27,8 @@ enum Tree {
     Const(u64),
     /// factor_left * factor_right + addend (fp_contract).
     Madd { factor_left: Box<Tree>, factor_right: Box<Tree>, addend: Box<Tree> },
+    /// base - factor_left * factor_right (fp_contract: fnmsub d,a,c,b = b - a*c).
+    Fnmsub { factor_left: Box<Tree>, factor_right: Box<Tree>, base: Box<Tree> },
     Mul { left: Box<Tree>, right: Box<Tree> },
 }
 
@@ -35,6 +37,7 @@ enum Tree {
 enum FloatOp {
     Const(u64),
     Madd { a: Operand, c: Operand, b: Operand },
+    Fnmsub { a: Operand, c: Operand, b: Operand },
     Mul { a: Operand, c: Operand },
 }
 
@@ -84,8 +87,9 @@ impl Generator {
         // measured construction the frozen linearizer was fitted against.
         let mut arith_refs: Vec<(&Tree, u32)> = Vec::new();
         collect_arith(&tree, 0, &mut arith_refs);
-        if arith_refs.len() < 2 {
-            // Single-op float returns stay on the existing verified path.
+        if arith_refs.is_empty() || (arith_refs.len() < 2 && seen_literals.is_empty()) {
+            // A bare constant return and const-free single ops stay on the
+            // existing verified paths; a pooled-constant single op is ours.
             return Ok(false);
         }
         arith_refs.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
@@ -103,7 +107,8 @@ impl Generator {
                 built.push((key, Operand::Node(index)));
             };
             match arith {
-                Tree::Madd { factor_left, factor_right, addend } => {
+                Tree::Madd { factor_left, factor_right, addend }
+                | Tree::Fnmsub { factor_left, factor_right, base: addend } => {
                     for factor in [factor_left, factor_right] {
                         if let Tree::Const(bits) = factor.as_ref() {
                             push_const(*bits, &mut nodes, &mut ops, &mut built, factor.as_ref() as *const Tree);
@@ -140,6 +145,22 @@ impl Generator {
             };
             let index = nodes.len();
             match arith {
+                Tree::Fnmsub { factor_left, factor_right, base } => {
+                    let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(base, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    // The same measured slot convention as fmadd: a pooled
+                    // constant factor takes A (fnmsub f1,f2,f1,f0).
+                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
+                    let reads: Vec<u32> = [a, c, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    nodes.push(
+                        DagNode::new("fnmsub", FLOAT_ARITH_LATENCY)
+                            .hazard(HAZARD_FPU)
+                            .reads(&reads)
+                            .writes(&[10 + index as u32]),
+                    );
+                    ops.push(FloatOp::Fnmsub { a, c, b });
+                }
                 Tree::Madd { factor_left, factor_right, addend } => {
                     let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
@@ -204,6 +225,12 @@ impl Generator {
                     c: register_of(*c),
                     b: register_of(*b),
                 }),
+                FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble {
+                    d,
+                    a: register_of(*a),
+                    c: register_of(*c),
+                    b: register_of(*b),
+                }),
                 FloatOp::Mul { a, c } => self.output.instructions.push(Instruction::FloatMultiplyDouble {
                     d,
                     a: register_of(*a),
@@ -251,6 +278,27 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
                     make_madd(x, y, left, params, seen_literals)
                 }
             }
+        }
+        Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+            // fp_contract: `b - x*y` contracts to fnmsub (measured: the
+            // single fnmsub and the alternating-sign horner chain share the
+            // fmadd fixtures' exact geometry). `x*y - b` is fmsub whose ROOT
+            // shape resolves its register tie differently (reg_fmsub_root,
+            // the documented open case) — defer.
+            if matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. }) {
+                return None;
+            }
+            let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = right.as_ref() else {
+                return None;
+            };
+            let both_const = matches!(x.as_ref(), Expression::FloatLiteral(_)) && matches!(y.as_ref(), Expression::FloatLiteral(_));
+            if both_const {
+                return None;
+            }
+            let base = build_tree(left, params, seen_literals)?;
+            let factor_left = build_tree(x, params, seen_literals)?;
+            let factor_right = build_tree(y, params, seen_literals)?;
+            Some(Tree::Fnmsub { factor_left: Box::new(factor_left), factor_right: Box::new(factor_right), base: Box::new(base) })
         }
         Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
             // A constant fmul factor is uncaptured (const-in-A evidence
@@ -304,7 +352,8 @@ fn collect_literals(expression: &Expression, into: &mut Vec<u64>) {
 /// the measured evaluation order.
 fn collect_arith<'tree>(tree: &'tree Tree, level: u32, into: &mut Vec<(&'tree Tree, u32)>) {
     match tree {
-        Tree::Madd { factor_left, factor_right, addend } => {
+        Tree::Madd { factor_left, factor_right, addend }
+        | Tree::Fnmsub { factor_left, factor_right, base: addend } => {
             into.push((tree, level));
             collect_arith(factor_left, level + 1, into);
             collect_arith(factor_right, level + 1, into);

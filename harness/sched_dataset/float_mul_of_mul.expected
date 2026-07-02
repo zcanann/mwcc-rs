@@ -1,0 +1,6 @@
+lfd f3,0(0)
+fmul f0,f1,f2
+lfd f2,0(0)
+fmadd f1,f3,f1,f2
+fmul f1,f1,f0
+blr

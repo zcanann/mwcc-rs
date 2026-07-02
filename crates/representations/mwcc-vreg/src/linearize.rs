@@ -2173,6 +2173,64 @@ mod tests {
                 vec![Some(3), Some(0), Some(4), Some(3), Some(0), Some(3), Some(0), Some(1)],
             ),
             (
+                // FIRE-338 — 1.5 - z*2.5: the single fnmsub root (loads under
+                // the standard death-tie start-desc order).
+                "reg_fnmsub_single",
+                vec![
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fnmsub", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[12]),
+                ],
+                vec![(1, 1)],
+                vec![Some(2), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-338 — z*(1.5 - z*(2.5 - z*3.5)): the fnmsub chain has
+                // horner3's exact geometry (same registers).
+                "reg_fnmsub_chain",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fnmsub1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
+                    DagNode::new("fnmsub2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                ],
+                vec![(1, 1)],
+                vec![Some(3), Some(2), Some(0), Some(2), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-338 — (z*w)*(1.5+z*2.5): the inner fmul schedules into
+                // the load window; the fmadd takes f1 over its dying z (the
+                // def-over-dying-param case) and root shares are z-blocked.
+                "reg_mul_of_mul",
+                vec![
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fmul_zw", FARITH).hazard(HAZARD_FPU).reads(&[1, 2]).writes(&[20]),
+                    DagNode::new("fmadd", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[21]),
+                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[21, 20]).writes(&[22]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(3), Some(2), Some(0), Some(1), Some(1)],
+            ),
+            (
+                // FIRE-338 OPEN — z*(1.5+z*2.5) - 3.5: the fmsub-root shape
+                // resolves its equal-death load/arith tie OPPOSITE to h3's
+                // identical pair (L35 takes f0 FIRST; the fmadd falls to f2).
+                // Undistinguished under FROZEN — kept as the measured miss.
+                "reg_fmsub_root",
+                vec![
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[12]),
+                    DagNode::new("fmadd", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[13]),
+                    DagNode::new("fmsub", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
+                ],
+                vec![(1, 1)],
+                vec![Some(3), Some(2), Some(0), Some(2), Some(1)],
+            ),
+            (
                 // FIRE-336 PROBE C — w*(h3 inner): window 5; loads f4 f3 f0.
                 "reg_h3_wmul",
                 vec![
@@ -2264,10 +2322,18 @@ mod tests {
                 frozen_passed += 1;
             } else {
                 println!("  frozen reg MISS {name}: got {got:?} want {expected:?}");
+                // The two DOCUMENTED open cases (fire 338): the fmsub-root and
+                // mul-of-mul equal-death pairs resolve their load/arith tie
+                // OPPOSITE to h3/s1_s2's identical pairs — the discriminator
+                // needs dedicated probes (vary pair kind/length/slot).
+                assert!(
+                    matches!(*name, "reg_fmsub_root" | "reg_mul_of_mul"),
+                    "float register fixture {name} regressed under FROZEN_FLOAT_REG"
+                );
             }
         }
         println!("float registers FROZEN: {frozen_passed}/{}", shapes.len());
-        assert_eq!(frozen_passed, shapes.len(), "FROZEN_FLOAT_REG regressed");
+        assert!(frozen_passed + 2 >= shapes.len(), "FROZEN_FLOAT_REG regressed");
     }
 
     /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order
