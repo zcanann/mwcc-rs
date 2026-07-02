@@ -24,6 +24,8 @@ enum Operand {
 /// The recursive tree after fmadd contraction, before ordering.
 enum Tree {
     Param(u32),
+    /// A named double local's shared node (by locals-list index).
+    LocalRef(usize),
     Const(u64),
     /// factor_left * factor_right + addend (fp_contract).
     Madd { factor_left: Box<Tree>, factor_right: Box<Tree>, addend: Box<Tree> },
@@ -55,10 +57,20 @@ impl Generator {
         if function.return_type != Type::Double
             || !function.statements.is_empty()
             || !function.guards.is_empty()
-            || !function.locals.is_empty()
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
+        }
+        // Named double locals are WINDOW-TOP tier values (measured: k_sin's
+        // z/v take f4/f3): each must be a plain scalar double with a
+        // single-arith initializer over params and prior locals.
+        for local in &function.locals {
+            if local.declared_type != Type::Double
+                || local.initializer.is_none()
+                || local.array_length.is_some()
+            {
+                return Ok(false);
+            }
         }
         let Some(return_expression) = function.return_expression.as_ref() else {
             return Ok(false);
@@ -82,9 +94,99 @@ impl Generator {
         }
         // Lower the expression to the contracted tree (or bail).
         let mut seen_literals: Vec<u64> = Vec::new();
-        let Some(tree) = build_tree(return_expression, &param_ids, &mut seen_literals) else {
+        let local_names: Vec<(String, usize)> = function
+            .locals
+            .iter()
+            .enumerate()
+            .map(|(index, local)| (local.name.clone(), index))
+            .collect();
+        // Each local's initializer must lower to exactly ONE arith node over
+        // params and PRIOR locals (constants in inits are uncaptured).
+        let mut local_trees: Vec<Tree> = Vec::new();
+        for (index, local) in function.locals.iter().enumerate() {
+            let initializer = local.initializer.as_ref().expect("gated above");
+            let prior = &local_names[..index];
+            let Some(local_tree) = build_tree(initializer, &param_ids, prior, &mut seen_literals) else {
+                return Ok(false);
+            };
+            if count_arith(&local_tree) != 1 || !seen_literals.is_empty() {
+                return Ok(false);
+            }
+            local_trees.push(local_tree);
+        }
+        let Some(tree) = build_tree(return_expression, &param_ids, &local_names, &mut seen_literals) else {
             return Ok(false);
         };
+        // Local shapes beyond the captured range defer: a >= 4-arith return
+        // tree over locals diverges (probed: the 4-coefficient z-chain), and
+        // a local consumed ONLY by the return root alongside a >= 2-arith
+        // chain is held back by mwcc's scheduler (the v=z*x fmul waits past
+        // the chain's first fmadd — a far-consumer stall the order model
+        // does not fit yet).
+        if !function.locals.is_empty() {
+            let return_arith_total = {
+                let mut refs: Vec<(&Tree, u32)> = Vec::new();
+                collect_arith(&tree, 0, &mut refs);
+                refs.len()
+            };
+            if return_arith_total >= 4 {
+                return Ok(false);
+            }
+            let uses = |index: usize, tree: &Tree| -> usize {
+                fn walk(tree: &Tree, index: usize, count: &mut usize) {
+                    match tree {
+                        Tree::LocalRef(local) if *local == index => *count += 1,
+                        Tree::Madd { factor_left, factor_right, addend }
+                        | Tree::Fnmsub { factor_left, factor_right, base: addend }
+                        | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                            walk(factor_left, index, count);
+                            walk(factor_right, index, count);
+                            walk(addend, index, count);
+                        }
+                        Tree::Mul { left, right } => {
+                            walk(left, index, count);
+                            walk(right, index, count);
+                        }
+                        _ => {}
+                    }
+                }
+                let mut count = 0;
+                walk(tree, index, &mut count);
+                count
+            };
+            let return_arith = {
+                let mut refs: Vec<(&Tree, u32)> = Vec::new();
+                collect_arith(&tree, 0, &mut refs);
+                refs.len()
+            };
+            for (index, _) in function.locals.iter().enumerate() {
+                let root_only = match &tree {
+                    Tree::Madd { factor_left, factor_right, addend } => {
+                        let direct = [factor_left, factor_right, addend]
+                            .iter()
+                            .filter(|sub| matches!(sub.as_ref(), Tree::LocalRef(local) if *local == index))
+                            .count();
+                        direct == uses(index, &tree)
+                    }
+                    Tree::Mul { left, right } => {
+                        let direct = [left, right]
+                            .iter()
+                            .filter(|sub| matches!(sub.as_ref(), Tree::LocalRef(local) if *local == index))
+                            .count();
+                        direct == uses(index, &tree)
+                    }
+                    _ => false,
+                };
+                let later_local_uses: usize = local_trees
+                    .iter()
+                    .skip(index + 1)
+                    .map(|later| uses(index, later))
+                    .sum();
+                if root_only && later_local_uses == 0 && uses(index, &tree) > 0 && return_arith >= 3 {
+                    return Ok(false);
+                }
+            }
+        }
         // Order the arith nodes by (tree level DESC, factor-side first) and
         // group each node's constant loads before the arith block — the
         // measured construction the frozen linearizer was fitted against.
@@ -101,6 +203,51 @@ impl Generator {
         let mut ops: Vec<FloatOp> = Vec::new();
         // Map from each arith Tree's address to its node operand.
         let mut built: Vec<(*const Tree, Operand)> = Vec::new();
+        // The locals' shared nodes, in declaration order (their arith emits
+        // ahead of the loads: measured, z's fmul is slot 0).
+        let mut local_operands: Vec<Operand> = Vec::new();
+        for local_tree in &local_trees {
+            let resolve_leaf = |leaf: &Tree| -> Option<Operand> {
+                match leaf {
+                    Tree::Param(value) => Some(Operand::Param(*value)),
+                    Tree::LocalRef(local) => local_operands.get(*local).copied(),
+                    _ => None,
+                }
+            };
+            let index = nodes.len();
+            let (op, reads) = match local_tree {
+                Tree::Mul { left, right } => {
+                    let a = resolve_leaf(left).ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    let c = resolve_leaf(right).ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    (FloatOp::Mul { a, c }, vec![a, c])
+                }
+                Tree::Madd { factor_left, factor_right, addend } => {
+                    let a = resolve_leaf(factor_left).ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    let c = resolve_leaf(factor_right).ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    let b = resolve_leaf(addend).ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    (FloatOp::Madd { a, c, b }, vec![a, c, b])
+                }
+                _ => return Ok(false),
+            };
+            let read_values: Vec<u32> = reads
+                .iter()
+                .map(|&operand| match operand {
+                    Operand::Param(value) => value,
+                    Operand::Node(node) => nodes[node].writes[0],
+                })
+                .collect();
+            nodes.push(
+                DagNode::new("flocal", FLOAT_ARITH_LATENCY)
+                    .hazard(HAZARD_FPU)
+                    .local_home()
+                    .reads(&read_values)
+                    .writes(&[10 + index as u32]),
+            );
+            ops.push(op);
+            let operand = Operand::Node(index);
+            local_operands.push(operand);
+            built.push((local_tree as *const Tree, operand));
+        }
         // Pass 1: pooled constant loads, grouped per consumer (factor first).
         for &(arith, _) in &arith_refs {
             let mut push_const = |bits: u64, nodes: &mut Vec<DagNode>, ops: &mut Vec<FloatOp>, built: &mut Vec<(*const Tree, Operand)>, key: *const Tree| {
@@ -134,6 +281,7 @@ impl Generator {
             let resolve = |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
                 match subtree {
                     Tree::Param(value) => Some(Operand::Param(*value)),
+                    Tree::LocalRef(local) => local_operands.get(*local).copied(),
                     _ => built
                         .iter()
                         .rev()
@@ -256,14 +404,18 @@ impl Generator {
                     c: register_of(*c),
                     b: register_of(*b),
                 }),
-                FloatOp::Mul { a, c } => self.output.instructions.push(Instruction::FloatMultiplyDouble {
-                    // Source-slot order (the chain-left canonicalization
-                    // already puts the measured operand in A; the inner leaf
-                    // product keeps source order — fmul f0,f1,f2 for z*w).
-                    d,
-                    a: register_of(*a),
-                    c: register_of(*c),
-                }),
+                FloatOp::Mul { a, c } => {
+                    // Measured fmul slots: a PARAM-only product keeps source
+                    // order (fmul f0,f1,f2 for z*w); any VALUE operand sorts
+                    // the registers DESCENDING into A (every captured root
+                    // and chain fmul complies — shallow A=f1>f0, deep A=f4>f0).
+                    let (mut ra, mut rc) = (register_of(*a), register_of(*c));
+                    let both_params = matches!(a, Operand::Param(_)) && matches!(c, Operand::Param(_));
+                    if !both_params && rc > ra {
+                        std::mem::swap(&mut ra, &mut rc);
+                    }
+                    self.output.instructions.push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
+                }
             }
         }
         Ok(true)
@@ -273,9 +425,17 @@ impl Generator {
 /// Lower an expression to the contracted tree. `None` defers: anything
 /// outside the captured vocabulary (params + distinct double literals
 /// combined by fmadd/fmul).
-fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: &mut Vec<u64>) -> Option<Tree> {
+fn build_tree(
+    expression: &Expression,
+    params: &[(String, u32)],
+    locals: &[(String, usize)],
+    seen_literals: &mut Vec<u64>,
+) -> Option<Tree> {
     match expression {
         Expression::Variable(name) => {
+            if let Some(&(_, index)) = locals.iter().find(|(local, _)| local == name) {
+                return Some(Tree::LocalRef(index));
+            }
             let &(_, value) = params.iter().find(|(parameter, _)| parameter == name)?;
             Some(Tree::Param(value))
         }
@@ -299,11 +459,11 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
                 (false, false) => None,
                 (true, _) => {
                     let Expression::Binary { left: x, right: y, .. } = left.as_ref() else { unreachable!() };
-                    make_madd(x, y, right, params, seen_literals)
+                    make_madd(x, y, right, params, locals, seen_literals)
                 }
                 (false, true) => {
                     let Expression::Binary { left: x, right: y, .. } = right.as_ref() else { unreachable!() };
-                    make_madd(x, y, left, params, seen_literals)
+                    make_madd(x, y, left, params, locals, seen_literals)
                 }
             }
         }
@@ -316,9 +476,9 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
                 if matches!(x.as_ref(), Expression::FloatLiteral(_)) || matches!(y.as_ref(), Expression::FloatLiteral(_)) {
                     return None;
                 }
-                let factor_left = build_tree(x, params, seen_literals)?;
-                let factor_right = build_tree(y, params, seen_literals)?;
-                let subtrahend = build_tree(right, params, seen_literals)?;
+                let factor_left = build_tree(x, params, locals, seen_literals)?;
+                let factor_right = build_tree(y, params, locals, seen_literals)?;
+                let subtrahend = build_tree(right, params, locals, seen_literals)?;
                 return Some(Tree::Fmsub {
                     factor_left: Box::new(factor_left),
                     factor_right: Box::new(factor_right),
@@ -332,9 +492,9 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
             if both_const {
                 return None;
             }
-            let base = build_tree(left, params, seen_literals)?;
-            let factor_left = build_tree(x, params, seen_literals)?;
-            let factor_right = build_tree(y, params, seen_literals)?;
+            let base = build_tree(left, params, locals, seen_literals)?;
+            let factor_left = build_tree(x, params, locals, seen_literals)?;
+            let factor_right = build_tree(y, params, locals, seen_literals)?;
             Some(Tree::Fnmsub { factor_left: Box::new(factor_left), factor_right: Box::new(factor_right), base: Box::new(base) })
         }
         Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
@@ -346,8 +506,8 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
             let is_mul = |side: &Expression| matches!(side, Expression::Binary { operator: BinaryOperator::Multiply, .. });
             match (is_mul(left), is_mul(right)) {
                 (false, false) => {
-                    let left = build_tree(left, params, seen_literals)?;
-                    let right = build_tree(right, params, seen_literals)?;
+                    let left = build_tree(left, params, locals, seen_literals)?;
+                    let right = build_tree(right, params, locals, seen_literals)?;
                     Some(Tree::Mul { left: Box::new(left), right: Box::new(right) })
                 }
                 // The SHALLOW mul-of-mul (measured both source orders emit
@@ -364,12 +524,12 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
                     if !matches!(x.as_ref(), Expression::Variable(_)) || !matches!(y.as_ref(), Expression::Variable(_)) {
                         return None;
                     }
-                    let chain_tree = build_tree(chain, params, seen_literals)?;
-                    if !matches!(chain_tree, Tree::Madd { .. } | Tree::Fnmsub { .. }) || count_arith(&chain_tree) != 1 {
+                    let chain_tree = build_tree(chain, params, locals, seen_literals)?;
+                    if !matches!(chain_tree, Tree::Madd { .. } | Tree::Fnmsub { .. }) {
                         return None;
                     }
-                    let x = build_tree(x, params, seen_literals)?;
-                    let y = build_tree(y, params, seen_literals)?;
+                    let x = build_tree(x, params, locals, seen_literals)?;
+                    let y = build_tree(y, params, locals, seen_literals)?;
                     let product_tree = Tree::Mul { left: Box::new(x), right: Box::new(y) };
                     Some(Tree::Mul { left: Box::new(chain_tree), right: Box::new(product_tree) })
                 }
@@ -381,14 +541,21 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
 }
 
 /// Build an fmadd from `x*y + addend`, deferring constant-foldable pairs.
-fn make_madd(x: &Expression, y: &Expression, addend: &Expression, params: &[(String, u32)], seen_literals: &mut Vec<u64>) -> Option<Tree> {
+fn make_madd(
+    x: &Expression,
+    y: &Expression,
+    addend: &Expression,
+    params: &[(String, u32)],
+    locals: &[(String, usize)],
+    seen_literals: &mut Vec<u64>,
+) -> Option<Tree> {
     let both_const = matches!(x, Expression::FloatLiteral(_)) && matches!(y, Expression::FloatLiteral(_));
     if both_const {
         return None;
     }
-    let factor_left = build_tree(x, params, seen_literals)?;
-    let factor_right = build_tree(y, params, seen_literals)?;
-    let addend = build_tree(addend, params, seen_literals)?;
+    let factor_left = build_tree(x, params, locals, seen_literals)?;
+    let factor_right = build_tree(y, params, locals, seen_literals)?;
+    let addend = build_tree(addend, params, locals, seen_literals)?;
     Some(Tree::Madd { factor_left: Box::new(factor_left), factor_right: Box::new(factor_right), addend: Box::new(addend) })
 }
 
@@ -430,6 +597,6 @@ fn collect_arith<'tree>(tree: &'tree Tree, level: u32, into: &mut Vec<(&'tree Tr
             collect_arith(left, level + 1, into);
             collect_arith(right, level + 1, into);
         }
-        Tree::Param(_) | Tree::Const(_) => {}
+        Tree::Param(_) | Tree::LocalRef(_) | Tree::Const(_) => {}
     }
 }

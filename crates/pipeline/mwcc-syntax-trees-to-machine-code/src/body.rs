@@ -1790,6 +1790,15 @@ impl Generator {
         if self.try_ordered_early_return_branch(function)? {
             return Ok(());
         }
+        // The FLOAT DAG arm claims double multiply-add trees with named
+        // double locals BEFORE value tracking and the int-oriented folds:
+        // folding a single-use float local (v = z*x) duplicates the shared z
+        // subterm, while mwcc keeps locals as window-top-tier shared
+        // registers.
+        if self.try_float_dag_return(function)? {
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(());
+        }
         if self.try_float_param_reassign(function)? {
             return Ok(());
         }
@@ -2517,13 +2526,15 @@ impl Generator {
             return self.emit_guard_sequence(&function.guards, return_expression, function.return_type, result);
         }
 
-        match function.locals.as_slice() {
-            // The FLOAT DAG arm claims double multiply-add trees for the
-            // frozen float models before the single-scratch evaluator.
-            [] if self.try_float_dag_return(function)? => {}
-            [] => self.evaluate_tail(return_expression, function.return_type, result)?,
-            [local] => self.evaluate_single_local(local, return_expression, function.return_type, result)?,
-            _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
+        // The FLOAT DAG arm claims double multiply-add trees (including
+        // named double locals — the window-top tier) for the frozen float
+        // models before the single-scratch evaluator paths.
+        if !self.try_float_dag_return(function)? {
+            match function.locals.as_slice() {
+                [] => self.evaluate_tail(return_expression, function.return_type, result)?,
+                [local] => self.evaluate_single_local(local, return_expression, function.return_type, result)?,
+                _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
+            }
         }
         // A return value that is itself a call (`return h(p->a, p->b);`) emits its
         // argument setup here, after the body loop's hoist ran — so hoist again now.

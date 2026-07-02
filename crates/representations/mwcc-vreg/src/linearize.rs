@@ -60,6 +60,10 @@ pub struct DagNode {
     /// intermediate (measured: void extsb r3,r3); a multi-consumer one may not
     /// (it must outlive the first chain's final — measured: extsb r4,r3).
     pub extension: bool,
+    /// A named LOCAL's float home: window-top tier in the float register
+    /// machine (measured: k_sin-class locals z/v take f4/f3 descending while
+    /// the chains churn the low registers).
+    pub local_home: bool,
     /// This STORE's chain is rooted at the r3 parameter: when its analytic
     /// earliest-ready is <= the return final's, the chain holds r3 (the
     /// allocator reuses the dying param) and the final's r3 write must EMIT
@@ -84,7 +88,11 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false, r3_chain_store: false }
+        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false, local_home: false, r3_chain_store: false }
+    }
+    pub fn local_home(mut self) -> DagNode {
+        self.local_home = true;
+        self
     }
     pub fn r3_chain_store(mut self) -> DagNode {
         self.r3_chain_store = true;
@@ -1232,6 +1240,12 @@ pub struct FloatRegModel {
     /// allocate before L15 at slot 4 because it dies later; horner4's
     /// "anomalous" second load falls out naturally under this order).
     pub order_by_death: bool,
+    /// Reverse machine: named float LOCALS (local_home) and unnamed values
+    /// spanning >= 2 other arith definitions take WINDOW-TOP homes,
+    /// descending in definition order, BEFORE the death-order pass
+    /// (measured: k_sin-class z/v -> f4/f3; the deep mul-of-mul's
+    /// cross-chain product -> the window top).
+    pub local_top_tier: bool,
     /// Reverse machine: the boundary share into one's own CONSUMER is
     /// allowed regardless of the arity/class rules when the register is
     /// ALSO vacated by the node's own dying operand — the register flows
@@ -1283,6 +1297,7 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     arith_share_two_op_only: true,
     share_f0_only: false,
     share_blocked_by_pending_arith: true,
+    local_top_tier: true,
     dying_door_share: true,
     order_by_death: true,
     root_slot_order: true,
@@ -1378,6 +1393,58 @@ pub fn assign_float_registers(
             });
         } else {
             sequence.sort_by_key(|&node| std::cmp::Reverse(position[node]));
+        }
+        // The WINDOW-TOP tier: named locals and cross-chain values (spanning
+        // >= 2 other arith defs) take descending homes from the window top,
+        // in definition order, before everything else.
+        if model.local_top_tier {
+            let mut tier: Vec<usize> = (0..count)
+                .filter(|&node| is_value(node) && result[node].is_none())
+                .filter(|&node| {
+                    if nodes[node].local_home {
+                        return true;
+                    }
+                    // Structural membership is for ARITH cross-chain values
+                    // only (the deep mul-of-mul's fmul); a long-lived LOAD
+                    // stays in the death-order pass (horner5's coefficients).
+                    if nodes[node].kind == OpKind::Load {
+                        return false;
+                    }
+                    let start = position[node];
+                    let end = value_end(node);
+                    let inside_arith = (0..count)
+                        .filter(|&other| other != node && is_value(other) && nodes[other].kind != OpKind::Load)
+                        .filter(|&other| position[other] > start && position[other] < end)
+                        .count();
+                    inside_arith >= 2
+                })
+                .collect();
+            tier.sort_by_key(|&node| position[node]);
+            let mut next_top = window.saturating_sub(1);
+            for node in tier {
+                let start = position[node];
+                let end = value_end(node);
+                // A param register is takeable when the param DIES at this
+                // node's definition feeding it (z = x*y claims y's f2).
+                let register = (0..=next_top)
+                    .rev()
+                    .find(|&register| {
+                        occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
+                            if taken != register || taken_end < start || taken_start > end {
+                                return true;
+                            }
+                            owner == usize::MAX
+                                && taken_end == start
+                                && params.iter().any(|&(value, param_register)| {
+                                    param_register == register && nodes[node].reads.contains(&value)
+                                })
+                        })
+                    })
+                    .unwrap_or(next_top);
+                result[node] = Some(register);
+                occupied.push((register, start, end, node));
+                next_top = register.saturating_sub(1);
+            }
         }
         // Whether one of `node`'s own operands (param or value) holds
         // `register` and dies exactly at `node`'s definition — the register
@@ -2310,6 +2377,83 @@ mod tests {
                 vec![Some(4), Some(3), Some(0), Some(1), Some(1)],
             ),
             (
+                // FIRE-340 — z=x*x; z*(1.5+z*2.5): the named local takes the
+                // window top (f2); x's f1 frees at slot 0 for the 2.5 load.
+                "reg_local_z2",
+                vec![
+                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[21]),
+                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[20, 21]).writes(&[22]),
+                ],
+                vec![(1, 1)],
+                vec![Some(2), Some(1), Some(0), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-340 — z=x*x; 3-use horner: z -> f3 (window-top).
+                "reg_local_z3",
+                vec![
+                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[21]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[20, 21, 12]).writes(&[22]),
+                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[20, 22]).writes(&[23]),
+                ],
+                vec![(1, 1)],
+                vec![Some(3), Some(2), Some(1), Some(0), Some(1), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-340 — z=x*x; v=z*x (k_sin core): locals descend from
+                // the top in declaration order (z f4, v f3); x lives to the
+                // root fmadd's addend.
+                "reg_local_zv",
+                vec![
+                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fmul_v", FARITH).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[22]),
+                    DagNode::new("fmadd_root", FARITH).hazard(HAZARD_FPU).reads(&[21, 22, 1]).writes(&[23]),
+                ],
+                vec![(1, 1)],
+                vec![Some(4), Some(2), Some(0), Some(3), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-340 — k_sin r-shape (r folded): x + z*(1.5+z*(2.5+z*3.5)).
+                "reg_local_ksin_r",
+                vec![
+                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[21]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[20, 21, 12]).writes(&[22]),
+                    DagNode::new("fmadd_root", FARITH).hazard(HAZARD_FPU).reads(&[20, 22, 1]).writes(&[23]),
+                ],
+                vec![(1, 1)],
+                vec![Some(4), Some(3), Some(2), Some(0), Some(2), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-340 — the DEEP mul-of-mul ((z*w)*(2-arith chain)): the
+                // cross-chain product spans two arith defs and joins the
+                // window-top tier structurally (f4) — the fire-339 open case.
+                "reg_mul_of_mul_deep",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[21]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 21, 12]).writes(&[22]),
+                    DagNode::new("fmul_zw", FARITH).hazard(HAZARD_FPU).reads(&[1, 2]).writes(&[20]),
+                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[22, 20]).writes(&[23]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(3), Some(2), Some(0), Some(2), Some(0), Some(4), Some(1)],
+            ),
+            (
                 // FIRE-336 PROBE C — w*(h3 inner): window 5; loads f4 f3 f0.
                 "reg_h3_wmul",
                 vec![
@@ -2343,20 +2487,23 @@ mod tests {
                                     {
                                         for root_slot_order in [false, true] {
                                             for dying_door_share in [false, true] {
-                                                models.push(FloatRegModel {
-                                                    reverse: true,
-                                                    share_loads,
-                                                    share_arith,
-                                                    arith_share_two_op_only,
-                                                    share_f0_only,
-                                                    share_blocked_by_pending_arith,
-                                                    dying_door_share,
-                                                    order_by_death,
-                                                    root_slot_order,
-                                                    dying_pick,
-                                                    init_ascending: true,
-                                                    void_forward,
-                                                });
+                                                for local_top_tier in [false, true] {
+                                                    models.push(FloatRegModel {
+                                                        reverse: true,
+                                                        share_loads,
+                                                        share_arith,
+                                                        arith_share_two_op_only,
+                                                        share_f0_only,
+                                                        share_blocked_by_pending_arith,
+                                                        local_top_tier,
+                                                        dying_door_share,
+                                                        order_by_death,
+                                                        root_slot_order,
+                                                        dying_pick,
+                                                        init_ascending: true,
+                                                        void_forward,
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -2376,6 +2523,7 @@ mod tests {
                     arith_share_two_op_only: false,
                     share_f0_only: false,
                     share_blocked_by_pending_arith: false,
+                    local_top_tier: false,
                     dying_door_share: false,
                     order_by_death: false,
                     root_slot_order: false,
