@@ -23,3 +23,4 @@ tail_pair_depth5	void f(double x, int* eptr, int ix, int hx, int k) { *eptr += (
 tail_pair_equal3	void f(double x, int* eptr, int ix, int hx) { *eptr = (ix >> 20) - 1022; *(int*)&x = (hx & 0x800fffff) | 0x3fe00000; }
 clean_load_pair	extern int g; extern int h; void f(int* eptr, int ix, int hx) { g = (ix >> 20) + *eptr; h = (hx & 0x0ff0) | 4096; }
 clean_alu_pair	extern int g; extern int h; void f(int* eptr, int ix, int hx, int k) { g = (ix >> 20) + k; h = (hx & 0x0ff0) | 4096; }
+mulli_srawi_pair	extern int g; extern int h; void f(int a, int b) { g = a * 3; h = (b >> 2) + 7; }
