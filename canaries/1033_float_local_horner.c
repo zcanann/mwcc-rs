@@ -64,3 +64,10 @@ double local_z4_wfactor(double x, double w)
 	double z = x * x;
 	return z * (91.5 + z * (92.5 + z * (93.5 + z * w)));
 }
+
+double local_r_fold(double x)
+{
+	double z = x * x;
+	double r = 101.5 + z * (102.5 + z * 103.5);
+	return x + z * r;
+}

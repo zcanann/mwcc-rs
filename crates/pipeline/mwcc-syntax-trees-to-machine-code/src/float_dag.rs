@@ -104,8 +104,8 @@ impl Generator {
             }
         }
         // Named double locals are WINDOW-TOP tier values (measured: k_sin's
-        // z/v take f4/f3): each must be a plain scalar double with a
-        // single-arith initializer over params and prior locals.
+        // z/v take the top FPRs descending): each must be a plain scalar
+        // double with an initializer.
         for local in &function.locals {
             if local.declared_type != Type::Double
                 || local.initializer.is_none()
@@ -117,6 +117,49 @@ impl Generator {
         let Some(return_expression) = function.return_expression.as_ref() else {
             return Ok(false);
         };
+        // Fold LOAD-DEPENDENT single-use locals into their use site
+        // (measured: k_sin's r chain has no tier home — its registers flow
+        // with the expression), keeping pure register-product locals (z, v)
+        // as window-top-tier nodes. A multi-use load-dependent local is
+        // uncaptured — defer.
+        fn contains_literal(expression: &Expression) -> bool {
+            match expression {
+                Expression::FloatLiteral(_) => true,
+                Expression::Binary { left, right, .. } => contains_literal(left) || contains_literal(right),
+                _ => false,
+            }
+        }
+        let mut fold_map: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+        let mut kept_locals: Vec<(String, Expression)> = Vec::new();
+        for (index, local) in function.locals.iter().enumerate() {
+            let Some(initializer) = local.initializer.as_ref() else {
+                return Ok(false);
+            };
+            let resolved = crate::value_tracking::substitute(initializer, &fold_map);
+            let later_uses: usize = function.locals[index + 1..]
+                .iter()
+                .filter_map(|later| later.initializer.as_ref())
+                .map(|later| crate::analysis::count_name_occurrences(later, &local.name))
+                .sum::<usize>()
+                + crate::analysis::count_name_occurrences(return_expression, &local.name);
+            if contains_literal(&resolved) {
+                if later_uses != 1 {
+                    return Ok(false);
+                }
+                fold_map.insert(local.name.clone(), resolved);
+            } else {
+                kept_locals.push((local.name.clone(), resolved));
+            }
+        }
+        // Two kept locals PLUS a folded chain (the full k_sin tail) exposes
+        // an uncracked share-vs-free register rule (the coefficient load
+        // takes its consumer's share over clean f0 there, the opposite of
+        // horner4's identical pair) — defer until discriminated.
+        if kept_locals.len() >= 2 && !fold_map.is_empty() {
+            return Ok(false);
+        }
+        let folded_return = crate::value_tracking::substitute(return_expression, &fold_map);
+        let return_expression = &folded_return;
         // Double parameters join the float DAG with their FPRs; int
         // (general-class) parameters are allowed alongside — they exist for
         // the guard conditions and never enter the DAG.
@@ -141,17 +184,16 @@ impl Generator {
         }
         // Lower the expression to the contracted tree (or bail).
         let mut seen_literals: Vec<u64> = Vec::new();
-        let local_names: Vec<(String, usize)> = function
-            .locals
+        let local_names: Vec<(String, usize)> = kept_locals
             .iter()
             .enumerate()
-            .map(|(index, local)| (local.name.clone(), index))
+            .map(|(index, (name, _))| (name.clone(), index))
             .collect();
-        // Each local's initializer must lower to exactly ONE arith node over
-        // params and PRIOR locals (constants in inits are uncaptured).
+        // Each KEPT local's initializer must lower to exactly ONE arith node
+        // over params and PRIOR locals (it is a pure register product — the
+        // load-dependent ones folded above).
         let mut local_trees: Vec<Tree> = Vec::new();
-        for (index, local) in function.locals.iter().enumerate() {
-            let initializer = local.initializer.as_ref().expect("gated above");
+        for (index, (_, initializer)) in kept_locals.iter().enumerate() {
             let prior = &local_names[..index];
             let Some(local_tree) = build_tree(initializer, &param_ids, prior, &mut seen_literals) else {
                 return Ok(false);
@@ -170,7 +212,7 @@ impl Generator {
         // chain is held back by mwcc's scheduler (the v=z*x fmul waits past
         // the chain's first fmadd — a far-consumer stall the order model
         // does not fit yet).
-        if !function.locals.is_empty() {
+        if !kept_locals.is_empty() {
             let uses = |index: usize, tree: &Tree| -> usize {
                 fn walk(tree: &Tree, index: usize, count: &mut usize) {
                     match tree {
@@ -198,7 +240,7 @@ impl Generator {
                 collect_arith(&tree, 0, &mut refs);
                 refs.len()
             };
-            for (index, _) in function.locals.iter().enumerate() {
+            for (index, _) in kept_locals.iter().enumerate() {
                 let root_only = match &tree {
                     Tree::Madd { factor_left, factor_right, addend } => {
                         let direct = [factor_left, factor_right, addend]

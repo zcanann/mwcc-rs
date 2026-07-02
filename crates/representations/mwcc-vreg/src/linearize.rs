@@ -468,17 +468,34 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 };
                 // Rescan after every pick: a WAR-deferred return final becomes
                 // eligible the moment the bound store lands in this window.
-                // A fresh arith reading a LOCAL-HOME value defers one cycle
-                // to a pending blocked-load lift (measured: z4/zv_deeper —
-                // the last coefficient lifts BEFORE the chain's first fmadd
-                // only when a local z feeds it; horner4's and fmsub_deep's
-                // m1 issue straight over their pending loads).
-                let arith_defers = |candidate: usize, issued_at: &Vec<Option<u32>>| -> bool {
-                    nodes[candidate].kind != OpKind::Load
-                        && deps[candidate].iter().any(|&dep| nodes[dep].local_home)
-                        && ready
-                            .iter()
-                            .any(|&other| other != candidate && load_blocked(other, issued_at))
+                // LOCAL-HOME deference to pending blocked-load lifts
+                // (measured: z4/zv_deeper/ksin_tail; horner4's and
+                // fmsub_deep's m1 — no local — issue straight over pending
+                // loads): a local_home NODE (v) yields to EVERY pending lift
+                // until none remain; an arith merely READING a local (the
+                // chain's first fmadd) yields exactly ONE cycle — it defers
+                // while FRESH and issues aged (ksin_tail: m1 issues at c5
+                // over two still-pending coefficient lifts).
+                let arith_defers = |candidate: usize, issued_at: &Vec<Option<u32>>, picked: &[usize]| -> bool {
+                    if nodes[candidate].kind == OpKind::Load {
+                        return false;
+                    }
+                    // A lift already PICKED this cycle no longer defers
+                    // anyone (measured: ksin_tail's v dual-issues with the
+                    // final coefficient lift; z4's m1 follows its lift in the
+                    // same cycle).
+                    let lift_pending = ready.iter().any(|&other| {
+                        other != candidate && !picked.contains(&other) && load_blocked(other, issued_at)
+                    });
+                    if !lift_pending {
+                        return false;
+                    }
+                    // A dep-free local (z, params only) leads the schedule
+                    // and never defers; a dependent local (v = z*x) yields.
+                    if nodes[candidate].local_home {
+                        return !deps[candidate].is_empty();
+                    }
+                    deps[candidate].iter().any(|&dep| nodes[dep].local_home) && fresh(candidate)
                 };
                 'fill: while picked.len() < model.issue_width {
                     for &candidate in &ready {
@@ -493,7 +510,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         {
                             continue;
                         }
-                        if arith_defers(candidate, &issued_at) {
+                        if arith_defers(candidate, &issued_at, &picked) {
                             continue;
                         }
                         if load_blocked(candidate, &issued_at) {
@@ -501,7 +518,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                                 other != candidate
                                     && !picked.contains(&other)
                                     && !load_blocked(other, &issued_at)
-                                    && !arith_defers(other, &issued_at)
+                                    && !arith_defers(other, &issued_at, &picked)
                             });
                             if !picked.is_empty() || other_unblocked {
                                 continue;
