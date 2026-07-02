@@ -545,6 +545,135 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
     result
 }
 
+/// Register model v3 — the fires-284/286 synthesis in full form:
+/// - CLOSED-interval scan in issue order (a register frees the slot AFTER its
+///   holder's last read; params occupy from entry);
+/// - pool r3..r12 for non-r0 values;
+/// - the LAST chain's values prefer r0 when free (closed); other chains may
+///   use r0 only when their whole interval PRECEDES the last chain's first def;
+/// - a FINAL op (feeding a store) may reuse its own dying source's register
+///   (an open-interval exception); last-chain finals still prefer r0.
+pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u8)]) -> Vec<Option<u8>> {
+    let count = nodes.len();
+    let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, node) in nodes.iter().enumerate() {
+        for read in &node.reads {
+            if let Some(writer) = (0..index).rev().find(|&w| nodes[w].writes.contains(read)) {
+                consumer_of[writer].push(index);
+            }
+        }
+    }
+    let position: Vec<usize> = {
+        let mut position = vec![0; count];
+        for (slot, &node) in order.iter().enumerate() {
+            position[node] = slot;
+        }
+        position
+    };
+    let chain_of = |mut node: usize| -> usize {
+        loop {
+            match consumer_of[node].first() {
+                Some(&next) => node = next,
+                None => return node,
+            }
+        }
+    };
+    let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
+    let last_chain_first_def = (0..count)
+        .filter(|&node| chain_of(node) == last_sink && nodes[node].kind != OpKind::Store)
+        .map(|node| position[node])
+        .min()
+        .unwrap_or(usize::MAX);
+    let param_end = |value: u32| -> usize {
+        (0..count)
+            .filter(|&reader| nodes[reader].reads.contains(&value))
+            .map(|reader| position[reader])
+            .max()
+            .unwrap_or(0)
+    };
+    let value_end = |node: usize| -> usize {
+        consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node])
+    };
+    // Occupancies as (register, start, end) with CLOSED ends.
+    let mut occupied: Vec<(u8, usize, usize)> = params
+        .iter()
+        .map(|&(value, register)| (register, 0, param_end(value)))
+        .collect();
+    let mut result: Vec<Option<u8>> = vec![None; count];
+    for &node in order {
+        if nodes[node].kind == OpKind::Store || nodes[node].writes.is_empty() {
+            continue;
+        }
+        let start = position[node];
+        let end = value_end(node);
+        let closed_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+            occupied.iter().all(|&(taken, taken_start, taken_end)| {
+                taken != register || taken_end < start || taken_start > end
+            })
+        };
+        // The own dying source (for the in-place exception), split by origin:
+        // an INTERNAL source (another op's result) reuses in place always; a
+        // PARAM source only in the relaxed regime — at most two chains, a
+        // last chain no deeper than two, and never for a mulli result
+        // (measured across the whole dataset).
+        let chain_count = {
+            let mut sinks: Vec<usize> = (0..count)
+                .filter(|&candidate| consumer_of[candidate].is_empty() || nodes[candidate].kind == OpKind::Store)
+                .map(|_| 0)
+                .collect();
+            sinks.clear();
+            for candidate in 0..count {
+                if nodes[candidate].kind == OpKind::Store {
+                    sinks.push(candidate);
+                }
+            }
+            sinks.len().max(1)
+        };
+        let last_chain_depth = (0..count)
+            .filter(|&member| chain_of(member) == last_sink && nodes[member].kind != OpKind::Store)
+            .count();
+        let relaxed = chain_count <= 2 && last_chain_depth <= 2 && nodes[node].latency < 3;
+        let own_dying: Option<u8> = nodes[node]
+            .reads
+            .iter()
+            .filter_map(|read| {
+                let from_param = params
+                    .iter()
+                    .find(|&&(value, _)| value == *read)
+                    .map(|&(_, register)| (register, param_end(*read), false));
+                let from_internal = (0..count)
+                    .rev()
+                    .find(|&w| nodes[w].writes.contains(read))
+                    .and_then(|writer| result[writer].map(|register| (register, value_end(writer), true)));
+                from_param.or(from_internal)
+            })
+            .filter(|&(_, death, internal)| death == start && (internal || relaxed))
+            .map(|(register, _, _)| register)
+            .min();
+        let open_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+            occupied.iter().all(|&(taken, taken_start, taken_end)| {
+                taken != register || taken_end <= start || taken_start > end
+            })
+        };
+        let on_last_chain = chain_of(node) == last_sink;
+        let is_final = consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
+        let r0_allowed = on_last_chain || end < last_chain_first_def;
+        let pick = if r0_allowed && closed_free(0, &occupied) {
+            Some(0)
+        } else if is_final || relaxed {
+            own_dying
+                .filter(|&register| open_free(register, &occupied))
+                .or_else(|| (3..=12).find(|&register| closed_free(register, &occupied)))
+        } else {
+            (3..=12).find(|&register| closed_free(register, &occupied))
+        };
+        let register = pick.unwrap_or(0);
+        result[node] = Some(register);
+        occupied.push((register, start, end));
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,6 +938,21 @@ mod tests {
             })
             .count();
         println!("v2 interval model: {v2_passed}/{}", shapes.len());
+        let v3_passed = shapes
+            .iter()
+            .filter(|(_, nodes, params, expected)| {
+                let order = linearize(nodes);
+                assign_registers_v3(nodes, &order, params) == *expected
+            })
+            .count();
+        println!("v3 closed+r0-last model: {v3_passed}/{}", shapes.len());
+        for (name, nodes, params, expected) in &shapes {
+            let order = linearize(nodes);
+            let got = assign_registers_v3(nodes, &order, params);
+            if got != *expected {
+                println!("  v3 FAIL {name}: got {got:?}\n               want {expected:?}");
+            }
+        }
         for (name, nodes, params, expected) in &shapes {
             let order = linearize(nodes);
             let got = assign_registers_v2(nodes, &order, params);
