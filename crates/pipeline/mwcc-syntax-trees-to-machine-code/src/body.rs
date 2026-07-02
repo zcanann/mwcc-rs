@@ -4256,29 +4256,31 @@ impl Generator {
         if !(call_arguments.is_empty() || (call_arguments.len() == 1 && is_param(&call_arguments[0]))) {
             return Ok(false);
         }
-        // Prologue: a 16-byte frame saving the link register and r31.
+        // Prologue: a 16-byte frame saving the link register and the saved parameter.
         self.non_leaf = true;
         self.frame_size = 16;
-        self.callee_saved = vec![31];
+        // Phase D: the saved parameter's home is a virtual (call-crossing -> r31).
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-        // Save the live parameter into r31 before the call clobbers its incoming register.
-        self.output.instructions.push(Instruction::Or { a: 31, s: param_register, b: param_register });
+        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        // Save the live parameter before the call clobbers its incoming register.
+        self.output.instructions.push(Instruction::Or { a: saved, s: param_register, b: param_register });
         self.emit_call(call_name, call_arguments, None, false)?;
-        // Combine the saved parameter (r31) with the call result (r3) — the saved value first.
+        // Combine the saved parameter with the call result (r3) — the saved value first.
         let result = Eabi::general_result().number;
         self.output.instructions.push(match operator {
-            BinaryOperator::Add => Instruction::Add { d: result, a: 31, b: result },
-            BinaryOperator::BitOr => Instruction::Or { a: result, s: 31, b: result },
-            BinaryOperator::BitAnd => Instruction::And { a: result, s: 31, b: result },
-            BinaryOperator::BitXor => Instruction::Xor { a: result, s: 31, b: result },
+            BinaryOperator::Add => Instruction::Add { d: result, a: saved, b: result },
+            BinaryOperator::BitOr => Instruction::Or { a: result, s: saved, b: result },
+            BinaryOperator::BitAnd => Instruction::And { a: result, s: saved, b: result },
+            BinaryOperator::BitXor => Instruction::Xor { a: result, s: saved, b: result },
             // `subf d,a,b` computes `b - a`. `f()-x` (call left) is result-param -> `subf r3,r31,r3`;
             // `x-f()` (call right) is param-result -> `subf r3,r3,r31`.
-            BinaryOperator::Subtract if call_on_left => Instruction::SubtractFrom { d: result, a: 31, b: result },
-            BinaryOperator::Subtract => Instruction::SubtractFrom { d: result, a: result, b: 31 },
-            BinaryOperator::Multiply => Instruction::MultiplyLow { d: result, a: 31, b: result },
+            BinaryOperator::Subtract if call_on_left => Instruction::SubtractFrom { d: result, a: saved, b: result },
+            BinaryOperator::Subtract => Instruction::SubtractFrom { d: result, a: result, b: saved },
+            BinaryOperator::Multiply => Instruction::MultiplyLow { d: result, a: saved, b: result },
             _ => unreachable!("operator restricted above"),
         });
         self.emit_epilogue_and_return();
@@ -4318,19 +4320,21 @@ impl Generator {
                 _ => return Ok(false),
             }
         }
-        // Prologue: a 16-byte frame saving the link register and r31.
+        // Prologue: a 16-byte frame saving the link register and the saved parameter.
         self.non_leaf = true;
         self.frame_size = 16;
-        self.callee_saved = vec![31];
+        // Phase D: the saved parameter's home is a virtual (call-crossing -> r31).
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-        // Save the second parameter (live across the first call) into r31, and record it there so the
-        // second call materializes its argument from r31 (`mr r3,r31`).
-        self.output.instructions.push(Instruction::Or { a: 31, s: param_registers[1], b: param_registers[1] });
+        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        // Save the second parameter (live across the first call), and record it there so
+        // the second call materializes its argument from the saved home (`mr r3,r31`).
+        self.output.instructions.push(Instruction::Or { a: saved, s: param_registers[1], b: param_registers[1] });
         if let Some(location) = self.locations.get_mut(&function.parameters[1].name) {
-            location.register = 31;
+            location.register = saved;
         }
         // First call: the first parameter is still in its incoming register (no move).
         self.emit_call(name0, args0, None, false)?;
@@ -4367,22 +4371,24 @@ impl Generator {
         if !first_arguments.is_empty() || !second_arguments.is_empty() {
             return Ok(false);
         }
-        // Prologue: a 16-byte frame saving the link register and r31.
+        // Prologue: a 16-byte frame saving the link register and the saved result.
         self.non_leaf = true;
         self.frame_size = 16;
-        self.callee_saved = vec![31];
+        // Phase D: the first result's home is a virtual (call-crossing -> r31).
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-        // First call; its result is saved in r31 across the second call.
+        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        // First call; its result is saved across the second call.
         self.emit_call(first_name, first_arguments, None, false)?;
-        self.output.instructions.push(Instruction::Or { a: 31, s: 3, b: 3 });
+        self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
         // Second call; its result lands in r3.
         self.emit_call(second_name, second_arguments, None, false)?;
-        // `subf d,a,b` = `b - a`; first result in r31, second in r3, so `subf r3,r3,r31` = r31 - r3 =
+        // `subf d,a,b` = `b - a`; first result saved, second in r3, so `subf r3,r3,<saved>` =
         // first - second (`f() - g()`).
-        self.output.instructions.push(Instruction::SubtractFrom { d: 3, a: 3, b: 31 });
+        self.output.instructions.push(Instruction::SubtractFrom { d: 3, a: 3, b: saved });
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -4439,27 +4445,29 @@ impl Generator {
         let frame_size = 16i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        self.callee_saved = vec![31, 30];
+        // Phase D: virtual homes, highest-rank first (id order -> r31, r30).
+        let homes: Vec<u8> = (0..incoming.len()).map(|_| self.fresh_virtual_general()).collect();
+        self.callee_saved = homes.clone();
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
         // Save each parameter — the LAST to r31 (top of the frame), the first to r30 — interleaving
         // the store with the move, as mwcc emits.
         for (rank, (_, incoming_register)) in incoming.iter().rev().enumerate() {
-            let register = 31 - rank as u8;
+            let register = homes[rank];
             let offset = frame_size - 4 * (rank as i16 + 1);
             self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
             self.output.instructions.push(Instruction::Or { a: register, s: *incoming_register, b: *incoming_register });
         }
-        // The second parameter is now read from its callee-saved register r31 (its incoming register
+        // The second parameter is now read from its callee-saved home (its incoming register
         // is dead), so a call passing it materializes `mr r3,r31`. The first parameter stays in its
-        // incoming register for the call (no move) and moves to r30 only afterward.
+        // incoming register for the call (no move) and moves to its home only afterward.
         if let Some(location) = self.locations.get_mut(&function.parameters[1].name) {
-            location.register = 31;
+            location.register = homes[0];
         }
         self.emit_call(name, arguments, None, false)?;
         if let Some(location) = self.locations.get_mut(&function.parameters[0].name) {
-            location.register = 30;
+            location.register = homes[1];
         }
         let result = Eabi::general_result().number;
         self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
