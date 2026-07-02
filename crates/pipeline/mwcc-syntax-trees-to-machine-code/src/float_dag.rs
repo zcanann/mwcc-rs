@@ -48,6 +48,9 @@ enum FloatOp {
 
 const LOAD_LATENCY: u32 = 2;
 const FLOAT_ARITH_LATENCY: u32 = 3;
+/// Double fmul GATES its consumers at 4 cycles while weighing 3 for
+/// priority (measured: the z=x*x chains; see the linearize fixtures).
+const FLOAT_MUL_GATE: u32 = 4;
 
 impl Generator {
     /// Claim `return <double multiply-add tree>;` for the frozen float
@@ -124,14 +127,6 @@ impl Generator {
         // the chain's first fmadd — a far-consumer stall the order model
         // does not fit yet).
         if !function.locals.is_empty() {
-            let return_arith_total = {
-                let mut refs: Vec<(&Tree, u32)> = Vec::new();
-                collect_arith(&tree, 0, &mut refs);
-                refs.len()
-            };
-            if return_arith_total >= 4 {
-                return Ok(false);
-            }
             let uses = |index: usize, tree: &Tree| -> usize {
                 fn walk(tree: &Tree, index: usize, count: &mut usize) {
                     match tree {
@@ -236,13 +231,15 @@ impl Generator {
                     Operand::Node(node) => nodes[node].writes[0],
                 })
                 .collect();
-            nodes.push(
-                DagNode::new("flocal", FLOAT_ARITH_LATENCY)
-                    .hazard(HAZARD_FPU)
-                    .local_home()
-                    .reads(&read_values)
-                    .writes(&[10 + index as u32]),
-            );
+            let mut node = DagNode::new("flocal", FLOAT_ARITH_LATENCY)
+                .hazard(HAZARD_FPU)
+                .local_home()
+                .reads(&read_values)
+                .writes(&[10 + index as u32]);
+            if matches!(op, FloatOp::Mul { .. }) {
+                node = node.gate(FLOAT_MUL_GATE);
+            }
+            nodes.push(node);
             ops.push(op);
             let operand = Operand::Node(index);
             local_operands.push(operand);
@@ -350,6 +347,7 @@ impl Generator {
                     let reads: Vec<u32> = [a, c].iter().map(|&operand| value_of(operand, &nodes)).collect();
                     nodes.push(
                         DagNode::new("fmul", FLOAT_ARITH_LATENCY)
+                            .gate(FLOAT_MUL_GATE)
                             .hazard(HAZARD_FPU)
                             .reads(&reads)
                             .writes(&[10 + index as u32]),

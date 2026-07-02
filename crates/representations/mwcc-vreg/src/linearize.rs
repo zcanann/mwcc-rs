@@ -452,14 +452,8 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 // unblocked candidate is ready, the top blocked load issues
                 // anyway (measured: horner3/4 hoist every coefficient load
                 // that has a fresh register — one per empty cycle).
-                // The same stall governs a LOCAL-HOME arith (v = z*x): its
-                // window-top-tier register is held by an early load until the
-                // chain's first consumer frees it, so mwcc holds the fmul
-                // (measured: zv_deep/zv_deeper — v issues right after m1,
-                // lifted on the empty cycle). Anonymous cross-chain products
-                // (mul-of-mul's z*w) are exempt and issue at once.
                 let load_blocked = |candidate: usize, issued_at: &Vec<Option<u32>>| -> bool {
-                    (nodes[candidate].kind == OpKind::Load || nodes[candidate].local_home)
+                    nodes[candidate].kind == OpKind::Load
                         && !(0..count).any(|consumer| {
                             deps[consumer].contains(&candidate)
                                 && deps[consumer].iter().all(|&dependency| {
@@ -474,6 +468,18 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 };
                 // Rescan after every pick: a WAR-deferred return final becomes
                 // eligible the moment the bound store lands in this window.
+                // A fresh arith reading a LOCAL-HOME value defers one cycle
+                // to a pending blocked-load lift (measured: z4/zv_deeper —
+                // the last coefficient lifts BEFORE the chain's first fmadd
+                // only when a local z feeds it; horner4's and fmsub_deep's
+                // m1 issue straight over their pending loads).
+                let arith_defers = |candidate: usize, issued_at: &Vec<Option<u32>>| -> bool {
+                    nodes[candidate].kind != OpKind::Load
+                        && deps[candidate].iter().any(|&dep| nodes[dep].local_home)
+                        && ready
+                            .iter()
+                            .any(|&other| other != candidate && load_blocked(other, issued_at))
+                };
                 'fill: while picked.len() < model.issue_width {
                     for &candidate in &ready {
                         if picked.contains(&candidate) {
@@ -487,11 +493,15 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         {
                             continue;
                         }
+                        if arith_defers(candidate, &issued_at) {
+                            continue;
+                        }
                         if load_blocked(candidate, &issued_at) {
                             let other_unblocked = ready.iter().any(|&other| {
                                 other != candidate
                                     && !picked.contains(&other)
                                     && !load_blocked(other, &issued_at)
+                                    && !arith_defers(other, &issued_at)
                             });
                             if !picked.is_empty() || other_unblocked {
                                 continue;
@@ -1926,6 +1936,14 @@ mod tests {
     fn float_order_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<usize>, bool)> {
         use OpKind::Store as St;
         const FARITH: u32 = 3;
+        // DOUBLE fmul GATES its consumers at 4 cycles while WEIGHING 3 for
+        // priority (the mulli precedent: gate and weight split). Measured:
+        // z=x*x chains hold the first fmadd one extra cycle so every
+        // coefficient lifts first, while z=x+x (a 3-cycle fadd) flows the
+        // standard 3-loads-then-fmadd; s1_s2's load order pins the WEIGHT
+        // at 3 (weight 4 flips the s1/s2 chains). The fire-341 "local-home
+        // stall" was this gate in disguise.
+        const FMUL_D: u32 = 4;
         vec![
             (
                 // g=a+1.5; h=b+2.5: lfd lfd fadd fadd stfd stfd (source order)
@@ -1978,7 +1996,7 @@ mod tests {
                     DagNode::new("lfd_c25", LOAD).writes(&[10]),
                     DagNode::new("lfd_c15", LOAD).writes(&[11]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[12]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 12]).writes(&[13]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 12]).writes(&[13]),
                 ],
                 vec![0, 1, 2, 3],
                 true,
@@ -1994,7 +2012,7 @@ mod tests {
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
                 ],
                 vec![0, 1, 2, 3, 4, 5],
                 true,
@@ -2012,7 +2030,7 @@ mod tests {
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[14]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 14, 12]).writes(&[15]),
                     DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[1, 15, 13]).writes(&[16]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 16]).writes(&[17]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 16]).writes(&[17]),
                 ],
                 vec![0, 1, 2, 4, 3, 5, 6, 7],
                 true,
@@ -2029,7 +2047,7 @@ mod tests {
                     DagNode::new("lfd_t0", LOAD).reads(&[31]).writes(&[12]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
                 ],
                 vec![0, 1, 2, 3, 4, 5, 6, 7],
                 true,
@@ -2048,7 +2066,7 @@ mod tests {
                     DagNode::new("fmadd_a", FARITH).hazard(HAZARD_FPU).reads(&[2, 10, 11]).writes(&[20]),
                     DagNode::new("fmadd_b", FARITH).hazard(HAZARD_FPU).reads(&[2, 12, 13]).writes(&[21]),
                     DagNode::new("fmadd_c", FARITH).hazard(HAZARD_FPU).reads(&[2, 20, 14]).writes(&[22]),
-                    DagNode::new("fmul_d", FARITH).hazard(HAZARD_FPU).reads(&[2, 21]).writes(&[23]),
+                    DagNode::new("fmul_d", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[2, 21]).writes(&[23]),
                     DagNode::new("fmadd_f", FARITH).hazard(HAZARD_FPU).reads(&[1, 22, 23]).writes(&[24]),
                 ],
                 vec![0, 1, 2, 3, 5, 4, 6, 7, 8, 9],
@@ -2060,7 +2078,7 @@ mod tests {
                 "float_fmul_vs_fadd",
                 vec![
                     DagNode::new("lfd_c1", LOAD).writes(&[10]),
-                    DagNode::new("fmul_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("fmul_g", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
                     DagNode::new("st_g", STORE).kind(St).reads(&[11]),
                     DagNode::new("lfd_c2", LOAD).writes(&[20]),
                     DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
@@ -2113,6 +2131,7 @@ mod tests {
     fn float_register_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
         use OpKind::Store as St;
         const FARITH: u32 = 3;
+        const FMUL_D: u32 = 4;
         vec![
             (
                 // g=a+1.5; h=b+2.5: lfd f3 / fadd f1,f3,f1 / lfd f0 / fadd f0,f0,f2
@@ -2163,7 +2182,7 @@ mod tests {
                 "reg_fmul_vs_fadd",
                 vec![
                     DagNode::new("lfd_c1", LOAD).writes(&[10]),
-                    DagNode::new("fmul_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("fmul_g", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
                     DagNode::new("st_g", STORE).kind(St).reads(&[11]),
                     DagNode::new("lfd_c2", LOAD).writes(&[20]),
                     DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
@@ -2179,7 +2198,7 @@ mod tests {
                     DagNode::new("lfd_c25", LOAD).writes(&[10]),
                     DagNode::new("lfd_c15", LOAD).writes(&[11]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[12]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 12]).writes(&[13]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 12]).writes(&[13]),
                 ],
                 vec![(1, 1)],
                 vec![Some(2), Some(0), Some(0), Some(1)],
@@ -2193,7 +2212,7 @@ mod tests {
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
                 ],
                 vec![(1, 1)],
                 vec![Some(3), Some(2), Some(0), Some(2), Some(0), Some(1)],
@@ -2209,7 +2228,7 @@ mod tests {
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[14]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 14, 12]).writes(&[15]),
                     DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[1, 15, 13]).writes(&[16]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 16]).writes(&[17]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 16]).writes(&[17]),
                 ],
                 vec![(1, 1)],
                 vec![Some(3), Some(0), Some(2), Some(0), Some(3), Some(2), Some(0), Some(1)],
@@ -2227,7 +2246,7 @@ mod tests {
                     DagNode::new("fmadd_a", FARITH).hazard(HAZARD_FPU).reads(&[2, 10, 11]).writes(&[20]),
                     DagNode::new("fmadd_b", FARITH).hazard(HAZARD_FPU).reads(&[2, 12, 13]).writes(&[21]),
                     DagNode::new("fmadd_c", FARITH).hazard(HAZARD_FPU).reads(&[2, 20, 14]).writes(&[22]),
-                    DagNode::new("fmul_d", FARITH).hazard(HAZARD_FPU).reads(&[2, 21]).writes(&[23]),
+                    DagNode::new("fmul_d", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[2, 21]).writes(&[23]),
                     DagNode::new("fmadd_f", FARITH).hazard(HAZARD_FPU).reads(&[1, 22, 23]).writes(&[24]),
                 ],
                 vec![(1, 1), (2, 2)],
@@ -2267,7 +2286,7 @@ mod tests {
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[14]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 14, 12]).writes(&[15]),
                     DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[1, 15, 13]).writes(&[16]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[2, 16]).writes(&[17]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[2, 16]).writes(&[17]),
                 ],
                 vec![(1, 1), (2, 2)],
                 vec![Some(4), Some(0), Some(3), Some(0), Some(4), Some(3), Some(0), Some(1)],
@@ -2286,7 +2305,7 @@ mod tests {
                     DagNode::new("lfd_c15", LOAD).writes(&[13]),
                     DagNode::new("fmadd_b", FARITH).hazard(HAZARD_FPU).reads(&[2, 10, 11]).writes(&[20]),
                     DagNode::new("fmadd_a", FARITH).hazard(HAZARD_FPU).reads(&[2, 12, 13]).writes(&[21]),
-                    DagNode::new("fmul_d", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[22]),
+                    DagNode::new("fmul_d", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[22]),
                     DagNode::new("fmadd_f", FARITH).hazard(HAZARD_FPU).reads(&[1, 21, 22]).writes(&[23]),
                 ],
                 vec![(1, 1), (2, 2)],
@@ -2314,7 +2333,7 @@ mod tests {
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
                     DagNode::new("fnmsub1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
                     DagNode::new("fnmsub2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
                 ],
                 vec![(1, 1)],
                 vec![Some(3), Some(2), Some(0), Some(2), Some(0), Some(1)],
@@ -2327,9 +2346,9 @@ mod tests {
                 vec![
                     DagNode::new("lfd_c25", LOAD).writes(&[10]),
                     DagNode::new("lfd_c15", LOAD).writes(&[11]),
-                    DagNode::new("fmul_zw", FARITH).hazard(HAZARD_FPU).reads(&[1, 2]).writes(&[20]),
+                    DagNode::new("fmul_zw", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 2]).writes(&[20]),
                     DagNode::new("fmadd", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[21]),
-                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[21, 20]).writes(&[22]),
+                    DagNode::new("fmul_root", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[21, 20]).writes(&[22]),
                 ],
                 vec![(1, 1), (2, 2)],
                 vec![Some(3), Some(2), Some(0), Some(1), Some(1)],
@@ -2387,11 +2406,11 @@ mod tests {
                 // window top (f2); x's f1 frees at slot 0 for the 2.5 load.
                 "reg_local_z2",
                 vec![
-                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
                     DagNode::new("lfd_c25", LOAD).writes(&[10]),
                     DagNode::new("lfd_c15", LOAD).writes(&[11]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[21]),
-                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[20, 21]).writes(&[22]),
+                    DagNode::new("fmul_root", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[20, 21]).writes(&[22]),
                 ],
                 vec![(1, 1)],
                 vec![Some(2), Some(1), Some(0), Some(0), Some(1)],
@@ -2400,13 +2419,13 @@ mod tests {
                 // FIRE-340 — z=x*x; 3-use horner: z -> f3 (window-top).
                 "reg_local_z3",
                 vec![
-                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
                     DagNode::new("lfd_c35", LOAD).writes(&[10]),
                     DagNode::new("lfd_c25", LOAD).writes(&[11]),
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[21]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[20, 21, 12]).writes(&[22]),
-                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[20, 22]).writes(&[23]),
+                    DagNode::new("fmul_root", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[20, 22]).writes(&[23]),
                 ],
                 vec![(1, 1)],
                 vec![Some(3), Some(2), Some(1), Some(0), Some(1), Some(0), Some(1)],
@@ -2417,10 +2436,10 @@ mod tests {
                 // root fmadd's addend.
                 "reg_local_zv",
                 vec![
-                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
                     DagNode::new("lfd_c25", LOAD).writes(&[10]),
                     DagNode::new("lfd_c15", LOAD).writes(&[11]),
-                    DagNode::new("fmul_v", FARITH).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
+                    DagNode::new("fmul_v", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[22]),
                     DagNode::new("fmadd_root", FARITH).hazard(HAZARD_FPU).reads(&[21, 22, 1]).writes(&[23]),
                 ],
@@ -2431,7 +2450,7 @@ mod tests {
                 // FIRE-340 — k_sin r-shape (r folded): x + z*(1.5+z*(2.5+z*3.5)).
                 "reg_local_ksin_r",
                 vec![
-                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
                     DagNode::new("lfd_c35", LOAD).writes(&[10]),
                     DagNode::new("lfd_c25", LOAD).writes(&[11]),
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
@@ -2453,8 +2472,8 @@ mod tests {
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[21]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 21, 12]).writes(&[22]),
-                    DagNode::new("fmul_zw", FARITH).hazard(HAZARD_FPU).reads(&[1, 2]).writes(&[20]),
-                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[22, 20]).writes(&[23]),
+                    DagNode::new("fmul_zw", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[1, 2]).writes(&[20]),
+                    DagNode::new("fmul_root", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[22, 20]).writes(&[23]),
                 ],
                 vec![(1, 1), (2, 2)],
                 vec![Some(3), Some(2), Some(0), Some(2), Some(0), Some(4), Some(1)],
@@ -2465,8 +2484,8 @@ mod tests {
                 // frees it; v issues on the empty cycle after m1.
                 "reg_local_zv_deep",
                 vec![
-                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
-                    DagNode::new("fmul_v", FARITH).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_v", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
                     DagNode::new("lfd_c35", LOAD).writes(&[10]),
                     DagNode::new("lfd_c25", LOAD).writes(&[11]),
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
@@ -2482,7 +2501,7 @@ mod tests {
                 // frees at z; the chain reuses it mid-stream).
                 "reg_local_z4",
                 vec![
-                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
                     DagNode::new("lfd_c45", LOAD).writes(&[10]),
                     DagNode::new("lfd_c35", LOAD).writes(&[11]),
                     DagNode::new("lfd_c25", LOAD).writes(&[12]),
@@ -2490,7 +2509,7 @@ mod tests {
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[21]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[20, 21, 12]).writes(&[22]),
                     DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[20, 22, 13]).writes(&[23]),
-                    DagNode::new("fmul_root", FARITH).hazard(HAZARD_FPU).reads(&[20, 23]).writes(&[24]),
+                    DagNode::new("fmul_root", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[20, 23]).writes(&[24]),
                 ],
                 vec![(1, 1)],
                 vec![Some(4), Some(3), Some(2), Some(1), Some(0), Some(2), Some(1), Some(0), Some(1)],
@@ -2500,8 +2519,8 @@ mod tests {
                 // chain (v waits two lift cycles).
                 "reg_local_zv_deeper",
                 vec![
-                    DagNode::new("fmul_z", FARITH).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
-                    DagNode::new("fmul_v", FARITH).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_v", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
                     DagNode::new("lfd_c45", LOAD).writes(&[10]),
                     DagNode::new("lfd_c35", LOAD).writes(&[11]),
                     DagNode::new("lfd_c25", LOAD).writes(&[12]),
@@ -2523,7 +2542,7 @@ mod tests {
                     DagNode::new("lfd_c15", LOAD).writes(&[12]),
                     DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
                     DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
-                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[2, 14]).writes(&[15]),
+                    DagNode::new("fmul", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[2, 14]).writes(&[15]),
                 ],
                 vec![(1, 1), (2, 2)],
                 vec![Some(4), Some(3), Some(0), Some(3), Some(0), Some(1)],
@@ -2618,20 +2637,10 @@ mod tests {
                 frozen_passed += 1;
             } else {
                 println!("  frozen reg MISS {name}: got {got:?} want {expected:?}");
-                // FIRE-341 OPEN: z4/zv_deeper — the chain's first fmadd holds
-                // one cycle past readiness so the LAST blocked coefficient
-                // lifts first (all pool loads precede the chain), but ONLY
-                // when a local z feeds the chain (fmsub_deep's m1 issues over
-                // its pending subtrahend). Not a latency effect (lat-4 breaks
-                // zv). Needs isolation probes.
-                assert!(
-                    matches!(*name, "reg_local_z4" | "reg_local_zv_deeper"),
-                    "float register fixture {name} regressed under FROZEN_FLOAT_REG"
-                );
             }
         }
         println!("float registers FROZEN: {frozen_passed}/{}", shapes.len());
-        assert!(frozen_passed + 2 >= shapes.len(), "FROZEN_FLOAT_REG regressed");
+        assert_eq!(frozen_passed, shapes.len(), "FROZEN_FLOAT_REG regressed");
     }
 
     /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order

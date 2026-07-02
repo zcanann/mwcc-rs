@@ -39,3 +39,28 @@ double local_zv_deep(double x)
 	double v = z * x;
 	return x + v * (51.5 + z * (52.5 + z * 53.5));
 }
+
+double local_z4(double x)
+{
+	double z = x * x;
+	return z * (61.5 + z * (62.5 + z * (63.5 + z * 64.5)));
+}
+
+double local_z4_xy(double x, double y)
+{
+	double z = x * y;
+	return z * (71.5 + z * (72.5 + z * (73.5 + z * 74.5)));
+}
+
+double local_zv_deeper(double x)
+{
+	double z = x * x;
+	double v = z * x;
+	return x + v * (81.5 + z * (82.5 + z * (83.5 + z * 84.5)));
+}
+
+double local_z4_wfactor(double x, double w)
+{
+	double z = x * x;
+	return z * (91.5 + z * (92.5 + z * (93.5 + z * w)));
+}

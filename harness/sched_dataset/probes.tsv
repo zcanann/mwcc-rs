@@ -81,3 +81,6 @@ float_local_ksin_r	double f(double x) { double z = x*x; double r = 1.5 + z*(2.5 
 float_local_zv_deep	double f(double x) { double z = x*x; double v = z*x; return x + v*(1.5 + z*(2.5 + z*3.5)); }
 float_local_z4	double f(double x) { double z = x*x; return z * (1.5 + z * (2.5 + z * (3.5 + z * 4.5))); }
 float_local_zv_deeper	double f(double x) { double z = x*x; double v = z*x; return x + v*(1.5 + z*(2.5 + z*(3.5 + z*4.5))); }
+float_local_z4_xy	double f(double x, double y) { double z = x*y; return z * (1.5 + z * (2.5 + z * (3.5 + z * 4.5))); }
+float_local_fadd_z4	double f(double x) { double z = x+x; return z * (1.5 + z * (2.5 + z * (3.5 + z * 4.5))); }
+float_local_z4_wfactor	double f(double x, double w) { double z = x*x; return z * (1.5 + z * (2.5 + z * (3.5 + z * w))); }
