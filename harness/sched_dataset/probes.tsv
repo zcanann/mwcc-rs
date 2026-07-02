@@ -31,3 +31,4 @@ one_op_g_two_op_h	extern int g; extern int h; void f(int a, int b) { g = a + 1; 
 four_op_last_chain	extern int g; extern int h; void f(int a, int b) { g = a + 1; h = (((b + 2) * 3) + 4) * 5; }
 three_op_no_mulli	extern int g; extern int h; void f(int a, int b) { g = a + 1; h = ((b + 2) >> 3) + 4; }
 two_mulli_chains	extern int g; extern int h; void f(int a, int b) { g = (a + 1) * 5; h = ((b + 2) * 3) + 4; }
+three_two_op_chains	extern int g; extern int h; extern int k; void f(int a, int b, int c) { g = (a + 1) * 2; h = (b + 2) * 3; k = (c + 3) * 4; }

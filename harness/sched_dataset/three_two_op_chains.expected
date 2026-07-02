@@ -1,0 +1,10 @@
+addi r0,r4,2
+addi r4,r3,1
+mulli r3,r0,3
+addi r0,r5,3
+slwi r4,r4,1
+slwi r0,r0,2
+stw r4,0(0)
+stw r3,0(0)
+stw r0,0(0)
+blr
