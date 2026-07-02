@@ -34,8 +34,12 @@ pub struct DagNode {
     pub label: &'static str,
     /// The operation class.
     pub kind: OpKind,
-    /// Issue-to-result steps (see the module table).
+    /// Issue-to-result steps (see the module table) — the PRIORITY weight.
     pub latency: u32,
+    /// Readiness gating steps (defaults to `latency`); mulli gates consumers
+    /// at 2 while weighing 3 (measured: store orders vs intra-expression
+    /// priority disagree on one latency).
+    pub gate_latency: u32,
     /// Value ids this op reads (RAW edges come from these).
     pub reads: Vec<u32>,
     /// Value ids this op defines.
@@ -52,7 +56,11 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new() }
+        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new() }
+    }
+    pub fn gate(mut self, gate_latency: u32) -> DagNode {
+        self.gate_latency = gate_latency;
+        self
     }
     pub fn kind(mut self, kind: OpKind) -> DagNode {
         self.kind = kind;
@@ -224,7 +232,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 deps[candidate].iter().all(|&dependency| {
                     issued_at[dependency].is_some_and(|at| {
                         if model.gate_on_complete {
-                            at + nodes[dependency].latency <= time
+                            at + nodes[dependency].gate_latency <= time
                         } else {
                             at < time
                         }
@@ -632,10 +640,14 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let last_chain_depth = (0..count)
             .filter(|&member| chain_of(member) == last_sink && nodes[member].kind != OpKind::Store)
             .count();
+        // Param in-place never applies to the block's FIRST issue slot (measured:
+        // every slot-0 op takes a closed-pool register — alu_tie's r6, the
+        // equal-pair's r5 — while identical ops at slot 1+ reuse in place).
         let relaxed = chain_count <= 2
             && last_chain_depth <= 2
             && nodes[node].latency < 3
-            && chain_of(node) != last_sink;
+            && chain_of(node) != last_sink
+            && (start > 0 || nodes[node].kind == OpKind::Load);
         let own_dying: Option<u8> = nodes[node]
             .reads
             .iter()
@@ -926,6 +938,73 @@ mod tests {
         ]
     }
 
+    /// The newer capture shapes, register-hardening round (fire 289). MUL ops
+    /// gate at 2 while weighing 3 (the split the store orders demand).
+    fn register_fixtures_round2() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+        use OpKind::Store as St;
+        vec![
+            (
+                // h1 r0; g1 r4; h2 r3; k1 r0; g2 r4(in place); k2 r0(in place)
+                "three_two_op_chains",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("g2", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("h1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("h2", MUL).gate(2).reads(&[20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                    DagNode::new("k1", ALU).reads(&[3]).writes(&[30]),
+                    DagNode::new("k2", ALU).reads(&[30]).writes(&[31]),
+                    DagNode::new("st_k", STORE).kind(St).reads(&[31]),
+                ],
+                vec![(1, 3), (2, 4), (3, 5)],
+                vec![Some(4), Some(4), None, Some(0), Some(3), None, Some(0), Some(0), None],
+            ),
+            (
+                // srawi_g r5; srawi_h r3; addi_g r4; addi_h r0
+                "equal_two_op_pair",
+                vec![
+                    DagNode::new("srawi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("addi_g", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("srawi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("addi_h", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(5), Some(4), None, Some(3), Some(0), None],
+            ),
+            (
+                // g addi r3 (in place, relaxed); h1 addi r0; h2 mulli r0
+                "one_op_g_two_op_h",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("h1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("h2", MUL).gate(2).reads(&[20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(3), None, Some(0), Some(0), None],
+            ),
+            (
+                // h1 r0; g1 r4; h2 r3; g2 r4(in place); h3 r0
+                "two_mulli_chains",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("g2", MUL).gate(2).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("h1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("h2", MUL).gate(2).reads(&[20]).writes(&[21]),
+                    DagNode::new("h3", ALU).reads(&[21]).writes(&[22]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[22]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(4), Some(4), None, Some(0), Some(3), Some(0), None],
+            ),
+        ]
+    }
+
     /// THE REGISTER FITTER: enumerate policies against the register fixtures.
     /// Run: `cargo test -p mwcc-vreg register_fitter -- --ignored --nocapture`.
     #[test]
@@ -966,6 +1045,23 @@ mod tests {
             })
             .count();
         println!("v3 closed+r0-last model: {v3_passed}/{}", shapes.len());
+        let round2 = register_fixtures_round2();
+        let round2_passed = round2
+            .iter()
+            .filter(|(_, nodes, params, expected)| {
+                let order = linearize(nodes);
+                assign_registers_v3(nodes, &order, params) == *expected
+            })
+            .count();
+        println!("v3 round2: {round2_passed}/{}", round2.len());
+        for (name, nodes, params, expected) in &round2 {
+            let order = linearize(nodes);
+            let order_labels: Vec<&str> = order.iter().map(|&index| nodes[index].label).collect();
+            let got = assign_registers_v3(nodes, &order, params);
+            if got != *expected {
+                println!("  r2 FAIL {name}: order {order_labels:?}\n     got {got:?}\n    want {expected:?}");
+            }
+        }
         for (name, nodes, params, expected) in &shapes {
             let order = linearize(nodes);
             let got = assign_registers_v3(nodes, &order, params);
