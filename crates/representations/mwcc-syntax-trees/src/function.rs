@@ -165,6 +165,9 @@ pub struct Function {
     pub name: String,
     /// A `static` (file-local) function — emitted with a LOCAL symbol.
     pub is_static: bool,
+    /// Declared `__declspec(weak)` (on a prior prototype or the definition) —
+    /// emitted with a WEAK symbol binding.
+    pub is_weak: bool,
     pub parameters: Vec<Parameter>,
     pub locals: Vec<LocalDeclaration>,
     pub statements: Vec<Statement>,

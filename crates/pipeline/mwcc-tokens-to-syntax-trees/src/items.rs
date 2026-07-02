@@ -1280,10 +1280,32 @@ impl Parser {
             // local. Both are recorded so the object can classify the symbol.
             let mut is_extern = false;
             let mut is_static = false;
+            let mut is_weak = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
                     "extern" => is_extern = true,
                     "static" => is_static = true,
+                    // `__declspec(weak)` marks the declared symbol WEAK — on a
+                    // prototype it applies to the later definition too.
+                    "__declspec" => {
+                        self.advance();
+                        self.expect(Token::ParenOpen)?;
+                        let mut depth = 1;
+                        let mut weak_inside = false;
+                        while depth > 0 {
+                            match self.advance() {
+                                Token::ParenOpen => depth += 1,
+                                Token::ParenClose => depth -= 1,
+                                Token::Identifier(inner) if inner == "weak" => weak_inside = true,
+                                Token::EndOfFile => return Err(Diagnostic::error("unterminated __declspec")),
+                                _ => {}
+                            }
+                        }
+                        if weak_inside {
+                            is_weak = true;
+                        }
+                        continue;
+                    }
                     _ => break,
                 }
                 self.advance();
@@ -1692,6 +1714,9 @@ impl Parser {
             if *self.peek() == Token::Semicolon {
                 self.advance(); // a prototype — record its return + parameter types, keep looking
                 let parameter_types = parameters.iter().map(|parameter| parameter.parameter_type).collect();
+                if is_weak {
+                    self.weak_functions.insert(name.clone());
+                }
                 prototypes.push((name, return_type, parameter_types));
                 return Ok(());
             }
@@ -1702,7 +1727,10 @@ impl Parser {
             if is_variadic {
                 return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
             }
-            functions.push(self.function_body(return_type, name, is_static, parameters)?);
+            let function_is_weak = is_weak || self.weak_functions.contains(&name);
+            let mut function = self.function_body(return_type, name, is_static, parameters)?;
+            function.is_weak = function_is_weak;
+            functions.push(function);
         }
         Ok(())
     }
@@ -2169,7 +2197,7 @@ impl Parser {
         }
         self.expect(Token::BraceClose)?;
 
-        Ok(Function { return_type, name, is_static, parameters, locals, statements, guards, return_expression })
+        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

@@ -53,6 +53,7 @@ pub struct MachineFunction {
     /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol
     /// rather than a global one.
     pub is_static: bool,
+    pub is_weak: bool,
     /// Whether the function performs an int<->float conversion. mwcc's anonymous
     /// `@N` counter starts one higher for such functions.
     pub has_conversion: bool,
@@ -97,6 +98,7 @@ impl MachineFunction {
             new_string_count: 0,
             new_string_names: Vec::new(),
             is_static: false,
+            is_weak: false,
             has_conversion: false,
             has_float_branch: false,
             anonymous_label_bump: 0,

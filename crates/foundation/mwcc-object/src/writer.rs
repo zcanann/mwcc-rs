@@ -32,6 +32,7 @@ const STT_FILE: u8 = 4; // STB_LOCAL (0<<4) | STT_FILE
 const STT_SECTION: u8 = 3; // STB_LOCAL | STT_SECTION
 const STB_LOCAL_OBJECT: u8 = 1; // STB_LOCAL | STT_OBJECT (the @N unwind entries)
 const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
+const STB_WEAK_FUNC: u8 = (2 << 4) | 2; // STB_WEAK | STT_FUNC (__declspec(weak))
 const STB_LOCAL_FUNC: u8 = 2; // STB_LOCAL | STT_FUNC (a `static` function)
 const STB_GLOBAL_OBJECT: u8 = (1 << 4) | 1; // STB_GLOBAL | STT_OBJECT (a defined global)
 const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
@@ -51,9 +52,13 @@ const COMMENT_PREFIX: [u8; 56] = [
     0x00, 0x00, 0x00, 0x01,
 ];
 
-/// The `.comment` record for a specific compiler version and build, plus the
-/// per-symbol alignment values (one per symbol past null and FILE, in order).
-fn comment_record(version: (u8, u8, u8), build: u16, symbol_alignments: &[u32]) -> Vec<u8> {
+/// The `.comment` record for a specific compiler version and build, plus one
+/// (alignment, flags) pair per symbol past null and FILE, in order. The true
+/// framing is a 60-byte prefix then `[align u32][flags u32]` per symbol —
+/// byte-identical to the old pad+align reading when every flag is 0; a WEAK
+/// function carries flags 0x0e000000 (measured: weak-first, weak-last, and
+/// weak-only orderings all place the 0x0e word right after the weak align).
+fn comment_record(version: (u8, u8, u8), build: u16, symbol_records: &[(u32, u32)]) -> Vec<u8> {
     let mut record = COMMENT_PREFIX.to_vec();
     // Byte 11 is a format marker: 0x0a for every supported build except GC/2.7
     // (build 108), which bumped it to 0x0b. Bytes 12..15 are the version itself.
@@ -61,11 +66,11 @@ fn comment_record(version: (u8, u8, u8), build: u16, symbol_alignments: &[u32]) 
     record[12] = version.0;
     record[13] = version.1;
     record[14] = version.2;
-    for &alignment in symbol_alignments {
-        record.extend_from_slice(&[0, 0, 0, 0]);
-        record.extend_from_slice(&alignment.to_be_bytes());
-    }
     record.extend_from_slice(&[0, 0, 0, 0]);
+    for &(alignment, flags) in symbol_records {
+        record.extend_from_slice(&alignment.to_be_bytes());
+        record.extend_from_slice(&flags.to_be_bytes());
+    }
     record
 }
 
@@ -417,7 +422,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // The `.comment` trailer carries one record per symbol *after* the null and
     // FILE entries, holding that symbol's alignment (0 for an undefined external).
     // Values are collected here in symbol-emission order.
-    let mut comment_values: Vec<u32> = Vec::new();
+    let mut comment_values: Vec<(u32, u32)> = Vec::new();
     let section_align = |name: &str| -> u32 {
         match name {
             ".sdata2" | ".sdata" | ".sbss" | ".data" | ".bss" | ".rodata" => 8,
@@ -430,14 +435,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     write_symbol(&mut symtab, strtab.add(input.source_name), 0, 0, STT_FILE, 0, SHN_ABS);
     for name in &content_sections {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
-        comment_values.push(section_align(name));
+        comment_values.push((section_align(name), 0));
     }
     // `static inline` asm helpers (e.g. OSFastCast.h) — a local undefined symbol
     // each, in declaration order, right after the section symbols. `info = 0` is
     // STB_LOCAL | STT_NOTYPE; an undefined symbol has `.comment` alignment 0.
     for name in input.inline_asm_symbols {
         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
-        comment_values.push(0);
+        comment_values.push((0, 0));
     }
     // `static` (file-local) data objects: a LOCAL object symbol each, after the
     // inline-asm locals and before the functions' `@N` entries. The INITIALIZED ones
@@ -467,7 +472,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
-            comment_values.push(data_aligns[object.name]);
+            comment_values.push((data_aligns[object.name], 0));
         }
     }
     // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`), REVERSE order.
@@ -476,7 +481,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
-            comment_values.push(data_aligns[object.name]);
+            comment_values.push((data_aligns[object.name], 0));
         }
     }
     // `static` functions are file-local: a LOCAL `STT_FUNC` symbol each, in
@@ -492,7 +497,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             function_symbols[index] = symbol;
             local_function_symbols.insert(function.name, symbol);
             write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(".text") as u16);
-            comment_values.push(4); // a function is 4-aligned
+            comment_values.push((4, 0)); // a function is 4-aligned
         }
     }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
@@ -512,7 +517,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[name.as_str()]) as u16;
             write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
-            comment_values.push(data_aligns[name.as_str()]);
+            comment_values.push((data_aligns[name.as_str()], 0));
         }
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
@@ -524,7 +529,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     symbols.push(symbol);
                     let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
                     write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
-                    comment_values.push(constant.byte_width as u32);
+                    comment_values.push((constant.byte_width as u32, 0));
                 }
             }
         }
@@ -536,8 +541,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let extabindex_name = strtab.add(&format!("@{}", frame.extabindex));
             write_symbol(&mut symtab, extabindex_name, frame.extabindex_entry_offset, 12, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extabindex") as u16);
             // The unwind entries are 4-aligned objects.
-            comment_values.push(4);
-            comment_values.push(4);
+            comment_values.push((4, 0));
+            comment_values.push((4, 0));
         } else {
             extab_entry_symbols.push(0);
         }
@@ -547,7 +552,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let name = strtab.add(&format!("@{}", number));
             let size = function.jump_table.as_ref().unwrap().entries.len() as u32 * 4;
             write_symbol(&mut symtab, name, jump_table_offset[index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".data") as u16);
-            comment_values.push(4);
+            comment_values.push((4, 0));
         } else {
             jump_table_symbols.push(0);
         }
@@ -581,7 +586,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(section_name) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
-            comment_values.push(data_aligns[object.name]);
+            comment_values.push((data_aligns[object.name], 0));
             // mwcc emits each pointer global's relocation targets immediately after
             // it (`p, &a; q, &b`), not all targets at the end — and within one object
             // (a pointer array `{&a, &b}`) in REVERSE element order (`t, &b, &a`). A
@@ -595,10 +600,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 global_symbols.insert(target, (symtab.len() / SYMBOL_SIZE) as u32);
                 if let Some(&offset) = data_offsets.get(target) {
                     write_symbol(&mut symtab, strtab.add(target), offset, data_sizes[target], STB_GLOBAL_OBJECT, 0, index_of(data_section[target]) as u16);
-                    comment_values.push(data_aligns[target]);
+                    comment_values.push((data_aligns[target], 0));
                 } else {
                     write_symbol(&mut symtab, strtab.add(target), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
-                    comment_values.push(0);
+                    comment_values.push((0, 0));
                 }
             }
         }
@@ -648,10 +653,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     if let Some(&offset) = data_offsets.get(name) {
                         let section = index_of(data_section[name]) as u16;
                         write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name], STB_GLOBAL_OBJECT, 0, section);
-                        comment_values.push(data_aligns[name]);
+                        comment_values.push((data_aligns[name], 0));
                     } else {
                         write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
-                        comment_values.push(0); // an undefined external has no alignment
+                        comment_values.push((0, 0)); // an undefined external has no alignment
                     }
                 }
             };
@@ -662,8 +667,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // newly-referenced externals appear in this run, not the function symbol.
         if !function.is_static {
             function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_GLOBAL_FUNC, 0, index_of(".text") as u16);
-            comment_values.push(4); // a function is 4-aligned
+            let binding = if function.is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], binding, 0, index_of(".text") as u16);
+            let flags = if function.is_weak { 0x0e00_0000 } else { 0 };
+            comment_values.push((4, flags)); // a function is 4-aligned; weak carries 0x0e
         }
         emit_referenced!(implicit_ordered);
     }
@@ -676,7 +683,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
-            comment_values.push(data_aligns[object.name]);
+            comment_values.push((data_aligns[object.name], 0));
         }
     }
     // The `.comment` trailer is now fully determined by the symbol alignments.

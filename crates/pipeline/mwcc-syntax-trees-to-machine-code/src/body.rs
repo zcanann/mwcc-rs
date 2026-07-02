@@ -320,6 +320,7 @@ pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwc
         return_type: function.return_type,
         name: function.name.clone(),
         is_static: function.is_static,
+        is_weak: function.is_weak,
         parameters: function.parameters.clone(),
         locals: function
             .locals
@@ -436,6 +437,7 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
         return_type: function.return_type,
         name: function.name.clone(),
         is_static: function.is_static,
+        is_weak: function.is_weak,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: function
@@ -495,6 +497,7 @@ fn inline_return_only_locals(function: &Function) -> Option<Function> {
         return_type: function.return_type,
         name: function.name.clone(),
         is_static: function.is_static,
+        is_weak: function.is_weak,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: function.statements.clone(),
@@ -551,6 +554,7 @@ fn inline_switch_scrutinee_locals(function: &Function) -> Option<Function> {
         return_type: function.return_type,
         name: function.name.clone(),
         is_static: function.is_static,
+        is_weak: function.is_weak,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: vec![Statement::Switch {
@@ -765,6 +769,7 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
         return_type: function.return_type,
         name: function.name.clone(),
         is_static: function.is_static,
+        is_weak: function.is_weak,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: new_statements,
@@ -857,6 +862,7 @@ fn inline_single_call_result(function: &Function) -> Option<Function> {
         return_type: function.return_type,
         name: function.name.clone(),
         is_static: function.is_static,
+        is_weak: function.is_weak,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements,
