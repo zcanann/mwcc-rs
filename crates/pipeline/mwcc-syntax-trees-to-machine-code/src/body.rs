@@ -5936,12 +5936,16 @@ impl Generator {
     /// source), else the condition's DYING register, else a free volatile —
     /// and the trailing return/guards consume the locals as pseudo-params.
     pub(crate) fn try_live_across_branches(&mut self, function: &Function) -> Compilation<bool> {
-        if function.return_type != Type::Int
-            || function.return_expression.is_none()
+        let int_return = function.return_type == Type::Int && function.return_expression.is_some();
+        let void_stores = function.return_type == Type::Void && function.return_expression.is_none();
+        if !(int_return || void_stores)
             || function_makes_call(function)
             || function.locals.is_empty()
             || self.behavior.global_addressing != GlobalAddressing::SmallData
         {
+            return Ok(false);
+        }
+        if void_stores && !function.guards.is_empty() {
             return Ok(false);
         }
         // Trailing guards (`if (id < 0) return a;` — the id-tested-later form)
@@ -5977,8 +5981,30 @@ impl Generator {
                 _ => false,
             }
         };
+        // A VOID body: a run of ifs then TRAILING STORES to distinct SDA int
+        // globals (the tail — DAG-scheduled below with the live locals as
+        // pseudo-params).
+        let mut tail_stores: Vec<&Statement> = Vec::new();
         let mut branch_conditions: Vec<&Expression> = Vec::new();
         for statement in &function.statements {
+            if let Statement::Store { target, value } = statement {
+                if !void_stores {
+                    return Ok(false);
+                }
+                let Expression::Variable(global) = target else { return Ok(false) };
+                if !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt)) {
+                    return Ok(false);
+                }
+                if !simple_value(value) {
+                    return Ok(false);
+                }
+                tail_stores.push(statement);
+                continue;
+            }
+            if !tail_stores.is_empty() {
+                // A branch after the tail began — outside this slice.
+                return Ok(false);
+            }
             let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
             if !else_body.is_empty() {
                 return Ok(false);
@@ -6004,7 +6030,7 @@ impl Generator {
             }
             branch_conditions.push(condition);
         }
-        if branch_conditions.is_empty() {
+        if branch_conditions.is_empty() || (void_stores && tail_stores.is_empty()) {
             return Ok(false);
         }
         // Init values must be simple too.
@@ -6014,15 +6040,17 @@ impl Generator {
             }
         }
         // HOME SELECTION. A use as an addi source forbids r0: an init/arm value
-        // `local <op> const` reading the local, or the return expression adding
-        // a constant to it. (Reads via cmp/add-register allow r0.)
-        let return_expression = function.return_expression.as_ref().expect("gated");
+        // `local <op> const` reading the local, the return expression adding a
+        // constant to it, or a tail store's value doing the same.
         let forbids_r0 = |name: &str| -> bool {
             let reads_as_addi = |expression: &Expression| -> bool {
                 matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
                     if matches!(left.as_ref(), Expression::Variable(inner) if inner == name) && constant_value(right).is_some())
             };
-            if reads_as_addi(return_expression) {
+            if function.return_expression.as_ref().is_some_and(&reads_as_addi) {
+                return true;
+            }
+            if tail_stores.iter().any(|statement| matches!(statement, Statement::Store { value, .. } if reads_as_addi(value))) {
                 return true;
             }
             function.statements.iter().any(|statement| {
@@ -6041,7 +6069,7 @@ impl Generator {
                 },
                 _ => continue,
             };
-            let uses_elsewhere = count_name_occurrences(return_expression, param)
+            let uses_elsewhere = function.return_expression.as_ref().map_or(0, |expression| count_name_occurrences(expression, param))
                 + function
                     .statements
                     .iter()
@@ -6063,7 +6091,23 @@ impl Generator {
         let mut homes: Vec<(String, u8)> = Vec::new();
         let mut taken: Vec<u8> = Vec::new();
         for local in &function.locals {
-            let candidates: Vec<u8> = if forbids_r0(&local.name) {
+            // In a VOID body, r0 belongs to the LAST tail chain: the local may
+            // take it only when it IS that chain's value (stored bare by the
+            // final store, read nowhere else in the tail).
+            let r0_ok = if void_stores {
+                let last_is_bare_self = matches!(
+                    tail_stores.last(),
+                    Some(Statement::Store { value: Expression::Variable(name), .. }) if *name == local.name
+                );
+                let tail_reads: usize = tail_stores
+                    .iter()
+                    .map(|statement| statement_reads(statement, &local.name))
+                    .sum();
+                last_is_bare_self && tail_reads == 1 && !forbids_r0(&local.name)
+            } else {
+                !forbids_r0(&local.name)
+            };
+            let candidates: Vec<u8> = if !r0_ok {
                 dying_condition_registers.iter().copied().chain(5..=12).collect()
             } else {
                 std::iter::once(0u8).chain(dying_condition_registers.iter().copied()).chain(5..=12).collect()
@@ -6079,7 +6123,8 @@ impl Generator {
         // EMISSION. First branch: cmpwi, speculative inits, branch; later
         // branches: cmpwi, branch, arm.
         for (index, statement) in function.statements.iter().enumerate() {
-            let Statement::If { condition, then_body, .. } = statement else { unreachable!() };
+            // Tail stores emit after the branch structure.
+            let Statement::If { condition, then_body, .. } = statement else { break };
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             if index == 0 {
                 for local in &function.locals {
@@ -6111,6 +6156,41 @@ impl Generator {
                 stride: None,
             });
         }
+        if void_stores {
+            // The tail: a single bare-local store emits directly; a richer run
+            // routes through the DAG store-fill with the live locals as
+            // PSEUDO-PARAMS (their homes registered above resolve through
+            // lookup_general like any parameter).
+            if let [Statement::Store { target: Expression::Variable(global), value: Expression::Variable(name) }] =
+                tail_stores.as_slice()
+            {
+                let source = self.lookup_general(name).expect("registered home");
+                self.record_relocation(RelocationKind::EmbSda21, global);
+                self.output.instructions.push(Instruction::StoreWord { s: source, a: 0, offset: 0 });
+                self.emit_epilogue_and_return();
+                return Ok(true);
+            }
+            let mut pseudo = function.parameters.clone();
+            for (name, _) in &homes {
+                pseudo.push(mwcc_syntax_trees::Parameter { parameter_type: Type::Int, name: name.clone() });
+            }
+            let synthesized = Function {
+                return_type: Type::Void,
+                name: function.name.clone(),
+                is_static: function.is_static,
+                is_weak: function.is_weak,
+                parameters: pseudo,
+                locals: Vec::new(),
+                statements: tail_stores.iter().map(|&statement| statement.clone()).collect(),
+                guards: Vec::new(),
+                return_expression: None,
+            };
+            if !self.try_dag_store_fill(&synthesized)? {
+                return Err(Diagnostic::error("a live-across store tail outside the DAG envelope needs more vocabulary (roadmap)"));
+            }
+            return Ok(true);
+        }
+        let return_expression = function.return_expression.as_ref().expect("gated");
         let result = Eabi::general_result().number;
         if function.guards.is_empty() {
             self.evaluate_tail(return_expression, Type::Int, result)?;

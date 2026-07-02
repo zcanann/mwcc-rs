@@ -68,3 +68,29 @@ int guard_on_live(int a, int c)
 		return 0;
 	return t + 2;
 }
+
+/* void store-tails: the live local takes r0 when its store IS the last
+ * chain; an independent last chain claims r0 and the local falls to the
+ * dying condition register; richer tails DAG-schedule with the live local
+ * as a pseudo-param. */
+int g;
+int h;
+
+void void_store_tail(int a, int c)
+{
+	int t = a + 1;
+	if (c) {
+		t = a * 3;
+	}
+	g = t;
+}
+
+void void_two_stores(int a, int b, int c)
+{
+	int t = a + 1;
+	if (c) {
+		t = a * 3;
+	}
+	g = t;
+	h = b + 2;
+}
