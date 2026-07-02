@@ -1,0 +1,7 @@
+addi r3,r3,1
+addi r4,r4,-3
+clrlwi r0,r5,28
+stw r3,0(0)
+ori r3,r0,1
+stw r4,0(0)
+blr
