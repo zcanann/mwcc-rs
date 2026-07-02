@@ -57,15 +57,12 @@ impl Generator {
                 // test left; result 0; if left true skip to result 1; test right; return 0 if right false; result 1.
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
                 self.output.instructions.push(Instruction::load_immediate(result, 0));
-                let branch_index = self.output.instructions.len();
                 // the branch taken when left is TRUE is the negation of the skip-when-false branch.
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: left_skip ^ 8, condition_bit: left_bit, target: 0 });
+                let set_one = self.fresh_label();
+                self.emit_branch_conditional_to(left_skip ^ 8, left_bit, set_one);
                 let (right_skip, right_bit) = self.emit_condition_test(right)?;
                 self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: right_skip, condition_bit: right_bit });
-                let set_one = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-                    *target = set_one;
-                }
+                self.bind_label(set_one);
                 self.output.instructions.push(Instruction::load_immediate(result, 1));
             }
             _ => unreachable!("caller restricts to logical and/or"),
@@ -108,15 +105,12 @@ impl Generator {
             BinaryOperator::LogicalAnd => {
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
                 self.output.instructions.push(Instruction::load_immediate(scratch, 0));
-                let exit_a = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: left_skip, condition_bit: left_bit, target: 0 });
+                let exit = self.fresh_label();
+                self.emit_branch_conditional_to(left_skip, left_bit, exit);
                 let (right_skip, right_bit) = self.emit_condition_test(right)?;
-                let exit_b = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: right_skip, condition_bit: right_bit, target: 0 });
+                self.emit_branch_conditional_to(right_skip, right_bit, exit);
                 self.output.instructions.push(Instruction::load_immediate(scratch, 1));
-                let exit = self.output.instructions.len();
-                self.patch_forward(exit_a, exit);
-                self.patch_forward(exit_b, exit);
+                self.bind_label(exit);
                 if result != scratch {
                     self.output.instructions.push(Instruction::move_register(result, scratch));
                 }
@@ -124,16 +118,14 @@ impl Generator {
             BinaryOperator::LogicalOr => {
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
                 self.output.instructions.push(Instruction::load_immediate(scratch, 0));
-                let to_set_one = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: left_skip ^ 8, condition_bit: left_bit, target: 0 });
+                let set_one = self.fresh_label();
+                self.emit_branch_conditional_to(left_skip ^ 8, left_bit, set_one);
                 let (right_skip, right_bit) = self.emit_condition_test(right)?;
-                let to_exit = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: right_skip, condition_bit: right_bit, target: 0 });
-                let set_one = self.output.instructions.len();
+                let exit = self.fresh_label();
+                self.emit_branch_conditional_to(right_skip, right_bit, exit);
+                self.bind_label(set_one);
                 self.output.instructions.push(Instruction::load_immediate(scratch, 1));
-                let exit = self.output.instructions.len();
-                self.patch_forward(to_set_one, set_one);
-                self.patch_forward(to_exit, exit);
+                self.bind_label(exit);
                 if result != scratch {
                     self.output.instructions.push(Instruction::move_register(result, scratch));
                 }

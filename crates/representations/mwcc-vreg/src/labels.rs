@@ -1,0 +1,128 @@
+//! Labels over a linear instruction stream — the substrate for multi-block
+//! emission (task: block-structured codegen).
+//!
+//! Selection has so far patched branch targets by hand: remember the index of a
+//! `BranchConditionalForward`, emit the fall-through, write the target back.
+//! That bookkeeping does not scale to functions with shared cold blocks, merge
+//! points, or backward branches (loops). A [`Label`] names a position that may
+//! not exist yet; branches record a use, [`Labels::bind`] pins the position, and
+//! one [`Labels::resolve`] pass writes every target. Both forward and backward
+//! references work — `encode_text` computes signed offsets from indices, and the
+//! BD/LI field masks carry negative displacements correctly.
+//!
+//! Targets are INSTRUCTION INDICES into the finished stream, so resolution must
+//! happen when emission is complete and before any pass that inserts or removes
+//! instructions (the schedulers refuse to reorder across branches, but
+//! `coalesce_self_moves` shortens the stream — a function combining self-moves
+//! with branches would need the permutation applied to targets, which no shape
+//! produces today).
+
+use mwcc_machine_code::Instruction;
+
+/// A named position in the instruction stream, created before it is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Label(usize);
+
+/// The label table for one function: bindings and recorded branch uses.
+#[derive(Debug, Default)]
+pub struct Labels {
+    /// `bound[label]` is the instruction index the label pins, once bound.
+    bound: Vec<Option<usize>>,
+    /// `(branch instruction index, label)` pairs awaiting resolution.
+    pending: Vec<(usize, Label)>,
+}
+
+impl Labels {
+    /// A new, unbound label.
+    pub fn fresh(&mut self) -> Label {
+        self.bound.push(None);
+        Label(self.bound.len() - 1)
+    }
+
+    /// Pin `label` to instruction index `at` (the next instruction to be
+    /// emitted). Binding twice is a logic error.
+    pub fn bind(&mut self, label: Label, at: usize) {
+        debug_assert!(self.bound[label.0].is_none(), "label bound twice");
+        self.bound[label.0] = Some(at);
+    }
+
+    /// Record that the branch at `instruction_index` targets `label`.
+    pub fn use_at(&mut self, instruction_index: usize, label: Label) {
+        self.pending.push((instruction_index, label));
+    }
+
+    /// Write every recorded use's target. Errs with the offending label if one
+    /// was used but never bound.
+    pub fn resolve(&self, instructions: &mut [Instruction]) -> Result<(), Label> {
+        for &(index, label) in &self.pending {
+            let resolved = self.bound[label.0].ok_or(label)?;
+            match &mut instructions[index] {
+                Instruction::BranchConditionalForward { target, .. } | Instruction::Branch { target } => *target = resolved,
+                other => unreachable!("label use recorded on a non-branch: {other:?}"),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_forward_conditional_resolves_to_the_bound_index() {
+        let mut labels = Labels::default();
+        let skip = labels.fresh();
+        let mut stream = vec![
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 },
+            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
+        ];
+        labels.use_at(0, skip);
+        labels.bind(skip, 2);
+        labels.resolve(&mut stream).unwrap();
+        assert_eq!(stream[0], Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 2 });
+    }
+
+    #[test]
+    fn two_branches_share_one_epilogue_label() {
+        let mut labels = Labels::default();
+        let epilogue = labels.fresh();
+        let mut stream = vec![
+            Instruction::Branch { target: 0 },
+            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
+            Instruction::Branch { target: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+        labels.use_at(0, epilogue);
+        labels.use_at(2, epilogue);
+        labels.bind(epilogue, 3);
+        labels.resolve(&mut stream).unwrap();
+        assert_eq!(stream[0], Instruction::Branch { target: 3 });
+        assert_eq!(stream[2], Instruction::Branch { target: 3 });
+    }
+
+    #[test]
+    fn a_backward_branch_resolves_to_an_earlier_index() {
+        // The loop shape: bind the head first, branch back to it from below.
+        let mut labels = Labels::default();
+        let head = labels.fresh();
+        labels.bind(head, 1);
+        let mut stream = vec![
+            Instruction::AddImmediate { d: 3, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 3, a: 3, immediate: -1 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 1, target: 0 },
+        ];
+        labels.use_at(2, head);
+        labels.resolve(&mut stream).unwrap();
+        assert_eq!(stream[2], Instruction::BranchConditionalForward { options: 12, condition_bit: 1, target: 1 });
+    }
+
+    #[test]
+    fn an_unbound_label_is_an_error_naming_it() {
+        let mut labels = Labels::default();
+        let never = labels.fresh();
+        let mut stream = vec![Instruction::Branch { target: 0 }];
+        labels.use_at(0, never);
+        assert_eq!(labels.resolve(&mut stream), Err(never));
+    }
+}

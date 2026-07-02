@@ -44,6 +44,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     }
     let mut generator = Generator {
         output: MachineFunction::new(function.name.clone()),
+        labels: mwcc_vreg::Labels::default(),
         locations: HashMap::new(),
         // A `const` global is read-only and mwcc *folds* its value into each reader
         // (`return K;` becomes `li r3, <value>`, not a load). That folding is not
@@ -95,6 +96,11 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
+    // Resolve label-addressed branch targets now that emission is complete (and
+    // before any stream-shortening pass could shift instruction indices).
+    if generator.labels.resolve(&mut generator.output.instructions).is_err() {
+        return Err(mwcc_core::Diagnostic::error("internal: a branch label was used but never bound"));
+    }
     // The names this function references, in mwcc's symbol-table order (an AST
     // traversal); the writer assigns its external/global symbols in this order.
     generator.output.symbol_order = symbol_order::referenced_names(function);

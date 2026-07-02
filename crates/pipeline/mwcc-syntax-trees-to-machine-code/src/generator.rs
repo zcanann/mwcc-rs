@@ -53,6 +53,9 @@ pub(crate) struct FrameSlot {
 
 pub(crate) struct Generator {
     pub(crate) output: MachineFunction,
+    /// Branch labels awaiting resolution — the multi-block emission substrate.
+    /// Resolved into `output.instructions` once body emission completes.
+    pub(crate) labels: mwcc_vreg::Labels,
     pub(crate) locations: HashMap<String, Location>,
     /// File-scope globals by name; a reference to one loads from the small-data
     /// area (an `R_PPC_EMB_SDA21` relocation off r13, the `0(r0)` placeholder).
@@ -179,6 +182,33 @@ impl Generator {
         let register = Reg::general(self.next_virtual);
         self.next_virtual += 1;
         register.to_field()
+    }
+
+    /// A fresh, unbound branch label. Branches emitted through
+    /// [`Self::emit_branch_conditional_to`]/[`Self::emit_branch_to`] may target it
+    /// before [`Self::bind_label`] pins where it lands; one resolve pass at the
+    /// end of body emission writes every target.
+    pub(crate) fn fresh_label(&mut self) -> mwcc_vreg::Label {
+        self.labels.fresh()
+    }
+
+    /// Pin `label` to the next instruction to be emitted.
+    pub(crate) fn bind_label(&mut self, label: mwcc_vreg::Label) {
+        let at = self.output.instructions.len();
+        self.labels.bind(label, at);
+    }
+
+    /// Emit a conditional branch to `label` (target written at resolution).
+    pub(crate) fn emit_branch_conditional_to(&mut self, options: u8, condition_bit: u8, label: mwcc_vreg::Label) {
+        self.labels.use_at(self.output.instructions.len(), label);
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+    }
+
+    /// Emit an unconditional branch to `label` (target written at resolution).
+    #[allow(dead_code)]
+    pub(crate) fn emit_branch_to(&mut self, label: mwcc_vreg::Label) {
+        self.labels.use_at(self.output.instructions.len(), label);
+        self.output.instructions.push(Instruction::Branch { target: 0 });
     }
 
     /// A fresh floating-point virtual register. The allocator draws float homes
