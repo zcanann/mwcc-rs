@@ -1,0 +1,9 @@
+lfd f3,0(0)
+lfd f0,0(0)
+fadd f1,f3,f1
+lfd f3,0(0)
+fadd f0,f0,f2
+fadd f1,f3,f1
+stfd f0,0(0)
+stfd f1,0(0)
+blr
