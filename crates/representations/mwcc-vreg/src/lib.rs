@@ -15,6 +15,7 @@
 
 mod allocator;
 mod constraints;
+mod frame;
 mod description;
 mod liveness;
 mod register;
@@ -22,6 +23,7 @@ mod schedule;
 
 pub use allocator::*;
 pub use constraints::*;
+pub use frame::*;
 pub use description::*;
 pub use liveness::*;
 pub use register::*;

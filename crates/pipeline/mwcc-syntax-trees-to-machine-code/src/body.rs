@@ -3595,11 +3595,13 @@ impl Generator {
             }
         }
 
+        // The canonical saveless non-leaf frame, derived by the FRAME BUILDER — the
+        // first consumer of the plan-based prologue (its epilogue is the standard
+        // emit_epilogue_and_return form, identical to plan.epilogue()).
+        let plan = mwcc_vreg::FramePlan::sized_for(Vec::new());
         self.non_leaf = true;
-        self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.frame_size = plan.frame_size;
+        self.output.instructions.extend(plan.prologue());
         self.emit_global_load_value(global, 12)?;
         // The pointer local is UNSIGNED (cmplwi) and lives in r12 for the test.
         self.locations.insert(
