@@ -431,6 +431,120 @@ pub fn assign_registers(
     result
 }
 
+/// RegisterPolicy v2 — the fire-284 synthesis: WHOLE-INTERVAL assignment over
+/// the linearized order (the lookahead the paradox demanded):
+/// - each value's interval = [def slot, last-read slot], params from entry;
+/// - the LAST chain's ops prefer r0 when it is free across their interval;
+/// - any op whose source DIES AT ITS DEF may write IN PLACE (an open-interval
+///   reuse) — taken when that register stays free across the whole interval;
+/// - otherwise the lowest volatile (r3..) free across the whole interval.
+/// Assignment processes values in ISSUE order but checks conflicts against
+/// EVERY other value's interval, including future ones (interval allocation,
+/// not greedy-at-issue).
+pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u8)]) -> Vec<Option<u8>> {
+    let count = nodes.len();
+    let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, node) in nodes.iter().enumerate() {
+        for read in &node.reads {
+            if let Some(writer) = (0..index).rev().find(|&w| nodes[w].writes.contains(read)) {
+                consumer_of[writer].push(index);
+            }
+        }
+    }
+    let position: Vec<usize> = {
+        let mut position = vec![0; count];
+        for (slot, &node) in order.iter().enumerate() {
+            position[node] = slot;
+        }
+        position
+    };
+    let chain_of = |mut node: usize| -> usize {
+        loop {
+            match consumer_of[node].first() {
+                Some(&next) => node = next,
+                None => return node,
+            }
+        }
+    };
+    let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
+    // Intervals: params [0, last read]; values [def slot, last read slot].
+    struct Interval {
+        register: Option<u8>,
+        start: usize,
+        end: usize,
+    }
+    let mut intervals: Vec<Interval> = Vec::new();
+    let mut param_end = |value: u32| -> usize {
+        (0..count)
+            .filter(|&reader| nodes[reader].reads.contains(&value))
+            .map(|reader| position[reader])
+            .max()
+            .unwrap_or(0)
+    };
+    for &(value, register) in params {
+        intervals.push(Interval { register: Some(register), start: 0, end: param_end(value) });
+    }
+    let value_interval = |node: usize| -> (usize, usize) {
+        let end = consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node]);
+        (position[node], end)
+    };
+    // Process in issue order; assignment sees all existing intervals AND we
+    // re-check against them after each placement (future values conflict via
+    // their later placement — the in-place preference is what needs care).
+    let mut result: Vec<Option<u8>> = vec![None; count];
+    let ordered_values: Vec<usize> = order.iter().copied().filter(|&node| !nodes[node].writes.is_empty() && nodes[node].kind != OpKind::Store).collect();
+    for &node in &ordered_values {
+        let (start, end) = value_interval(node);
+        let free_over = |register: u8, intervals: &[Interval], open_start: bool| -> bool {
+            intervals.iter().all(|interval| {
+                interval.register != Some(register)
+                    || interval.end < start
+                    || (open_start && interval.end == start)
+                    || interval.start > end
+            })
+        };
+        // The source register dying exactly at this def (the in-place candidate):
+        // lowest such source.
+        let in_place: Option<u8> = nodes[node]
+            .reads
+            .iter()
+            .filter_map(|read| {
+                // A param source:
+                params
+                    .iter()
+                    .find(|&&(value, _)| value == *read)
+                    .map(|&(_, register)| {
+                        let dies_here = param_end(*read) == start;
+                        (register, dies_here)
+                    })
+                    .or_else(|| {
+                        // An internal source: its writer's assigned register.
+                        (0..count).rev().find(|&w| nodes[w].writes.contains(read)).and_then(|writer| {
+                            result[writer].map(|register| {
+                                let (_, writer_end) = value_interval(writer);
+                                (register, writer_end == start)
+                            })
+                        })
+                    })
+            })
+            .filter(|&(_, dies_here)| dies_here)
+            .map(|(register, _)| register)
+            .min();
+        let on_last_chain = chain_of(node) == last_sink;
+        let pick = if on_last_chain && free_over(0, &intervals, true) {
+            Some(0)
+        } else if let Some(register) = in_place.filter(|&register| free_over(register, &intervals, true)) {
+            Some(register)
+        } else {
+            (3..=12).find(|&register| free_over(register, &intervals, false))
+        };
+        let register = pick.unwrap_or(0);
+        result[node] = Some(register);
+        intervals.push(Interval { register: Some(register), start, end });
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +798,22 @@ mod tests {
                 if passed > best.0 {
                     best = (passed, Some(policy));
                 }
+            }
+        }
+        // Score the v2 interval model too.
+        let v2_passed = shapes
+            .iter()
+            .filter(|(_, nodes, params, expected)| {
+                let order = linearize(nodes);
+                assign_registers_v2(nodes, &order, params) == *expected
+            })
+            .count();
+        println!("v2 interval model: {v2_passed}/{}", shapes.len());
+        for (name, nodes, params, expected) in &shapes {
+            let order = linearize(nodes);
+            let got = assign_registers_v2(nodes, &order, params);
+            if got != *expected {
+                println!("  v2 FAIL {name}: got {got:?}\n               want {expected:?}");
             }
         }
         if let Some(policy) = best.1 {
