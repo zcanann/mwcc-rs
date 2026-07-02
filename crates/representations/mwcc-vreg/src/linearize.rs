@@ -1202,6 +1202,261 @@ pub fn assign_registers_sequenced(
     result
 }
 
+/// The FLOAT register machines (fires 331-335 captures). Both share the
+/// interval/window frame: values are non-store defs, intervals are CLOSED
+/// [def slot, last consumer slot] over the EMISSION order, params occupy
+/// their fixed FPRs over [0, last read], and a consumerless non-store def is
+/// the RETURN value, forced to f1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FloatRegModel {
+    /// Process defs in REVERSE emission order with ascending first-fit
+    /// (else: FORWARD emission order with the MRU free-stack).
+    pub reverse: bool,
+    /// Reverse machine: a LOAD may take its direct consumer's register
+    /// (joining the accumulator), overlap exactly at the consumption slot.
+    pub share_loads: bool,
+    /// Reverse machine: an ARITH def may take its consumer's register.
+    pub share_arith: bool,
+    /// Reverse machine: arith shares only into a TWO-operand consumer
+    /// (fadd/fmul accumulate in place; an fmadd factor never takes D).
+    pub arith_share_two_op_only: bool,
+    /// Reverse machine: shares are allowed only into f0 (the accumulator).
+    pub share_f0_only: bool,
+    /// The reverse machine applies only to RETURN bodies; void bodies run
+    /// the forward stack (measured: deep_vs_shallow's g-chain inherits the
+    /// param home through forward in-place reuse).
+    pub void_forward: bool,
+    /// Forward machine: which dying-operand register the result reuses.
+    pub dying_pick: DyingPick,
+    /// Forward machine: the initial window stack pushes ascending (top =
+    /// window top, first pop descends).
+    pub init_ascending: bool,
+}
+
+/// Forward machine: a def whose operands die at its slot reuses one of their
+/// registers — the candidate rules the fitter enumerates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DyingPick {
+    /// The lowest-numbered dying register.
+    MinReg,
+    /// The highest-numbered dying register.
+    MaxReg,
+    /// The register of the OLDEST dying operand (earliest def slot; params
+    /// count as older than any value).
+    OldestDef,
+    /// The register of the NEWEST dying operand.
+    NewestDef,
+}
+
+/// The FROZEN float register model (fire 335 fit: 8/9 captures; the OPEN
+/// case is s1_s2's fifth load, which refuses the consumer addend-share that
+/// horner4's identical-role load takes — undistinguished pending probes).
+pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
+    reverse: true,
+    share_loads: true,
+    share_arith: true,
+    arith_share_two_op_only: true,
+    share_f0_only: false,
+    dying_pick: DyingPick::MinReg,
+    init_ascending: true,
+    void_forward: true,
+};
+
+pub fn assign_float_registers(
+    nodes: &[DagNode],
+    order: &[usize],
+    params: &[(u32, u8)],
+    model: FloatRegModel,
+) -> Vec<Option<u8>> {
+    let count = nodes.len();
+    let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, node) in nodes.iter().enumerate() {
+        for read in &node.reads {
+            if let Some(writer) = (0..index).rev().find(|&w| nodes[w].writes.contains(read)) {
+                consumer_of[writer].push(index);
+            }
+        }
+    }
+    let position: Vec<usize> = {
+        let mut position = vec![0; count];
+        for (slot, &node) in order.iter().enumerate() {
+            position[node] = slot;
+        }
+        position
+    };
+    let is_value = |node: usize| nodes[node].kind != OpKind::Store && !nodes[node].writes.is_empty();
+    let value_end = |node: usize| -> usize {
+        consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node])
+    };
+    let param_end = |value: u32| -> usize {
+        (0..count)
+            .filter(|&reader| nodes[reader].reads.contains(&value))
+            .map(|reader| position[reader])
+            .max()
+            .unwrap_or(0)
+    };
+    let return_node: Option<usize> = (0..count).find(|&node| {
+        consumer_of[node].is_empty() && is_value(node)
+    });
+    let mut result: Vec<Option<u8>> = vec![None; count];
+    if let Some(ret) = return_node {
+        result[ret] = Some(1);
+    }
+    // The WINDOW: max simultaneous live-INTO-slot count (params included; a
+    // def and its dying operands never coexist across a boundary).
+    let window = {
+        let slots = order.len();
+        (0..=slots)
+            .map(|boundary| {
+                let values = (0..count)
+                    .filter(|&node| is_value(node))
+                    .filter(|&node| position[node] < boundary && value_end(node) >= boundary)
+                    .count();
+                let live_params = params.iter().filter(|&&(value, _)| param_end(value) >= boundary).count();
+                values + live_params
+            })
+            .max()
+            .unwrap_or(0)
+            .max(params.len())
+    } as u8;
+    let param_registers: Vec<u8> = params.iter().map(|&(_, register)| register).collect();
+    let use_reverse = model.reverse && (return_node.is_some() || !model.void_forward);
+    if use_reverse {
+        // Occupancies: (register, start, end, owner) — owner usize::MAX marks
+        // a param.
+        let mut occupied: Vec<(u8, usize, usize, usize)> = params
+            .iter()
+            .map(|&(value, register)| (register, 0, param_end(value), usize::MAX))
+            .collect();
+        if let Some(ret) = return_node {
+            occupied.push((1, position[ret], value_end(ret), ret));
+        }
+        let mut sequence: Vec<usize> = (0..count).filter(|&node| is_value(node)).collect();
+        sequence.sort_by_key(|&node| std::cmp::Reverse(position[node]));
+        for node in sequence {
+            if result[node].is_some() {
+                continue;
+            }
+            let start = position[node];
+            let end = value_end(node);
+            let share_ok = |owner: usize| -> bool {
+                if nodes[node].kind == OpKind::Load {
+                    model.share_loads
+                } else {
+                    model.share_arith
+                        && (!model.arith_share_two_op_only || nodes[owner].reads.len() <= 2)
+                }
+            };
+            let pick = (0u8..14).find(|&register| {
+                occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
+                    if taken != register || taken_end < start || taken_start > end {
+                        return true;
+                    }
+                    // Operand -> consumer share: the overlap is exactly the
+                    // consumption slot and the occupant consumes this node.
+                    if owner != usize::MAX
+                        && consumer_of[node].contains(&owner)
+                        && taken_start == end
+                        && share_ok(owner)
+                        && (!model.share_f0_only || register == 0)
+                    {
+                        return true;
+                    }
+                    // Def over its own dying operand (a param or earlier
+                    // value read by this node, ending exactly at our def).
+                    let dying_operand = if owner == usize::MAX {
+                        params.iter().any(|&(value, taken_register)| {
+                            taken_register == taken && nodes[node].reads.contains(&value)
+                        })
+                    } else {
+                        nodes[node].reads.iter().any(|read| nodes[owner].writes.contains(read))
+                    };
+                    dying_operand && taken_end == start
+                })
+            });
+            let register = pick.unwrap_or(13);
+            result[node] = Some(register);
+            occupied.push((register, start, end, node));
+        }
+    } else {
+        // FORWARD: the MRU free-stack. Available = the window minus params.
+        // A def whose operands die at its slot reuses one of their registers
+        // (per dying_pick), releasing the others; otherwise it pops the stack.
+        let mut stack: Vec<u8> = Vec::new();
+        let available: Vec<u8> = (0..window).filter(|register| !param_registers.contains(register)).collect();
+        if model.init_ascending {
+            stack.extend(available.iter());
+        } else {
+            stack.extend(available.iter().rev());
+        }
+        let return_slot = return_node.map(|ret| position[ret]);
+        // Dying operands of `node`: (register, def slot; params def at -1).
+        let dying_of = |node: usize, result: &Vec<Option<u8>>| -> Vec<(u8, isize)> {
+            nodes[node]
+                .reads
+                .iter()
+                .filter_map(|read| {
+                    let last_read = (0..count)
+                        .filter(|&reader| nodes[reader].reads.contains(read))
+                        .map(|reader| position[reader])
+                        .max()
+                        .unwrap_or(0);
+                    if last_read != position[node] {
+                        return None;
+                    }
+                    params
+                        .iter()
+                        .find(|&&(value, _)| value == *read)
+                        .map(|&(_, register)| (register, -1isize))
+                        .or_else(|| {
+                            (0..count)
+                                .rev()
+                                .find(|&writer| nodes[writer].writes.contains(read))
+                                .and_then(|writer| {
+                                    result[writer].map(|register| (register, position[writer] as isize))
+                                })
+                        })
+                })
+                .collect()
+        };
+        for &node in order {
+            let dying = dying_of(node, &result);
+            if !is_value(node) || Some(position[node]) == return_slot {
+                // Stores and the forced-f1 return release their dying
+                // operand registers to the stack.
+                for &(register, _) in &dying {
+                    if !stack.contains(&register) {
+                        stack.push(register);
+                    }
+                }
+                if is_value(node) {
+                    result[node] = Some(1);
+                }
+                continue;
+            }
+            let reused: Option<u8> = match model.dying_pick {
+                DyingPick::MinReg => dying.iter().map(|&(register, _)| register).min(),
+                DyingPick::MaxReg => dying.iter().map(|&(register, _)| register).max(),
+                DyingPick::OldestDef => dying.iter().min_by_key(|&&(_, slot)| slot).map(|&(register, _)| register),
+                DyingPick::NewestDef => dying.iter().max_by_key(|&&(_, slot)| slot).map(|&(register, _)| register),
+            };
+            let register = match reused {
+                Some(register) => {
+                    for &(other, _) in &dying {
+                        if other != register && !stack.contains(&other) {
+                            stack.push(other);
+                        }
+                    }
+                    register
+                }
+                None => stack.pop().unwrap_or(13),
+            };
+            result[node] = Some(register);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1692,6 +1947,234 @@ mod tests {
             }
         }
         println!("float orders: {passed}/{}", shapes.len());
+    }
+
+    /// FLOAT REGISTER fixtures (fires 331-335 captures): per-NODE expected
+    /// FPR. Params are (value, register). Node construction mirrors
+    /// float_order_fixtures so linearize reproduces the real emission.
+    fn float_register_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+        use OpKind::Store as St;
+        const FARITH: u32 = 3;
+        vec![
+            (
+                // g=a+1.5; h=b+2.5: lfd f3 / fadd f1,f3,f1 / lfd f0 / fadd f0,f0,f2
+                "reg_two_fadd",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fadd_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(3), Some(1), None, Some(0), Some(0), None],
+            ),
+            (
+                // g=(a+1.5)+2.5; h=b+3.5: f3/f1 chain reusing f3; h in f0.
+                "reg_deep_vs_shallow",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fadd_g1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[12]),
+                    DagNode::new("fadd_g2", FARITH).hazard(HAZARD_FPU).reads(&[11, 12]).writes(&[13]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[13]),
+                    DagNode::new("lfd_c3", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(3), Some(1), Some(3), Some(1), None, Some(0), Some(0), None],
+            ),
+            (
+                // g=a*b+1.5; h=c+2.5: lfd f4 / fmadd f1,f1,f2,f4 / lfd f0 / fadd f0,f0,f3
+                "reg_fmadd_latency",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fmadd_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 2, 10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[3, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 1), (2, 2), (3, 3)],
+                vec![Some(4), Some(1), None, Some(0), Some(0), None],
+            ),
+            (
+                // g=a*1.5; h=b+2.5: fmul f1,f3,f1 / fadd f0,f0,f2
+                "reg_fmul_vs_fadd",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fmul_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(3), Some(1), None, Some(0), Some(0), None],
+            ),
+            (
+                // return z*(1.5+z*2.5): lfd f2 / lfd f0 / fmadd f0 / fmul f1
+                "reg_horner2",
+                vec![
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[12]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 12]).writes(&[13]),
+                ],
+                vec![(1, 1)],
+                vec![Some(2), Some(0), Some(0), Some(1)],
+            ),
+            (
+                // horner3: lfd f3 f2 f0 / fmadd f2 / fmadd f0 / fmul f1
+                "reg_horner3",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                ],
+                vec![(1, 1)],
+                vec![Some(3), Some(2), Some(0), Some(2), Some(0), Some(1)],
+            ),
+            (
+                // horner4: lfd f3 f0 f2 / fmadd f3 / lfd f0 / fmadd f2 / fmadd f0 / fmul f1
+                "reg_horner4",
+                vec![
+                    DagNode::new("lfd_c45", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[13]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[14]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 14, 12]).writes(&[15]),
+                    DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[1, 15, 13]).writes(&[16]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 16]).writes(&[17]),
+                ],
+                vec![(1, 1)],
+                vec![Some(3), Some(0), Some(2), Some(0), Some(3), Some(2), Some(0), Some(1)],
+            ),
+            (
+                // s1_s2: lfd f5 f4 f3 f0 / fmadd f5 / lfd f4 / fmadd f0 /
+                // fmadd f3 / fmul f0 / fmadd f1
+                "reg_s1_s2",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c55", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c45", LOAD).writes(&[13]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[14]),
+                    DagNode::new("fmadd_a", FARITH).hazard(HAZARD_FPU).reads(&[2, 10, 11]).writes(&[20]),
+                    DagNode::new("fmadd_b", FARITH).hazard(HAZARD_FPU).reads(&[2, 12, 13]).writes(&[21]),
+                    DagNode::new("fmadd_c", FARITH).hazard(HAZARD_FPU).reads(&[2, 20, 14]).writes(&[22]),
+                    DagNode::new("fmul_d", FARITH).hazard(HAZARD_FPU).reads(&[2, 21]).writes(&[23]),
+                    DagNode::new("fmadd_f", FARITH).hazard(HAZARD_FPU).reads(&[1, 22, 23]).writes(&[24]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![
+                    Some(5),
+                    Some(4),
+                    Some(3),
+                    Some(0),
+                    Some(4),
+                    Some(5),
+                    Some(0),
+                    Some(3),
+                    Some(0),
+                    Some(1),
+                ],
+            ),
+            (
+                // return *p + 1.5 (no float params): lfd f1 / lfd f0 / fadd f1
+                "reg_load_use",
+                vec![
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("lfd_p", LOAD).reads(&[100]).writes(&[10]),
+                    DagNode::new("fadd", FARITH).hazard(HAZARD_FPU).reads(&[11, 10]).writes(&[12]),
+                ],
+                vec![],
+                vec![Some(1), Some(0), Some(1)],
+            ),
+        ]
+    }
+
+    /// Diagnostic: score both float register machines across the model space.
+    #[test]
+    fn float_registers() {
+        let shapes = float_register_fixtures();
+        let mut models: Vec<FloatRegModel> = Vec::new();
+        for share_loads in [false, true] {
+            for share_arith in [false, true] {
+                for arith_share_two_op_only in [false, true] {
+                    for share_f0_only in [false, true] {
+                        for void_forward in [false, true] {
+                            for dying_pick in
+                                [DyingPick::MinReg, DyingPick::MaxReg, DyingPick::OldestDef, DyingPick::NewestDef]
+                            {
+                                models.push(FloatRegModel {
+                                    reverse: true,
+                                    share_loads,
+                                    share_arith,
+                                    arith_share_two_op_only,
+                                    share_f0_only,
+                                    dying_pick,
+                                    init_ascending: true,
+                                    void_forward,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for dying_pick in [DyingPick::MinReg, DyingPick::MaxReg, DyingPick::OldestDef, DyingPick::NewestDef] {
+            for init_ascending in [true, false] {
+                models.push(FloatRegModel {
+                    reverse: false,
+                    share_loads: false,
+                    share_arith: false,
+                    arith_share_two_op_only: false,
+                    share_f0_only: false,
+                    dying_pick,
+                    init_ascending,
+                    void_forward: false,
+                });
+            }
+        }
+        let mut best: (usize, Option<FloatRegModel>) = (0, None);
+        for model in &models {
+            let passed = shapes
+                .iter()
+                .filter(|(_, nodes, params, expected)| {
+                    let order = linearize(nodes);
+                    assign_float_registers(nodes, &order, params, *model) == *expected
+                })
+                .count();
+            if passed > best.0 {
+                best = (passed, Some(*model));
+            }
+        }
+        let (best_score, best_model) = (best.0, best.1.expect("nonempty model space"));
+        println!("float registers BEST {best_model:?}: {best_score}/{}", shapes.len());
+        // Score FROZEN and pin everything but the documented open case.
+        let mut frozen_passed = 0;
+        for (name, nodes, params, expected) in &shapes {
+            let order = linearize(nodes);
+            let got = assign_float_registers(nodes, &order, params, FROZEN_FLOAT_REG);
+            if got == *expected {
+                frozen_passed += 1;
+            } else {
+                println!("  frozen reg MISS {name}: got {got:?} want {expected:?}");
+                assert_eq!(
+                    *name, "reg_s1_s2",
+                    "float register fixture {name} regressed under FROZEN_FLOAT_REG"
+                );
+            }
+        }
+        println!("float registers FROZEN: {frozen_passed}/{}", shapes.len());
+        assert!(frozen_passed >= 8, "FROZEN_FLOAT_REG regressed below 8/9");
     }
 
     /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order
