@@ -1790,6 +1790,9 @@ impl Generator {
         if self.try_ordered_early_return_branch(function)? {
             return Ok(());
         }
+        if self.try_live_across_branches(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }
@@ -5925,6 +5928,204 @@ impl Generator {
     /// Each guard is its own block ending in `blr`; the last guard collapses the
     /// final return into a conditional return when the final value already sits in
     /// the result register.
+    /// LIVE-ACROSS-BRANCHES: initialized int locals reassigned inside simple
+    /// if-blocks, read after the joins (the s_atan `id`/`x` skeleton). The
+    /// measured model: the condition's cmpwi leads; the inits compute
+    /// SPECULATIVELY before the branch; every definition of one local shares
+    /// ONE register home — r0 first unless a later use forbids it (an addi
+    /// source), else the condition's DYING register, else a free volatile —
+    /// and the trailing return/guards consume the locals as pseudo-params.
+    pub(crate) fn try_live_across_branches(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Int
+            || function.return_expression.is_none()
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || function.locals.is_empty()
+            || self.behavior.global_addressing != GlobalAddressing::SmallData
+        {
+            return Ok(false);
+        }
+        // Every local: int, initialized, non-static.
+        if function.locals.iter().any(|local| {
+            local.is_static
+                || local.array_length.is_some()
+                || local.initializer.is_none()
+                || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+        }) {
+            return Ok(false);
+        }
+        // The statements: a run of `if (param <cmp> const) { local = value; ... }`
+        // blocks (no else), reassigning ONLY the declared locals.
+        let local_names: Vec<&str> = function.locals.iter().map(|local| local.name.as_str()).collect();
+        let simple_value = |expression: &Expression| -> bool {
+            let readable = |name: &str| self.lookup_general(name).is_some() || local_names.contains(&name);
+            match expression {
+                Expression::IntegerLiteral(value) => i16::try_from(*value).is_ok(),
+                Expression::Variable(name) => readable(name.as_str()),
+                Expression::Binary { operator, left, right } => {
+                    matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply)
+                        && matches!(left.as_ref(), Expression::Variable(name) if readable(name.as_str()))
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok())
+                }
+                _ => false,
+            }
+        };
+        let mut branch_conditions: Vec<&Expression> = Vec::new();
+        for statement in &function.statements {
+            let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
+            if !else_body.is_empty() {
+                return Ok(false);
+            }
+            // The condition: a bare param, or param <cmp> constant.
+            let condition_param = match condition {
+                Expression::Variable(name) => Some(name.as_str()),
+                Expression::Binary { left, right, .. } => match (left.as_ref(), constant_value(right)) {
+                    (Expression::Variable(name), Some(_)) => Some(name.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(condition_param) = condition_param else { return Ok(false) };
+            if self.lookup_general(condition_param).is_none() || local_names.contains(&condition_param) {
+                return Ok(false);
+            }
+            for inner in then_body {
+                let Statement::Assign { name, value } = inner else { return Ok(false) };
+                if !local_names.contains(&name.as_str()) || !simple_value(value) {
+                    return Ok(false);
+                }
+            }
+            branch_conditions.push(condition);
+        }
+        if branch_conditions.is_empty() {
+            return Ok(false);
+        }
+        // Init values must be simple too.
+        for local in &function.locals {
+            if !simple_value(local.initializer.as_ref().expect("gated")) {
+                return Ok(false);
+            }
+        }
+        // HOME SELECTION. A use as an addi source forbids r0: an init/arm value
+        // `local <op> const` reading the local, or the return expression adding
+        // a constant to it. (Reads via cmp/add-register allow r0.)
+        let return_expression = function.return_expression.as_ref().expect("gated");
+        let forbids_r0 = |name: &str| -> bool {
+            let reads_as_addi = |expression: &Expression| -> bool {
+                matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(inner) if inner == name) && constant_value(right).is_some())
+            };
+            if reads_as_addi(return_expression) {
+                return true;
+            }
+            function.statements.iter().any(|statement| {
+                let Statement::If { then_body, .. } = statement else { return false };
+                then_body.iter().any(|inner| matches!(inner, Statement::Assign { value, .. } if reads_as_addi(value)))
+            })
+        };
+        // Dying condition registers: a condition param never referenced later.
+        let mut dying_condition_registers: Vec<u8> = Vec::new();
+        for condition in &branch_conditions {
+            let param = match condition {
+                Expression::Variable(name) => name.as_str(),
+                Expression::Binary { left, .. } => match left.as_ref() {
+                    Expression::Variable(name) => name.as_str(),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let uses_elsewhere = count_name_occurrences(return_expression, param)
+                + function
+                    .statements
+                    .iter()
+                    .map(|statement| statement_reads(statement, param))
+                    .sum::<usize>()
+                > branch_conditions
+                    .iter()
+                    .filter(|other| {
+                        matches!(other, Expression::Variable(name) if name == param)
+                            || matches!(other, Expression::Binary { left, .. } if matches!(left.as_ref(), Expression::Variable(name) if name == param))
+                    })
+                    .count();
+            if !uses_elsewhere {
+                if let Some(register) = self.lookup_general(param) {
+                    dying_condition_registers.push(register);
+                }
+            }
+        }
+        let mut homes: Vec<(String, u8)> = Vec::new();
+        let mut taken: Vec<u8> = Vec::new();
+        for local in &function.locals {
+            let candidates: Vec<u8> = if forbids_r0(&local.name) {
+                dying_condition_registers.iter().copied().chain(5..=12).collect()
+            } else {
+                std::iter::once(0u8).chain(dying_condition_registers.iter().copied()).chain(5..=12).collect()
+            };
+            let Some(register) = candidates.into_iter().find(|register| !taken.contains(register)) else {
+                return Ok(false);
+            };
+            taken.push(register);
+            homes.push((local.name.clone(), register));
+        }
+        let home_of = |name: &str| homes.iter().find(|(local, _)| local == name).map(|&(_, register)| register);
+
+        // EMISSION. First branch: cmpwi, speculative inits, branch; later
+        // branches: cmpwi, branch, arm.
+        for (index, statement) in function.statements.iter().enumerate() {
+            let Statement::If { condition, then_body, .. } = statement else { unreachable!() };
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            if index == 0 {
+                for local in &function.locals {
+                    let home = home_of(&local.name).expect("assigned");
+                    self.evaluate(local.initializer.as_ref().expect("gated"), Type::Int, home)?;
+                }
+            }
+            let branch_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            for inner in then_body {
+                let Statement::Assign { name, value } = inner else { unreachable!() };
+                // A reassignment may read the local itself (its home).
+                let home = home_of(name).expect("assigned");
+                self.evaluate_with_live_locals(value, home, &homes)?;
+            }
+            let join = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = join;
+            }
+        }
+        // The trailing return consumes the locals as pseudo-params.
+        for (name, register) in &homes {
+            self.locations.insert(name.clone(), crate::generator::Location {
+                class: crate::generator::ValueClass::General,
+                register: *register,
+                signed: true,
+                width: 32,
+                pointee: None,
+                stride: None,
+            });
+        }
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(return_expression, Type::Int, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// evaluate() with the live-local homes visible as locations (a
+    /// reassignment reads its own or a sibling's home).
+    fn evaluate_with_live_locals(&mut self, value: &Expression, destination: u8, homes: &[(String, u8)]) -> Compilation<()> {
+        for (name, register) in homes {
+            self.locations.entry(name.clone()).or_insert(crate::generator::Location {
+                class: crate::generator::ValueClass::General,
+                register: *register,
+                signed: true,
+                width: 32,
+                pointee: None,
+                stride: None,
+            });
+        }
+        self.evaluate(value, Type::Int, destination)
+    }
+
     pub(crate) fn emit_guard_sequence(
         &mut self,
         guards: &[GuardedReturn],
