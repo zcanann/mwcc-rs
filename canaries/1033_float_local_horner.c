@@ -71,3 +71,11 @@ double local_r_fold(double x)
 	double r = 101.5 + z * (102.5 + z * 103.5);
 	return x + z * r;
 }
+
+double ksin_tail(double x)
+{
+	double z = x * x;
+	double v = z * x;
+	double r = 111.5 + z * (112.5 + z * (113.5 + z * (114.5 + z * 115.5)));
+	return x + v * (116.5 + z * r);
+}

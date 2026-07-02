@@ -151,13 +151,6 @@ impl Generator {
                 kept_locals.push((local.name.clone(), resolved));
             }
         }
-        // Two kept locals PLUS a folded chain (the full k_sin tail) exposes
-        // an uncracked share-vs-free register rule (the coefficient load
-        // takes its consumer's share over clean f0 there, the opposite of
-        // horner4's identical pair) — defer until discriminated.
-        if kept_locals.len() >= 2 && !fold_map.is_empty() {
-            return Ok(false);
-        }
         let folded_return = crate::value_tracking::substitute(return_expression, &fold_map);
         let return_expression = &folded_return;
         // Double parameters join the float DAG with their FPRs; int

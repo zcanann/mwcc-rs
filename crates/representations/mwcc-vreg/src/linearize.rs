@@ -1273,6 +1273,12 @@ pub struct FloatRegModel {
     /// allocate before L15 at slot 4 because it dies later; horner4's
     /// "anomalous" second load falls out naturally under this order).
     pub order_by_death: bool,
+    /// TIER shapes run a FORWARD machine instead of the reverse one:
+    /// non-tier values allocate in EMISSION order — loads descending
+    /// first-fit from the window top, arith reusing the MINIMUM dying
+    /// operand register (measured: the ksin tail's loads descend f6..f2
+    /// while horner5/6 — no tier — stay on the reverse machine).
+    pub tier_forward_descending: bool,
     /// Reverse machine: named float LOCALS (local_home) and unnamed values
     /// spanning >= 2 other arith definitions take WINDOW-TOP homes,
     /// descending in definition order, BEFORE the death-order pass
@@ -1331,6 +1337,7 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     share_f0_only: false,
     share_blocked_by_pending_arith: true,
     local_top_tier: true,
+    tier_forward_descending: true,
     dying_door_share: true,
     order_by_death: true,
     root_slot_order: true,
@@ -1453,6 +1460,7 @@ pub fn assign_float_registers(
                 })
                 .collect();
             tier.sort_by_key(|&node| position[node]);
+            let tier_members: Vec<usize> = tier.clone();
             let mut next_top = window.saturating_sub(1);
             for node in tier {
                 let start = position[node];
@@ -1477,6 +1485,60 @@ pub fn assign_float_registers(
                 result[node] = Some(register);
                 occupied.push((register, start, end, node));
                 next_top = register.saturating_sub(1);
+            }
+            // TIER shapes switch to the FORWARD machine: emission order,
+            // loads (and any dep-free values) DESCENDING first-fit from the
+            // window top, arith reusing the MINIMUM dying operand register
+            // (measured: the ksin tail's coefficients descend f6..f2 with
+            // the chain riding the dying addends; horner5/6 — no tier —
+            // stay on the reverse machine below).
+            if model.tier_forward_descending && !tier_members.is_empty() {
+                for &node in order {
+                    if !is_value(node) || result[node].is_some() {
+                        continue;
+                    }
+                    let start = position[node];
+                    let end = value_end(node);
+                    let free = |register: u8, occupied: &Vec<(u8, usize, usize, usize)>| -> bool {
+                        occupied.iter().all(|&(taken, taken_start, taken_end, _)| {
+                            taken != register || taken_end < start || taken_start > end
+                        })
+                    };
+                    // The MIN register among operands dying exactly at this
+                    // definition (in-place reuse).
+                    let min_dying: Option<u8> = nodes[node]
+                        .reads
+                        .iter()
+                        .filter_map(|read| {
+                            if let Some(&(value, register)) = params.iter().find(|&&(value, _)| value == *read) {
+                                return (param_end(value) == start).then_some(register);
+                            }
+                            (0..count)
+                                .rev()
+                                .find(|&writer| nodes[writer].writes.contains(read))
+                                .and_then(|writer| {
+                                    (value_end(writer) == start).then(|| result[writer]).flatten()
+                                })
+                        })
+                        .min();
+                    let register = if nodes[node].kind != OpKind::Load {
+                        match min_dying {
+                            Some(register) => register,
+                            None => match (0..window).rev().find(|&register| free(register, &occupied)) {
+                                Some(register) => register,
+                                None => return vec![None; count],
+                            },
+                        }
+                    } else {
+                        match (0..window).rev().find(|&register| free(register, &occupied)) {
+                            Some(register) => register,
+                            None => return vec![None; count],
+                        }
+                    };
+                    result[node] = Some(register);
+                    occupied.push((register, start, end, node));
+                }
+                return result;
             }
         }
         // Whether one of `node`'s own operands (param or value) holds
@@ -2551,6 +2613,46 @@ mod tests {
                 vec![Some(5), Some(4), Some(4), Some(3), Some(2), Some(0), Some(3), Some(2), Some(0), Some(1)],
             ),
             (
+                // FIRE-345 — the FULL k_sin tail: z/v tier (f7/f6), the six
+                // coefficients DESCENDING f6..f2,f0 under the tier-forward
+                // machine, the chain riding the dying addends, v sharing
+                // L55's f6 serially.
+                "reg_ksin_tail",
+                vec![
+                    DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[20]),
+                    DagNode::new("fmul_v", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[20, 1]).writes(&[21]),
+                    DagNode::new("lfd_c55", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c45", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[13]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[14]),
+                    DagNode::new("lfd_c65", LOAD).writes(&[15]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 20, 11]).writes(&[22]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[20, 22, 12]).writes(&[23]),
+                    DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[20, 23, 13]).writes(&[24]),
+                    DagNode::new("fmadd4", FARITH).hazard(HAZARD_FPU).reads(&[20, 24, 14]).writes(&[25]),
+                    DagNode::new("fmadd5", FARITH).hazard(HAZARD_FPU).reads(&[20, 25, 15]).writes(&[26]),
+                    DagNode::new("fmadd_root", FARITH).hazard(HAZARD_FPU).reads(&[21, 26, 1]).writes(&[27]),
+                ],
+                vec![(1, 1)],
+                vec![
+                    Some(7),
+                    Some(6),
+                    Some(6),
+                    Some(5),
+                    Some(4),
+                    Some(3),
+                    Some(2),
+                    Some(0),
+                    Some(5),
+                    Some(4),
+                    Some(3),
+                    Some(2),
+                    Some(0),
+                    Some(1),
+                ],
+            ),
+            (
                 // FIRE-336 PROBE C — w*(h3 inner): window 5; loads f4 f3 f0.
                 "reg_h3_wmul",
                 vec![
@@ -2585,21 +2687,24 @@ mod tests {
                                         for root_slot_order in [false, true] {
                                             for dying_door_share in [false, true] {
                                                 for local_top_tier in [false, true] {
-                                                    models.push(FloatRegModel {
-                                                        reverse: true,
-                                                        share_loads,
-                                                        share_arith,
-                                                        arith_share_two_op_only,
-                                                        share_f0_only,
-                                                        share_blocked_by_pending_arith,
-                                                        local_top_tier,
-                                                        dying_door_share,
-                                                        order_by_death,
-                                                        root_slot_order,
-                                                        dying_pick,
-                                                        init_ascending: true,
-                                                        void_forward,
-                                                    });
+                                                    for tier_forward_descending in [false, true] {
+                                                        models.push(FloatRegModel {
+                                                            reverse: true,
+                                                            share_loads,
+                                                            share_arith,
+                                                            arith_share_two_op_only,
+                                                            share_f0_only,
+                                                            share_blocked_by_pending_arith,
+                                                            local_top_tier,
+                                                            tier_forward_descending,
+                                                            dying_door_share,
+                                                            order_by_death,
+                                                            root_slot_order,
+                                                            dying_pick,
+                                                            init_ascending: true,
+                                                            void_forward,
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
@@ -2621,6 +2726,7 @@ mod tests {
                     share_f0_only: false,
                     share_blocked_by_pending_arith: false,
                     local_top_tier: false,
+                    tier_forward_descending: false,
                     dying_door_share: false,
                     order_by_death: false,
                     root_slot_order: false,
