@@ -1898,6 +1898,31 @@ impl Generator {
                 }
             }
         }
+        // A single COMPUTED store to an SDA integer global plus an int return that
+        // does NOT read the stored global: mwcc's DAG scheduler interleaves the
+        // return-value computation with the store chain; sequential emission
+        // diverges. try_dag_store_fill (above) claims every such shape it has
+        // vocabulary for, so what reaches here (a division, an unsigned shift)
+        // would fall through to the sequential emitter — defer. A return that
+        // reads the just-stored global (rand.c) is data-dependent, so mwcc is
+        // sequential too — byte-exact on the normal path; let it through.
+        if function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && self.behavior.global_addressing == GlobalAddressing::SmallData
+            && !matches!(function.return_type, Type::Void | Type::Float | Type::Double)
+        {
+            if let (Some(return_expression), [Statement::Store { target: Expression::Variable(name), value }]) =
+                (&function.return_expression, function.statements.as_slice())
+            {
+                let sda_integer_global = matches!(self.globals.get(name.as_str()), Some(global_type) if !matches!(global_type, Type::Float | Type::Double));
+                let leaf_value = constant_value(value).is_some()
+                    || matches!(value, Expression::Variable(leaf) if !self.globals.contains_key(leaf.as_str()));
+                if sda_integer_global && !leaf_value && count_name_occurrences(return_expression, name) == 0 {
+                    return Err(Diagnostic::error("a computed store scheduled against an independent return needs the DAG scheduler (roadmap)"));
+                }
+            }
+        }
         // A `do { …calls… } while (--counter);` loop: the counter goes in r31
         // (callee-saved), the body branches back, and the decrement-and-test is a
         // single `addic.`/`bne`.

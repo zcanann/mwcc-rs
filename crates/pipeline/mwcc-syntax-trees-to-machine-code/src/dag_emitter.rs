@@ -33,6 +33,12 @@ enum Template {
     OrImmediateShifted(u16),
     /// `rlwinm d,s,0,begin,end` — an AND by a contiguous or wrap mask.
     Mask(u8, u8),
+    XorImmediate(u16),
+    /// Variable shifts: `slw`/`sraw` (the arithmetic right shift writes XER).
+    ShiftLeftWord,
+    ShiftRightAlgebraicWord,
+    /// `mr` — a register move (the bare-parameter return chain).
+    Move,
     LoadWord,
     /// A small-data scalar store: `stw s, g@sda21(r0)`.
     StoreGlobal(String),
@@ -135,17 +141,40 @@ impl Builder {
                         Some(self.push(OpKind::Alu, 3, 2, vec![value], Template::MultiplyImmediate(immediate)))
                     }
                     BinaryOperator::ShiftRight => {
-                        let shift = u8::try_from(constant_right?).ok().filter(|shift| *shift < 32)?;
+                        // srawi/sraw are the SIGNED shifts; an unsigned operand
+                        // lowers to srwi (a different encoding) — defer it.
+                        if let Expression::Variable(name) = left.as_ref() {
+                            if generator.locations.get(name.as_str()).is_some_and(|location| !location.signed) {
+                                return None;
+                            }
+                        }
+                        if let Some(shift) = constant_right.and_then(|constant| u8::try_from(constant).ok()).filter(|shift| *shift < 32) {
+                            let value = self.expression(left, generator)?;
+                            // srawi writes XER.CA — two cannot dual-issue (measured).
+                            let node = self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightAlgebraicImmediate(shift));
+                            self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_XER);
+                            return Some(node);
+                        }
                         let value = self.expression(left, generator)?;
-                        // srawi writes XER.CA — two cannot dual-issue (measured).
-                        let node = self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightAlgebraicImmediate(shift));
+                        let amount = self.expression(right, generator)?;
+                        let node = self.push(OpKind::Alu, 1, 1, vec![value, amount], Template::ShiftRightAlgebraicWord);
                         self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_XER);
                         Some(node)
                     }
                     BinaryOperator::ShiftLeft => {
-                        let shift = u8::try_from(constant_right?).ok().filter(|shift| *shift < 32)?;
+                        if let Some(shift) = constant_right.and_then(|constant| u8::try_from(constant).ok()).filter(|shift| *shift < 32) {
+                            let value = self.expression(left, generator)?;
+                            return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftLeftImmediate(shift)));
+                        }
                         let value = self.expression(left, generator)?;
-                        Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftLeftImmediate(shift)))
+                        let amount = self.expression(right, generator)?;
+                        Some(self.push(OpKind::Alu, 1, 1, vec![value, amount], Template::ShiftLeftWord))
+                    }
+                    BinaryOperator::BitXor => {
+                        let constant = u32::try_from(constant_right.or(constant_left)?).ok().filter(|constant| *constant <= 0xffff)?;
+                        let operand = if constant_right.is_some() { left } else { right };
+                        let value = self.expression(operand, generator)?;
+                        Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::XorImmediate(constant as u16)))
                     }
                     BinaryOperator::BitAnd => {
                         let mask = u32::try_from(constant_right.or(constant_left)?).ok()?;
@@ -283,13 +312,18 @@ impl Generator {
         // forces its result into r3 (the contracts' return mode).
         if returns_int {
             let return_expression = function.return_expression.as_ref().expect("gated");
-            // A bare parameter/constant return has no chain to schedule —
-            // those tails belong to the existing paths.
-            if matches!(return_expression, Expression::Variable(_)) || constant_value(return_expression).is_some() {
-                return Ok(false);
-            }
             let before_return = builder.nodes.len();
-            if builder.expression(return_expression, self).is_none() {
+            // A bare parameter return is an `mr r3,rX` move node (measured); a
+            // bare constant return is an li. Anything unrecognizable DEFERS:
+            // the legacy fall-through would emit the store+return
+            // SEQUENTIALLY (wrong order).
+            if let Expression::Variable(_) = return_expression {
+                let Some(value) = builder.expression(return_expression, self) else { return Ok(false) };
+                builder.push(OpKind::Alu, 1, 1, vec![value], Template::Move);
+            } else if let Some(constant) = constant_value(return_expression) {
+                let Ok(immediate) = i16::try_from(constant) else { return Ok(false) };
+                builder.push(OpKind::Alu, 1, 1, vec![], Template::LoadImmediate(immediate));
+            } else if builder.expression(return_expression, self).is_none() {
                 return Ok(false);
             }
             // r0 CONTENTION (open model boundary): when a store chain ends in a
@@ -303,11 +337,7 @@ impl Generator {
                 .take(before_return)
                 .any(|template| matches!(template, Template::MultiplyImmediate(_)));
             if return_ops >= 2 && store_multiply_final {
-                // The legacy fall-through would emit this SEQUENTIALLY (wrong
-                // bytes) — defer the whole function instead.
-                return Err(Diagnostic::error(
-                    "r0 contention between a multiply store chain and a computed return needs tenancy arbitration (roadmap)",
-                ));
+                return Ok(false);
             }
         }
         // The PPC r0-as-zero rule: a value consumed as an addi source (or any
@@ -391,6 +421,22 @@ impl Generator {
                     begin: *begin,
                     end: *end,
                 },
+                Template::XorImmediate(immediate) => Instruction::XorImmediate {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                    immediate: *immediate,
+                },
+                Template::ShiftLeftWord => Instruction::ShiftLeftWord {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                    b: operand(1)?,
+                },
+                Template::ShiftRightAlgebraicWord => Instruction::ShiftRightAlgebraicWord {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                    b: operand(1)?,
+                },
+                Template::Move => Instruction::move_register(destination.expect("value node"), operand(0)?),
                 Template::LoadWord => Instruction::LoadWord {
                     d: destination.expect("value node"),
                     a: operand(0)?,

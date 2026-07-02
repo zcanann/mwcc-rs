@@ -101,3 +101,25 @@ int ret_three(int a, int b, int c)
 	h = b * 3;
 	return c - 2;
 }
+
+/* the fire-299 audit shapes: xor and variable-shift store values, and a
+ * bare-param return (a Move node — the return pre-claims r3, the mr lands
+ * after the store chain). All were live DIFFs on the legacy path before the
+ * envelope covered them. */
+int ret_xor(int a, int b)
+{
+	g = a ^ 5;
+	return b + 1;
+}
+
+int ret_varshift(int a, int b)
+{
+	g = a << b;
+	return b + 1;
+}
+
+int ret_bare(int a, int b)
+{
+	g = a + 1;
+	return b;
+}
