@@ -26,10 +26,32 @@ impl Generator {
             return Ok(false);
         }
         // This path handles a straight-line body (stores/calls) plus an optional
-        // return; guard chains and reassignment-mixed bodies defer for now.
-        if !function.guards.is_empty() {
-            return Ok(false);
-        }
+        // return — and ONE captured guard shape: a leaf double function whose guard
+        // returns a float literal and whose fall-through returns the still-in-f1
+        // parameter (`if (<punned test>) return 0.0; return x;` — measured: the
+        // guard value falls INTO the shared epilogue; the skip branch targets it;
+        // the fall-through emits nothing). Anything else defers.
+        let guard_plan = match function.guards.as_slice() {
+            [] => None,
+            [GuardedReturn { condition, value }] => {
+                if !function.statements.is_empty() || function.return_type != Type::Double || function_makes_call(function) {
+                    return Ok(false);
+                }
+                let Expression::FloatLiteral(guard_value) = value else { return Ok(false) };
+                // The fall-through must be the FIRST double parameter, unwritten —
+                // still live in f1, so the merge emits nothing.
+                let Some(Expression::Variable(returned)) = &function.return_expression else { return Ok(false) };
+                let first_float_parameter = function
+                    .parameters
+                    .iter()
+                    .find(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double));
+                if first_float_parameter.map(|parameter| parameter.name.as_str()) != Some(returned.as_str()) {
+                    return Ok(false);
+                }
+                Some((condition, *guard_value))
+            }
+            _ => return Ok(false),
+        };
 
         // Lay out a slot for each address-taken parameter (in argument order),
         // then each address-taken local, above the 8-byte linkage area.
@@ -109,6 +131,20 @@ impl Generator {
             }
         }
 
+        // The single-guard shape: test, skip-to-epilogue, guard value into f1,
+        // shared epilogue (the fall-through parameter is already in f1).
+        if let Some((condition, guard_value)) = guard_plan {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let epilogue = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, epilogue);
+            self.evaluate(&Expression::FloatLiteral(guard_value), Type::Double, Eabi::float_result().number)?;
+            self.bind_label(epilogue);
+            // mwcc's internal label counter advances 2 for the guard (measured via
+            // the @N symbol numbers: real @7/@8/@9 vs @5/@6/@7 without the bump).
+            self.output.anonymous_label_bump += 2;
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
         // Body statements, then the return value.
         for statement in &function.statements {
             self.emit_statement(statement)?;

@@ -204,7 +204,7 @@ fn inline_first_call_target_alias(function: &Function) -> Option<Function> {
 /// statement-free bodies only: a call could rewrite the punned memory, a store
 /// could alias it, and a twice-read local would duplicate its load.
 fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
-    if function.locals.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+    if function.locals.is_empty() || !function.statements.is_empty() {
         return None;
     }
     if function_makes_call(function) {
@@ -232,13 +232,18 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
         if expression_has_call(initializer) {
             return None;
         }
-        // Read-once: across the later initializers and the return, so the
-        // substitution cannot duplicate a load mwcc would keep in a register.
+        // Read-once: across the later initializers, the guards, and the return, so
+        // the substitution cannot duplicate a load mwcc would keep in a register.
         let reads = function.locals[index + 1..]
             .iter()
             .filter_map(|later| later.initializer.as_ref())
             .map(|later| count_name_occurrences(later, &local.name))
             .sum::<usize>()
+            + function
+                .guards
+                .iter()
+                .map(|guard| count_name_occurrences(&guard.condition, &local.name) + count_name_occurrences(&guard.value, &local.name))
+                .sum::<usize>()
             + count_name_occurrences(return_expression, &local.name);
         if reads > 1 {
             return None;
@@ -253,7 +258,14 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: Vec::new(),
-        guards: Vec::new(),
+        guards: function
+            .guards
+            .iter()
+            .map(|guard| GuardedReturn {
+                condition: crate::value_tracking::substitute(&guard.condition, &values),
+                value: crate::value_tracking::substitute(&guard.value, &values),
+            })
+            .collect(),
         return_expression: Some(crate::value_tracking::substitute(return_expression, &values)),
     })
 }
@@ -5762,6 +5774,14 @@ impl Generator {
             // a float context is an implicit int->float conversion (the same magic-
             // constant sequence as the explicit `(float)`/`(double)` cast).
             Type::Float | Type::Double => {
+                // A bare float literal materializes at the CONTEXT precision: an 8-byte
+                // pooled `lfd` for a double, the rounded 4-byte `lfs` for a float.
+                // evaluate_float cannot know the context and always picked single,
+                // which mis-typed every double-constant return (`return 0.0;`).
+                if let Expression::FloatLiteral(value) = expression {
+                    self.load_float_literal(destination, *value, value_type == Type::Double);
+                    return Ok(());
+                }
                 if self.is_integer_leaf(expression) {
                     return self.emit_cast_to_float(expression, destination, value_type == Type::Double);
                 }
