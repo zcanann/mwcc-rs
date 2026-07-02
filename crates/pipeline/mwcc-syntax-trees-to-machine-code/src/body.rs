@@ -1475,6 +1475,11 @@ impl Generator {
         if self.try_conditional_assign_initialized(function)? {
             return Ok(());
         }
+        // `if (c) { [g = w;] [v = NEW;] } return v;` over a PARAMETER — the in-place
+        // diamond with the merge `mr r3,v`, folding to a conditional return when v is r3.
+        if self.try_conditional_reassign_return(function)? {
+            return Ok(());
+        }
         // A function's value-tracked locals are folded into its stores and trailing return,
         // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
         // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths
@@ -2461,6 +2466,114 @@ impl Generator {
         // The taken path computes NEW into the result register, then returns.
         self.evaluate_tail(value, function.return_type, result)?;
         self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// A PARAMETER conditionally reassigned (optionally after one global store), then
+    /// returned: `if (c) { [g = leaf;] [v = NEW;] } return v;`. mwcc keeps v in its
+    /// incoming register through the diamond; the skip branch targets the merge, and the
+    /// merge is `mr r3,v` — or NOTHING when v already lives in r3, in which case the skip
+    /// branch folds to `b<!c>lr` (the conditional-return fold). Captured shapes, GC/2.6:
+    ///   `if (a<b) a=b; return a;`        -> cmpw; bgelr; mr r3,r4; blr
+    ///   `if (a<b) b=b+1; return b;`      -> cmpw; bge M; addi r4,r4,1; M: mr r3,r4; blr
+    ///   `if (a>0) { g=a; a=a-1; } ret a` -> cmpwi; blelr; stw r3; addi r3,r3,-1; blr
+    ///   `if (a>0) { g=a; } return a;`    -> cmpwi; blelr; stw r3; blr
+    /// LONGER then-bodies RESCHEDULE (a second store sinks below the addi — measured), so
+    /// only the probed [Store], [Assign], [Store, Assign] forms are taken; more defers.
+    pub(crate) fn try_conditional_reassign_return(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || !function.locals.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(Expression::Variable(returned)) = &function.return_expression else { return Ok(false) };
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let Some(location) = self.locations.get(returned.as_str()) else { return Ok(false) };
+        if location.class != ValueClass::General || location.width != 32 {
+            return Ok(false);
+        }
+        let home = location.register;
+        // The probed then-body forms only (see above; longer bodies reschedule).
+        let (store, assign) = match then_body.as_slice() {
+            [assign @ Statement::Assign { .. }] => (None, Some(assign)),
+            [store @ Statement::Store { .. }] => (Some(store), None),
+            [store @ Statement::Store { .. }, assign @ Statement::Assign { .. }] => (Some(store), Some(assign)),
+            _ => return Ok(false),
+        };
+        if let Some(Statement::Store { target, value }) = store {
+            // One word store to a scalar global, from a register-resident variable — the
+            // exact captured store; constants/computed values would stage through r0 with
+            // unprobed placement.
+            let Expression::Variable(global) = target else { return Ok(false) };
+            if !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt)) {
+                return Ok(false);
+            }
+            if self.global_array_sizes.contains_key(global.as_str()) {
+                return Ok(false);
+            }
+            let Expression::Variable(source) = value else { return Ok(false) };
+            if self.lookup_general(source).is_none() {
+                return Ok(false);
+            }
+        }
+        if let Some(Statement::Assign { name, value }) = assign {
+            // Only the returned variable may be reassigned, in place: `v = w` (mr) or
+            // `v = v +- C` (addi). Other RHS forms are unprobed placements.
+            if name != returned {
+                return Ok(false);
+            }
+            match value {
+                Expression::Variable(source) => {
+                    if self.lookup_general(source).is_none() {
+                        return Ok(false);
+                    }
+                }
+                Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
+                    let reads_self = matches!(left.as_ref(), Expression::Variable(source) if source == returned);
+                    if !reads_self || constant_value(right).and_then(|value| i16::try_from(value).ok()).is_none() {
+                        return Ok(false);
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+        // -- commit (an Err past here defers the whole function; never Ok(false)) --
+        let result = Eabi::general_result().number;
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        // v already in r3 means an empty merge: the skip folds to a conditional return.
+        let merge = if home == result { None } else { Some(self.fresh_label()) };
+        match merge {
+            Some(label) => self.emit_branch_conditional_to(options, condition_bit, label),
+            None => self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit }),
+        }
+        if let Some(Statement::Store { target, value }) = store {
+            self.emit_store(target, value)?;
+        }
+        if let Some(Statement::Assign { value, .. }) = assign {
+            match value {
+                Expression::Variable(source) => {
+                    let source = self.lookup_general(source).expect("gated: register-resident");
+                    self.output.instructions.push(Instruction::move_register(home, source));
+                }
+                Expression::Binary { operator, right, .. } => {
+                    let constant = constant_value(right).expect("gated: i16 constant") as i16;
+                    let immediate = if *operator == BinaryOperator::Subtract { -constant } else { constant };
+                    self.output.instructions.push(Instruction::AddImmediate { d: home, a: home, immediate });
+                }
+                _ => unreachable!("gated"),
+            }
+        }
+        if let Some(label) = merge {
+            self.bind_label(label);
+            self.output.instructions.push(Instruction::move_register(result, home));
+        }
+        self.emit_epilogue_and_return();
         Ok(true)
     }
 
