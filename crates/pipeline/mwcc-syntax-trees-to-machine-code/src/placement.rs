@@ -378,7 +378,7 @@ impl Generator {
             (pointer_register, GENERAL_SCRATCH)
         } else {
             let pointer = as_dereference(other).unwrap();
-            let global_register = self.free_register_avoiding(&[pointer])?;
+            let global_register = self.fresh_virtual_general();
             self.emit_global_load(leaf_name(anchor).unwrap(), global_register)?;
             self.emit_load_from_pointer(pointer, GENERAL_SCRATCH)?;
             (global_register, GENERAL_SCRATCH)
@@ -407,7 +407,7 @@ impl Generator {
         } else {
             // The global anchor loads into a free register; the member -> scratch.
             let (base, offset, member_type) = as_member(other).unwrap();
-            let global_register = self.free_register_avoiding(&[base])?;
+            let global_register = self.fresh_virtual_general();
             self.emit_global_load(leaf_name(anchor).unwrap(), global_register)?;
             self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
             (global_register, GENERAL_SCRATCH)

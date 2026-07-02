@@ -1159,7 +1159,11 @@ impl Generator {
             self.output.instructions.push(displacement_store(pointee, source, 0, displacement));
             return Ok(true);
         }
-        let base = self.free_register_avoiding(&[value])?;
+        // Phase D: the const-address base is a virtual. place_store_value between its
+        // definition and use picks PHYSICAL registers; the reserve marker keeps the
+        // legacy chooser away from the virtual's field value, and the allocator sees
+        // any physical it picks as pinned inside the base's range.
+        let base = self.fresh_virtual_general();
         let restore = self.reserved.insert(base);
         self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
         let source = self.place_store_value(value, pointee)?;
@@ -1347,7 +1351,9 @@ impl Generator {
             }
             let total = i16::try_from(constant * stride as i64 + offset as i64)
                 .map_err(|_| Diagnostic::error("struct-array member store offset out of range (roadmap)"))?;
-            let base = self.free_register_avoiding(&[value])?;
+            // Phase D: the base is a virtual; the reserve marker keeps the legacy
+            // physical chooser (place_store_value) off the virtual's field value.
+            let base = self.fresh_virtual_general();
             let restore = self.reserved.insert(base);
             self.emit_global_array_base(name, total_size, base)?;
             let source = self.place_store_value(value, pointee)?;
@@ -1368,13 +1374,10 @@ impl Generator {
         }
         let index_register = self.general_register_of_leaf(index)?;
         let shift = stride.trailing_zeros() as u8;
-        // `@ha` avoids the index (and the value when it is in a register); the base
-        // reuses the index register; a constant value reuses `@ha`'s now-free register.
-        let high = if constant_value(value).is_some() {
-            self.free_register_avoiding(&[index])?
-        } else {
-            self.free_register_avoiding(&[index, value])?
-        };
+        // `@ha` is a VIRTUAL the allocator places: the index/value pinned ranges force
+        // it past them, and a constant value's reuse of the register is the same vreg
+        // redefined (one spanning range — the allocator keeps the home).
+        let high = self.fresh_virtual_general();
         self.emit_address_high(high, name);
         self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
         self.record_relocation(RelocationKind::Addr16Lo, name);
@@ -1862,7 +1865,7 @@ impl Generator {
                 self.output.instructions.push(displacement_store(pointee, source, 0, 0));
                 return Ok(());
             }
-            let base = self.free_register_avoiding(&[value])?;
+            let base = self.fresh_virtual_general();
             let restore = self.reserved.insert(base);
             let large = !small;
             if offset == 0 && large {
@@ -1960,7 +1963,7 @@ impl Generator {
         } else {
             // base high → a register avoiding the index and value; scale; base low
             // into the freed index register; `stwx`.
-            let high = self.free_register_avoiding(&[index, value])?;
+            let high = self.fresh_virtual_general();
             self.emit_address_high(high, name);
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
             self.record_relocation(RelocationKind::Addr16Lo, name);
@@ -2166,7 +2169,7 @@ impl Generator {
                         // mwcc materializes the address base before the value, so the
                         // base GPR (chosen to avoid the value's input registers) is
                         // reserved while the value is placed.
-                        let base = self.free_register_avoiding(&[value])?;
+                        let base = self.fresh_virtual_general();
                         let restore = self.reserved.insert(base);
                         self.emit_address_high(base, name);
                         let source = self.place_store_value(value, pointee)?;
@@ -2279,7 +2282,7 @@ impl Generator {
                                     self.output.instructions.push(displacement_store(pointee, source, 0, 0));
                                 } else {
                                     let restore = self.reserved.insert(source);
-                                    let base_reg = self.free_register_avoiding(&[value])?;
+                                    let base_reg = self.fresh_virtual_general();
                                     self.emit_global_array_base(name, size, base_reg)?;
                                     if restore {
                                         self.reserved.remove(&source);
@@ -2293,7 +2296,7 @@ impl Generator {
                             // register value matches mwcc; a *constant* value is a known
                             // latent diff — mwcc folds `@l` into the store and interleaves
                             // the `li` between `lis` and the store (a follow-up).
-                            let base_reg = self.free_register_avoiding(&[value])?;
+                            let base_reg = self.fresh_virtual_general();
                             let restore = self.reserved.insert(base_reg);
                             self.emit_global_array_base(name, size, base_reg)?;
                             let source = self.place_store_value(value, pointee)?;
@@ -2304,7 +2307,7 @@ impl Generator {
                             return Ok(());
                         }
                         // struct POINTER base: load the pointer, then the value, then store.
-                        let base_reg = self.free_register_avoiding(&[value])?;
+                        let base_reg = self.fresh_virtual_general();
                         let restore = self.reserved.insert(base_reg);
                         self.emit_global_load_value(name, base_reg)?;
                         let source = self.place_store_value(value, pointee)?;
