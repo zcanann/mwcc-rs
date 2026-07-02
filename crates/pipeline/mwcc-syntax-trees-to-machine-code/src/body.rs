@@ -4264,10 +4264,8 @@ impl Generator {
         // Phase D: the saved parameter's home is a virtual (call-crossing -> r31).
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        // The canonical single-save frame, from the FRAME BUILDER.
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // Save the live parameter before the call clobbers its incoming register.
         self.output.instructions.push(Instruction::Or { a: saved, s: param_register, b: param_register });
         self.emit_call(call_name, call_arguments, None, false)?;
@@ -4328,10 +4326,8 @@ impl Generator {
         // Phase D: the saved parameter's home is a virtual (call-crossing -> r31).
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        // The canonical single-save frame, from the FRAME BUILDER.
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // Save the second parameter (live across the first call), and record it there so
         // the second call materializes its argument from the saved home (`mr r3,r31`).
         self.output.instructions.push(Instruction::Or { a: saved, s: param_registers[1], b: param_registers[1] });
@@ -4379,10 +4375,8 @@ impl Generator {
         // Phase D: the first result's home is a virtual (call-crossing -> r31).
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        // The canonical single-save frame, from the FRAME BUILDER.
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // First call; its result is saved across the second call.
         self.emit_call(first_name, first_arguments, None, false)?;
         self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
@@ -4578,17 +4572,13 @@ impl Generator {
         let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        // Phase D: virtual homes, created highest-rank first (id order -> r31, r30, …).
+        // Phase D: virtual homes, created highest-rank first (id order -> r31, r30, …),
+        // framed by the FRAME BUILDER (all saves consecutive — the canonical schedule).
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        for rank in 0..count {
-            let register = homes[rank];
-            let offset = frame_size - 4 * (rank as i16 + 1);
-            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
-        }
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        debug_assert_eq!(plan.frame_size, frame_size);
+        self.output.instructions.extend(plan.prologue());
 
         // Each local: its producing call, then move r3 into the local's callee-saved
         // register — the first local takes the lowest (r30 when there are two), the last
@@ -4678,10 +4668,8 @@ impl Generator {
         // Phase D: the computed local's home is a virtual (call-crossing -> r31).
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        // The canonical single-save frame, from the FRAME BUILDER.
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         self.evaluate_general(initializer, saved)?;
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
