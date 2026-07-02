@@ -12,7 +12,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type};
 use mwcc_target::Eabi;
-use crate::analysis::{constant_value, expression_reads_name, function_makes_call};
+use crate::analysis::{constant_value, expression_reads_memory, expression_reads_name, function_makes_call};
 use crate::generator::*;
 
 impl Generator {
@@ -71,12 +71,36 @@ impl Generator {
         // path, which cannot read a value-tracked local and emits garbage (it reads an
         // unallocated register) — a silent miscompile for `int x = a+1; gi = x; return x;`.
         let has_store = function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }));
+        // A single local initialized from a MEMORY read (`int t = arr[i]; return t + 1;` — an
+        // array element, dereference, or member) inlines into its use, matching the direct
+        // `arr[i] + 1` lowering, but ONLY in a store-free leaf body: a store could alias the
+        // read and a call could rewrite the memory, so those keep their order (non-leaf is
+        // rejected below; a store is excluded here). The duplication guard below rejects a
+        // twice-read load.
+        let single_memory_local = function.locals.len() == 1
+            && !has_store
+            && function.locals.first().is_some_and(|local| local.declared_type.width() >= 32)
+            && function.locals.first().and_then(|local| local.initializer.as_ref()).is_some_and(|initializer| {
+                let register_names: std::collections::HashSet<&str> = function
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.name.as_str())
+                    .chain(function.locals.iter().map(|local| local.name.as_str()))
+                    .collect();
+                expression_reads_memory(initializer, &register_names)
+            });
         // A function with no locals but a reassigned PARAMETER (`int f(int a){ a += 5; return a; }`)
         // is value-tracked too: the param's register is mutated in place and the inlined value
         // feeds the return. Only `has_assignment` distinguishes this from a plain no-locals body
         // (a global store is a Store, never an Assign), so it is safe to take over here.
         if (function.locals.is_empty() && !has_assignment)
-            || (function.locals.len() == 1 && !has_assignment && !has_store && !single_conditional_local && !single_alias_local && !single_constant_local)
+            || (function.locals.len() == 1
+                && !has_assignment
+                && !has_store
+                && !single_conditional_local
+                && !single_alias_local
+                && !single_constant_local
+                && !single_memory_local)
         {
             return Ok(false);
         }
