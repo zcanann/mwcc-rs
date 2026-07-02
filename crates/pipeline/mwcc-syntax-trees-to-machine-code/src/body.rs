@@ -296,7 +296,30 @@ fn fold_would_duplicate(
 /// at 2+ sites (mwcc keeps it in one register — fold_would_duplicate). A store-free body
 /// (pure dead-local, or pure return-folding) is left to the value-tracking path.
 fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
-    if function.locals.is_empty() || function_makes_call(function) || !function.guards.is_empty() {
+    // Reassigned PARAMETERS fold exactly like locals: `x = x + 1; *p = x;` compiles as
+    // `*p = x + 1;` (`addi r0,r4,1; stw r0,0(r3)`) — the store value substitutes the
+    // tracked expression, reads before the assignment keep the raw (pristine) register.
+    // A narrow reassigned param would drop its re-narrowing when substituted — bail.
+    let local_name_set: std::collections::HashSet<&str> =
+        function.locals.iter().map(|local| local.name.as_str()).collect();
+    let mut reassigned_parameters: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for statement in &function.statements {
+        let Statement::Assign { name, .. } = statement else { continue };
+        if local_name_set.contains(name.as_str()) {
+            continue;
+        }
+        let Some(parameter) = function.parameters.iter().find(|parameter| &parameter.name == name) else {
+            continue;
+        };
+        if parameter.parameter_type.width() < 32 {
+            return None;
+        }
+        reassigned_parameters.insert(name.as_str());
+    }
+    if (function.locals.is_empty() && reassigned_parameters.is_empty())
+        || function_makes_call(function)
+        || !function.guards.is_empty()
+    {
         return None;
     }
     // A NARROWING narrow local (`char c = a;` for a wider `a`) must not inline: substituting
@@ -326,17 +349,21 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
             }
         }
     }
-    let local_names: std::collections::HashSet<&str> =
-        function.locals.iter().map(|local| local.name.as_str()).collect();
-    // Each local's current value, earlier folds applied. Seed from initializers (a call-
-    // bearing initializer is a call result to preserve, not inline). `read_count` tracks how
-    // many times each local's CURRENT value-version is read, to reject duplicating a
-    // computation; reassignment resets it.
+    // The TRACKED names: locals plus reassigned parameters. The duplication guard and the
+    // substitution treat both alike; the locals-only checks (a store into a local, the
+    // must-fully-fold `survives` test) keep `local_name_set` — a parameter legitimately
+    // survives in the output (it lives in a register).
+    let mut tracked_names = local_name_set.clone();
+    tracked_names.extend(reassigned_parameters.iter().copied());
+    // Each tracked name's current value, earlier folds applied. Seed from initializers (a
+    // call-bearing initializer is a call result to preserve, not inline). `read_count`
+    // tracks how many times each name's CURRENT value-version is read, to reject
+    // duplicating a computation; reassignment resets it.
     let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
     let mut read_count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for local in &function.locals {
         let Some(initializer) = &local.initializer else { continue };
-        if expression_has_call(initializer) || fold_would_duplicate(initializer, &local_names, &values, &mut read_count) {
+        if expression_has_call(initializer) || fold_would_duplicate(initializer, &tracked_names, &values, &mut read_count) {
             return None;
         }
         values.insert(local.name.clone(), crate::value_tracking::substitute(initializer, &values));
@@ -345,10 +372,10 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
     for statement in &function.statements {
         match statement {
             Statement::Assign { name, value } => {
-                if !local_names.contains(name.as_str()) || expression_has_call(value) {
+                if !tracked_names.contains(name.as_str()) || expression_has_call(value) {
                     return None;
                 }
-                if fold_would_duplicate(value, &local_names, &values, &mut read_count) {
+                if fold_would_duplicate(value, &tracked_names, &values, &mut read_count) {
                     return None;
                 }
                 values.insert(name.clone(), crate::value_tracking::substitute(value, &values));
@@ -361,12 +388,12 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
                 // A store INTO a local is a different shape — we only fold locals that feed
                 // memory stores, not locals that are themselves store targets.
                 if let Expression::Variable(name) = target {
-                    if local_names.contains(name.as_str()) {
+                    if local_name_set.contains(name.as_str()) {
                         return None;
                     }
                 }
-                if fold_would_duplicate(target, &local_names, &values, &mut read_count)
-                    || fold_would_duplicate(value, &local_names, &values, &mut read_count)
+                if fold_would_duplicate(target, &tracked_names, &values, &mut read_count)
+                    || fold_would_duplicate(value, &tracked_names, &values, &mut read_count)
                 {
                     return None;
                 }
@@ -379,7 +406,7 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
         }
     }
     if let Some(return_expression) = &function.return_expression {
-        if fold_would_duplicate(return_expression, &local_names, &values, &mut read_count) {
+        if fold_would_duplicate(return_expression, &tracked_names, &values, &mut read_count) {
             return None;
         }
     }
@@ -394,7 +421,7 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
         .map(|expression| crate::value_tracking::substitute(expression, &values));
     // Every local must be fully folded away — none may survive in a resulting store or the
     // return (e.g. a local whose aggregate or address use could not be substituted).
-    let survives = |expression: &Expression| local_names.iter().any(|name| expression_reads_name(expression, name));
+    let survives = |expression: &Expression| local_name_set.iter().any(|name| expression_reads_name(expression, name));
     for statement in &new_statements {
         if let Statement::Store { target, value } = statement {
             if survives(target) || survives(value) {
