@@ -73,3 +73,31 @@ void const_amid(int a, int b)
 	h = 7;
 	k = (b + 2) * 3;
 }
+
+/* return-bearing bodies: the return chain's value lands in r3 by the model's
+ * construction; store chains ride r0; the ret2->ret3 handoff and the XER
+ * hazard (two srawis) compose. */
+int ret_mix(int a, int b)
+{
+	g = a + 1;
+	return b + 2;
+}
+
+int ret_deep(int a, int b)
+{
+	g = (a + 1) * 2;
+	return ((b + 2) * 3) + 4;
+}
+
+int ret_hazard(int a, int b)
+{
+	g = a >> 3;
+	return b >> 4;
+}
+
+int ret_three(int a, int b, int c)
+{
+	g = a + 1;
+	h = b * 3;
+	return c - 2;
+}

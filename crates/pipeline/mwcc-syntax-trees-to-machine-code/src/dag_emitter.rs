@@ -186,7 +186,7 @@ fn contiguous_or_wrap_mask(mask: u32) -> Option<(u8, u8)> {
     if mask == 0 || mask == u32::MAX {
         return None;
     }
-    let rotated = mask.rotate_left(mask.trailing_zeros() % 32);
+    let rotated = mask.rotate_right(mask.trailing_zeros() % 32);
     // After rotating the low run to the bottom, a single run is (2^n - 1)-shaped.
     if rotated.leading_zeros() + rotated.count_ones() + rotated.trailing_zeros() == 32 && rotated.trailing_zeros() == 0 {
         let begin = mask.leading_zeros() as u8;
@@ -212,18 +212,27 @@ impl Generator {
     /// Leaf multi-store bodies through the measured models (see the module
     /// doc). Returns Ok(false) outside the validated envelope.
     pub(crate) fn try_dag_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if std::env::var("DAG_DEBUG").is_ok() {
+            eprintln!("dag: entered for {}", function.name);
+        }
         if !function.guards.is_empty()
             || !function.locals.is_empty()
-            || function.return_type != Type::Void
             || function_makes_call(function)
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
         }
+        // Void multi-store bodies, or INT-returning bodies with at least one
+        // store (a pure computed return stays with the proven direct paths).
+        let returns_int = matches!(function.return_type, Type::Int | Type::UnsignedInt);
+        if !(function.return_type == Type::Void || (returns_int && function.return_expression.is_some())) {
+            return Ok(false);
+        }
         if self.behavior.global_addressing != GlobalAddressing::SmallData {
             return Ok(false);
         }
-        if function.statements.len() < 2 {
+        let minimum_stores = if returns_int { 1 } else { 2 };
+        if function.statements.len() < minimum_stores {
             return Ok(false);
         }
         // Parameters: ints and int pointers, all register-resident.
@@ -269,6 +278,52 @@ impl Generator {
             node.reads = vec![value_id];
             builder.nodes.push(node);
             builder.templates.push(Template::StoreGlobal(global.clone()));
+        }
+        // The RETURN chain: a consumerless value node — the register model
+        // forces its result into r3 (the contracts' return mode).
+        if returns_int {
+            let return_expression = function.return_expression.as_ref().expect("gated");
+            // A bare parameter/constant return has no chain to schedule —
+            // those tails belong to the existing paths.
+            if matches!(return_expression, Expression::Variable(_)) || constant_value(return_expression).is_some() {
+                return Ok(false);
+            }
+            let before_return = builder.nodes.len();
+            if builder.expression(return_expression, self).is_none() {
+                return Ok(false);
+            }
+            // r0 CONTENTION (open model boundary): when a store chain ends in a
+            // multiply and the return chain has intermediates, mwcc arbitrates
+            // r0 by tenancy length (the mulli yields) — a lookahead the model
+            // lacks. Defer the combination.
+            let return_ops = builder.nodes.len() - before_return;
+            let store_multiply_final = builder
+                .templates
+                .iter()
+                .take(before_return)
+                .any(|template| matches!(template, Template::MultiplyImmediate(_)));
+            if return_ops >= 2 && store_multiply_final {
+                // The legacy fall-through would emit this SEQUENTIALLY (wrong
+                // bytes) — defer the whole function instead.
+                return Err(Diagnostic::error(
+                    "r0 contention between a multiply store chain and a computed return needs tenancy arbitration (roadmap)",
+                ));
+            }
+        }
+        // The PPC r0-as-zero rule: a value consumed as an addi source (or any
+        // base field) must not live in r0 — mark producers so the register
+        // model excludes it.
+        for index in 0..builder.nodes.len() {
+            let unsafe_reads: Vec<u32> = match &builder.templates[index] {
+                Template::AddImmediate(_) => builder.nodes[index].reads.clone(),
+                Template::LoadWord => builder.nodes[index].reads.clone(),
+                _ => Vec::new(),
+            };
+            for read in unsafe_reads {
+                if let ValueSource::Node(producer) = builder.value_of(read) {
+                    builder.nodes[producer].forbid_r0 = true;
+                }
+            }
         }
         // -- the models take over --
         let order = linearize(&builder.nodes);

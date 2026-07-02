@@ -52,6 +52,9 @@ pub struct DagNode {
     /// one class cannot issue in the same cycle — measured: srawi+srawi
     /// serialize where rlwinm+rlwinm pair.
     pub hazard: Option<u8>,
+    /// This value is consumed as an addi source or a load/store BASE — where
+    /// PPC reads r0 as literal zero — so it must never be assigned r0.
+    pub forbid_r0: bool,
 }
 
 /// The XER (carry) hazard class: srawi, subfc, addc.
@@ -63,7 +66,11 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None }
+        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false }
+    }
+    pub fn forbid_r0(mut self) -> DagNode {
+        self.forbid_r0 = true;
+        self
     }
     pub fn hazard(mut self, class: u8) -> DagNode {
         self.hazard = Some(class);
@@ -760,10 +767,10 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // register is candidate when closed-free — or open-free for the op's
         // own dying source (internal sources always; params in the relaxed
         // regime only). First candidate in pool order wins.
-        let r0_eligible = return_mode || on_last_chain || end < last_chain_first_def;
-        let pool: Vec<u8> = if !return_mode && on_last_chain && is_final {
+        let r0_eligible = (return_mode || on_last_chain || end < last_chain_first_def) && !nodes[node].forbid_r0;
+        let pool: Vec<u8> = if !return_mode && on_last_chain && is_final && !nodes[node].forbid_r0 {
             vec![0]
-        } else if return_mode && is_final {
+        } else if return_mode && is_final && !nodes[node].forbid_r0 {
             // A return-mode STORE-chain final PREFERS r0 (measured on all five
             // return captures; it falls through when r0 is occupied — cap2).
             let mut pool = vec![0u8, 3, 4];
