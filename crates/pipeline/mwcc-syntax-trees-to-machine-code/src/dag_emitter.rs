@@ -14,7 +14,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Pointee, Statement, Type};
 use mwcc_versions::GlobalAddressing;
-use mwcc_vreg::{assign_registers_v3, linearize, DagNode, OpKind, HAZARD_XER};
+use mwcc_vreg::{assign_registers_v3, linearize, DagNode, OpKind, HAZARD_MUL, HAZARD_XER};
 
 use crate::analysis::{constant_value, count_name_occurrences, function_makes_call};
 use crate::generator::Generator;
@@ -180,8 +180,11 @@ impl Builder {
                             return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftLeftImmediate(shift)));
                         }
                         let immediate = i16::try_from(constant).ok()?;
-                        // mulli weighs 3 for priority but gates consumers at 2 (measured).
-                        Some(self.push(OpKind::Alu, 3, 2, vec![value], Template::MultiplyImmediate(immediate)))
+                        // mulli weighs 3 for priority but gates consumers at 2 (measured);
+                        // one integer multiplier — two mulli never dual-issue.
+                        let node = self.push(OpKind::Alu, 3, 2, vec![value], Template::MultiplyImmediate(immediate));
+                        self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_MUL);
+                        Some(node)
                     }
                     BinaryOperator::ShiftRight => {
                         // FOLD: a read-once narrow UNSIGNED parameter >> constant

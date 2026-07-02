@@ -64,6 +64,10 @@ pub struct DagNode {
 
 /// The XER (carry) hazard class: srawi, subfc, addc.
 pub const HAZARD_XER: u8 = 1;
+/// The integer-multiplier structural hazard: Gekko has ONE multiplier, so two
+/// mulli never dual-issue (measured: the two-mulli return tail threads the
+/// return chain into the serialization gap).
+pub const HAZARD_MUL: u8 = 2;
 
 impl DagNode {
     pub fn new(label: &'static str, latency: u32) -> DagNode {
@@ -1291,6 +1295,147 @@ mod tests {
     /// A single-consumer extension reuses its dying param register in place
     /// (extsb r3,r3); a multi-consumer one takes the next closed-free register
     /// and the first chain's final claims the freed param home.
+    /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order
+    /// as node indices. The tail rank (store vs return final) is the open
+    /// sub-model; shapes marked false do not pass FROZEN yet.
+    fn return_tail_order_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<usize>, bool)> {
+        use OpKind::Store as St;
+        vec![
+            (
+                // g=a+1; h=b-3; ret (c&15)|1: addi addi mask stw_g ori stw_h
+                "tail_plain2",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[20]),
+                    DagNode::new("mask", ALU).reads(&[3]).writes(&[30]),
+                    DagNode::new("ori", ALU).reads(&[30]).writes(&[31]),
+                ],
+                vec![0, 2, 4, 1, 5, 3],
+                false,
+            ),
+            (
+                // g=a+1; h=b*3; ret (c&15)|1: mulli addi mask stw_g stw_h ori
+                "tail_one_mulli",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("mulli_h", MUL).gate(2).hazard(HAZARD_MUL).reads(&[2]).writes(&[20]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[20]),
+                    DagNode::new("mask", ALU).reads(&[3]).writes(&[30]),
+                    DagNode::new("ori", ALU).reads(&[30]).writes(&[31]),
+                ],
+                vec![2, 0, 4, 1, 3, 5],
+                true,
+            ),
+            (
+                // g=a*5; h=b*3; ret (c&15)|1: mulli_g mask ori mulli_h stw_g stw_h
+                "tail_two_mulli",
+                vec![
+                    DagNode::new("mulli_g", MUL).gate(2).hazard(HAZARD_MUL).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("mulli_h", MUL).gate(2).hazard(HAZARD_MUL).reads(&[2]).writes(&[20]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[20]),
+                    DagNode::new("mask", ALU).reads(&[3]).writes(&[30]),
+                    DagNode::new("ori", ALU).reads(&[30]).writes(&[31]),
+                ],
+                vec![0, 4, 5, 2, 1, 3],
+                false,
+            ),
+            (
+                // 3 stores + 2-op ret: g h k mask stw_g ori stw_h stw_k
+                "tail_three_stores",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[20]),
+                    DagNode::new("addi_k", ALU).reads(&[3]).writes(&[30]),
+                    DagNode::new("st_k", STORE).kind(St).reads(&[30]),
+                    DagNode::new("mask", ALU).reads(&[4]).writes(&[40]),
+                    DagNode::new("ori", ALU).reads(&[40]).writes(&[41]),
+                ],
+                vec![0, 2, 4, 6, 1, 7, 3, 5],
+                false,
+            ),
+            (
+                // g=a+1; ret ((b&15)|1)+2: addi mask ori stw_g addf
+                "tail_deep_return",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("mask", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("addf", ALU).reads(&[21]).writes(&[22]),
+                ],
+                vec![0, 2, 3, 1, 4],
+                false,
+            ),
+            (
+                // g=a+1; ret (b&15)|1: addi mask stw_g ori
+                "tail_single_store",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("mask", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
+                ],
+                vec![0, 2, 1, 3],
+                true,
+            ),
+            (
+                // g=a+1; h=b-3; ret (c>>2)+1: addi addi srawi stw_g ret stw_h
+                "tail_forbidden_feeder",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[20]),
+                    DagNode::new("srawi", ALU).hazard(HAZARD_XER).forbid_r0().reads(&[3]).writes(&[30]),
+                    DagNode::new("ret", ALU).reads(&[30]).writes(&[31]),
+                ],
+                vec![0, 2, 4, 1, 5, 3],
+                false,
+            ),
+            (
+                // g=a+1; h=b*3; ret c-2: mulli addi stw_g ret stw_h (BYTE today)
+                "tail_ret_three",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("mulli_h", MUL).gate(2).hazard(HAZARD_MUL).reads(&[2]).writes(&[20]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[20]),
+                    DagNode::new("ret", ALU).reads(&[3]).writes(&[30]),
+                ],
+                vec![2, 0, 1, 4, 3],
+                true,
+            ),
+        ]
+    }
+
+    /// Diagnostic: score FROZEN against the return-tail order captures.
+    #[test]
+    fn return_tail_orders() {
+        let shapes = return_tail_order_fixtures();
+        let mut passed = 0;
+        for (name, nodes, expected, must_pass) in &shapes {
+            let got = linearize(nodes);
+            let ok = got == *expected;
+            if ok {
+                passed += 1;
+            } else {
+                let labels: Vec<&str> = got.iter().map(|&index| nodes[index].label).collect();
+                let want: Vec<&str> = expected.iter().map(|&index| nodes[index].label).collect();
+                println!("tail MISS {name}: got {labels:?} want {want:?}");
+            }
+            if *must_pass {
+                assert!(ok, "return-tail fixture {name} regressed");
+            }
+        }
+        println!("return-tail orders: {passed}/{}", shapes.len());
+    }
+
     fn register_fixtures_round4() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
         use OpKind::Store as St;
         vec![
