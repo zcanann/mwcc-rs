@@ -5938,12 +5938,19 @@ impl Generator {
     pub(crate) fn try_live_across_branches(&mut self, function: &Function) -> Compilation<bool> {
         if function.return_type != Type::Int
             || function.return_expression.is_none()
-            || !function.guards.is_empty()
             || function_makes_call(function)
             || function.locals.is_empty()
             || self.behavior.global_addressing != GlobalAddressing::SmallData
         {
             return Ok(false);
+        }
+        // Trailing guards (`if (id < 0) return a;` — the id-tested-later form)
+        // are allowed: their conditions/values may read the live locals, which
+        // resolve through the registered home locations below.
+        for guard in &function.guards {
+            if !matches!(&guard.condition, Expression::Variable(_) | Expression::Binary { .. }) {
+                return Ok(false);
+            }
         }
         // Every local: int, initialized, non-static.
         if function.locals.iter().any(|local| {
@@ -6105,8 +6112,12 @@ impl Generator {
             });
         }
         let result = Eabi::general_result().number;
-        self.evaluate_tail(return_expression, Type::Int, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        if function.guards.is_empty() {
+            self.evaluate_tail(return_expression, Type::Int, result)?;
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+        } else {
+            self.emit_guard_sequence(&function.guards, return_expression, Type::Int, result)?;
+        }
         Ok(true)
     }
 

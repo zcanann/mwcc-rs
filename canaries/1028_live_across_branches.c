@@ -44,3 +44,27 @@ int two_branches(int a, int c, int d)
 	}
 	return t;
 }
+
+/* the id-tested-later form: trailing guards read the live local through its
+ * registered home (cmpwi r0; bltlr) before the final return. */
+int id_pattern(int a, int c)
+{
+	int id = -1;
+	if (c) {
+		id = 2;
+	}
+	if (id < 0)
+		return a;
+	return a + id;
+}
+
+int guard_on_live(int a, int c)
+{
+	int t = a + 1;
+	if (c) {
+		t = a * 3;
+	}
+	if (t > 10)
+		return 0;
+	return t + 2;
+}
