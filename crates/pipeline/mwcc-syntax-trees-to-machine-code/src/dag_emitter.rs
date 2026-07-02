@@ -14,7 +14,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Pointee, Statement, Type};
 use mwcc_versions::GlobalAddressing;
-use mwcc_vreg::{assign_registers_v3, linearize, DagNode, OpKind};
+use mwcc_vreg::{assign_registers_v3, linearize, DagNode, OpKind, HAZARD_XER};
 
 use crate::analysis::{constant_value, function_makes_call};
 use crate::generator::Generator;
@@ -137,7 +137,10 @@ impl Builder {
                     BinaryOperator::ShiftRight => {
                         let shift = u8::try_from(constant_right?).ok().filter(|shift| *shift < 32)?;
                         let value = self.expression(left, generator)?;
-                        Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightAlgebraicImmediate(shift)))
+                        // srawi writes XER.CA — two cannot dual-issue (measured).
+                        let node = self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightAlgebraicImmediate(shift));
+                        self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_XER);
+                        Some(node)
                     }
                     BinaryOperator::ShiftLeft => {
                         let shift = u8::try_from(constant_right?).ok().filter(|shift| *shift < 32)?;

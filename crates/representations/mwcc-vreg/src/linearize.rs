@@ -48,7 +48,14 @@ pub struct DagNode {
     pub alias_group: Option<u32>,
     /// Extra dependence edges (indices), e.g. the r0-staging serialization.
     pub extra_deps: Vec<usize>,
+    /// A shared-resource class (e.g. XER for carry-writing srawi): two ops of
+    /// one class cannot issue in the same cycle — measured: srawi+srawi
+    /// serialize where rlwinm+rlwinm pair.
+    pub hazard: Option<u8>,
 }
+
+/// The XER (carry) hazard class: srawi, subfc, addc.
+pub const HAZARD_XER: u8 = 1;
 
 impl DagNode {
     pub fn new(label: &'static str, latency: u32) -> DagNode {
@@ -56,7 +63,11 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new() }
+        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None }
+    }
+    pub fn hazard(mut self, class: u8) -> DagNode {
+        self.hazard = Some(class);
+        self
     }
     pub fn gate(mut self, gate_latency: u32) -> DagNode {
         self.gate_latency = gate_latency;
@@ -282,7 +293,24 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
         match model.strategy {
             Strategy::GlobalKey => {
                 ready.sort_by_key(|&candidate| rank(candidate));
-                ready.truncate(model.issue_width);
+                // Fill the issue window, skipping shared-resource conflicts
+                // (XER: two carry-writing ops cannot pair — measured
+                // srawi+srawi serializing where rlwinm+rlwinm pairs).
+                let mut picked: Vec<usize> = Vec::new();
+                let mut picked_hazards: Vec<u8> = Vec::new();
+                for &candidate in &ready {
+                    if picked.len() >= model.issue_width {
+                        break;
+                    }
+                    if let Some(class) = nodes[candidate].hazard {
+                        if picked_hazards.contains(&class) {
+                            continue;
+                        }
+                        picked_hazards.push(class);
+                    }
+                    picked.push(candidate);
+                }
+                ready = picked;
             }
             Strategy::ChainRobin { lead, offer_non_load_first } => {
                 // Each chain offers ONE ready op; the lead chain's offer goes first.
@@ -1109,7 +1137,7 @@ mod tests {
                 vec![
                     DagNode::new("mulli_g", MUL).reads(&[1]).writes(&[10]),
                     DagNode::new("stw_g", STORE).kind(St).reads(&[10]),
-                    DagNode::new("srawi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("srawi_h", ALU).hazard(HAZARD_XER).reads(&[2]).writes(&[20]),
                     DagNode::new("addi_h", ALU).reads(&[20]).writes(&[21]),
                     DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
                 ],
@@ -1170,10 +1198,10 @@ mod tests {
                 // srawi_g r5; srawi_h r3; addi_g r4; addi_h r0
                 "equal_two_op_pair",
                 vec![
-                    DagNode::new("srawi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("srawi_g", ALU).hazard(HAZARD_XER).reads(&[1]).writes(&[10]),
                     DagNode::new("addi_g", ALU).reads(&[10]).writes(&[11]),
                     DagNode::new("st_g", STORE).kind(St).reads(&[11]),
-                    DagNode::new("srawi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("srawi_h", ALU).hazard(HAZARD_XER).reads(&[2]).writes(&[20]),
                     DagNode::new("addi_h", ALU).reads(&[20]).writes(&[21]),
                     DagNode::new("st_h", STORE).kind(St).reads(&[21]),
                 ],
@@ -1256,10 +1284,10 @@ mod tests {
                 // g=(a>>1)+5; return (b>>2)+7;  ->  g1 r3, g2 r0, ret1 r3, ret2 r3
                 "ret_equal_twin",
                 vec![
-                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("g1", ALU).hazard(HAZARD_XER).reads(&[1]).writes(&[10]),
                     DagNode::new("g2", ALU).reads(&[10]).writes(&[11]),
                     DagNode::new("st_g", STORE).kind(St).reads(&[11]),
-                    DagNode::new("ret1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ret1", ALU).hazard(HAZARD_XER).reads(&[2]).writes(&[20]),
                     DagNode::new("ret2", ALU).reads(&[20]).writes(&[21]),
                 ],
                 vec![(1, 3), (2, 4)],

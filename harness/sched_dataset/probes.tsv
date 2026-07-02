@@ -40,3 +40,5 @@ ret_both_deep	extern int g; int f(int a, int b) { g = (a + 1) * 2; return (b + 2
 ret_first_source	extern int g; int f(int a, int b) { g = (b + 2) * 3; return a + 1; }
 ret_equal_twin	extern int g; int f(int a, int b) { g = (a >> 1) + 5; return (b >> 2) + 7; }
 ret_deep_chain	extern int g; int f(int a, int b) { g = (a + 1) * 2; return ((b + 2) * 3) + 4; }
+hazard_srawi_rlwinm	extern int g; int f(int a, int b) { g = (a >> 1) + 5; return (b & 15) + 7; }
+hazard_control_rlwinm	extern int g; int f(int a, int b) { g = (a & 60) + 5; return (b & 15) + 7; }

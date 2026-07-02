@@ -1,0 +1,6 @@
+rlwinm r5,r3,0,26,29
+clrlwi r3,r4,28
+addi r0,r5,5
+stw r0,0(0)
+addi r3,r3,7
+blr
