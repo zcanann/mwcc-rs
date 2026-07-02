@@ -66,7 +66,7 @@ else
   while IFS= read -r sysroot; do
     rel="${sysroot#"$project"/}"
     [[ "$rel" == include ]] || include_dirs+=("$rel")
-  done < <(find "$project" -maxdepth 6 -name stddef.h \
+  done < <(find "$project" -maxdepth 8 \( -name stddef.h -o -name errno.h -o -name __va_arg.h \) \
              -not -path "*/orig/*" -not -path "*/build/*" -not -path "*/tools/*" 2>/dev/null \
            | xargs -n1 dirname | sort -u)
 fi

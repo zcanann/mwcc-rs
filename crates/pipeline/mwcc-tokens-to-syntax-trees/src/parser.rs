@@ -78,6 +78,8 @@ pub(crate) struct Parser {
     pub(crate) skipped_inline_functions: usize,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
     pub(crate) weak_functions: std::collections::HashSet<String>,
+    /// Names of SKIPPED inline definitions — a call to one defers the unit.
+    pub(crate) skipped_inline_names: std::collections::HashSet<String>,
     /// `typedef`-declared struct aliases (`typedef struct _FILE {…} FILE;`) mapped
     /// to their struct tag, so `FILE *p` resolves to the right layout.
     pub(crate) struct_typedefs: HashMap<String, String>,

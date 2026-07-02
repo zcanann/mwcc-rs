@@ -1133,6 +1133,12 @@ impl Parser {
                 // counter by the labels its (compiled, then dropped) body uses.
                 if let Some(bump) = self.skipped_inline_label_bump()? {
                     self.skipped_inline_functions += bump;
+                    // Record the NAME: a later call to it would need mwcc's
+                    // inline expansion (mwcc inlines, we would emit a bl to an
+                    // undefined symbol — wrong bytes), so such units defer.
+                    if let Some(name) = self.skipped_function_name() {
+                        self.skipped_inline_names.insert(name);
+                    }
                 }
                 // A skipped `typedef` still registers its alias name, so function
                 // bodies that use the type as a pointer (`FILE *fp`) still parse.
@@ -1149,6 +1155,79 @@ impl Parser {
                 return Err(Diagnostic::error("a static global declared after a function is not supported yet (local-symbol ordering)"));
             }
         }
+        // A CALL to a skipped inline definition would need mwcc's inline
+        // expansion (mwcc inlines the body; a bl to an undefined local symbol
+        // is wrong bytes) — defer the unit honestly.
+        if !self.skipped_inline_names.is_empty() {
+            fn expression_calls(expression: &Expression, names: &std::collections::HashSet<String>) -> bool {
+                match expression {
+                    Expression::Call { name, arguments } => {
+                        names.contains(name) || arguments.iter().any(|argument| expression_calls(argument, names))
+                    }
+                    Expression::Binary { left, right, .. } => {
+                        expression_calls(left, names) || expression_calls(right, names)
+                    }
+                    Expression::Unary { operand, .. }
+                    | Expression::Cast { operand, .. }
+                    | Expression::AddressOf { operand } => expression_calls(operand, names),
+                    Expression::Dereference { pointer } => expression_calls(pointer, names),
+                    Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => expression_calls(base, names),
+                    Expression::Index { base, index } => {
+                        expression_calls(base, names) || expression_calls(index, names)
+                    }
+                    Expression::Assign { target, value } => {
+                        expression_calls(target, names) || expression_calls(value, names)
+                    }
+                    Expression::Conditional { condition, when_true, when_false } => {
+                        expression_calls(condition, names)
+                            || expression_calls(when_true, names)
+                            || expression_calls(when_false, names)
+                    }
+                    _ => false,
+                }
+            }
+            fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
+                match statement {
+                    Statement::Store { target, value } => {
+                        expression_calls(target, names) || expression_calls(value, names)
+                    }
+                    Statement::Assign { value, .. } => expression_calls(value, names),
+                    Statement::Expression(expression) => expression_calls(expression, names),
+                    Statement::If { condition, then_body, else_body } => {
+                        expression_calls(condition, names)
+                            || then_body.iter().any(|inner| statement_calls(inner, names))
+                            || else_body.iter().any(|inner| statement_calls(inner, names))
+                    }
+                    Statement::Switch { scrutinee, arms, default } => {
+                        expression_calls(scrutinee, names)
+                            || arms.iter().any(|arm| expression_calls(&arm.result, names))
+                            || default.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                    }
+                    Statement::Return(Some(expression)) => expression_calls(expression, names),
+                    Statement::Loop { initializer, condition, step, body, .. } => {
+                        initializer.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                            || condition.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                            || step.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                            || body.iter().any(|inner| statement_calls(inner, names))
+                    }
+                    _ => false,
+                }
+            }
+            let calls_skipped = functions.iter().any(|function| {
+                function.statements.iter().any(|statement| statement_calls(statement, &self.skipped_inline_names))
+                    || function.guards.iter().any(|guard| {
+                        expression_calls(&guard.condition, &self.skipped_inline_names)
+                            || expression_calls(&guard.value, &self.skipped_inline_names)
+                    })
+                    || function
+                        .return_expression
+                        .as_ref()
+                        .is_some_and(|expression| expression_calls(expression, &self.skipped_inline_names))
+            });
+            if calls_skipped {
+                return Err(Diagnostic::error("a call to a skipped inline function needs inline expansion (roadmap)"));
+            }
+        }
         Ok(TranslationUnit {
             globals,
             functions,
@@ -1161,6 +1240,27 @@ impl Parser {
     /// If the item at the cursor is an `inline`/`static inline` function whose body
     /// contains an inline `asm` block, return its name (mwcc emits a local symbol
     /// for it). Pure lookahead — consumes nothing.
+    /// The name of the (inline) function definition at the cursor: the last
+    /// identifier before the parameter list's `(`.
+    fn skipped_function_name(&self) -> Option<String> {
+        let mut index = self.position;
+        let mut name: Option<String> = None;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::Identifier(word)
+                    if word != "inline" && word != "__inline" && word != "static" && word != "extern" =>
+                {
+                    name = Some(word.clone());
+                }
+                Token::ParenOpen => return name,
+                Token::Semicolon | Token::BraceOpen | Token::EndOfFile => return None,
+                _ => {}
+            }
+            index += 1;
+        }
+        None
+    }
+
     fn inline_asm_function_name(&self) -> Option<String> {
         let mut index = self.position;
         let mut is_inline = false;
