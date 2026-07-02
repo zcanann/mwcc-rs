@@ -287,3 +287,23 @@ void void_fold_last(unsigned char a, int b)
 	h = b + 1;
 	u = a >> 3;
 }
+
+/* multi-store + multi-op return with EXACTLY one store mulli (the measured
+ * tail): the r0 RESERVATION blocks both store finals (each overlaps the
+ * return intermediate) so both reuse their dying params in place — and the
+ * multiply exclusion is a store-only-mode rule, lifted here (mulli r4,r4,3).
+ * The no-multiply and two-mulli tails defer (linearizer emission-order
+ * boundaries, captures recorded). */
+int ret_h_mulli_second(int a, int b, int c)
+{
+	g = a + 1;
+	h = b * 3;
+	return (c & 15) | 1;
+}
+
+int ret_h_mulli_first(int a, int b, int c)
+{
+	g = b * 3;
+	h = a + 1;
+	return (c & 15) | 1;
+}

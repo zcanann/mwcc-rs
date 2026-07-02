@@ -688,8 +688,29 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         result[return_node] = Some(3);
         occupied.push((3, position[return_node], value_end(return_node)));
     }
+    // r0 RESERVATION (return mode): each non-forbidden return-chain
+    // intermediate pre-claims r0 over its interval — a store final whose
+    // interval overlaps finds r0 occupied and falls to its own-dying/pool
+    // registers (the arbitration), while a disjoint final shares r0
+    // serially (measured across the contention captures). A forbidden
+    // intermediate (one feeding the return addi) never reserves.
+    if return_mode {
+        for node in 0..count {
+            if Some(node) == return_node
+                || nodes[node].kind == OpKind::Store
+                || nodes[node].writes.is_empty()
+                || nodes[node].forbid_r0
+                || chain_of(node) != last_sink
+                || result[node].is_some()
+            {
+                continue;
+            }
+            result[node] = Some(0);
+            occupied.push((0, position[node], value_end(node)));
+        }
+    }
     for &node in order {
-        if Some(node) == return_node {
+        if result[node].is_some() {
             continue;
         }
         // The value the return op READS hands its register off at the claim
@@ -740,9 +761,13 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let own_chain_has_multiply = (0..count).any(|member| {
             chain_of(member) == chain_of(node) && nodes[member].kind != OpKind::Store && nodes[member].latency >= 3
         });
+        // The multiply exclusion is a STORE-ONLY-mode rule: in return mode a
+        // contended store-chain mulli reuses its dying param in place
+        // (measured: mulli r4,r4,3 under a mask+or return; the uncontended
+        // 1-op-return mulli prefers r0 before reuse is ever consulted).
         let relaxed = chain_count <= 2
             && last_chain_depth <= 2
-            && !own_chain_has_multiply
+            && !(own_chain_has_multiply && !return_mode)
             && (return_mode || chain_of(node) != last_sink)
             && (return_mode
                 || node_is_final
@@ -781,42 +806,12 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // own dying source (internal sources always; params in the relaxed
         // regime only). First candidate in pool order wins.
         let r0_eligible = (return_mode || on_last_chain || end < last_chain_first_def) && !nodes[node].forbid_r0;
-        // r0 ARBITRATION (measured, the contention captures): a store final
-        // avoids r0 exactly when a non-forbidden return-chain intermediate's
-        // interval OVERLAPS its own with tenancy no longer than its own
-        // (mask [1,2] beats mulli [0,3]; equal 2<=2 also yields). Disjoint
-        // tenancies share r0 serially (deep-store capture: mask r0 then
-        // addi r0). A forbidden intermediate (feeding the return addi) never
-        // contends.
-        let r0_contender = return_mode
-            && (0..count).any(|other| {
-                let other_start = position[other];
-                let other_end = value_end(other);
-                other != node
-                    && Some(other) != return_node
-                    && chain_of(other) == last_sink
-                    && nodes[other].kind != OpKind::Store
-                    && !nodes[other].writes.is_empty()
-                    && !nodes[other].forbid_r0
-                    && other_start <= end
-                    && other_end >= start
-                    && (other_end - other_start) <= end.saturating_sub(start)
-            });
         let pool: Vec<u8> = if !return_mode && on_last_chain && is_final && !nodes[node].forbid_r0 {
             vec![0]
-        } else if return_mode && is_final && !nodes[node].forbid_r0 && r0_contender {
-            // The yield: never touch r0 — the shorter-tenancy return
-            // intermediate takes it.
-            (3..=12).collect()
         } else if return_mode && is_final && !nodes[node].forbid_r0 {
             // A return-mode STORE-chain final PREFERS r0 (measured on all five
-            // return captures; it falls through when r0 is occupied — cap2).
-            let mut pool = vec![0u8, 3, 4];
-            pool.extend(5..=12);
-            pool
-        } else if return_mode && on_last_chain && !nodes[node].forbid_r0 {
-            // A return-chain INTERMEDIATE prefers r0 over the r3 handoff
-            // (measured: clrlwi r0 / ori r3,r0 where r3 was available).
+            // return captures); it falls through when r0 is held — by another
+            // occupant or by an overlapping return-intermediate RESERVATION.
             let mut pool = vec![0u8, 3, 4];
             pool.extend(5..=12);
             pool

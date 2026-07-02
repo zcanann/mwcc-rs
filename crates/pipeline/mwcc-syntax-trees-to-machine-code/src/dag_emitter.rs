@@ -487,14 +487,21 @@ impl Generator {
             } else if builder.expression(return_expression, self).is_none() {
                 return Ok(false);
             }
-            // TWO-PLUS store chains against a multi-op return: the H capture
-            // shows the store mulli reusing its dying param at an odd slot
-            // (contradicting the fitted multiply exclusion) and the I capture
-            // shows the return final issuing BEFORE the last store (a
-            // linearizer boundary). Defer the combination until both are
-            // measured.
+            // TWO-PLUS store chains against a multi-op return: only the
+            // EXACTLY-ONE-multiply tail is measured (the H captures — the
+            // mulli's latency re-times the tail so the store-first order
+            // holds). With no multiply (I) the return final issues BEFORE the
+            // last store, and with two mullis (J) it threads INTO the latency
+            // gap — both are within-cycle emission-order boundaries in the
+            // linearizer. Defer those.
             let return_ops = builder.nodes.len() - before_return;
-            if return_ops >= 2 && stored.len() >= 2 {
+            let store_multiplies = builder
+                .templates
+                .iter()
+                .take(before_return)
+                .filter(|template| matches!(template, Template::MultiplyImmediate(_)))
+                .count();
+            if return_ops >= 2 && stored.len() >= 2 && store_multiplies != 1 {
                 return Ok(false);
             }
         }
