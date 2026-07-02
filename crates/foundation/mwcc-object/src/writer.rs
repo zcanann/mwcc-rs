@@ -567,31 +567,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // reference order, trailing when unused.)
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
     let mut global_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-    // The always-present initialized sections (`.sdata`/`.data`, and the read-only
-    // `.sdata2`/`.rodata`) emit their symbols up front in declaration order; the
-    // zero `.sbss`/`.bss` objects instead follow reference order (handled below).
-    for object in &input.data_objects {
-        // `static` objects already have their LOCAL symbol; only exported globals
-        // appear in this run.
-        if object.is_static {
-            continue;
-        }
-        let section_name = data_section[object.name];
-        // The initialized sections AND the EXPLICITLY zero-initialized small `.sbss` globals
-        // (`int a = 0;`) emit their symbols up front in DECLARATION order, interleaved (mwcc:
-        // `int a=0; int s=5;` -> symbols `a, s`). Only the UNINITIALIZED zero globals trail the
-        // functions in reverse (handled below). (Large `.bss` follows its own reference-order rule,
-        // untouched here.)
-        if matches!(section_name, ".sdata" | ".data" | ".sdata2" | ".rodata") || (section_name == ".sbss" && object.is_explicit_zero) {
+    // One initialized exported object's symbol plus its pointer-relocation
+    // targets (reverse element order) — shared by the up-front run and the
+    // source-position interleaved runs below.
+    macro_rules! emit_initialized_object {
+        ($object:expr) => {{
+            let object = $object;
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-            let section = index_of(section_name) as u16;
+            let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
             comment_values.push((data_aligns[object.name], 0));
-            // mwcc emits each pointer global's relocation targets immediately after
-            // it (`p, &a; q, &b`), not all targets at the end — and within one object
-            // (a pointer array `{&a, &b}`) in REVERSE element order (`t, &b, &a`). A
-            // target defined in this unit resolves to its own data symbol; an
-            // external one is undefined.
             for relocation in object.relocations.iter().rev() {
                 let target = relocation.target.as_str();
                 if global_symbols.contains_key(target) || local_data_symbols.contains_key(target) {
@@ -606,8 +591,30 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     comment_values.push((0, 0));
                 }
             }
+        }};
+    }
+    let is_initialized_run_object = |object: &DataObject| -> bool {
+        let section_name = data_section[object.name];
+        !object.is_static
+            && (matches!(section_name, ".sdata" | ".data" | ".sdata2" | ".rodata")
+                || (section_name == ".sbss" && object.is_explicit_zero))
+    };
+    // The always-present initialized sections (`.sdata`/`.data`, and the read-only
+    // `.sdata2`/`.rodata`) emit their symbols up front in declaration order; the
+    // zero `.sbss`/`.bss` objects instead follow reference order (handled below).
+    // The initialized sections AND the EXPLICITLY zero-initialized small `.sbss`
+    // globals (`int a = 0;`) emit their symbols in DECLARATION order at their
+    // SOURCE POSITION: objects declared before any non-static function up front
+    // here, later ones interleaved after that function's symbol below (mwcc:
+    // `__lower_map, tolower, __upper_map` — the ctype shape). Only the
+    // UNINITIALIZED zero globals trail the functions in reverse. (Large `.bss`
+    // follows its own reference-order rule, untouched here.)
+    for object in &input.data_objects {
+        if is_initialized_run_object(object) && object.non_static_functions_before == 0 {
+            emit_initialized_object!(object);
         }
     }
+    let mut non_static_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
         // Assign this function's referenced externals in mwcc's symbol-table order
         // (its AST `symbol_order`) for the names it lists, then any remaining in
@@ -673,6 +680,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push((4, flags)); // a function is 4-aligned; weak carries 0x0e
         }
         emit_referenced!(implicit_ordered);
+        // Initialized objects declared right after this (non-static) function
+        // emit here — the source-position interleaving.
+        if !function.is_static {
+            non_static_seen += 1;
+            for object in &input.data_objects {
+                if is_initialized_run_object(object)
+                    && object.non_static_functions_before == non_static_seen
+                    && !global_symbols.contains_key(object.name)
+                {
+                    emit_initialized_object!(object);
+                }
+            }
+        }
     }
     // Still-unreferenced (.sbss/.bss) defined globals trail the functions, in
     // REVERSE declaration order (verified: `int a;b;c;d;e;` -> `e d c b a`, and a

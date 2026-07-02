@@ -96,6 +96,11 @@ pub struct GlobalDeclaration {
     pub name: String,
     pub is_extern: bool,
     pub is_static: bool,
+    /// How many NON-STATIC functions were defined before this declaration —
+    /// mwcc's symbol table interleaves defined data with function symbols by
+    /// source position (static functions' LOCAL symbols precede the data run,
+    /// so only global functions shift an object's slot).
+    pub non_static_functions_before: usize,
     /// Declared array length `[N]`; `Some` for an array (an empty `[]` infers it
     /// from the initializer), `None` for a scalar.
     pub array_length: Option<u16>,

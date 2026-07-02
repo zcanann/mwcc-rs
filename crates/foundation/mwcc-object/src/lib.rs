@@ -64,6 +64,9 @@ pub struct DataObject<'a> {
     /// initialized with the address of another symbol (`int *p = &g;`). Each patches
     /// 4 bytes at `offset` to `target + addend`.
     pub relocations: Vec<DataRelocation>,
+    /// Non-static functions defined before this object — the writer emits its
+    /// symbol at that source position among the function symbol runs.
+    pub non_static_functions_before: usize,
 }
 
 /// An `R_PPC_ADDR32` relocation inside a data object: 4 bytes at `offset` resolve

@@ -1160,15 +1160,7 @@ impl Parser {
             if seen_function && globals[globals_before..].iter().any(|global| global.is_static && !global.is_const && !global.is_extern) {
                 return Err(Diagnostic::error("a static global declared after a function is not supported yet (local-symbol ordering)"));
             }
-            // (Static functions' LOCAL symbols precede the data run, so only a
-            // GLOBAL function before the object forces the interleaving.)
-            if functions.iter().any(|function| !function.is_static)
-                && globals[globals_before..]
-                    .iter()
-                    .any(|global| !global.is_extern && !global.is_static && (global.initializer.is_some() || global.data_bytes.is_some()))
-            {
-                return Err(Diagnostic::error("an initialized global declared after a function is not supported yet (symbol-order interleaving)"));
-            }
+
         }
         // A CALL to a skipped inline definition would need mwcc's inline
         // expansion (mwcc inlines the body; a bl to an undefined local symbol
@@ -1636,7 +1628,7 @@ impl Parser {
                         return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
                     }
                     self.variable_structs.insert(name.clone(), tag.clone());
-                    globals.push(GlobalDeclaration { declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None });
+                    globals.push(GlobalDeclaration { non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None });
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {
@@ -1681,7 +1673,7 @@ impl Parser {
                     None
                 };
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer, data_bytes: None });
+                globals.push(GlobalDeclaration { non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer, data_bytes: None });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -1813,7 +1805,7 @@ impl Parser {
                     let total_bytes = element_bytes * array_length.map_or(1, u32::from);
                     let array_element = array_length.map(|_| element_bytes);
                     self.global_sizes.insert(declarator_name.clone(), (total_bytes, array_element));
-                    globals.push(GlobalDeclaration { declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
+                    globals.push(GlobalDeclaration { non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type
@@ -2204,16 +2196,14 @@ impl Parser {
 
     fn function_body(&mut self, return_type: Type, name: String, is_static: bool, parameters: Vec<Parameter>) -> Compilation<Function> {
         self.expect(Token::BraceOpen)?;
-        // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro artifact
-        // — the MSL ctype shape) could unwrap transparently, but the TUs that
-        // carry it also need source-order SYMBOL INTERLEAVING in the writer
-        // (functions and defined globals mixed by declaration position). Defer
-        // until the writer models that — unwrapping today trades a parse defer
-        // for a symbol-order DIFF.
-        if *self.peek() == Token::BraceOpen && self.brace_wraps_whole_body() {
-            return Err(Diagnostic::error("a whole-body block needs source-order symbol interleaving (roadmap)"));
+        // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro
+        // artifact — the MSL ctype shape) is transparent: consume the inner
+        // brace; its matching close is consumed with the function's own.
+        let mut redundant_blocks = 0usize;
+        while *self.peek() == Token::BraceOpen && self.brace_wraps_whole_body() {
+            self.advance();
+            redundant_blocks += 1;
         }
-        let redundant_blocks = 0usize;
 
         // Track each parameter's type (function-scoped — cleared per function) so `sizeof(param)`
         // folds to a `size_t` constant.

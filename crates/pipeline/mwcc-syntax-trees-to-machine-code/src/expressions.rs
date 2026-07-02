@@ -1748,8 +1748,25 @@ impl Generator {
                 // `i & 0xFF` normalizes identically (the same clrlwi — measured).
                 Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
                     if constant_value(right) == Some(0xff) => Some(left.as_ref()),
+                // A NARROW UNSIGNED parameter index arrives unextended and mwcc
+                // re-extends it exactly like the cast (measured: BfBB islower's
+                // `unsigned char c` param -> clrlwi r0,r3,24 before the lbzx).
+                Expression::Variable(name)
+                    if self.locations.get(name.as_str()).is_some_and(|location| location.width == 8 && !location.signed) =>
+                {
+                    Some(index)
+                }
                 _ => None,
             };
+            // A SIGNED narrow index would need extsb before the lbzx — unprobed.
+            if let Expression::Variable(name) = index {
+                if self.locations.get(name.as_str()).is_some_and(|location| location.width < 32 && location.signed) {
+                    return Err(Diagnostic::error("a signed narrow parameter as an array index is not supported yet (roadmap)"));
+                }
+                if self.locations.get(name.as_str()).is_some_and(|location| location.width == 16 && !location.signed) {
+                    return Err(Diagnostic::error("an unsigned short parameter as a byte-array index is not supported yet (roadmap)"));
+                }
+            }
             if let Some(operand) = byte_normalized {
                 let source = self.general_register_of_leaf(operand)?;
                 let high = self.fresh_virtual_general();
