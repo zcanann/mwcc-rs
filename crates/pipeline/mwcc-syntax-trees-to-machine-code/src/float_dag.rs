@@ -29,6 +29,8 @@ enum Tree {
     Madd { factor_left: Box<Tree>, factor_right: Box<Tree>, addend: Box<Tree> },
     /// base - factor_left * factor_right (fp_contract: fnmsub d,a,c,b = b - a*c).
     Fnmsub { factor_left: Box<Tree>, factor_right: Box<Tree>, base: Box<Tree> },
+    /// factor_left * factor_right - subtrahend (fp_contract: fmsub d,a,c,b = a*c - b).
+    Fmsub { factor_left: Box<Tree>, factor_right: Box<Tree>, subtrahend: Box<Tree> },
     Mul { left: Box<Tree>, right: Box<Tree> },
 }
 
@@ -38,6 +40,7 @@ enum FloatOp {
     Const(u64),
     Madd { a: Operand, c: Operand, b: Operand },
     Fnmsub { a: Operand, c: Operand, b: Operand },
+    Fmsub { a: Operand, c: Operand, b: Operand },
     Mul { a: Operand, c: Operand },
 }
 
@@ -108,7 +111,8 @@ impl Generator {
             };
             match arith {
                 Tree::Madd { factor_left, factor_right, addend }
-                | Tree::Fnmsub { factor_left, factor_right, base: addend } => {
+                | Tree::Fnmsub { factor_left, factor_right, base: addend }
+                | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
                     for factor in [factor_left, factor_right] {
                         if let Tree::Const(bits) = factor.as_ref() {
                             push_const(*bits, &mut nodes, &mut ops, &mut built, factor.as_ref() as *const Tree);
@@ -145,6 +149,21 @@ impl Generator {
             };
             let index = nodes.len();
             match arith {
+                Tree::Fmsub { factor_left, factor_right, subtrahend } => {
+                    let a = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let c = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(subtrahend, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    // Measured: the source-left factor keeps A (constant
+                    // factors are deferred at build).
+                    let reads: Vec<u32> = [a, c, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    nodes.push(
+                        DagNode::new("fmsub", FLOAT_ARITH_LATENCY)
+                            .hazard(HAZARD_FPU)
+                            .reads(&reads)
+                            .writes(&[10 + index as u32]),
+                    );
+                    ops.push(FloatOp::Fmsub { a, c, b });
+                }
                 Tree::Fnmsub { factor_left, factor_right, base } => {
                     let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
@@ -231,7 +250,16 @@ impl Generator {
                     c: register_of(*c),
                     b: register_of(*b),
                 }),
+                FloatOp::Fmsub { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplySubtractDouble {
+                    d,
+                    a: register_of(*a),
+                    c: register_of(*c),
+                    b: register_of(*b),
+                }),
                 FloatOp::Mul { a, c } => self.output.instructions.push(Instruction::FloatMultiplyDouble {
+                    // Source-slot order (the chain-left canonicalization
+                    // already puts the measured operand in A; the inner leaf
+                    // product keeps source order — fmul f0,f1,f2 for z*w).
                     d,
                     a: register_of(*a),
                     c: register_of(*c),
@@ -280,13 +308,22 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
             }
         }
         Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
-            // fp_contract: `b - x*y` contracts to fnmsub (measured: the
-            // single fnmsub and the alternating-sign horner chain share the
-            // fmadd fixtures' exact geometry). `x*y - b` is fmsub whose ROOT
-            // shape resolves its register tie differently (reg_fmsub_root,
-            // the documented open case) — defer.
-            if matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. }) {
-                return None;
+            // fp_contract: `b - x*y` contracts to fnmsub, `x*y - b` to
+            // fmsub (measured: the root-slot order + dying-door rules fit
+            // the simple, deep, and wmul fmsub roots). A constant fmsub
+            // FACTOR is uncaptured — deferred inside the branch.
+            if let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = left.as_ref() {
+                if matches!(x.as_ref(), Expression::FloatLiteral(_)) || matches!(y.as_ref(), Expression::FloatLiteral(_)) {
+                    return None;
+                }
+                let factor_left = build_tree(x, params, seen_literals)?;
+                let factor_right = build_tree(y, params, seen_literals)?;
+                let subtrahend = build_tree(right, params, seen_literals)?;
+                return Some(Tree::Fmsub {
+                    factor_left: Box::new(factor_left),
+                    factor_right: Box::new(factor_right),
+                    subtrahend: Box::new(subtrahend),
+                });
             }
             let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = right.as_ref() else {
                 return None;
@@ -302,21 +339,42 @@ fn build_tree(expression: &Expression, params: &[(String, u32)], seen_literals: 
         }
         Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
             // A constant fmul factor is uncaptured (const-in-A evidence
-            // exists only for fmadd); constant folding likewise. A factor
-            // that is ITSELF a multiplication is uncaptured too (probed:
-            // (z*w)*(1.5+z*2.5) schedules the inner fmul into the load
-            // window and swaps the register chains — a DIFF, so defer).
-            let is_mul = |side: &Expression| matches!(side, Expression::Binary { operator: BinaryOperator::Multiply, .. });
-            if matches!(left.as_ref(), Expression::FloatLiteral(_))
-                || matches!(right.as_ref(), Expression::FloatLiteral(_))
-                || is_mul(left)
-                || is_mul(right)
-            {
+            // exists only for fmadd); constant folding likewise.
+            if matches!(left.as_ref(), Expression::FloatLiteral(_)) || matches!(right.as_ref(), Expression::FloatLiteral(_)) {
                 return None;
             }
-            let left = build_tree(left, params, seen_literals)?;
-            let right = build_tree(right, params, seen_literals)?;
-            Some(Tree::Mul { left: Box::new(left), right: Box::new(right) })
+            let is_mul = |side: &Expression| matches!(side, Expression::Binary { operator: BinaryOperator::Multiply, .. });
+            match (is_mul(left), is_mul(right)) {
+                (false, false) => {
+                    let left = build_tree(left, params, seen_literals)?;
+                    let right = build_tree(right, params, seen_literals)?;
+                    Some(Tree::Mul { left: Box::new(left), right: Box::new(right) })
+                }
+                // The SHALLOW mul-of-mul (measured both source orders emit
+                // identically): one factor a leaf param product, the other a
+                // single contracted madd — canonicalized chain-left. The
+                // deeper chain breaks the register model (the cross-chain
+                // product spans the window; float_mul_of_mul_deep) — defer.
+                (true, false) | (false, true) => {
+                    let (product, chain) = if is_mul(left) { (left, right) } else { (left, right) };
+                    let (product, chain) = if is_mul(product.as_ref()) { (product, chain) } else { (chain, product) };
+                    let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = product.as_ref() else {
+                        return None;
+                    };
+                    if !matches!(x.as_ref(), Expression::Variable(_)) || !matches!(y.as_ref(), Expression::Variable(_)) {
+                        return None;
+                    }
+                    let chain_tree = build_tree(chain, params, seen_literals)?;
+                    if !matches!(chain_tree, Tree::Madd { .. } | Tree::Fnmsub { .. }) || count_arith(&chain_tree) != 1 {
+                        return None;
+                    }
+                    let x = build_tree(x, params, seen_literals)?;
+                    let y = build_tree(y, params, seen_literals)?;
+                    let product_tree = Tree::Mul { left: Box::new(x), right: Box::new(y) };
+                    Some(Tree::Mul { left: Box::new(chain_tree), right: Box::new(product_tree) })
+                }
+                (true, true) => None,
+            }
         }
         _ => None,
     }
@@ -332,6 +390,13 @@ fn make_madd(x: &Expression, y: &Expression, addend: &Expression, params: &[(Str
     let factor_right = build_tree(y, params, seen_literals)?;
     let addend = build_tree(addend, params, seen_literals)?;
     Some(Tree::Madd { factor_left: Box::new(factor_left), factor_right: Box::new(factor_right), addend: Box::new(addend) })
+}
+
+/// Count arith nodes in a subtree (the shallow mul-of-mul gate).
+fn count_arith(tree: &Tree) -> usize {
+    let mut refs: Vec<(&Tree, u32)> = Vec::new();
+    collect_arith(tree, 0, &mut refs);
+    refs.len()
 }
 
 /// Collect double literals in source (left-to-right) order — the measured
@@ -353,7 +418,8 @@ fn collect_literals(expression: &Expression, into: &mut Vec<u64>) {
 fn collect_arith<'tree>(tree: &'tree Tree, level: u32, into: &mut Vec<(&'tree Tree, u32)>) {
     match tree {
         Tree::Madd { factor_left, factor_right, addend }
-        | Tree::Fnmsub { factor_left, factor_right, base: addend } => {
+        | Tree::Fnmsub { factor_left, factor_right, base: addend }
+        | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
             into.push((tree, level));
             collect_arith(factor_left, level + 1, into);
             collect_arith(factor_right, level + 1, into);

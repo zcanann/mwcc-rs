@@ -71,3 +71,6 @@ float_fnmsub_single	double f(double z) { return 1.5 - z * 2.5; }
 float_fnmsub_chain	double f(double z) { return z * (1.5 - z * (2.5 - z * 3.5)); }
 float_dup_literal	double f(double z) { return z * (1.5 + z * (1.5 + z * 2.5)); }
 float_mul_of_mul	double f(double z, double w) { return (z * w) * (1.5 + z * 2.5); }
+float_fmsub_deep	double f(double z) { return z * (1.5 + z * (2.5 + z * 3.5)) - 4.5; }
+float_fmsub_wmul	double f(double z, double w) { return w * (1.5 + z * 2.5) - 3.5; }
+float_mul_of_mul_deep	double f(double z, double w) { return (z * w) * (1.5 + z * (2.5 + z * 3.5)); }

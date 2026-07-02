@@ -1232,6 +1232,19 @@ pub struct FloatRegModel {
     /// allocate before L15 at slot 4 because it dies later; horner4's
     /// "anomalous" second load falls out naturally under this order).
     pub order_by_death: bool,
+    /// Reverse machine: the boundary share into one's own CONSUMER is
+    /// allowed regardless of the arity/class rules when the register is
+    /// ALSO vacated by the node's own dying operand — the register flows
+    /// operand -> node -> consumer as one accumulation chain (measured:
+    /// fmsub_wmul's m1 takes f1 through dying-z although the 3-op fmsub
+    /// consumer-share alone refuses).
+    pub dying_door_share: bool,
+    /// Reverse machine: within the equal-death group of the RETURN node's
+    /// own operands, LATER emitted slots allocate first — the B/addend-side
+    /// operand takes f0 (measured: fmsub_root's subtrahend load, mul_of_mul's
+    /// C-side fmul, and s1_s2's mD all claim f0 while the earlier-slot
+    /// sibling falls to the next register).
+    pub root_slot_order: bool,
     /// The reverse machine applies only to RETURN bodies; void bodies run
     /// the forward stack (measured: deep_vs_shallow's g-chain inherits the
     /// param home through forward in-place reuse).
@@ -1270,7 +1283,9 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     arith_share_two_op_only: true,
     share_f0_only: false,
     share_blocked_by_pending_arith: true,
+    dying_door_share: true,
     order_by_death: true,
+    root_slot_order: true,
     dying_pick: DyingPick::MinReg,
     init_ascending: true,
     void_forward: true,
@@ -1347,10 +1362,37 @@ pub fn assign_float_registers(
         }
         let mut sequence: Vec<usize> = (0..count).filter(|&node| is_value(node)).collect();
         if model.order_by_death {
-            sequence.sort_by_key(|&node| std::cmp::Reverse((value_end(node), position[node])));
+            let return_reads: Vec<u32> = return_node.map(|ret| nodes[ret].reads.clone()).unwrap_or_default();
+            sequence.sort_by_key(|&node| {
+                let root_slot = if model.root_slot_order {
+                    nodes[node]
+                        .writes
+                        .first()
+                        .and_then(|value| return_reads.iter().position(|read| read == value))
+                        .map(|slot| slot + 1)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                std::cmp::Reverse((value_end(node), root_slot, position[node]))
+            });
         } else {
             sequence.sort_by_key(|&node| std::cmp::Reverse(position[node]));
         }
+        // Whether one of `node`'s own operands (param or value) holds
+        // `register` and dies exactly at `node`'s definition — the register
+        // is being vacated TO this node (the dying door).
+        let dying_vacates = |node: usize, register: u8, result: &Vec<Option<u8>>| -> bool {
+            nodes[node].reads.iter().any(|read| {
+                if let Some(&(value, param_register)) = params.iter().find(|&&(value, _)| value == *read) {
+                    return param_register == register && param_end(value) == position[node];
+                }
+                (0..count)
+                    .rev()
+                    .find(|&writer| nodes[writer].writes.contains(read))
+                    .is_some_and(|writer| result[writer] == Some(register) && value_end(writer) == position[node])
+            })
+        };
         for node in sequence {
             if result[node].is_some() {
                 continue;
@@ -1392,10 +1434,15 @@ pub fn assign_float_registers(
                     }
                     // Operand -> consumer share: the overlap is exactly the
                     // consumption slot and the occupant consumes this node.
+                    // The DYING DOOR: when this register is also vacated by
+                    // the node's own dying operand, the consumer boundary
+                    // passes regardless of the arity/class rules (the
+                    // accumulation chain operand -> node -> consumer).
                     if owner != usize::MAX
                         && consumer_of[node].contains(&owner)
                         && taken_start == end
-                        && share_ok(owner, &result)
+                        && (share_ok(owner, &result)
+                            || (model.dying_door_share && dying_vacates(node, register, &result)))
                         && (!model.share_f0_only || register == 0)
                     {
                         return true;
@@ -2231,6 +2278,38 @@ mod tests {
                 vec![Some(3), Some(2), Some(0), Some(2), Some(1)],
             ),
             (
+                // FIRE-339 — z*(h3 chain) - 4.5: the deeper fmsub root. The
+                // subtrahend load defers (blocked-load stall) to slot 4 and
+                // takes f0 via root-slot order; the chain packs f3/f2/f0.
+                "reg_fmsub_deep",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c45", LOAD).writes(&[13]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[14]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 14, 12]).writes(&[15]),
+                    DagNode::new("fmsub", FARITH).hazard(HAZARD_FPU).reads(&[1, 15, 13]).writes(&[16]),
+                ],
+                vec![(1, 1)],
+                vec![Some(3), Some(0), Some(2), Some(0), Some(3), Some(2), Some(1)],
+            ),
+            (
+                // FIRE-339 — w*(1.5+z*2.5) - 3.5: m1 takes f1 through the
+                // DYING DOOR (z vacates f1 to it; the 3-op fmsub consumer
+                // boundary passes because the register flows z -> m1 -> root).
+                "reg_fmsub_wmul",
+                vec![
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[10, 1, 11]).writes(&[13]),
+                    DagNode::new("fmsub", FARITH).hazard(HAZARD_FPU).reads(&[2, 13, 12]).writes(&[14]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(4), Some(3), Some(0), Some(1), Some(1)],
+            ),
+            (
                 // FIRE-336 PROBE C — w*(h3 inner): window 5; loads f4 f3 f0.
                 "reg_h3_wmul",
                 vec![
@@ -2262,18 +2341,24 @@ mod tests {
                                     for dying_pick in
                                         [DyingPick::MinReg, DyingPick::MaxReg, DyingPick::OldestDef, DyingPick::NewestDef]
                                     {
-                                        models.push(FloatRegModel {
-                                            reverse: true,
-                                            share_loads,
-                                            share_arith,
-                                            arith_share_two_op_only,
-                                            share_f0_only,
-                                            share_blocked_by_pending_arith,
-                                            order_by_death,
-                                            dying_pick,
-                                            init_ascending: true,
-                                            void_forward,
-                                        });
+                                        for root_slot_order in [false, true] {
+                                            for dying_door_share in [false, true] {
+                                                models.push(FloatRegModel {
+                                                    reverse: true,
+                                                    share_loads,
+                                                    share_arith,
+                                                    arith_share_two_op_only,
+                                                    share_f0_only,
+                                                    share_blocked_by_pending_arith,
+                                                    dying_door_share,
+                                                    order_by_death,
+                                                    root_slot_order,
+                                                    dying_pick,
+                                                    init_ascending: true,
+                                                    void_forward,
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2291,7 +2376,9 @@ mod tests {
                     arith_share_two_op_only: false,
                     share_f0_only: false,
                     share_blocked_by_pending_arith: false,
+                    dying_door_share: false,
                     order_by_death: false,
+                    root_slot_order: false,
                     dying_pick,
                     init_ascending,
                     void_forward: false,
@@ -2322,18 +2409,10 @@ mod tests {
                 frozen_passed += 1;
             } else {
                 println!("  frozen reg MISS {name}: got {got:?} want {expected:?}");
-                // The two DOCUMENTED open cases (fire 338): the fmsub-root and
-                // mul-of-mul equal-death pairs resolve their load/arith tie
-                // OPPOSITE to h3/s1_s2's identical pairs — the discriminator
-                // needs dedicated probes (vary pair kind/length/slot).
-                assert!(
-                    matches!(*name, "reg_fmsub_root" | "reg_mul_of_mul"),
-                    "float register fixture {name} regressed under FROZEN_FLOAT_REG"
-                );
             }
         }
         println!("float registers FROZEN: {frozen_passed}/{}", shapes.len());
-        assert!(frozen_passed + 2 >= shapes.len(), "FROZEN_FLOAT_REG regressed");
+        assert_eq!(frozen_passed, shapes.len(), "FROZEN_FLOAT_REG regressed");
     }
 
     /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order

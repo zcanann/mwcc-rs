@@ -1,0 +1,6 @@
+lfd f4,0(0)
+lfd f3,0(0)
+lfd f0,0(0)
+fmadd f1,f4,f1,f3
+fmsub f1,f2,f1,f0
+blr
