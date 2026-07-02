@@ -125,8 +125,10 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             while position < bytes.len() && bytes[position].is_ascii_hexdigit() {
                 position += 1;
             }
-            let value = i64::from_str_radix(&source[start..position], 16)
-                .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))?;
+            // Parse as u64 and wrap: a full-width literal (0xFFFFFFFFFFFFFFFF)
+            // overflows i64 but is a valid C constant (its bits are the value).
+            let value = u64::from_str_radix(&source[start..position], 16)
+                .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))? as i64;
             position = consume_integer_suffix(bytes, position);
             tokens.push(Token::IntegerLiteral(value));
             continue;
