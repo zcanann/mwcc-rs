@@ -1104,6 +1104,11 @@ impl Parser {
                 if self.inline_function_has_static_local() {
                     return Err(Diagnostic::error("a static local in an inline function is not supported yet (emits .sdata2/.sdata data)"));
                 }
+                // A skipped INLINE function definition still advanced mwcc's `@N`
+                // counter by 3 (compiled, then dropped) — count it for the writer.
+                if self.item_is_inline_function_definition() {
+                    self.skipped_inline_functions += 1;
+                }
                 // A skipped `typedef` still registers its alias name, so function
                 // bodies that use the type as a pointer (`FILE *fp`) still parse.
                 self.capture_skipped_typedef();
@@ -1119,7 +1124,13 @@ impl Parser {
                 return Err(Diagnostic::error("a static global declared after a function is not supported yet (local-symbol ordering)"));
             }
         }
-        Ok(TranslationUnit { globals, functions, prototypes, inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols) })
+        Ok(TranslationUnit {
+            globals,
+            functions,
+            prototypes,
+            inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
+            skipped_inline_functions: self.skipped_inline_functions,
+        })
     }
 
     /// If the item at the cursor is an `inline`/`static inline` function whose body
@@ -1766,6 +1777,34 @@ impl Parser {
     /// `(params) {` body) rather than a declaration. Used after a parse failure to
     /// decide whether the item can be skipped (a declaration) or must be propagated
     /// (a function we are expected to compile). Pure lookahead — consumes nothing.
+    /// Like `item_is_function_definition`, but for the `inline`/`__inline`
+    /// definitions that check deliberately skips.
+    fn item_is_inline_function_definition(&self) -> bool {
+        let mut index = self.position;
+        let mut paren_depth = 0i32;
+        let mut saw_parameter_list = false;
+        let mut saw_inline = false;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::Identifier(word) if word == "typedef" => return false,
+                Token::Identifier(word) if word == "inline" || word == "__inline" => saw_inline = true,
+                Token::ParenOpen => paren_depth += 1,
+                Token::ParenClose => {
+                    paren_depth -= 1;
+                    if paren_depth == 0 {
+                        saw_parameter_list = true;
+                    }
+                }
+                Token::Semicolon if paren_depth == 0 => return false,
+                Token::BraceOpen if paren_depth == 0 => return saw_inline && saw_parameter_list,
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
     fn item_is_function_definition(&self) -> bool {
         let mut index = self.position;
         let mut paren_depth = 0i32;

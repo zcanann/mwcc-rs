@@ -577,6 +577,232 @@ impl Generator {
         Ok(())
     }
 
+    /// The frexp FAMILY: punned int locals over a spilled double parameter and an
+    /// int-pointer out-parameter, with a param-returning disjunction guard, a
+    /// float-multiply writeback block that REASSIGNS the locals, and a closing
+    /// arithmetic tail. The locals live as VIRTUALS: the block's reassignment
+    /// redefines the same virtual, so the redefinition-spanning rule gives each
+    /// ONE home across the diamond (merge agreement), and the allocator
+    /// reproduces the captured r5/r4/r6 from liveness with eptr pinned in r3.
+    /// Every ORDER below is measured (the 35-instruction s_frexp capture).
+    pub(crate) fn try_frexp_family(&mut self, function: &Function) -> Compilation<bool> {
+        // ---- recognition (any mismatch declines) ----
+        if !function.guards.is_empty() || function.return_type != Type::Double || function_makes_call(function) {
+            return Ok(false);
+        }
+        let [param_x, param_e] = function.parameters.as_slice() else { return Ok(false) };
+        if param_x.parameter_type != Type::Double || !matches!(param_e.parameter_type, Type::Pointer(Pointee::Int)) {
+            return Ok(false);
+        }
+        let (x, eptr) = (param_x.name.as_str(), param_e.name.as_str());
+        let [local_hx, local_ix, local_lx] = function.locals.as_slice() else { return Ok(false) };
+        if [local_hx, local_ix, local_lx].iter().any(|local| local.declared_type != Type::Int || local.array_length.is_some()) {
+            return Ok(false);
+        }
+        let (hx, ix, lx) = (local_hx.name.as_str(), local_ix.name.as_str(), local_lx.name.as_str());
+        // The locals may be initialized via declarations OR via leading assign
+        // statements (`int hx, ix, lx; hx = …;` — the fdlibm style parses as
+        // uninitialized locals plus assigns). Normalize to three value sources.
+        let (hx_init, ix_init, lx_init, rest): (&Expression, &Expression, &Expression, &[Statement]) =
+            match (&local_hx.initializer, &local_ix.initializer, &local_lx.initializer, function.statements.as_slice()) {
+                (Some(hx_init), Some(ix_init), Some(lx_init), rest) => (hx_init, ix_init, lx_init, rest),
+                (
+                    None,
+                    None,
+                    None,
+                    [Statement::Assign { name: a0, value: v0 }, Statement::Assign { name: a1, value: v1 }, Statement::Assign { name: a2, value: v2 }, rest @ ..],
+                ) if a0 == hx && a1 == ix && a2 == lx => (v0, v1, v2, rest),
+                _ => return Ok(false),
+            };
+        if pun_word_offset(hx_init, x) != Some(0) {
+            return Ok(false);
+        }
+        if as_mask31_of(ix_init, hx) != Some(true) {
+            return Ok(false);
+        }
+        if pun_word_offset(lx_init, x) != Some(4) {
+            return Ok(false);
+        }
+        let [s0, s1, s2, s3, s4, s5] = rest else { return Ok(false) };
+        // s0: *eptr = 0;
+        if !matches!(s0, Statement::Store { target: Expression::Dereference { pointer }, value }
+            if matches!(pointer.as_ref(), Expression::Variable(name) if name == eptr) && constant_value(value) == Some(0))
+        {
+            return Ok(false);
+        }
+        // s1: if (ix >= C1 || ((ix|lx) == 0)) return x;
+        let Statement::If { condition, then_body, else_body } = s1 else { return Ok(false) };
+        if !else_body.is_empty() || !matches!(then_body.as_slice(), [Statement::Return(Some(Expression::Variable(name)))] if name == x) {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::LogicalOr, left, right } = condition else { return Ok(false) };
+        let Expression::Binary { operator: BinaryOperator::GreaterEqual, left: ge_left, right: ge_right } = left.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(ge_left.as_ref(), Expression::Variable(name) if name == ix) {
+            return Ok(false);
+        }
+        let Some(guard_high) = lis_able_high(ge_right) else { return Ok(false) };
+        let Expression::Binary { operator: BinaryOperator::Equal, left: or_expr, right: zero } = right.as_ref() else {
+            return Ok(false);
+        };
+        if constant_value(zero) != Some(0) {
+            return Ok(false);
+        }
+        if !matches!(or_expr.as_ref(), Expression::Binary { operator: BinaryOperator::BitOr, left, right }
+            if matches!(left.as_ref(), Expression::Variable(name) if name == ix)
+                && matches!(right.as_ref(), Expression::Variable(name) if name == lx))
+        {
+            return Ok(false);
+        }
+        // s2: if (ix < C2) { x *= F; hx = __HI(x); ix = hx & 0x7fffffff; *eptr = C3; }
+        let Statement::If { condition, then_body, else_body } = s2 else { return Ok(false) };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Less, left: lt_left, right: lt_right } = condition else {
+            return Ok(false);
+        };
+        if !matches!(lt_left.as_ref(), Expression::Variable(name) if name == ix) {
+            return Ok(false);
+        }
+        let Some(block_high) = lis_able_high(lt_right) else { return Ok(false) };
+        let [b0, b1, b2, b3] = then_body.as_slice() else { return Ok(false) };
+        let Statement::Assign { name: b0_name, value: b0_value } = b0 else { return Ok(false) };
+        let Expression::Binary { operator: BinaryOperator::Multiply, left: mul_left, right: mul_right } = b0_value else {
+            return Ok(false);
+        };
+        if b0_name != x
+            || !matches!(mul_left.as_ref(), Expression::Variable(name) if name == x)
+        {
+            return Ok(false);
+        }
+        let Expression::FloatLiteral(scale) = mul_right.as_ref() else { return Ok(false) };
+        if !matches!(b1, Statement::Assign { name, value } if name == hx && pun_word_offset(value, x) == Some(0)) {
+            return Ok(false);
+        }
+        if !matches!(b2, Statement::Assign { name, value } if name == ix && as_mask31_of(value, hx) == Some(true)) {
+            return Ok(false);
+        }
+        let Statement::Store { target: b3_target, value: b3_value } = b3 else { return Ok(false) };
+        if !matches!(b3_target, Expression::Dereference { pointer } if matches!(pointer.as_ref(), Expression::Variable(name) if name == eptr)) {
+            return Ok(false);
+        }
+        let Some(store_constant) = constant_value(b3_value).and_then(|constant| i16::try_from(constant).ok()) else {
+            return Ok(false);
+        };
+        // s3: *eptr += (ix >> C4) - C5;   (desugared: *eptr = *eptr + ((ix >> C4) - C5))
+        let Statement::Store { target: s3_target, value: s3_value } = s3 else { return Ok(false) };
+        if !matches!(s3_target, Expression::Dereference { pointer } if matches!(pointer.as_ref(), Expression::Variable(name) if name == eptr)) {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Add, left: add_left, right: add_right } = s3_value else {
+            return Ok(false);
+        };
+        if !matches!(add_left.as_ref(), Expression::Dereference { pointer } if matches!(pointer.as_ref(), Expression::Variable(name) if name == eptr)) {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Subtract, left: shift_expr, right: bias } = add_right.as_ref() else {
+            return Ok(false);
+        };
+        let Some(bias) = constant_value(bias).and_then(|constant| i16::try_from(constant).ok()) else { return Ok(false) };
+        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: shift_left, right: shift_amount } = shift_expr.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(shift_left.as_ref(), Expression::Variable(name) if name == ix) {
+            return Ok(false);
+        }
+        let Some(shift) = constant_value(shift_amount).and_then(|constant| u8::try_from(constant).ok()).filter(|shift| *shift < 32) else {
+            return Ok(false);
+        };
+        // s4: hx = (hx & M1) | M2;  (M1 an rlwinm mask, M2 an oris-able immediate)
+        let Statement::Assign { name: s4_name, value: s4_value } = s4 else { return Ok(false) };
+        if s4_name != hx {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::BitOr, left: and_expr, right: or_constant } = s4_value else {
+            return Ok(false);
+        };
+        let Some(or_high) = lis_able_high(or_constant) else { return Ok(false) };
+        let Expression::Binary { operator: BinaryOperator::BitAnd, left: and_left, right: and_right } = and_expr.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(and_left.as_ref(), Expression::Variable(name) if name == hx) {
+            return Ok(false);
+        }
+        let Some((mask_begin, mask_end)) = constant_value(and_right).and_then(|constant| u32::try_from(constant).ok()).and_then(wrap_mask) else {
+            return Ok(false);
+        };
+        // s5: *(int*)&x = hx;
+        let Statement::Store { target: s5_target, value: s5_value } = s5 else { return Ok(false) };
+        if pun_word_offset_target(s5_target, x) != Some(0) || !matches!(s5_value, Expression::Variable(name) if name == hx) {
+            return Ok(false);
+        }
+        if !matches!(&function.return_expression, Some(Expression::Variable(name)) if name == x) {
+            return Ok(false);
+        }
+        let Some(eptr_register) = self.lookup_general(eptr) else { return Ok(false) };
+
+        // ---- emission (the measured 35-instruction schedule; registers from the allocator) ----
+        const SLOT: i16 = 8;
+        self.frame_slots.insert(
+            param_x.name.clone(),
+            FrameSlot { offset: SLOT, class: ValueClass::Float, size: 8, parameter_register: Some(Eabi::FIRST_FLOAT_ARGUMENT), is_array: false },
+        );
+        self.frame_size = 16;
+        self.non_leaf = false;
+        let float_result = Eabi::float_result().number;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        let value_zero = self.fresh_virtual_general();
+        self.output.instructions.push(Instruction::load_immediate(value_zero, 0));
+        self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, guard_high));
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: Eabi::FIRST_FLOAT_ARGUMENT, a: 1, offset: SLOT });
+        let virtual_hx = self.fresh_virtual_general();
+        self.output.instructions.push(Instruction::LoadWord { d: virtual_hx, a: 1, offset: SLOT });
+        self.output.instructions.push(Instruction::StoreWord { s: value_zero, a: eptr_register, offset: 0 });
+        let virtual_ix = self.fresh_virtual_general();
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: virtual_ix, s: virtual_hx, clear: 1 });
+        let virtual_lx = self.fresh_virtual_general();
+        self.output.instructions.push(Instruction::LoadWord { d: virtual_lx, a: 1, offset: SLOT + 4 });
+        self.output.instructions.push(Instruction::CompareWord { a: virtual_ix, b: GENERAL_SCRATCH });
+        let value_label = self.fresh_label();
+        let skip_label = self.fresh_label();
+        let merge = self.fresh_label();
+        let epilogue = self.fresh_label();
+        self.emit_branch_conditional_to(4, 0, value_label); // bge: >= is TRUE, into the value
+        self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: virtual_ix, b: virtual_lx });
+        self.emit_branch_conditional_to(4, 2, skip_label); // bne: (ix|lx) != 0 skips the value
+        self.bind_label(value_label);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: float_result, a: 1, offset: SLOT });
+        self.emit_branch_to(epilogue);
+        self.bind_label(skip_label);
+        self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, block_high));
+        self.output.instructions.push(Instruction::CompareWord { a: virtual_ix, b: GENERAL_SCRATCH });
+        self.emit_branch_conditional_to(4, 0, merge); // bge: ix < C2 is FALSE, over the block
+        self.load_double_constant(FLOAT_SCRATCH, scale.to_bits());
+        self.output.instructions.push(Instruction::load_immediate(GENERAL_SCRATCH, store_constant));
+        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: eptr_register, offset: 0 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: FLOAT_SCRATCH, a: Eabi::FIRST_FLOAT_ARGUMENT, c: FLOAT_SCRATCH });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: SLOT });
+        self.output.instructions.push(Instruction::LoadWord { d: virtual_hx, a: 1, offset: SLOT });
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: virtual_ix, s: virtual_hx, clear: 1 });
+        self.bind_label(merge);
+        self.output.instructions.push(Instruction::RotateAndMask { a: GENERAL_SCRATCH, s: virtual_hx, shift: 0, begin: mask_begin, end: mask_end });
+        let virtual_exponent = self.fresh_virtual_general();
+        self.output.instructions.push(Instruction::LoadWord { d: virtual_exponent, a: eptr_register, offset: 0 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: virtual_ix, s: virtual_ix, shift });
+        self.output.instructions.push(Instruction::OrImmediateShifted { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, immediate: or_high as u16 });
+        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: 1, offset: SLOT });
+        self.output.instructions.push(Instruction::Add { d: virtual_ix, a: virtual_ix, b: virtual_exponent });
+        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: virtual_ix, immediate: -bias });
+        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: eptr_register, offset: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: float_result, a: 1, offset: SLOT });
+        self.bind_label(epilogue);
+        self.output.anonymous_label_bump += 6;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// Classify a frame-guard condition (see [`GuardTest`]). Frame slots must
     /// already be laid out — the punned load resolves against them.
     fn classify_guard_test<'a>(&self, condition: &'a Expression) -> GuardTest<'a> {
@@ -838,6 +1064,71 @@ fn signed_skip_when_false(operator: BinaryOperator) -> Option<(u8, u8)> {
         BinaryOperator::NotEqual => Some((12, 2)),     // skip on EQ
         _ => None,
     }
+}
+
+/// The word offset a punned READ of `&variable` accesses: `*(int*)&x` is 0,
+/// `*(1+(int*)&x)` (either operand order) is 4. `None` for anything else.
+fn pun_word_offset(expression: &Expression, variable: &str) -> Option<i16> {
+    let Expression::Dereference { pointer } = expression else { return None };
+    pun_pointer_offset(pointer, variable)
+}
+
+/// The same for a store TARGET.
+fn pun_word_offset_target(target: &Expression, variable: &str) -> Option<i16> {
+    let Expression::Dereference { pointer } = target else { return None };
+    pun_pointer_offset(pointer, variable)
+}
+
+fn pun_pointer_offset(pointer: &Expression, variable: &str) -> Option<i16> {
+    let is_cast_address = |expression: &Expression| {
+        matches!(expression, Expression::Cast { target_type: Type::Pointer(Pointee::Int), operand }
+            if matches!(operand.as_ref(), Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Variable(name) if name == variable)))
+    };
+    if is_cast_address(pointer) {
+        return Some(0);
+    }
+    if let Expression::Binary { operator: BinaryOperator::Add, left, right } = pointer {
+        if constant_value(left) == Some(1) && is_cast_address(right) {
+            return Some(4);
+        }
+        if constant_value(right) == Some(1) && is_cast_address(left) {
+            return Some(4);
+        }
+    }
+    None
+}
+
+/// `Some(true)` when the expression is `name & 0x7fffffff` (either order).
+fn as_mask31_of(expression: &Expression, name: &str) -> Option<bool> {
+    let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expression else { return None };
+    let is_name = |expression: &Expression| matches!(expression, Expression::Variable(read) if read == name);
+    let is_mask = |expression: &Expression| constant_value(expression) == Some(0x7fff_ffff);
+    Some((is_name(left) && is_mask(right)) || (is_mask(left) && is_name(right)))
+}
+
+/// The high half of a lis-able constant (low half zero, beyond the cmpwi range).
+fn lis_able_high(expression: &Expression) -> Option<i16> {
+    let constant = constant_value(expression)?;
+    (i16::try_from(constant).is_err() && (constant & 0xffff) == 0 && u32::try_from(constant).is_ok())
+        .then(|| (constant >> 16) as i16)
+}
+
+/// The (begin, end) of an rlwinm WRAP mask (a contiguous run of ones wrapping
+/// past bit 31 to bit 0), e.g. 0x800fffff -> (12, 0). `None` for other masks.
+fn wrap_mask(mask: u32) -> Option<(u8, u8)> {
+    // A wrap mask's COMPLEMENT is one contiguous run of ones not touching bit 0
+    // or bit 31 (in PowerPC bit order: mask begin > end).
+    let complement = !mask;
+    if complement == 0 || mask.leading_zeros() > 0 || mask.trailing_zeros() > 0 {
+        return None;
+    }
+    let run_start = complement.leading_zeros(); // first PPC bit of the zero run
+    let run_length = complement.count_ones();
+    if complement != (u32::MAX >> run_start) - if run_start + run_length == 32 { 0 } else { u32::MAX >> (run_start + run_length) } {
+        return None;
+    }
+    Some(((run_start + run_length) as u8, run_start as u8 - 1))
 }
 
 pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {

@@ -345,10 +345,20 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
     // as may a single-level If whose body is stores/assigns (the writeback
     // block); their reads count toward each local's read budget below. Other
     // statement kinds keep the pass out.
+    // A statement ASSIGNING a local would read back a stale substituted value —
+    // those bodies (the frexp family) belong to the frame path, not this pass.
+    let local_names: std::collections::HashSet<&str> = function.locals.iter().map(|local| local.name.as_str()).collect();
+    let assigns_local = |statement: &Statement| match statement {
+        Statement::Assign { name, .. } => local_names.contains(name.as_str()),
+        _ => false,
+    };
     let simple = |statement: &Statement| matches!(statement, Statement::Store { .. } | Statement::Assign { .. });
     if !function.statements.iter().all(|statement| match statement {
         Statement::Store { .. } => true,
-        Statement::If { then_body, else_body, .. } => then_body.iter().all(simple) && else_body.iter().all(simple),
+        Statement::If { then_body, else_body, .. } => {
+            then_body.iter().all(|inner| simple(inner) && !assigns_local(inner))
+                && else_body.iter().all(|inner| simple(inner) && !assigns_local(inner))
+        }
         _ => false,
     }) {
         return None;
@@ -1700,6 +1710,11 @@ impl Generator {
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,
         // since an address-taken variable cannot be value-tracked in a register.
+        // The frexp family (locals REASSIGNED across a writeback diamond) runs
+        // before the inline pass, which cannot fold reassigned locals.
+        if self.try_frexp_family(function)? {
+            return Ok(());
+        }
         // Register locals feeding a frame-resident body (`int hx = *(int*)&x; return
         // f(hx);`) inline away first: the frame path cannot bind them, and once
         // substituted the body is the proven direct form (`return f(*(int*)&x);`).

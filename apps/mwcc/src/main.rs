@@ -178,6 +178,13 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         .iter()
         .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, config))
         .collect::<Compilation<_>>()?;
+    // Each SKIPPED inline function definition advanced mwcc's `@N` counter by 3
+    // (compiled, then dropped) before the real functions were numbered — pre-bump
+    // the first function's block (measured: math.h's fabs helper shifts s_frexp's
+    // pool constant from @11 to @14).
+    if let Some(first) = machine_functions.first_mut() {
+        first.anonymous_label_bump += 3 * unit.skipped_inline_functions as u32;
+    }
     // Deferred inlining (`-inline …,deferred`) emits the object's functions — and
     // hence their `.text`, symbols, and metadata records — in reverse order.
     if config.flags.inline_deferred {

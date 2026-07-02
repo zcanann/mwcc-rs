@@ -146,6 +146,9 @@ pub struct TranslationUnit {
     /// result type (e.g. a `double`-returning math routine) and its parameter
     /// types (so an argument's int<->float register placement is correct).
     pub prototypes: Vec<(String, Type, Vec<Type>)>,
+    /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
+    /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
+    pub skipped_inline_functions: usize,
     /// Names of `static inline` functions whose body contains an inline `asm {}`
     /// block, in declaration order. mwcc keeps each as a deferred function and
     /// emits a local *undefined* symbol for it even when unused (it cannot inline
