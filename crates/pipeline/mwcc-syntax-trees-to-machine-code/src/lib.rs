@@ -58,7 +58,14 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         // modeled yet, so const globals are withheld from the operand map: any
         // reference then defers ("unknown variable") rather than emitting a wrong
         // memory load. The const global is still emitted as read-only data.
-        globals: globals.iter().filter(|global| !global.is_const).map(|global| (global.name.clone(), global.declared_type)).collect(),
+        // Const ARRAYS (the .rodata ctype tables) stay visible — their reads
+        // address like any large array; const SCALARS keep deferring (float ones
+        // de-name above, int ones fold differently).
+        globals: globals
+            .iter()
+            .filter(|global| !global.is_const || global.array_length.is_some())
+            .map(|global| (global.name.clone(), global.declared_type))
+            .collect(),
         // Subscriptable array globals (non-const) with their total byte size, so a
         // `g[i]` picks the right address mode (SDA21 vs ADDR16) by size. An EXTERN
         // array is included: mwcc addresses it identically to a defined one (verified
@@ -66,7 +73,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         // through a relocation to the undefined symbol.
         global_array_sizes: globals
             .iter()
-            .filter(|global| !global.is_const)
+            .filter(|global| !global.is_const || global.array_length.is_some())
             .filter_map(|global| {
                 global.array_length.map(|length| {
                     // A struct array's element size is its laid-out struct size, not the

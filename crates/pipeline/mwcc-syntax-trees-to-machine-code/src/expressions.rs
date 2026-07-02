@@ -1743,7 +1743,14 @@ impl Generator {
             if small {
                 return Err(Diagnostic::error("a variable subscript of a SMALL byte global array is not supported yet (roadmap)"));
             }
-            if let Expression::Cast { target_type: Type::UnsignedChar, operand } = index {
+            let byte_normalized = match index {
+                Expression::Cast { target_type: Type::UnsignedChar, operand } => Some(operand.as_ref()),
+                // `i & 0xFF` normalizes identically (the same clrlwi — measured).
+                Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
+                    if constant_value(right) == Some(0xff) => Some(left.as_ref()),
+                _ => None,
+            };
+            if let Some(operand) = byte_normalized {
                 let source = self.general_register_of_leaf(operand)?;
                 let high = self.fresh_virtual_general();
                 self.emit_address_high(high, name);
