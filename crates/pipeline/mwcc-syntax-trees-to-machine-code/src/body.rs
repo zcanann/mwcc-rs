@@ -3573,8 +3573,21 @@ impl Generator {
         if !matches!(then_body.as_slice(), [Statement::Return(None)]) || !else_body.is_empty() {
             return Ok(false);
         }
-        if name != &local.name || !arguments.is_empty() {
+        if name != &local.name {
             return Ok(false);
+        }
+        // Arguments must ALREADY sit in their argument registers (`t(s)` with `s` the
+        // first parameter): nothing to materialize, so the sequence is identical to the
+        // zero-argument form. Anything needing placement defers.
+        for (position, argument) in arguments.iter().enumerate() {
+            let Expression::Variable(argument_name) = argument else {
+                return Ok(false);
+            };
+            let expected = mwcc_target::Eabi::FIRST_GENERAL_ARGUMENT + position as u8;
+            match self.locations.get(argument_name) {
+                Some(location) if location.class == ValueClass::General && location.register == expected => {}
+                _ => return Ok(false),
+            }
         }
 
         self.non_leaf = true;
@@ -3619,12 +3632,30 @@ impl Generator {
         let Some(initializer) = &local.initializer else {
             return Ok(false);
         };
-        let Some(Expression::Variable(returned)) = function.return_expression.as_ref() else {
-            return Ok(false);
+        // The return is the local itself, or a two-leaf expression over the local and
+        // ONE parameter — the parameter then survives the calls in r30 alongside the
+        // local's r31 (`int t = gi; g(); return t + s;` → `stw r30,8; mr r30,r3;
+        // lwz r31; bl; add r3,r31,r30`).
+        let paired_parameter: Option<&str> = match function.return_expression.as_ref() {
+            Some(Expression::Variable(returned)) if returned == &local.name => None,
+            Some(Expression::Binary { left, right, .. }) => {
+                let (Expression::Variable(first), Expression::Variable(second)) = (left.as_ref(), right.as_ref()) else {
+                    return Ok(false);
+                };
+                let other = if first == &local.name {
+                    second
+                } else if second == &local.name {
+                    first
+                } else {
+                    return Ok(false);
+                };
+                if !function.parameters.iter().any(|parameter| &parameter.name == other) {
+                    return Ok(false);
+                }
+                Some(other.as_str())
+            }
+            _ => return Ok(false),
         };
-        if returned != &local.name {
-            return Ok(false);
-        }
         // An optional LEADING guard reading the loaded local: `int t = gi; if (!t)
         // return -1; g(); return t;` — the raise() core shape. Its constant early
         // return branches to the shared epilogue.
@@ -3690,12 +3721,49 @@ impl Generator {
             _ => return Ok(false),
         };
 
+        // The PAIRED form is verified for the guard-free scalar load only.
+        if paired_parameter.is_some() && (guard.is_some() || matches!(load, MemoryLoad::Array { .. })) {
+            return Ok(false);
+        }
         self.non_leaf = true;
         self.frame_size = 16;
-        self.callee_saved = vec![31];
+        self.callee_saved = if paired_parameter.is_some() { vec![31, 30] } else { vec![31] };
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        // The paired parameter saves in r30 between the r31 save and the memory load:
+        // `stw r31,12; stw r30,8; mr r30,<param>; lwz r31,<gi>`.
+        if let Some(parameter) = paired_parameter {
+            let Some(incoming) = self.lookup_general(parameter) else {
+                return Ok(false);
+            };
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::StoreWord { s: 30, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::Or { a: 30, s: incoming, b: incoming });
+            if let Some(location) = self.locations.get_mut(parameter) {
+                location.register = 30;
+            }
+            self.evaluate_general(initializer, 31)?;
+            self.locations.insert(
+                local.name.clone(),
+                Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+            );
+            for statement in calls {
+                self.emit_statement(statement)?;
+            }
+            // The epilogue computes the return expression in the slot after the LR
+            // reload: `lwz r0,20; add r3,r31,r30; lwz r31,12; lwz r30,8; mtlr; addi; blr`.
+            let result = mwcc_target::Eabi::general_result().number;
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+            self.evaluate_tail(function.return_expression.as_ref().expect("checked above"), function.return_type, result)?;
+            self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::LoadWord { d: 30, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(true);
+        }
         match load {
             MemoryLoad::Scalar => {
                 self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
