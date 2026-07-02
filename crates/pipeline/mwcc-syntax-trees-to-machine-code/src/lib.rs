@@ -184,6 +184,18 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
     )
         .map_err(|error| mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}")))?;
     mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
+    // FRAME-METADATA CONSISTENCY: every callee-saved register the allocation used
+    // must correspond to a save slot the arm declared (generator.callee_saved, one
+    // entry per prologue save). A mismatch would emit unwind metadata that disagrees
+    // with the actual saves — defer instead of shipping a wrong extab.
+    let used = allocation.assigned_callee_saved(&generator.constraints);
+    if used.len() > generator.callee_saved.len() {
+        return Err(mwcc_core::Diagnostic::error(format!(
+            "allocation used {} callee-saved register(s) but the frame declares {} save slot(s) (frame builder needed)",
+            used.len(),
+            generator.callee_saved.len()
+        )));
+    }
     Ok(())
 }
 

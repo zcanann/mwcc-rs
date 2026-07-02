@@ -83,6 +83,21 @@ impl Allocation {
         self.assignments.len()
     }
 
+    /// The callee-saved physical registers this allocation used, highest first,
+    /// deduplicated — the set the function's prologue must save and its unwind
+    /// metadata must count.
+    pub fn assigned_callee_saved(&self, constraints: &RegisterConstraints) -> Vec<u8> {
+        let mut used: Vec<u8> = self
+            .assignments
+            .values()
+            .copied()
+            .filter(|register| constraints.general_callee_saved.contains(register))
+            .collect();
+        used.sort_unstable_by(|left, right| right.cmp(left));
+        used.dedup();
+        used
+    }
+
     pub fn is_empty(&self) -> bool {
         self.assignments.is_empty()
     }
@@ -183,6 +198,15 @@ mod tests {
 
     fn gpr(id: u32, start: usize, end: usize) -> LiveInterval {
         LiveInterval::new(Reg::general(id).virtual_register().unwrap(), start, end)
+    }
+
+    #[test]
+    fn assigned_callee_saved_reports_the_used_registers_highest_first() {
+        let intervals = [gpr(0, 0, 4), gpr(1, 1, 4), gpr(2, 3, 4)];
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan.allocate(&intervals, &[], &[2], &constraints).unwrap();
+        // v0/v1 cross the call (r31, r30); v2 does not (r3, volatile).
+        assert_eq!(allocation.assigned_callee_saved(&constraints), vec![31, 30]);
     }
 
     #[test]
