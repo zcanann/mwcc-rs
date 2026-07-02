@@ -51,3 +51,25 @@ void three_two_op(int a, int b, int c)
 	h = (b + 2) * 3;
 	k = (c + 3) * 4;
 }
+
+/* constants as values: li nodes through the same models — including the
+ * slot-0 FINAL in-place datum (g's addi reuses r3 first-of-pair because it
+ * feeds its store directly; an intermediate there takes the closed pool). */
+void const_after(int a)
+{
+	g = a + 1;
+	h = 5;
+}
+
+void const_before(int a)
+{
+	g = 5;
+	h = a + 1;
+}
+
+void const_amid(int a, int b)
+{
+	g = a + 1;
+	h = 7;
+	k = (b + 2) * 3;
+}

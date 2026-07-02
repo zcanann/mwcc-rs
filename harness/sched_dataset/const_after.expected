@@ -1,0 +1,5 @@
+addi r3,r3,1
+li r0,5
+stw r3,0(0)
+stw r0,0(0)
+blr

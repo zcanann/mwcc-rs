@@ -21,6 +21,7 @@ use crate::generator::Generator;
 
 /// The instruction each DAG node emits once its registers are known.
 enum Template {
+    LoadImmediate(i16),
     AddImmediate(i16),
     Add,
     /// `a - b` with both operands in registers: `subf d,b,a`.
@@ -71,6 +72,11 @@ impl Builder {
     /// Lower an int expression to a DAG value; `None` defers (outside the
     /// validated envelope).
     fn expression(&mut self, expression: &Expression, generator: &Generator) -> Option<u32> {
+        // A bare small constant is an `li` node (no reads).
+        if let Some(constant) = constant_value(expression) {
+            let immediate = i16::try_from(constant).ok()?;
+            return Some(self.push(OpKind::Alu, 1, 1, vec![], Template::LoadImmediate(immediate)));
+        }
         match expression {
             Expression::Variable(name) => {
                 let register = generator.lookup_general(name)?;
@@ -283,6 +289,7 @@ impl Generator {
             };
             let destination = registers[node];
             let instruction = match &builder.templates[node] {
+                Template::LoadImmediate(immediate) => Instruction::load_immediate(destination.expect("value node"), *immediate),
                 Template::AddImmediate(immediate) => Instruction::AddImmediate {
                     d: destination.expect("value node"),
                     a: operand(0)?,

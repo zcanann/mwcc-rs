@@ -33,3 +33,5 @@ three_op_no_mulli	extern int g; extern int h; void f(int a, int b) { g = a + 1; 
 two_mulli_chains	extern int g; extern int h; void f(int a, int b) { g = (a + 1) * 5; h = ((b + 2) * 3) + 4; }
 three_two_op_chains	extern int g; extern int h; extern int k; void f(int a, int b, int c) { g = (a + 1) * 2; h = (b + 2) * 3; k = (c + 3) * 4; }
 equal_two_op_pair	extern int g; extern int h; void f(int a, int b) { g = (a >> 1) + 5; h = (b >> 2) + 7; }
+const_after	extern int g; extern int h; void f(int a) { g = a + 1; h = 5; }
+const_amid_three	extern int g; extern int h; extern int k; void f(int a, int b) { g = a + 1; h = 7; k = (b + 2) * 3; }

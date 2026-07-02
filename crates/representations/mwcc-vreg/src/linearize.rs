@@ -640,14 +640,16 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let last_chain_depth = (0..count)
             .filter(|&member| chain_of(member) == last_sink && nodes[member].kind != OpKind::Store)
             .count();
-        // Param in-place never applies to the block's FIRST issue slot (measured:
-        // every slot-0 op takes a closed-pool register — alu_tie's r6, the
-        // equal-pair's r5 — while identical ops at slot 1+ reuse in place).
+        // Param in-place: FINALS reuse anywhere; INTERMEDIATES only in the
+        // second dual-issue slot (odd positions) — a first-of-pair intermediate
+        // takes a closed-pool register (equal-pair's r5) while the same op
+        // second-of-pair reuses (mult_vs_shift's r3). Loads are exempt.
+        let node_is_final = consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
         let relaxed = chain_count <= 2
             && last_chain_depth <= 2
             && nodes[node].latency < 3
             && chain_of(node) != last_sink
-            && (start > 0 || nodes[node].kind == OpKind::Load);
+            && (node_is_final || start % 2 == 1 || nodes[node].kind == OpKind::Load);
         let own_dying: Option<u8> = nodes[node]
             .reads
             .iter()
