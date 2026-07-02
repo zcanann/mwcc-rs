@@ -3394,7 +3394,10 @@ impl Generator {
         let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        self.callee_saved = (0..count as u8).map(|rank| 31 - rank).collect();
+        // Phase D: the promoted parameters' homes are virtuals, created highest-rank
+        // first — id order reproduces r31, r30, … through the callee-saved pool.
+        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        self.callee_saved = homes.clone();
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
@@ -3403,7 +3406,7 @@ impl Generator {
         // Save and move each, highest register first (r31 ← last parameter), with the
         // save interleaved before its move, as mwcc emits them.
         for (rank, (_, name, incoming)) in promoted.iter().rev().enumerate() {
-            let register = 31 - rank as u8;
+            let register = homes[rank];
             let offset = frame_size - 4 * (rank as i16 + 1);
             self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
             self.output.instructions.push(Instruction::Or { a: register, s: *incoming, b: *incoming });
