@@ -457,6 +457,12 @@ impl Generator {
             // Distinct globals do not alias: no group (the model reorders freely).
             let mut node = DagNode::new("", 1).kind(OpKind::Store);
             node.reads = vec![value_id];
+            // The WAR flag: a chain reading the r3 parameter may hold r3 (the
+            // dying-param reuse), so the return final's r3 write must emit
+            // after this store when the analytic timing binds (linearize).
+            node.r3_chain_store = function.parameters.iter().any(|parameter| {
+                self.lookup_general(&parameter.name) == Some(3) && count_name_occurrences(value, &parameter.name) > 0
+            });
             builder.nodes.push(node);
             builder.templates.push(Template::StoreGlobal(global.clone()));
         }
@@ -490,23 +496,7 @@ impl Generator {
             } else if builder.expression(return_expression, self).is_none() {
                 return Ok(false);
             }
-            // TWO-PLUS store chains against a multi-op return: only the
-            // EXACTLY-ONE-multiply tail is measured (the H captures — the
-            // mulli's latency re-times the tail so the store-first order
-            // holds). With no multiply (I) the return final issues BEFORE the
-            // last store, and with two mullis (J) it threads INTO the latency
-            // gap — both are within-cycle emission-order boundaries in the
-            // linearizer. Defer those.
-            let return_ops = builder.nodes.len() - before_return;
-            let store_multiplies = builder
-                .templates
-                .iter()
-                .take(before_return)
-                .filter(|template| matches!(template, Template::MultiplyImmediate(_)))
-                .count();
-            if return_ops >= 2 && stored.len() >= 2 && store_multiplies != 1 {
-                return Ok(false);
-            }
+            let _ = before_return;
         }
         // The PPC r0-as-zero rule: a value consumed as an addi source (or any
         // base field) must not live in r0 — mark producers so the register

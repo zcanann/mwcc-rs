@@ -307,3 +307,44 @@ int ret_h_mulli_first(int a, int b, int c)
 	h = a + 1;
 	return (c & 15) | 1;
 }
+
+/* the return-tail fit (fire 308): the store port (one store per window),
+ * fresh-op and long-latency-store-affinity tiers, the alu-first tie in
+ * return mode, the return final weighing 0, and the r3 WAR (the final's r3
+ * write emits after the r3-holding chain's store — bound by analytic timing,
+ * unbound when the chain lands in r0). All previously deferred multi-store
+ * multi-op-return tails now compile through the models. */
+int ret_tail_plain(int a, int b, int c)
+{
+	g = a + 1;
+	h = b - 3;
+	return (c & 15) | 1;
+}
+
+int ret_tail_two_mulli(int a, int b, int c)
+{
+	g = a * 5;
+	h = b * 3;
+	return (c & 15) | 1;
+}
+
+int ret_tail_three_stores(int a, int b, int c, int d)
+{
+	g = a + 1;
+	h = b + 2;
+	u = c + 3;
+	return (d & 15) | 1;
+}
+
+int ret_tail_forbidden(int a, int b, int c)
+{
+	g = a + 1;
+	h = b - 3;
+	return (c >> 2) + 1;
+}
+
+int ret_tail_deep(int a, int b)
+{
+	g = a + 1;
+	return ((b & 15) | 1) + 2;
+}

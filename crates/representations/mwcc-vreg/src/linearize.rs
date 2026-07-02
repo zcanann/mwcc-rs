@@ -60,6 +60,11 @@ pub struct DagNode {
     /// intermediate (measured: void extsb r3,r3); a multi-consumer one may not
     /// (it must outlive the first chain's final — measured: extsb r4,r3).
     pub extension: bool,
+    /// This STORE's chain is rooted at the r3 parameter: when its analytic
+    /// earliest-ready is <= the return final's, the chain holds r3 (the
+    /// allocator reuses the dying param) and the final's r3 write must EMIT
+    /// after this store (the WAR constraint, allocation-coupled scheduling).
+    pub r3_chain_store: bool,
 }
 
 /// The XER (carry) hazard class: srawi, subfc, addc.
@@ -75,7 +80,11 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false }
+        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false, r3_chain_store: false }
+    }
+    pub fn r3_chain_store(mut self) -> DagNode {
+        self.r3_chain_store = true;
+        self
     }
     pub fn extension(mut self) -> DagNode {
         self.extension = true;
@@ -162,7 +171,10 @@ pub const FROZEN: Model = Model {
     issue_width: 2,
     gate_on_complete: true,
     gated_last: false,
-    kind_rank: [1, 2, 0],
+    // alu before store at weight ties (fire 308: the return-tail fit; the
+    // long-latency store AFFINITY tier covers the mulli-store-first captures
+    // that store-first ties used to absorb).
+    kind_rank: [0, 2, 1],
     weight_before_kind: true,
     strategy: Strategy::GlobalKey,
 };
@@ -221,7 +233,17 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             .map(|later| weight[later])
             .max()
             .unwrap_or(0);
-        let own = if on_return_chain[index] { nodes[index].gate_latency } else { nodes[index].latency };
+        let own = if Some(index) == return_sink {
+            // The return FINAL contributes nothing: the chain's pull comes
+            // from its intermediates (deep_return's store chain leads 2v2 on
+            // the source tie; ret_both_deep still leads 3v1).
+            0
+        } else {
+            // Return-chain intermediates weigh full LATENCY like everything
+            // else (ret_deep: the mulli-bearing return leads 4v3 — the only
+            // capture that discriminates latency from gate weighting there).
+            nodes[index].latency
+        };
         weight[index] = own + downstream;
     }
 
@@ -273,6 +295,50 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
         (0..count).any(|other| chain[other] == id && nodes[other].kind == OpKind::Load)
     }).collect();
 
+    // The WAR constraint: the RETURN FINAL's r3 write emits after the
+    // r3-rooted chain's store — but only when that store's ANALYTIC earliest
+    // cycle is <= the final's (else the claim overlapped the chain and the
+    // allocator adapted its register; measured: the two-mulli tail escapes,
+    // the plain and three-store tails bind).
+    let earliest: Vec<u32> = {
+        let mut earliest = vec![0u32; count];
+        for index in 0..count {
+            earliest[index] = deps[index]
+                .iter()
+                .map(|&dependency| earliest[dependency] + nodes[dependency].gate_latency)
+                .max()
+                .unwrap_or(0);
+        }
+        earliest
+    };
+    // A param-direct final (analytic 0) still cannot beat the crowded first
+    // cycle, so the binding floor is 1 (nine shapes; the mulli-gated store at
+    // 2 escapes while every plain store at 1 binds). The chain must also
+    // actually HOLD r3: the LAST store chain's final prefers r0, so its store
+    // binds only when an r0 RESERVATION (a non-forbidden return intermediate)
+    // pushes the chain to r3 (ret_mix/D unbind — the return emits first).
+    let has_r0_reservation = (0..count).any(|node| {
+        on_return_chain[node]
+            && Some(node) != return_sink
+            && nodes[node].kind != OpKind::Store
+            && !nodes[node].writes.is_empty()
+            && !nodes[node].forbid_r0
+    });
+    let last_store_index: Option<usize> = (0..count).rev().find(|&node| nodes[node].kind == OpKind::Store);
+    let war_stores: Vec<usize> = return_sink
+        .map(|sink| {
+            (0..count)
+                .filter(|&node| {
+                    nodes[node].r3_chain_store
+                        && earliest[node] <= earliest[sink].max(1)
+                        && (deps[node].is_empty() // a LEAF store reads r3 itself: a true RAW hazard
+                            || Some(node) != last_store_index
+                            || has_r0_reservation)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut order = Vec::with_capacity(count);
     let mut issued_at: Vec<Option<u32>> = vec![None; count];
     let mut time = 0u32;
@@ -296,18 +362,56 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             time += 1;
             continue;
         }
-        let rank = |candidate: usize| -> (u8, u32, u32, usize) {
+        // Ready EXACTLY this cycle: every dependency completed at `time` (or a
+        // dependency-free op at cycle 0).
+        let fresh = |candidate: usize| -> bool {
+            if deps[candidate].is_empty() {
+                return time == 0;
+            }
+            deps[candidate]
+                .iter()
+                .filter_map(|&dependency| issued_at[dependency].map(|at| at + nodes[dependency].gate_latency))
+                .max()
+                .is_some_and(|completed| completed == time)
+        };
+        // The return-tail tiers (fire 308) are fitted on RETURN-MODE captures
+        // only; a void block keeps the store-first tie-break of the original
+        // dataset fit.
+        let return_mode = return_sink.is_some();
+        let rank = |candidate: usize| -> (u8, u8, u8, u32, u32, usize) {
             let gate = if model.gated_last && gated[candidate] { 1 } else { 0 };
-            let kind = model.kind_rank[match nodes[candidate].kind {
+            // A store released by a LONG-latency producer (gate >= 2) issues
+            // the moment the gate opens — ahead of everything (measured: the
+            // mulli store beats the fresh return op).
+            let affinity = if return_mode
+                && nodes[candidate].kind == OpKind::Store
+                && deps[candidate].iter().any(|&dependency| nodes[dependency].gate_latency >= 2)
+                && fresh(candidate)
+            {
+                0u8
+            } else {
+                1
+            };
+            // A FRESH non-store outranks weight (measured: the fresh return op
+            // beats the heavier aged mulli; at cycle 0 everything is fresh so
+            // weight still decides).
+            let fresh_alu = if return_mode && nodes[candidate].kind != OpKind::Store && fresh(candidate) { 0u8 } else { 1 };
+            let kind_index = match nodes[candidate].kind {
                 OpKind::Alu => 0,
                 OpKind::Load => 1,
                 OpKind::Store => 2,
-            }] as u32;
+            };
+            let kind = if return_mode {
+                model.kind_rank[kind_index] as u32
+            } else {
+                // The original store-first tie-break ([1, 2, 0]).
+                [1u8, 2, 0][kind_index] as u32
+            };
             let inverse_weight = u32::MAX - weight[candidate];
             if model.weight_before_kind {
-                (gate, inverse_weight, kind, candidate)
+                (gate, affinity, fresh_alu, inverse_weight, kind, candidate)
             } else {
-                (gate, kind, inverse_weight, candidate)
+                (gate, affinity, fresh_alu, kind, inverse_weight, candidate)
             }
         };
         match model.strategy {
@@ -318,17 +422,42 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 // srawi+srawi serializing where rlwinm+rlwinm pairs).
                 let mut picked: Vec<usize> = Vec::new();
                 let mut picked_hazards: Vec<u8> = Vec::new();
-                for &candidate in &ready {
-                    if picked.len() >= model.issue_width {
-                        break;
-                    }
-                    if let Some(class) = nodes[candidate].hazard {
-                        if picked_hazards.contains(&class) {
+                // Rescan after every pick: a WAR-deferred return final becomes
+                // eligible the moment the bound store lands in this window.
+                'fill: while picked.len() < model.issue_width {
+                    for &candidate in &ready {
+                        if picked.contains(&candidate) {
                             continue;
                         }
-                        picked_hazards.push(class);
+                        // The WAR constraint: the return final waits for (or
+                        // follows, within this window) the bound r3-chain stores.
+                        if Some(candidate) == return_sink
+                            && war_stores
+                                .iter()
+                                .any(|&store| issued_at[store].is_none() && !picked.contains(&store))
+                        {
+                            continue;
+                        }
+                        // The STORE PORT: one store per issue window (measured:
+                        // the second fresh store of a pair waits a cycle while
+                        // the return op fills the slot). Return mode only — the
+                        // void dataset never discriminated it.
+                        if return_mode
+                            && nodes[candidate].kind == OpKind::Store
+                            && picked.iter().any(|&taken| nodes[taken].kind == OpKind::Store)
+                        {
+                            continue;
+                        }
+                        if let Some(class) = nodes[candidate].hazard {
+                            if picked_hazards.contains(&class) {
+                                continue;
+                            }
+                            picked_hazards.push(class);
+                        }
+                        picked.push(candidate);
+                        continue 'fill;
                     }
-                    picked.push(candidate);
+                    break;
                 }
                 ready = picked;
             }
@@ -712,7 +841,28 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             result[node] = Some(0);
             occupied.push((0, position[node], value_end(node)));
         }
+        // A FORBIDDEN return-feeder (it cannot stage through r0) will take the
+        // r3 handoff — pre-claim it so earlier chains route around (measured:
+        // the srawi feeder claims [its slot, the return], pushing the first
+        // store final to r6).
+        if let Some(return_node) = return_node {
+            for node in 0..count {
+                if nodes[node].forbid_r0
+                    && result[node].is_none()
+                    && consumer_of[node].contains(&return_node)
+                    && consumer_of[node].len() == 1
+                {
+                    result[node] = Some(3);
+                    occupied.push((3, position[node], value_end(node)));
+                }
+            }
+        }
     }
+    // The LAST store chain's sink: only ITS final gets the r0 preference in
+    // return mode (measured: the earlier chain's final never touches r0).
+    let last_store_sink: Option<usize> = (0..count)
+        .filter(|&node| nodes[node].kind == OpKind::Store)
+        .max_by_key(|&node| position[node]);
     for &node in order {
         if result[node].is_some() {
             continue;
@@ -769,7 +919,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // contended store-chain mulli reuses its dying param in place
         // (measured: mulli r4,r4,3 under a mask+or return; the uncontended
         // 1-op-return mulli prefers r0 before reuse is ever consulted).
-        let relaxed = chain_count <= 2
+        let relaxed = (chain_count <= 2 || (return_mode && start % 2 == 0))
             && last_chain_depth <= 2
             && !(own_chain_has_multiply && !return_mode)
             && (return_mode || chain_of(node) != last_sink)
@@ -812,13 +962,21 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let r0_eligible = (return_mode || on_last_chain || end < last_chain_first_def) && !nodes[node].forbid_r0;
         let pool: Vec<u8> = if !return_mode && on_last_chain && is_final && !nodes[node].forbid_r0 {
             vec![0]
-        } else if return_mode && is_final && !nodes[node].forbid_r0 {
-            // A return-mode STORE-chain final PREFERS r0 (measured on all five
-            // return captures); it falls through when r0 is held — by another
+        } else if return_mode
+            && is_final
+            && !nodes[node].forbid_r0
+            && consumer_of[node].first().copied() == last_store_sink
+        {
+            // Only the LAST store chain's final PREFERS r0 in return mode
+            // (measured); it falls through when r0 is held — by another
             // occupant or by an overlapping return-intermediate RESERVATION.
             let mut pool = vec![0u8, 3, 4];
             pool.extend(5..=12);
             pool
+        } else if return_mode && is_final && !nodes[node].forbid_r0 {
+            // An EARLIER chain's final never touches r0 (measured: r6 over a
+            // free r0 under the srawi handoff).
+            (3..=12).collect()
         } else if r0_eligible {
             let mut pool = vec![3u8, 4, 0];
             pool.extend(5..=12);
@@ -1306,7 +1464,7 @@ mod tests {
                 "tail_plain2",
                 vec![
                     DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
                     DagNode::new("st_h", STORE).kind(St).reads(&[20]),
                     DagNode::new("mask", ALU).reads(&[3]).writes(&[30]),
@@ -1320,7 +1478,7 @@ mod tests {
                 "tail_one_mulli",
                 vec![
                     DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("mulli_h", MUL).gate(2).hazard(HAZARD_MUL).reads(&[2]).writes(&[20]),
                     DagNode::new("st_h", STORE).kind(St).reads(&[20]),
                     DagNode::new("mask", ALU).reads(&[3]).writes(&[30]),
@@ -1334,7 +1492,7 @@ mod tests {
                 "tail_two_mulli",
                 vec![
                     DagNode::new("mulli_g", MUL).gate(2).hazard(HAZARD_MUL).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("mulli_h", MUL).gate(2).hazard(HAZARD_MUL).reads(&[2]).writes(&[20]),
                     DagNode::new("st_h", STORE).kind(St).reads(&[20]),
                     DagNode::new("mask", ALU).reads(&[3]).writes(&[30]),
@@ -1348,7 +1506,7 @@ mod tests {
                 "tail_three_stores",
                 vec![
                     DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
                     DagNode::new("st_h", STORE).kind(St).reads(&[20]),
                     DagNode::new("addi_k", ALU).reads(&[3]).writes(&[30]),
@@ -1364,7 +1522,7 @@ mod tests {
                 "tail_deep_return",
                 vec![
                     DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("mask", ALU).reads(&[2]).writes(&[20]),
                     DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
                     DagNode::new("addf", ALU).reads(&[21]).writes(&[22]),
@@ -1377,7 +1535,7 @@ mod tests {
                 "tail_single_store",
                 vec![
                     DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("mask", ALU).reads(&[2]).writes(&[20]),
                     DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
                 ],
@@ -1389,7 +1547,7 @@ mod tests {
                 "tail_forbidden_feeder",
                 vec![
                     DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
                     DagNode::new("st_h", STORE).kind(St).reads(&[20]),
                     DagNode::new("srawi", ALU).hazard(HAZARD_XER).forbid_r0().reads(&[3]).writes(&[30]),
@@ -1403,7 +1561,7 @@ mod tests {
                 "tail_ret_three",
                 vec![
                     DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
-                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).r3_chain_store().reads(&[10]),
                     DagNode::new("mulli_h", MUL).gate(2).hazard(HAZARD_MUL).reads(&[2]).writes(&[20]),
                     DagNode::new("st_h", STORE).kind(St).reads(&[20]),
                     DagNode::new("ret", ALU).reads(&[3]).writes(&[30]),
@@ -1838,10 +1996,10 @@ mod tests {
         let nodes = [
             DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
             DagNode::new("slwi_g", ALU).reads(&[10]).writes(&[11]),
-            DagNode::new("stw_g", STORE).reads(&[11]),
+            DagNode::new("stw_g", STORE).kind(OpKind::Store).reads(&[11]),
             DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
             DagNode::new("mulli_h", MUL).reads(&[20]).writes(&[21]),
-            DagNode::new("stw_h", STORE).reads(&[21]),
+            DagNode::new("stw_h", STORE).kind(OpKind::Store).reads(&[21]),
         ];
         assert_eq!(labels(&nodes), ["addi_h", "addi_g", "mulli_h", "slwi_g", "stw_g", "stw_h"]);
     }
@@ -1853,9 +2011,9 @@ mod tests {
             DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
             DagNode::new("slwi_g", ALU).reads(&[10]).writes(&[11]),
             DagNode::new("addi3_g", ALU).reads(&[11]).writes(&[12]),
-            DagNode::new("stw_g", STORE).reads(&[12]),
+            DagNode::new("stw_g", STORE).kind(OpKind::Store).reads(&[12]),
             DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
-            DagNode::new("stw_h", STORE).reads(&[20]),
+            DagNode::new("stw_h", STORE).kind(OpKind::Store).reads(&[20]),
         ];
         assert_eq!(labels(&nodes), ["addi_g", "addi_h", "slwi_g", "stw_h", "addi3_g", "stw_g"]);
     }
@@ -1865,9 +2023,9 @@ mod tests {
         // g = a/b; h = a+b;  ->  divw add stw(h) stw(g)
         let nodes = [
             DagNode::new("divw", DIV).reads(&[1, 2]).writes(&[10]),
-            DagNode::new("stw_g", STORE).reads(&[10]),
+            DagNode::new("stw_g", STORE).kind(OpKind::Store).reads(&[10]),
             DagNode::new("add", ALU).reads(&[1, 2]).writes(&[20]),
-            DagNode::new("stw_h", STORE).reads(&[20]),
+            DagNode::new("stw_h", STORE).kind(OpKind::Store).reads(&[20]),
         ];
         assert_eq!(labels(&nodes), ["divw", "add", "stw_h", "stw_g"]);
     }
@@ -1877,9 +2035,9 @@ mod tests {
         // g = a*5; h = b*7;  ->  mulli mulli stw stw
         let nodes = [
             DagNode::new("mulli_g", MUL).reads(&[1]).writes(&[10]),
-            DagNode::new("stw_g", STORE).reads(&[10]),
+            DagNode::new("stw_g", STORE).kind(OpKind::Store).reads(&[10]),
             DagNode::new("mulli_h", MUL).reads(&[2]).writes(&[20]),
-            DagNode::new("stw_h", STORE).reads(&[20]),
+            DagNode::new("stw_h", STORE).kind(OpKind::Store).reads(&[20]),
         ];
         assert_eq!(labels(&nodes), ["mulli_g", "mulli_h", "stw_g", "stw_h"]);
     }
@@ -1890,10 +2048,10 @@ mod tests {
         let nodes = [
             DagNode::new("lwz", LOAD).reads(&[1]).writes(&[10]),
             DagNode::new("addi5_g", ALU).reads(&[10]).writes(&[11]),
-            DagNode::new("stw_g", STORE).reads(&[11]),
+            DagNode::new("stw_g", STORE).kind(OpKind::Store).reads(&[11]),
             DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
             DagNode::new("mulli_h", MUL).reads(&[20]).writes(&[21]),
-            DagNode::new("stw_h", STORE).reads(&[21]),
+            DagNode::new("stw_h", STORE).kind(OpKind::Store).reads(&[21]),
         ];
         assert_eq!(labels(&nodes), ["addi_h", "lwz", "mulli_h", "addi5_g", "stw_g", "stw_h"]);
     }
@@ -1903,11 +2061,11 @@ mod tests {
         // g = a+1; h = b+2; k = c+3;  ->  a1 a2 a3 st1 st2 st3
         let nodes = [
             DagNode::new("a1", ALU).reads(&[1]).writes(&[10]),
-            DagNode::new("st1", STORE).reads(&[10]),
+            DagNode::new("st1", STORE).kind(OpKind::Store).reads(&[10]),
             DagNode::new("a2", ALU).reads(&[2]).writes(&[20]),
-            DagNode::new("st2", STORE).reads(&[20]),
+            DagNode::new("st2", STORE).kind(OpKind::Store).reads(&[20]),
             DagNode::new("a3", ALU).reads(&[3]).writes(&[30]),
-            DagNode::new("st3", STORE).reads(&[30]),
+            DagNode::new("st3", STORE).kind(OpKind::Store).reads(&[30]),
         ];
         assert_eq!(labels(&nodes), ["a1", "a2", "a3", "st1", "st2", "st3"]);
     }
@@ -1929,8 +2087,8 @@ mod tests {
         // g = *p; *q = a;  ->  lwz stw(g) stw(*q)  (the pointer store may alias)
         let nodes = [
             DagNode::new("lwz", LOAD).reads(&[1]).writes(&[10]),
-            DagNode::new("stw_g", STORE).reads(&[10]).alias(0),
-            DagNode::new("stw_q", STORE).reads(&[2]).alias(0),
+            DagNode::new("stw_g", STORE).kind(OpKind::Store).reads(&[10]).alias(0),
+            DagNode::new("stw_q", STORE).kind(OpKind::Store).reads(&[2]).alias(0),
         ];
         assert_eq!(labels(&nodes), ["lwz", "stw_g", "stw_q"]);
     }
@@ -1942,10 +2100,10 @@ mod tests {
         let nodes = [
             DagNode::new("lfd_c1", LOAD).writes(&[10]),
             DagNode::new("fmul", FP).reads(&[1, 10]).writes(&[11]),
-            DagNode::new("stfd_g", STORE).reads(&[11]),
+            DagNode::new("stfd_g", STORE).kind(OpKind::Store).reads(&[11]),
             DagNode::new("lfd_c2", LOAD).writes(&[20]),
             DagNode::new("fadd", FP).reads(&[2, 20]).writes(&[21]),
-            DagNode::new("stfd_h", STORE).reads(&[21]),
+            DagNode::new("stfd_h", STORE).kind(OpKind::Store).reads(&[21]),
         ];
         assert_eq!(labels(&nodes), ["lfd_c1", "lfd_c2", "fmul", "fadd", "stfd_g", "stfd_h"]);
     }
@@ -1968,12 +2126,12 @@ mod tests {
             DagNode::new("lwz_e", LOAD).reads(&[2]).writes(&[11]),
             DagNode::new("add", ALU).reads(&[10, 11]).writes(&[12]),
             DagNode::new("addi", ALU).reads(&[12]).writes(&[13]),
-            DagNode::new("stw_eptr", STORE).reads(&[13]).alias(1),
+            DagNode::new("stw_eptr", STORE).kind(OpKind::Store).reads(&[13]).alias(1),
             // s2: *(int*)&x = (hx & M) | C   (through the x slot, after the spill)
             DagNode::new("rlwinm", ALU).reads(&[3]).writes(&[20]),
             DagNode::new("oris", ALU).reads(&[20]).writes(&[21]),
-            DagNode::new("stfd_spill", STORE).alias(2),
-            DagNode::new("stw_slot", STORE).reads(&[21]).alias(2),
+            DagNode::new("stfd_spill", STORE).kind(OpKind::Store).alias(2),
+            DagNode::new("stw_slot", STORE).kind(OpKind::Store).reads(&[21]).alias(2),
         ];
         assert_eq!(
             labels(&nodes),
@@ -1987,9 +2145,9 @@ mod tests {
         // lwz stw lwz stw
         let nodes = [
             DagNode::new("lwz_p", LOAD).reads(&[1]).writes(&[10]),
-            DagNode::new("stw_g", STORE).reads(&[10]),
+            DagNode::new("stw_g", STORE).kind(OpKind::Store).reads(&[10]),
             DagNode::new("lwz_q", LOAD).reads(&[2]).writes(&[20]).after(1),
-            DagNode::new("stw_h", STORE).reads(&[20]),
+            DagNode::new("stw_h", STORE).kind(OpKind::Store).reads(&[20]),
         ];
         assert_eq!(labels(&nodes), ["lwz_p", "stw_g", "lwz_q", "stw_h"]);
     }
