@@ -162,7 +162,27 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
         }
         deps[index].extend(node.extra_deps.iter().copied());
     }
-    // Critical-path weight: latency + the heaviest dependent's weight.
+    // Critical-path weight: latency + the heaviest dependent's weight. On the
+    // RETURN chain (the chain of a consumerless non-store node) ops weigh
+    // their GATE latency instead — measured: the return chain leads only when
+    // its gate-weighted path exceeds the store chains' (ret_both_deep's g
+    // leads at 3v3 source-tie; ret_deep_chain's return leads at 4v3).
+    let return_sink: Option<usize> = (0..count).find(|&node| {
+        nodes[node].kind != OpKind::Store
+            && !nodes[node].writes.is_empty()
+            && (node + 1..count).all(|later| !deps[later].contains(&node))
+    });
+    let on_return_chain: Vec<bool> = (0..count)
+        .map(|node| {
+            let mut current = node;
+            loop {
+                match (current + 1..count).find(|&later| deps[later].contains(&current)) {
+                    Some(next) => current = next,
+                    None => break Some(current) == return_sink,
+                }
+            }
+        })
+        .collect();
     let mut weight = vec![0u32; count];
     for index in (0..count).rev() {
         let downstream = (index + 1..count)
@@ -170,7 +190,8 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             .map(|later| weight[later])
             .max()
             .unwrap_or(0);
-        weight[index] = nodes[index].latency + downstream;
+        let own = if on_return_chain[index] { nodes[index].gate_latency } else { nodes[index].latency };
+        weight[index] = own + downstream;
     }
 
     // LOAD-GATED: reachable joins (2+ reads) that also wait on a load through a
@@ -618,6 +639,7 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
     let mut result: Vec<Option<u8>> = vec![None; count];
     // Pre-claim the return value's r3 (its occupancy participates in every
     // in-place conflict check below).
+    let return_claim_start = return_node.map(|node| position[node]);
     if let Some(return_node) = return_node {
         result[return_node] = Some(3);
         occupied.push((3, position[return_node], value_end(return_node)));
@@ -626,6 +648,9 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         if Some(node) == return_node {
             continue;
         }
+        // The value the return op READS hands its register off at the claim
+        // boundary: for that node the r3 claim is OPEN (ret2 -> ret3's r3).
+        let feeds_return = return_node.is_some_and(|ret| consumer_of[node].contains(&ret));
         if nodes[node].kind == OpKind::Store || nodes[node].writes.is_empty() {
             continue;
         }
@@ -633,7 +658,10 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let end = value_end(node);
         let closed_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
             occupied.iter().all(|&(taken, taken_start, taken_end)| {
-                taken != register || taken_end < start || taken_start > end
+                taken != register
+                    || taken_end < start
+                    || taken_start > end
+                    || (feeds_return && register == 3 && Some(taken_start) == return_claim_start && taken_start == end)
             })
         };
         // The own dying source (for the in-place exception), split by origin:
@@ -707,6 +735,12 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let r0_eligible = return_mode || on_last_chain || end < last_chain_first_def;
         let pool: Vec<u8> = if !return_mode && on_last_chain && is_final {
             vec![0]
+        } else if return_mode && is_final {
+            // A return-mode STORE-chain final PREFERS r0 (measured on all five
+            // return captures; it falls through when r0 is occupied — cap2).
+            let mut pool = vec![0u8, 3, 4];
+            pool.extend(5..=12);
+            pool
         } else if r0_eligible {
             let mut pool = vec![3u8, 4, 0];
             pool.extend(5..=12);
