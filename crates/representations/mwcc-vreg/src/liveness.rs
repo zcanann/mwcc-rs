@@ -33,6 +33,9 @@ use crate::register::{Class, Reg, VirtualRegister, VIRTUAL_BASE};
 pub struct Liveness {
     pub intervals: Vec<LiveInterval>,
     pub pinned: Vec<PinnedOccupancy>,
+    /// Instruction indices of CALLS (`bl` / `bctrl`): an interval crossing one
+    /// must live in a callee-saved register.
+    pub calls: Vec<usize>,
 }
 
 /// Compute liveness from a selected instruction stream.
@@ -47,7 +50,11 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
     let mut open: HashMap<(Class, u8), (usize, usize)> = HashMap::new();
     let mut ranges: Vec<((Class, u8), usize, usize)> = Vec::new();
 
+    let mut calls: Vec<usize> = Vec::new();
     for (index, instruction) in instructions.iter().enumerate() {
+        if matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToCountRegisterAndLink) {
+            calls.push(index);
+        }
         let operands = register_operands(instruction);
         // Uses first: extend the open range (opening one from entry if this is a
         // parameter's first appearance).
@@ -82,6 +89,7 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
     ranges.sort_by_key(|((class, register), start, _)| (*start, *register, *class as u8));
 
     let mut liveness = Liveness::default();
+    liveness.calls = calls;
     for ((class, value), start, end) in ranges {
         if Reg::is_virtual_field(value) {
             let vreg = VirtualRegister::new((value - VIRTUAL_BASE) as u32, class);
@@ -157,7 +165,7 @@ mod tests {
         let v0 = liveness.intervals.iter().find(|interval| interval.vreg.id == 0).unwrap();
         assert_eq!((v0.start, v0.end), (0, 4));
         let constraints = RegisterConstraints::gekko();
-        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &constraints).unwrap();
+        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &liveness.calls, &constraints).unwrap();
         let home0 = allocation.physical(VirtualRegister::new(0, Class::General)).unwrap();
         let home1 = allocation.physical(VirtualRegister::new(1, Class::General)).unwrap();
         assert_ne!(home0, home1);
@@ -172,7 +180,7 @@ mod tests {
         ];
         let constraints = RegisterConstraints::gekko();
         let liveness = analyze(&stream);
-        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &constraints).unwrap();
+        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &liveness.calls, &constraints).unwrap();
         apply(&mut stream, &allocation);
         // r3/r4 are read at instruction 0 and dead after, so v0 may take r3 — the
         // half-open rule in action (a result reusing a just-consumed source).

@@ -15,8 +15,13 @@ use crate::register::Class;
 pub struct RegisterConstraints {
     /// General-purpose registers the allocator may assign, in preference order
     /// (mwcc favors the lowest). `r3..=r12` — `r0..=r2`/`r13` are reserved by the
-    /// ABI (scratch, stack, small-data) and `r14+` are callee-saved (unused so far).
+    /// ABI (scratch, stack, small-data); `r14..=r31` are callee-saved (below).
     pub general_pool: Vec<u8>,
+    /// Callee-saved general registers, in mwcc's preference order — HIGHEST first
+    /// (`r31, r30, …, r14`). A value live ACROSS a call must survive the callee's
+    /// clobbering of the volatile pool, so it draws from here; the prologue saves
+    /// and the epilogue restores whichever of these the allocation used.
+    pub general_callee_saved: Vec<u8>,
     /// Floating-point registers the allocator may assign, in preference order.
     /// `f1..=f13` — `f0` is the scratch, `f14+` callee-saved.
     pub float_pool: Vec<u8>,
@@ -31,6 +36,7 @@ impl RegisterConstraints {
     pub fn gekko() -> Self {
         RegisterConstraints {
             general_pool: (3..=12).collect(),
+            general_callee_saved: (14..=31).rev().collect(),
             float_pool: (1..=13).collect(),
             general_scratch: 0,
             float_scratch: 0,

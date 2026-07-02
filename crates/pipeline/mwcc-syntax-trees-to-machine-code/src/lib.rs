@@ -179,6 +179,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
         &mwcc_vreg::LinearScan,
         &liveness.intervals,
         &liveness.pinned,
+        &liveness.calls,
         &generator.constraints,
     )
         .map_err(|error| mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}")))?;

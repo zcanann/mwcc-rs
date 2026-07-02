@@ -103,6 +103,7 @@ pub trait Allocator {
         &self,
         intervals: &[LiveInterval],
         pinned: &[PinnedOccupancy],
+        calls: &[usize],
         constraints: &RegisterConstraints,
     ) -> Result<Allocation, AllocationError>;
 }
@@ -120,6 +121,7 @@ impl Allocator for LinearScan {
         &self,
         intervals: &[LiveInterval],
         pinned: &[PinnedOccupancy],
+        calls: &[usize],
         constraints: &RegisterConstraints,
     ) -> Result<Allocation, AllocationError> {
         let mut order: Vec<&LiveInterval> = intervals.iter().collect();
@@ -149,8 +151,18 @@ impl Allocator for LinearScan {
                 }
             }
 
-            let choice = constraints
-                .pool(class)
+            // A value live ACROSS a call (strictly inside its range — a result defined
+            // at the call or an argument last used at it needs no saving) must survive
+            // the callee: it draws from the callee-saved pool, highest first (r31, r30,
+            // …), exactly mwcc's assignment order. Floats keep the volatile pool until
+            // an FPR callee-saved case is captured.
+            let crosses_call = calls.iter().any(|call| interval.start < *call && *call < interval.end);
+            let pool: &[u8] = if crosses_call && class == Class::General {
+                &constraints.general_callee_saved
+            } else {
+                constraints.pool(class)
+            };
+            let choice = pool
                 .iter()
                 .copied()
                 .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
@@ -172,6 +184,18 @@ mod tests {
     fn gpr(id: u32, start: usize, end: usize) -> LiveInterval {
         LiveInterval::new(Reg::general(id).virtual_register().unwrap(), start, end)
     }
+
+    #[test]
+    fn a_call_crossing_interval_draws_from_the_callee_saved_pool_descending() {
+        // v0 [0,4] and v1 [1,4] both cross the call at 2 -> r31 then r30; v2 [3,4]
+        // is defined after it -> the volatile pool (r3).
+        let intervals = [gpr(0, 0, 4), gpr(1, 1, 4), gpr(2, 3, 4)];
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan.allocate(&intervals, &[], &[2], &constraints).unwrap();
+        assert_eq!(allocation.physical(Reg::general(0).virtual_register().unwrap()), Some(31));
+        assert_eq!(allocation.physical(Reg::general(1).virtual_register().unwrap()), Some(30));
+        assert_eq!(allocation.physical(Reg::general(2).virtual_register().unwrap()), Some(3));
+    }
     fn fpr(id: u32, start: usize, end: usize) -> LiveInterval {
         LiveInterval::new(Reg::float(id).virtual_register().unwrap(), start, end)
     }
@@ -183,7 +207,7 @@ mod tests {
     fn non_overlapping_intervals_reuse_the_lowest_register() {
         let constraints = RegisterConstraints::gekko();
         let intervals = [gpr(0, 0, 2), gpr(1, 3, 5)];
-        let allocation = LinearScan.allocate(&intervals, &[], &constraints).unwrap();
+        let allocation = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(3));
         assert_eq!(allocation.physical(phys(1)), Some(3)); // r3 freed and reused
     }
@@ -193,7 +217,7 @@ mod tests {
         let constraints = RegisterConstraints::gekko();
         // Without a hint this lone value takes r3; the hint forces it to r4.
         let intervals = [gpr(0, 0, 2).avoiding(vec![3])];
-        let allocation = LinearScan.allocate(&intervals, &[], &constraints).unwrap();
+        let allocation = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(4));
     }
 
@@ -201,7 +225,7 @@ mod tests {
     fn overlapping_intervals_get_distinct_registers() {
         let constraints = RegisterConstraints::gekko();
         let intervals = [gpr(0, 0, 4), gpr(1, 2, 6)];
-        let allocation = LinearScan.allocate(&intervals, &[], &constraints).unwrap();
+        let allocation = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(3));
         assert_eq!(allocation.physical(phys(1)), Some(4)); // must avoid r3
     }
@@ -210,7 +234,7 @@ mod tests {
     fn general_and_float_draw_from_separate_pools() {
         let constraints = RegisterConstraints::gekko();
         let intervals = [gpr(0, 0, 4), fpr(1, 0, 4)];
-        let allocation = LinearScan.allocate(&intervals, &[], &constraints).unwrap();
+        let allocation = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(3)); // r3
         let float_one = Reg::float(1).virtual_register().unwrap();
         assert_eq!(allocation.physical(float_one), Some(1)); // f1, not blocked by r3
@@ -222,7 +246,7 @@ mod tests {
         // A parameter pinned to r3 over [0, 5]; a virtual live across it.
         let pinned = [PinnedOccupancy { register: 3, class: Class::General, start: 0, end: 5 }];
         let intervals = [gpr(0, 1, 4)];
-        let allocation = LinearScan.allocate(&intervals, &pinned, &constraints).unwrap();
+        let allocation = LinearScan.allocate(&intervals, &pinned, &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(4)); // r3 is taken by the parameter
     }
 
@@ -231,7 +255,7 @@ mod tests {
         let constraints = RegisterConstraints::gekko();
         let pinned = [PinnedOccupancy { register: 3, class: Class::General, start: 0, end: 2 }];
         let intervals = [gpr(0, 3, 5)]; // starts after the parameter's last use
-        let allocation = LinearScan.allocate(&intervals, &pinned, &constraints).unwrap();
+        let allocation = LinearScan.allocate(&intervals, &pinned, &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(3));
     }
 
@@ -240,7 +264,7 @@ mod tests {
         // A pool of one register, two simultaneously-live values.
         let constraints = RegisterConstraints { general_pool: vec![3], ..RegisterConstraints::gekko() };
         let intervals = [gpr(0, 0, 4), gpr(1, 1, 5)];
-        let error = LinearScan.allocate(&intervals, &[], &constraints).unwrap_err();
+        let error = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap_err();
         assert_eq!(error, AllocationError::OutOfRegisters { class: Class::General, at: 1 });
     }
 }
