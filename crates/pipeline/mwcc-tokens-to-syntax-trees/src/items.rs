@@ -167,15 +167,34 @@ impl Parser {
             if self.eat_word("case") {
                 let value = self.parse_integer_constant()?;
                 self.expect(Token::Colon)?;
+                // The arm body may be braced (`case V: { return E; }`) — with
+                // an optional trailing `break;` after the return, both dead
+                // syntax around the same single-return arm.
+                let braced = self.eat_keyword(Token::BraceOpen);
                 self.expect(Token::KeywordReturn)?;
                 let result = self.expression()?;
                 self.expect(Token::Semicolon)?;
+                if braced {
+                    while matches!(self.peek(), Token::Identifier(word) if word == "break") {
+                        self.advance();
+                        self.expect(Token::Semicolon)?;
+                    }
+                    self.expect(Token::BraceClose)?;
+                }
                 arms.push(SwitchArm { value, result });
             } else if self.eat_word("default") {
                 self.expect(Token::Colon)?;
+                let braced = self.eat_keyword(Token::BraceOpen);
                 self.expect(Token::KeywordReturn)?;
                 default = Some(self.expression()?);
                 self.expect(Token::Semicolon)?;
+                if braced {
+                    while matches!(self.peek(), Token::Identifier(word) if word == "break") {
+                        self.advance();
+                        self.expect(Token::Semicolon)?;
+                    }
+                    self.expect(Token::BraceClose)?;
+                }
             } else {
                 return Err(Diagnostic::error("a switch arm must be `case <int>: return …;` or `default: return …;` (roadmap)"));
             }
@@ -1738,6 +1757,30 @@ impl Parser {
                         alias = self.parse_identifier()?;
                     }
                     self.expect(Token::Semicolon)?;
+                    return Ok(());
+                }
+                // A BODYLESS `typedef struct Tag Alias;` (a forward typedef —
+                // the layout arrives when `struct Tag { ... }` is defined) or
+                // `typedef struct Tag* AliasPtr;` registers the alias->TAG map
+                // directly; member lookups resolve through the tag at use time.
+                let is_union_forward = matches!(self.peek(), Token::Identifier(word) if word == "union");
+                if (*self.peek() == Token::KeywordStruct || is_union_forward)
+                    && matches!(self.tokens.get(self.position + 1), Some(Token::Identifier(_)))
+                    && matches!(
+                        (self.tokens.get(self.position + 2), self.tokens.get(self.position + 3)),
+                        (Some(Token::Identifier(_)), Some(Token::Semicolon)) | (Some(Token::Star), Some(Token::Identifier(_)))
+                    )
+                {
+                    self.advance(); // `struct` / `union`
+                    let tag = self.parse_identifier()?;
+                    let is_pointer = self.eat_keyword(Token::Star);
+                    let alias = self.parse_identifier()?;
+                    self.expect(Token::Semicolon)?;
+                    if is_pointer {
+                        self.struct_pointer_typedefs.insert(alias, tag);
+                    } else {
+                        self.struct_typedefs.insert(alias, tag);
+                    }
                     return Ok(());
                 }
                 let aliased = self.parse_type()?;
