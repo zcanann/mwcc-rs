@@ -297,6 +297,140 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
     order
 }
 
+/// A candidate REGISTER policy for block values (the allocation contract the
+/// emitter needs alongside the order): which values stage through r0, and how
+/// the rest pick among free volatiles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RegisterPolicy {
+    pub r0_rule: R0Rule,
+    pub reuse: ReuseRule,
+}
+
+/// When a value stages through r0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum R0Rule {
+    /// Only the FINAL value (the stw operand) of the LAST source chain — and of
+    /// a single-statement block.
+    FinalOfLastChain,
+    /// The final value, plus the whole last chain when it has TWO ops (the
+    /// measured 2-op in-place chains vs the 3-op bounce).
+    FinalPlusTwoOpChain,
+    /// Every op of the last chain (killed by the 3-op bounce; kept as control).
+    WholeLastChain,
+}
+
+/// How a non-r0 result picks among free volatile registers (r3..r12).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReuseRule {
+    /// The lowest register free at issue (deaths at this instruction count).
+    LowestFree,
+    /// The lowest free, EXCLUDING registers freed in this same issue cycle.
+    LowestFreeStable,
+    /// The op's own dying source first, then lowest free.
+    OwnSourceFirst,
+}
+
+/// Assign a result register per node, walking the linearized order. `params`
+/// maps input value ids to their incoming registers; `last_chain` is the chain
+/// id (sink index) of the LAST source statement.
+pub fn assign_registers(
+    nodes: &[DagNode],
+    order: &[usize],
+    params: &[(u32, u8)],
+    policy: RegisterPolicy,
+) -> Vec<Option<u8>> {
+    let count = nodes.len();
+    // Rebuild chains and the final-op set the same way linearize_with does.
+    let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, node) in nodes.iter().enumerate() {
+        for read in &node.reads {
+            if let Some(writer) = (0..index).rev().find(|&w| nodes[w].writes.contains(read)) {
+                consumer_of[writer].push(index);
+            }
+        }
+    }
+    let chain_of = |mut node: usize| -> usize {
+        loop {
+            match consumer_of[node].first() {
+                Some(&next) => node = next,
+                None => return node,
+            }
+        }
+    };
+    let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
+    // Ops on the last chain, and each op's position: final = feeds the sink store.
+    let on_last_chain: Vec<bool> = (0..count).map(|node| chain_of(node) == last_sink).collect();
+    let feeds_sink: Vec<bool> = (0..count).map(|node| consumer_of[node].first() == Some(&last_sink)).collect();
+    let last_chain_ops = (0..count).filter(|&node| on_last_chain[node] && nodes[node].kind != OpKind::Store).count();
+
+    // The death slot of each VALUE (last read position in the order).
+    let position: Vec<usize> = {
+        let mut position = vec![0; count];
+        for (slot, &node) in order.iter().enumerate() {
+            position[node] = slot;
+        }
+        position
+    };
+    let mut result: Vec<Option<u8>> = vec![None; count];
+    // Live map: register -> death slot (exclusive). Params live until last read.
+    let mut live: Vec<(u8, usize)> = params
+        .iter()
+        .map(|&(value, register)| {
+            let death = (0..count)
+                .filter(|&reader| nodes[reader].reads.contains(&value))
+                .map(|reader| position[reader])
+                .max()
+                .unwrap_or(0);
+            (register, death)
+        })
+        .collect();
+    for (slot, &node) in order.iter().enumerate() {
+        if nodes[node].kind == OpKind::Store || nodes[node].writes.is_empty() {
+            continue;
+        }
+        let stages_r0 = match policy.r0_rule {
+            R0Rule::FinalOfLastChain => on_last_chain[node] && feeds_sink[node],
+            R0Rule::FinalPlusTwoOpChain => {
+                on_last_chain[node] && (feeds_sink[node] || last_chain_ops <= 2)
+            }
+            R0Rule::WholeLastChain => on_last_chain[node],
+        };
+        if stages_r0 {
+            result[node] = Some(0);
+            continue;
+        }
+        let death = consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(slot);
+        let own_dying: Option<u8> = nodes[node].reads.iter().find_map(|read| {
+            params.iter().find(|&&(value, _)| value == *read).and_then(|&(value, register)| {
+                let value_death = (0..count)
+                    .filter(|&reader| nodes[reader].reads.contains(&value))
+                    .map(|reader| position[reader])
+                    .max()
+                    .unwrap_or(0);
+                (value_death == slot).then_some(register)
+            })
+        });
+        let is_free = |register: u8, live: &[(u8, usize)], include_same_cycle: bool| -> bool {
+            live.iter().all(|&(taken, taken_death)| {
+                taken != register || taken_death < slot || (include_same_cycle && taken_death == slot)
+            })
+        };
+        let pick = match policy.reuse {
+            ReuseRule::OwnSourceFirst => own_dying
+                .filter(|&register| is_free(register, &live, true))
+                .or_else(|| (3..=12).find(|&register| is_free(register, &live, true))),
+            ReuseRule::LowestFree => (3..=12).find(|&register| is_free(register, &live, true)),
+            ReuseRule::LowestFreeStable => (3..=12)
+                .find(|&register| is_free(register, &live, false))
+                .or_else(|| (3..=12).find(|&register| is_free(register, &live, true))),
+        };
+        let register = pick.unwrap_or(0);
+        result[node] = Some(register);
+        live.push((register, death));
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +573,129 @@ mod tests {
                 vec!["srawi", "rlwinm", "stfd_spill", "addi", "oris", "stw_eptr", "stw_slot"],
             ),
         ]
+    }
+
+    /// Register fixtures: (name, DAG, params (value,reg), expected register per
+    /// NON-STORE node in NODE order) — from the dataset captures.
+    fn register_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+        use OpKind::Store as St;
+        vec![
+            (
+                // addi r0(h); addi r3(g in place); mulli r0,r0; slwi r3,r3
+                "mult_vs_shift",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("slwi_g", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("mulli_h", MUL).reads(&[20]).writes(&[21]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(3), Some(3), None, Some(0), Some(0), None],
+            ),
+            (
+                // addi r0(h1); addi r4(g!); mulli r3(h2 bounce); addi r0(h3)
+                "three_op_last_chain",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("addi_h1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("mulli_h2", MUL).reads(&[20]).writes(&[21]),
+                    DagNode::new("addi_h3", ALU).reads(&[21]).writes(&[22]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[22]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(4), None, Some(0), Some(3), Some(0), None],
+            ),
+            (
+                // a1 r6; a2 r3; a3 r0
+                "alu_tie_three",
+                vec![
+                    DagNode::new("a1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st1", STORE).kind(St).reads(&[10]),
+                    DagNode::new("a2", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("st2", STORE).kind(St).reads(&[20]),
+                    DagNode::new("a3", ALU).reads(&[3]).writes(&[30]),
+                    DagNode::new("st3", STORE).kind(St).reads(&[30]),
+                ],
+                vec![(1, 3), (2, 4), (3, 5)],
+                vec![Some(6), None, Some(3), None, Some(0), None],
+            ),
+            (
+                // mulli r5(g); srawi r3(h1); addi r0(h2)
+                "mulli_srawi_pair",
+                vec![
+                    DagNode::new("mulli_g", MUL).reads(&[1]).writes(&[10]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("srawi_h", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("addi_h", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(5), None, Some(3), Some(0), None],
+            ),
+            (
+                // lwz r3(reuses base); srawi r4(in place); add r3; rlwinm r0; ori r0
+                "clean_load_pair",
+                vec![
+                    DagNode::new("lwz", LOAD).reads(&[1]).writes(&[10]),
+                    DagNode::new("srawi", ALU).reads(&[2]).writes(&[11]),
+                    DagNode::new("add", ALU).reads(&[10, 11]).writes(&[12]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[12]),
+                    DagNode::new("rlwinm", ALU).reads(&[3]).writes(&[20]),
+                    DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![(1, 3), (2, 4), (3, 5)],
+                vec![Some(3), Some(4), Some(3), None, Some(0), Some(0), None],
+            ),
+            (
+                // mulli r0 (single statement)
+                "single_mulli_store",
+                vec![
+                    DagNode::new("mulli", MUL).reads(&[1]).writes(&[10]),
+                    DagNode::new("stw", STORE).kind(St).reads(&[10]),
+                ],
+                vec![(1, 3)],
+                vec![Some(0), None],
+            ),
+        ]
+    }
+
+    /// THE REGISTER FITTER: enumerate policies against the register fixtures.
+    /// Run: `cargo test -p mwcc-vreg register_fitter -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "the register-policy search instrument; run with --nocapture"]
+    fn register_fitter() {
+        let shapes = register_fixtures();
+        let mut best: (usize, Option<RegisterPolicy>) = (0, None);
+        for r0_rule in [R0Rule::FinalOfLastChain, R0Rule::FinalPlusTwoOpChain, R0Rule::WholeLastChain] {
+            for reuse in [ReuseRule::LowestFree, ReuseRule::LowestFreeStable, ReuseRule::OwnSourceFirst] {
+                let policy = RegisterPolicy { r0_rule, reuse };
+                let passed = shapes
+                    .iter()
+                    .filter(|(_, nodes, params, expected)| {
+                        let order = linearize(nodes);
+                        assign_registers(nodes, &order, params, policy) == *expected
+                    })
+                    .count();
+                println!("{policy:?}: {passed}/{}", shapes.len());
+                if passed > best.0 {
+                    best = (passed, Some(policy));
+                }
+            }
+        }
+        if let Some(policy) = best.1 {
+            println!("best {}/{}: {policy:?}", best.0, shapes.len());
+            for (name, nodes, params, expected) in &shapes {
+                let order = linearize(nodes);
+                let got = assign_registers(nodes, &order, params, policy);
+                if got != *expected {
+                    println!("  FAIL {name}: got {got:?}\n            want {expected:?}");
+                }
+            }
+        }
     }
 
     /// THE FITTER: enumerate candidate models, report every one that matches
