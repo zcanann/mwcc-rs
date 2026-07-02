@@ -14,8 +14,14 @@ impl Generator {
         match expression {
             Expression::StringLiteral(_) => Err(Diagnostic::error("a string literal is not a float value")),
             Expression::Variable(name) => {
-                // A frame-resident float is reloaded from its stack slot.
+                // A frame-resident float is reloaded from its stack slot — but a
+                // spilled PARAMETER whose slot was never written is still live in
+                // its incoming register, and mwcc emits nothing (measured: the
+                // writeback shapes reload, `*eptr = f(hx); return x;` does not).
                 if let Some(slot) = self.frame_slots.get(name).copied() {
+                    if slot.parameter_register == Some(destination) && !self.written_slots.contains(&slot.offset) {
+                        return Ok(());
+                    }
                     let instruction = if slot.size == 8 {
                         Instruction::LoadFloatDouble { d: destination, a: 1, offset: slot.offset }
                     } else {

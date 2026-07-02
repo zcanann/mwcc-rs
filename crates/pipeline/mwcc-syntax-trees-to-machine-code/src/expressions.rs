@@ -2148,6 +2148,7 @@ impl Generator {
             if let Some((pointee, offset)) = self.resolve_frame_pointer(pointer) {
                 let source = self.place_store_value(value, pointee)?;
                 self.output.instructions.push(displacement_store(pointee, source, 1, offset));
+                self.written_slots.insert(offset);
                 return Ok(());
             }
         }

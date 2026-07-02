@@ -117,6 +117,11 @@ pub(crate) struct Generator {
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
+    /// Slot offsets STORED THROUGH during emission (a pun store, a writeback).
+    /// A spilled float parameter reloads at its return only when its slot is
+    /// here — otherwise the value is still live in the incoming register
+    /// (measured: `x *= c` reloads, an untouched x does not).
+    pub(crate) written_slots: HashSet<i16>,
     /// When set, a constant store value reuses the scratch register if it already
     /// holds that constant (`scratch_constant`). Enabled only by the
     /// constant-store-fill path, which guarantees nothing clobbers the scratch

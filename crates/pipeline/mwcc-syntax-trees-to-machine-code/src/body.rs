@@ -230,6 +230,77 @@ fn is_punned_frame_read(expression: &Expression) -> bool {
     }
 }
 
+/// See `lower_function`: reads of static const float/double globals become their
+/// literal values (mwcc de-names them into the anonymous constant pool).
+pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwcc_syntax_trees::GlobalDeclaration]) -> Option<Function> {
+    let shadowed: std::collections::HashSet<&str> = function
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .collect();
+    let values: std::collections::HashMap<String, Expression> = globals
+        .iter()
+        .filter(|global| global.is_const && global.is_static && global.array_length.is_none())
+        .filter(|global| !shadowed.contains(global.name.as_str()))
+        .filter_map(|global| {
+            let bits = *global.initializer.as_ref()?.first()?;
+            let value = match global.declared_type {
+                Type::Double => f64::from_bits(bits as u64),
+                Type::Float => f32::from_bits(bits as u32) as f64,
+                _ => return None,
+            };
+            Some((global.name.clone(), Expression::FloatLiteral(value)))
+        })
+        .collect();
+    if values.is_empty() {
+        return None;
+    }
+    let reads_any = |expression: &Expression| values.keys().any(|name| expression_reads_name(expression, name));
+    let mut touched = false;
+    let map = |expression: &Expression, touched: &mut bool| {
+        if reads_any(expression) {
+            *touched = true;
+            crate::value_tracking::substitute(expression, &values)
+        } else {
+            expression.clone()
+        }
+    };
+    fn map_statement(statement: &Statement, map: &mut dyn FnMut(&Expression) -> Expression) -> Statement {
+        match statement {
+            Statement::Store { target, value } => Statement::Store { target: map(target), value: map(value) },
+            Statement::Assign { name, value } => Statement::Assign { name: name.clone(), value: map(value) },
+            Statement::Expression(expression) => Statement::Expression(map(expression)),
+            Statement::If { condition, then_body, else_body } => Statement::If {
+                condition: map(condition),
+                then_body: then_body.iter().map(|inner| map_statement(inner, map)).collect(),
+                else_body: else_body.iter().map(|inner| map_statement(inner, map)).collect(),
+            },
+            other => other.clone(),
+        }
+    }
+    let mut map_expression = |expression: &Expression| map(expression, &mut touched);
+    let function = Function {
+        return_type: function.return_type,
+        name: function.name.clone(),
+        is_static: function.is_static,
+        parameters: function.parameters.clone(),
+        locals: function
+            .locals
+            .iter()
+            .map(|local| LocalDeclaration { initializer: local.initializer.as_ref().map(&mut map_expression), ..local.clone() })
+            .collect(),
+        statements: function.statements.iter().map(|statement| map_statement(statement, &mut map_expression)).collect(),
+        guards: function
+            .guards
+            .iter()
+            .map(|guard| GuardedReturn { condition: map_expression(&guard.condition), value: map_expression(&guard.value) })
+            .collect(),
+        return_expression: function.return_expression.as_ref().map(&mut map_expression),
+    };
+    touched.then_some(function)
+}
+
 fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() {
         return None;

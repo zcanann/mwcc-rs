@@ -35,6 +35,13 @@ use generator::Generator;
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
 pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, config: CompilerConfig) -> Compilation<MachineFunction> {
+    // A STATIC CONST float/double global is DE-NAMED by mwcc: every read compiles
+    // as the literal value, pooled anonymously (@N in .sdata2) with no named
+    // symbol — measured: `static const double two54 = C; x * two54` emits the
+    // exact bytes of the inline literal. Substitute before lowering (a name
+    // shadowed by a parameter or local is left alone).
+    let substituted = body::substitute_const_float_globals(function, globals);
+    let function = substituted.as_ref().unwrap_or(function);
     // A `static` local has STATIC storage — an anonymous `<name>$N` object in `.sdata`/`.sbss`,
     // codegen'd like a file-scope global, not a frame slot. That path (the `$N = @N-1` numbering, the
     // per-function symbol, global-style access) is not built yet, so defer rather than mis-treat it as
@@ -83,6 +90,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         stored_globals: HashMap::new(),
         const_address_bases: HashSet::new(),
         frame_slots: HashMap::new(),
+        written_slots: HashSet::new(),
         reuse_scratch_constant: false,
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
