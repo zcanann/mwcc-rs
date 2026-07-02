@@ -3506,15 +3506,18 @@ impl Generator {
         let frame_size: i16 = 16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        self.callee_saved = vec![31];
+        // Phase D: the saved pointer's home is a virtual — call-crossing -> r31; the
+        // epilogue reload (emit_epilogue_and_return reads callee_saved) renames too.
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
         self.epilogue_lr_first = true;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: frame_size - 4 });
-        self.output.instructions.push(Instruction::Or { a: 31, s: incoming, b: incoming });
+        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: frame_size - 4 });
+        self.output.instructions.push(Instruction::Or { a: saved, s: incoming, b: incoming });
         if let Some(location) = self.locations.get_mut(pointer_name) {
-            location.register = 31;
+            location.register = saved;
         }
         // A float-returning call leaves its result in f1 (stfs/stfd); an int call in r3.
         let result = if float_store {
@@ -3524,7 +3527,7 @@ impl Generator {
             self.emit_call(name, arguments, None, false)?;
             mwcc_target::Eabi::general_result().number
         };
-        self.output.instructions.push(displacement_store(pointee, result, 31, offset));
+        self.output.instructions.push(displacement_store(pointee, result, saved, offset));
         // A non-void function materializes its constant return value in r3 after the store.
         if let Some(return_expression) = function.return_expression.as_ref() {
             self.evaluate_tail(return_expression, function.return_type, mwcc_target::Eabi::general_result().number)?;
@@ -4066,10 +4069,13 @@ impl Generator {
         // Assign r31, r30, … to the pointers by DESCENDING incoming register (highest -> r31).
         let mut order: Vec<usize> = (0..count).collect();
         order.sort_by(|&i, &j| incoming[j].cmp(&incoming[i]));
+        // Phase D: each saved pointer's home is a virtual, created in DESCENDING
+        // incoming order — all widen to entry via their saves, so the scan assigns
+        // by id: first virtual -> r31, next -> r30, … exactly the positional rule.
         let mut saved_reg = vec![0u8; count];
         let mut callee_saved = Vec::with_capacity(count);
-        for (slot, &index) in order.iter().enumerate() {
-            let register = 31 - slot as u8;
+        for &index in order.iter() {
+            let register = self.fresh_virtual_general();
             saved_reg[index] = register;
             callee_saved.push(register);
         }
@@ -4086,7 +4092,7 @@ impl Generator {
         // Save each callee-saved register then move its pointer in, highest register first:
         // `stw r31,fs-4; mr r31,<highest>; stw r30,fs-8; mr r30,<next>; …`.
         for (slot, &index) in order.iter().enumerate() {
-            let register = 31 - slot as u8;
+            let register = saved_reg[index];
             let offset = frame_size - 4 * (slot as i16 + 1);
             self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
             self.output.instructions.push(Instruction::Or { a: register, s: incoming[index], b: incoming[index] });
