@@ -74,6 +74,9 @@ pub enum Instruction {
     ShiftLeftImmediate { a: u8, s: u8, shift: u8 },
     /// `or rA, rS, rB` — spells `mr rA, rS` when `s == b`.
     Or { a: u8, s: u8, b: u8 },
+    /// `or.` — OR with the record bit: writes `a` AND sets CR0 from the result,
+    /// so a `(x | y) == 0` guard needs no separate compare.
+    OrRecord { a: u8, s: u8, b: u8 },
     /// `and rA, rS, rB`
     And { a: u8, s: u8, b: u8 },
     /// `xor rA, rS, rB`

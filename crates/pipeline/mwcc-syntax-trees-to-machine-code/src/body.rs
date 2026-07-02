@@ -203,6 +203,24 @@ fn inline_first_call_target_alias(function: &Function) -> Option<Function> {
 /// (`int hx = *(int*)&x; return hx & C;` -> `return (*(int*)&x) & C;`). Leaf,
 /// statement-free bodies only: a call could rewrite the punned memory, a store
 /// could alias it, and a twice-read local would duplicate its load.
+/// A dereference whose pointer reduces to a cast/offset around `&variable` — the
+/// type-punned frame read (`*(int*)&x`, `*(1+(int*)&x)`). Pure and side-effect
+/// free, so re-emitting it is only a duplicated load.
+fn is_punned_frame_read(expression: &Expression) -> bool {
+    fn is_address_of_variable(pointer: &Expression) -> bool {
+        match pointer {
+            Expression::AddressOf { operand } => matches!(operand.as_ref(), Expression::Variable(_)),
+            Expression::Cast { operand, .. } => is_address_of_variable(operand),
+            Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
+                (constant_value(left).is_some() && is_address_of_variable(right))
+                    || (constant_value(right).is_some() && is_address_of_variable(left))
+            }
+            _ => false,
+        }
+    }
+    matches!(expression, Expression::Dereference { pointer } if is_address_of_variable(pointer))
+}
+
 fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() || !function.statements.is_empty() {
         return None;
@@ -234,7 +252,16 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
         }
         // Read-once: across the later initializers, the guards, and the return, so
         // the substitution cannot duplicate a load mwcc would keep in a register.
-        let reads = function.locals[index + 1..]
+        // EXCEPTION: a pure punned frame read may repeat across GUARD CONDITIONS —
+        // the frame guard-chain emitter shares one loaded word down the chain (and
+        // any chain it cannot share defers at classification), so the duplication
+        // never reaches the object.
+        let guard_condition_reads = function
+            .guards
+            .iter()
+            .map(|guard| count_name_occurrences(&guard.condition, &local.name))
+            .sum::<usize>();
+        let other_reads = function.locals[index + 1..]
             .iter()
             .filter_map(|later| later.initializer.as_ref())
             .map(|later| count_name_occurrences(later, &local.name))
@@ -242,10 +269,11 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
             + function
                 .guards
                 .iter()
-                .map(|guard| count_name_occurrences(&guard.condition, &local.name) + count_name_occurrences(&guard.value, &local.name))
+                .map(|guard| count_name_occurrences(&guard.value, &local.name))
                 .sum::<usize>()
             + count_name_occurrences(return_expression, &local.name);
-        if reads > 1 {
+        let dedup_safe = is_punned_frame_read(initializer) && other_reads == 0;
+        if other_reads + if dedup_safe { 0 } else { guard_condition_reads } > 1 {
             return None;
         }
         let resolved = crate::value_tracking::substitute(initializer, &values);

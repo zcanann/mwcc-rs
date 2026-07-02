@@ -44,6 +44,7 @@ impl Instruction {
                 (21 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (mask_end << 1)
             }
             Instruction::Or { a, s, b } => logical_form(s, a, b, 444),
+            Instruction::OrRecord { a, s, b } => logical_form(s, a, b, 444) | 1,
             Instruction::And { a, s, b } => logical_form(s, a, b, 28),
             Instruction::Xor { a, s, b } => logical_form(s, a, b, 316),
             Instruction::ShiftLeftWord { a, s, b } => logical_form(s, a, b, 24),
