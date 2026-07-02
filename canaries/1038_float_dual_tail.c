@@ -44,3 +44,25 @@ double fnmsub_of_chain(double x, double y)
 {
 	return x - (y * (41.5 + y * 42.5));
 }
+
+double dual_shared_z(double x, int c)
+{
+	double z;
+	z = x * x;
+	if (c == 0) {
+		return z * (51.5 + z * 52.5);
+	} else {
+		return z * (53.5 + z * 54.5);
+	}
+}
+
+double dual_shared_z_single(double x, int c)
+{
+	double z;
+	z = x * x;
+	if (c == 0) {
+		return z + 61.5;
+	} else {
+		return z * 62.5;
+	}
+}

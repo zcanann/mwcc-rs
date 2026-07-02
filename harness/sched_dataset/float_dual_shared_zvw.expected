@@ -1,0 +1,6 @@
+fmul f3,f1,f1
+cmpwi r3,0
+fmul f4,f3,f1
+fmul f5,f4,f3
+bne 28
+(tails)

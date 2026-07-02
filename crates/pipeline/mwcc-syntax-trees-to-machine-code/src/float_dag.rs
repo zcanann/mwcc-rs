@@ -165,6 +165,11 @@ impl Generator {
         let mut params: Vec<(u32, u8)> = Vec::new();
         let mut param_ids: Vec<(String, u32)> = Vec::new();
         let reload_mode = self.float_reload_x.is_some();
+        for (name, register) in &self.float_pseudo_params {
+            let value = (params.len() + 1) as u32;
+            params.push((value, *register));
+            param_ids.push((name.clone(), value));
+        }
         for (index, parameter) in function.parameters.iter().enumerate() {
             let Some(location) = self.locations.get(&parameter.name) else {
                 return Ok(false);
@@ -1103,15 +1108,45 @@ impl Generator {
         // The parser normalizes `if (c) return A; else return B;` into a
         // guard {condition, value: A} + the trailing return B. The guard's
         // value here is a COMPUTED tree (a bare x folds to the bclr form in
-        // the flat guard arm instead).
+        // the flat guard arm instead). ONE shared local (z = x*x, a single
+        // const-free arith over params) may precede — it materializes at
+        // f(max tail pool-constants) ahead of the compare and feeds both
+        // tails as a pseudo-param (measured; multi-local duals order
+        // DEFINITION-ASC to the top and are banked, not yet emitted).
         if function.return_type != Type::Double
             || function.guards.len() != 1
-            || !function.locals.is_empty()
+            || function.locals.len() > 1
             || !function.statements.is_empty()
             || function.return_expression.is_none()
         {
             return Ok(false);
         }
+        let shared_local: Option<(&str, &Expression)> = match function.locals.first() {
+            None => None,
+            Some(local) => {
+                if local.declared_type != Type::Double || local.array_length.is_some() {
+                    return Ok(false);
+                }
+                let Some(init) = local.initializer.as_ref() else {
+                    return Ok(false);
+                };
+                // A single fmul/fadd over PARAMS only (z = x*x), no consts.
+                let simple = match init {
+                    Expression::Binary { operator: BinaryOperator::Multiply | BinaryOperator::Add, left, right } => {
+                        let is_param = |side: &Expression| {
+                            matches!(side, Expression::Variable(name)
+                                if self.locations.get(name).is_some_and(|location| location.class == ValueClass::Float))
+                        };
+                        is_param(left) && is_param(right)
+                    }
+                    _ => false,
+                };
+                if !simple {
+                    return Ok(false);
+                }
+                Some((local.name.as_str(), init))
+            }
+        };
         let guard = &function.guards[0];
         let then_value = &guard.value;
         let else_value = function.return_expression.as_ref().expect("checked above");
@@ -1144,6 +1179,35 @@ impl Generator {
         if !condition_ok {
             return Ok(false);
         }
+        // z's register = f(max pool-constant count across the tails)
+        // (measured: 1-const tails -> f1, 2-const -> f2); deeper tails are
+        // uncaptured with a shared local.
+        let shared_register: Option<u8> = if shared_local.is_some() {
+            let mut then_literals: Vec<u64> = Vec::new();
+            collect_literals(then_value, &mut then_literals);
+            let mut else_literals: Vec<u64> = Vec::new();
+            collect_literals(else_value, &mut else_literals);
+            let max_constants = then_literals.len().max(else_literals.len());
+            if !(1..=2).contains(&max_constants) {
+                return Ok(false);
+            }
+            // x must DIE at the shared local (the tails read only z) — a
+            // live x shifts the window (uncaptured for K=1).
+            let (name, _) = shared_local.as_ref().expect("checked above");
+            let x_read_in_tails = function.parameters.first().is_some_and(|parameter| {
+                crate::analysis::count_name_occurrences(then_value, &parameter.name)
+                    + crate::analysis::count_name_occurrences(else_value, &parameter.name)
+                    > 0
+            });
+            let local_read = crate::analysis::count_name_occurrences(then_value, name)
+                + crate::analysis::count_name_occurrences(else_value, name);
+            if x_read_in_tails || local_read == 0 {
+                return Ok(false);
+            }
+            Some(max_constants as u8)
+        } else {
+            None
+        };
         let synthetic = |value: &Expression| Function {
             return_type: function.return_type,
             name: function.name.clone(),
@@ -1158,6 +1222,24 @@ impl Generator {
         let instructions_before = self.output.instructions.len();
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
+        if let (Some((name, init)), Some(register)) = (&shared_local, shared_register) {
+            // z = x OP y in place, ahead of the compare (measured slot 0).
+            let Expression::Binary { operator, left, right } = init else {
+                unreachable!("gated above");
+            };
+            let register_of = |side: &Expression| -> Compilation<u8> {
+                let Expression::Variable(param) = side else { unreachable!("gated above") };
+                Ok(self.locations.get(param).expect("gated above").register)
+            };
+            let a = register_of(left)?;
+            let b = register_of(right)?;
+            let instruction = match operator {
+                BinaryOperator::Multiply => Instruction::FloatMultiplyDouble { d: register, a, c: b },
+                _ => Instruction::FloatAddDouble { d: register, a, b },
+            };
+            self.output.instructions.push(instruction);
+            self.float_pseudo_params.push((name.to_string(), register));
+        }
         let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
         let branch_index = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
@@ -1167,6 +1249,7 @@ impl Generator {
             generator.output.instructions.truncate(instructions_before);
             generator.output.relocations.truncate(relocations_before);
             generator.output.anonymous_label_bump = bump_before;
+            generator.float_pseudo_params.clear();
         };
         match self.try_float_dag_return(&synthetic(then_value)) {
             Ok(true) => {}
@@ -1188,6 +1271,7 @@ impl Generator {
             }
         }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.float_pseudo_params.clear();
         Ok(true)
     }
 }

@@ -1409,8 +1409,11 @@ pub fn assign_float_registers(
     if use_reverse {
         // Occupancies: (register, start, end, owner) — owner usize::MAX marks
         // a param.
+        // A param NO node reads is dead on entry (the dual-tail's x after
+        // the shared z consumed it) — no occupancy at all.
         let mut occupied: Vec<(u8, usize, usize, usize)> = params
             .iter()
+            .filter(|&&(value, _)| (0..count).any(|reader| nodes[reader].reads.contains(&value)))
             .map(|&(value, register)| (register, 0, param_end(value), usize::MAX))
             .collect();
         if let Some(ret) = return_node {

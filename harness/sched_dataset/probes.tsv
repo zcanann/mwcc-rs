@@ -89,3 +89,6 @@ float_fctiwz_guard	double f(double x) { int ix; double z; ix = *(int*)&x & 0x7ff
 float_reload_flat	(fctiwz tail a)
 float_reload_zv	(fctiwz tail b)
 float_reload_z3	(fctiwz tail c)
+float_dual_shared_z	(dual z probe 1)
+float_dual_shared_zv	(dual z+v probe 2: tier DEFINITION-ASC to top!)
+float_dual_shared_zvw	(dual z+v+w probe 4)

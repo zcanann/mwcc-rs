@@ -1,0 +1,13 @@
+fmul f2,f1,f1
+cmpwi r3,0
+bne 20
+lfd f1,0(0)
+lfd f0,0(0)
+fmadd f0,f1,f2,f0
+fmul f1,f2,f0
+blr
+lfd f1,0(0)
+lfd f0,0(0)
+fmadd f0,f1,f2,f0
+fmul f1,f2,f0
+blr

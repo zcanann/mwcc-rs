@@ -75,6 +75,9 @@ pub(crate) struct Generator {
     /// punned-guard composition): x's references become a frame lfd node
     /// and f1 frees for the chain.
     pub(crate) float_reload_x: Option<i16>,
+    /// Extra float bindings for a DAG tail: shared dual-tail locals already
+    /// materialized in registers (name -> FPR).
+    pub(crate) float_pseudo_params: Vec<(String, u8)>,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in

@@ -148,6 +148,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         reserved: HashSet::new(),
         frame_size: 0,
         float_reload_x: None,
+        float_pseudo_params: Vec::new(),
         behavior: Behavior::resolve(&config),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
