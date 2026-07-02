@@ -24,6 +24,7 @@ mod narrow;
 mod casts;
 mod placement;
 mod floats;
+mod float_dag;
 mod value_tracking;
 mod switch;
 mod symbol_order;

@@ -2518,6 +2518,9 @@ impl Generator {
         }
 
         match function.locals.as_slice() {
+            // The FLOAT DAG arm claims double multiply-add trees for the
+            // frozen float models before the single-scratch evaluator.
+            [] if self.try_float_dag_return(function)? => {}
             [] => self.evaluate_tail(return_expression, function.return_type, result)?,
             [local] => self.evaluate_single_local(local, return_expression, function.return_type, result)?,
             _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
