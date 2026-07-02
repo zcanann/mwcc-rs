@@ -606,6 +606,13 @@ fn inline_single_call_result(function: &Function) -> Option<Function> {
     })
 }
 
+/// One arm of a pure-assign select diamond, as a value for the phi register.
+enum SelectArm {
+    Constant(i16),
+    Copy(u8),
+    Computed { source: u8, immediate: i16 },
+}
+
 impl Generator {
 
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
@@ -2497,6 +2504,14 @@ impl Generator {
         }
         let home = location.register;
         let result = Eabi::general_result().number;
+        // No side effect in either arm of an if/ELSE: the SELECT layouts — checked
+        // before the reassign plan, whose in-place gates are narrower than select's
+        // computed-from-any-register arms.
+        if !else_body.is_empty()
+            && !then_body.iter().chain(else_body.iter()).any(|statement| matches!(statement, Statement::Store { .. }))
+        {
+            return self.try_select_diamond(condition, then_body, else_body, returned);
+        }
         let Some(then_order) = self.conditional_reassign_plan(then_body, returned) else { return Ok(false) };
 
         if else_body.is_empty() {
@@ -2518,13 +2533,6 @@ impl Generator {
             return Ok(true);
         }
 
-        // The if/ELSE lowerings need a side effect (a store) in some arm; pure-assign
-        // diamonds take the select layouts instead (coalesce into the else source /
-        // speculate into r0 in the compare latency slot — measured on sel/sel2; deferred).
-        let has_store = then_body.iter().chain(else_body).any(|statement| matches!(statement, Statement::Store { .. }));
-        if !has_store {
-            return Ok(false);
-        }
         let Some(else_order) = self.conditional_reassign_plan(else_body, returned) else { return Ok(false) };
         let then_ends_assign = matches!(then_body.last(), Some(Statement::Assign { .. }));
         let else_ends_assign = matches!(else_body.last(), Some(Statement::Assign { .. }));
@@ -2627,6 +2635,105 @@ impl Generator {
             }
         }
         Ok(())
+    }
+
+    /// A pure-assign diamond — `if (c) v = X; else v = Y; return v;` with no side
+    /// effects — takes mwcc's SELECT layouts (measured, ten boundary probes):
+    ///
+    /// A CONSTANT arm is SPECULATED into the phi register in the compare latency slot
+    /// (both constant: the else), the branch skipping the other (conditional) arm; with
+    /// no constant, a COPY else COALESCES — phi becomes the copy's source register and
+    /// the else emits nothing; otherwise the else speculates. The phi is r3 itself when
+    /// the conditional arm does not read r3 (merge elided, the branch folding to
+    /// b<c>lr), else r0; a coalesced phi is wherever the else source lives. The merge,
+    /// when present, is `mr r3,phi`.
+    fn try_select_diamond(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement], returned: &str) -> Compilation<bool> {
+        let Some(then_arm) = self.classify_select_arm(then_body, returned) else { return Ok(false) };
+        let Some(else_arm) = self.classify_select_arm(else_body, returned) else { return Ok(false) };
+        let result = Eabi::general_result().number;
+        let then_const = matches!(then_arm, SelectArm::Constant(_));
+        let else_const = matches!(else_arm, SelectArm::Constant(_));
+
+        if !then_const && !else_const {
+            if let SelectArm::Copy(phi) = else_arm {
+                // COALESCE: the else vanishes; the then-arm computes into phi.
+                if matches!(then_arm, SelectArm::Copy(source) if source == phi) {
+                    return Ok(false); // a self-move then-arm is unprobed
+                }
+                // -- commit --
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                if phi == result {
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                    self.emit_select_arm(&then_arm, phi);
+                } else {
+                    let merge = self.fresh_label();
+                    self.emit_branch_conditional_to(options, condition_bit, merge);
+                    self.emit_select_arm(&then_arm, phi);
+                    self.bind_label(merge);
+                    self.output.instructions.push(Instruction::move_register(result, phi));
+                }
+                self.emit_epilogue_and_return();
+                return Ok(true);
+            }
+        }
+
+        // SPECULATE: the constant arm if exactly one (the else when both or neither).
+        let (speculated, conditional, conditional_is_then) = if then_const && !else_const {
+            (&then_arm, &else_arm, false)
+        } else {
+            (&else_arm, &then_arm, true)
+        };
+        let conditional_reads_result = match conditional {
+            SelectArm::Copy(source) | SelectArm::Computed { source, .. } => *source == result,
+            SelectArm::Constant(_) => false,
+        };
+        let phi = if conditional_reads_result { GENERAL_SCRATCH } else { result };
+        // -- commit --
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        self.emit_select_arm(speculated, phi);
+        let skip = if conditional_is_then { options } else { options ^ 8 };
+        if phi == result {
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: skip, condition_bit });
+            self.emit_select_arm(conditional, phi);
+        } else {
+            let merge = self.fresh_label();
+            self.emit_branch_conditional_to(skip, condition_bit, merge);
+            self.emit_select_arm(conditional, phi);
+            self.bind_label(merge);
+            self.output.instructions.push(Instruction::move_register(result, phi));
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// One select arm as a value: a register copy, a register ± constant, or a constant.
+    fn classify_select_arm(&self, body: &[Statement], returned: &str) -> Option<SelectArm> {
+        let [Statement::Assign { name, value }] = body else { return None };
+        if name.as_str() != returned {
+            return None;
+        }
+        match value {
+            Expression::Variable(source) => Some(SelectArm::Copy(self.lookup_general(source)?)),
+            Expression::Binary { operator: operator @ (BinaryOperator::Add | BinaryOperator::Subtract), left, right } => {
+                let Expression::Variable(source) = left.as_ref() else { return None };
+                let source = self.lookup_general(source)?;
+                let constant = i16::try_from(constant_value(right)?).ok()?;
+                let immediate = if *operator == BinaryOperator::Subtract { -constant } else { constant };
+                Some(SelectArm::Computed { source, immediate })
+            }
+            other => Some(SelectArm::Constant(i16::try_from(constant_value(other)?).ok()?)),
+        }
+    }
+
+    /// Materialize a select arm into the phi register.
+    fn emit_select_arm(&mut self, arm: &SelectArm, phi: u8) {
+        match arm {
+            SelectArm::Constant(constant) => self.output.instructions.push(Instruction::load_immediate(phi, *constant)),
+            SelectArm::Copy(source) => self.output.instructions.push(Instruction::move_register(phi, *source)),
+            SelectArm::Computed { source, immediate } => {
+                self.output.instructions.push(Instruction::AddImmediate { d: phi, a: *source, immediate: *immediate })
+            }
+        }
     }
 
     /// Gate and order one arm of the conditional-reassign form: up to THREE statements
