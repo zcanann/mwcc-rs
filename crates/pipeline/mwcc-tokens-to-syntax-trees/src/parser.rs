@@ -80,6 +80,10 @@ pub(crate) struct Parser {
     pub(crate) weak_functions: std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
+    /// `#pragma cplusplus` state: declarations parsed under it mangle their
+    /// symbol names (push/pop scope the switch).
+    pub(crate) cplusplus: bool,
+    pub(crate) cplusplus_stack: Vec<bool>,
     /// Parsed single-return inline bodies: name -> (parameter names, body) —
     /// substituted at call sites with pure arguments (mwcc -inline auto).
     pub(crate) inline_bodies: std::collections::HashMap<String, (Vec<String>, mwcc_syntax_trees::Expression)>,

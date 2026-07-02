@@ -19,8 +19,20 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
         // `#pragma` through). It is not a C token; skip the line. (A directive
         // that changes codegen, like `#pragma section`, is handled downstream.)
         if character == '#' {
+            let line_start = position;
             while position < bytes.len() && bytes[position] != b'\n' {
                 position += 1;
+            }
+            // `#pragma cplusplus on/off` and the `push`/`pop` scoping around it
+            // switch the LANGUAGE for the enclosed declarations (their symbol
+            // names mangle) — surface those; every other directive is skipped.
+            let line = source[line_start..position].trim();
+            let directive = line.trim_start_matches('#').trim();
+            if let Some(rest) = directive.strip_prefix("pragma ") {
+                let rest = rest.trim();
+                if matches!(rest, "cplusplus on" | "cplusplus off" | "push" | "pop") {
+                    tokens.push(Token::Pragma(rest.to_string()));
+                }
             }
             continue;
         }

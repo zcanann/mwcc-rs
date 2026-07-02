@@ -18,7 +18,7 @@ struct SkippedStaticLocal {
     byte_size: u16,
 }
 
-fn store_or_assign(target: Expression, value: Expression, local_names: &std::collections::HashSet<&str>) -> Statement {
+fn store_or_assign(target: Expression, value: Expression, local_names: &std::collections::HashSet<String>) -> Statement {
     match &target {
         Expression::Variable(name) if local_names.contains(name.as_str()) => Statement::Assign { name: name.clone(), value },
         _ => Statement::Store { target, value },
@@ -1451,8 +1451,12 @@ impl Parser {
             }
             index += 1;
         }
-        // Skip the parameter list.
+        // The parameter list: under `#pragma cplusplus on` the function's
+        // symbol MANGLES CodeWarrior-style — `name__F<codes>` (f float,
+        // d double, i int, v void) — and the $localstatic parent uses the
+        // mangled name (measured: sqrtf(float) -> sqrtf__Ff).
         let mut parens = 0i32;
+        let mut param_codes = String::new();
         while let Some(token) = self.tokens.get(index) {
             match token {
                 Token::ParenOpen => parens += 1,
@@ -1463,9 +1467,25 @@ impl Parser {
                         break;
                     }
                 }
+                Token::KeywordFloat => param_codes.push('f'),
+                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Float) => param_codes.push('f'),
+                Token::Identifier(word) if word == "double" => param_codes.push('d'),
+                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Double) => param_codes.push('d'),
+                Token::KeywordInt => param_codes.push('i'),
+                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Int) => param_codes.push('i'),
+                Token::KeywordVoid => param_codes.push('v'),
+                Token::Star => {
+                    return Err(Diagnostic::error("a pointer parameter in a mangled inline is not supported yet (roadmap)"));
+                }
                 _ => {}
             }
             index += 1;
+        }
+        if self.cplusplus {
+            if param_codes.is_empty() {
+                param_codes.push('v');
+            }
+            name = format!("{name}__F{param_codes}");
         }
         let mut statics = Vec::new();
         let mut braces = 0i32;
@@ -1634,6 +1654,19 @@ impl Parser {
             // `extern`/`static` storage qualifiers: `extern` makes the declaration a
             // reference to a symbol defined elsewhere; `static` makes a definition
             // local. Both are recorded so the object can classify the symbol.
+            // Surfaced pragmas switch the LANGUAGE for following declarations
+            // (`#pragma cplusplus on` mangles their symbol names); push/pop
+            // scope the switch.
+            while let Token::Pragma(directive) = self.peek() {
+                match directive.as_str() {
+                    "push" => self.cplusplus_stack.push(self.cplusplus),
+                    "pop" => self.cplusplus = self.cplusplus_stack.pop().unwrap_or(false),
+                    "cplusplus on" => self.cplusplus = true,
+                    "cplusplus off" => self.cplusplus = false,
+                    _ => {}
+                }
+                self.advance();
+            }
             let mut is_extern = false;
             let mut is_static = false;
             let mut is_weak = false;
@@ -2467,8 +2500,11 @@ impl Parser {
         // parameter `a` is a reassignment (an Assign the value tracker can inline), NOT a memory
         // store. Without this, `int f(int a){ a += 5; return a; }` lowered to a Store{Variable(a)}
         // the codegen rejected. Globals are not in this set, so they stay Stores (observable).
-        let mut local_names: std::collections::HashSet<&str> = locals.iter().map(|local| local.name.as_str()).collect();
-        local_names.extend(parameters.iter().map(|parameter| parameter.name.as_str()));
+        let mut local_names: std::collections::HashSet<String> = locals.iter().map(|local| local.name.clone()).collect();
+        local_names.extend(parameters.iter().map(|parameter| parameter.name.clone()));
+        // Block-scoped declarations hoist here (their initializations stay as
+        // positioned Assign statements inside their blocks).
+        let mut block_locals: Vec<LocalDeclaration> = Vec::new();
         let mut statements = Vec::new();
         // Zero or more guarded early returns: `if (condition) return value;`. An
         // `if (c) return x; else return y;` terminates the function as a single
@@ -2486,14 +2522,14 @@ impl Parser {
                 // `if (c) return ...` is a guard, handled after the statement list.
                 if *self.peek() == Token::KeywordIf {
                     if self.block_if_ahead() {
-                        let statement = self.parse_if_statement(&local_names)?;
+                        let statement = self.parse_if_statement(&mut local_names, &mut block_locals)?;
                         statements.push(statement);
                         continue;
                     }
                     break;
                 }
                 if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
-                    statements.push(self.parse_loop_statement(&local_names)?);
+                    statements.push(self.parse_loop_statement(&mut local_names, &mut block_locals)?);
                     continue;
                 }
                 let statement = self.parse_simple_statement(&local_names)?;
@@ -2560,7 +2596,7 @@ impl Parser {
                             then_body: vec![Statement::Return(Some(value))],
                             else_body: Vec::new(),
                         });
-                        statements.extend(self.parse_block_or_statement(&local_names)?);
+                        statements.extend(self.parse_block_or_statement(&mut local_names, &mut block_locals)?);
                         continue 'body;
                     }
                     // `if (c) return v; else return d;` is the guard `if (c) return v;`
@@ -2625,6 +2661,8 @@ impl Parser {
             self.expect(Token::BraceClose)?;
         }
 
+        let mut locals = locals;
+        locals.extend(block_locals);
         Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression })
     }
 
@@ -2689,7 +2727,7 @@ impl Parser {
 impl Parser {
     /// Parse one simple (non-control-flow) statement: a `switch`, an increment,
     /// an assignment / compound assignment / memory store, or a bare expression.
-    fn parse_simple_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Statement> {
+    fn parse_simple_statement(&mut self, local_names: &std::collections::HashSet<String>) -> Compilation<Statement> {
         if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
             return self.parse_switch();
         }
@@ -2788,17 +2826,17 @@ impl Parser {
     }
 
     /// `if (condition) <block-or-statement> [else <block-or-statement> | else if]`.
-    fn parse_if_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Statement> {
+    fn parse_if_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
         self.expect(Token::KeywordIf)?;
         self.expect(Token::ParenOpen)?;
         let condition = self.expression()?;
         self.expect(Token::ParenClose)?;
-        let then_body = self.parse_block_or_statement(local_names)?;
+        let then_body = self.parse_block_or_statement(local_names, block_locals)?;
         let else_body = if self.eat_word("else") {
             if *self.peek() == Token::KeywordIf {
-                vec![self.parse_if_statement(local_names)?]
+                vec![self.parse_if_statement(local_names, block_locals)?]
             } else {
-                self.parse_block_or_statement(local_names)?
+                self.parse_block_or_statement(local_names, block_locals)?
             }
         } else {
             Vec::new()
@@ -2809,19 +2847,19 @@ impl Parser {
     /// A `while`, `do … while`, or `for` loop. The body is a `{ … }` block or a
     /// single statement; the for-clause `init`/`step` are expressions (an `i = 0`
     /// assignment, an `i++` increment), any of which may be empty.
-    fn parse_loop_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Statement> {
+    fn parse_loop_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
         match self.peek() {
             Token::KeywordWhile => {
                 self.advance();
                 self.expect(Token::ParenOpen)?;
                 let condition = Some(self.expression()?);
                 self.expect(Token::ParenClose)?;
-                let body = self.parse_block_or_statement(local_names)?;
+                let body = self.parse_block_or_statement(local_names, block_locals)?;
                 Ok(Statement::Loop { kind: LoopKind::While, initializer: None, condition, step: None, body })
             }
             Token::KeywordDo => {
                 self.advance();
-                let body = self.parse_block_or_statement(local_names)?;
+                let body = self.parse_block_or_statement(local_names, block_locals)?;
                 self.expect(Token::KeywordWhile)?;
                 self.expect(Token::ParenOpen)?;
                 let condition = Some(self.expression()?);
@@ -2838,7 +2876,7 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 let step = (*self.peek() != Token::ParenClose).then(|| self.expression()).transpose()?;
                 self.expect(Token::ParenClose)?;
-                let body = self.parse_block_or_statement(local_names)?;
+                let body = self.parse_block_or_statement(local_names, block_locals)?;
                 Ok(Statement::Loop { kind: LoopKind::For, initializer, condition, step, body })
             }
             other => Err(Diagnostic::error(format!("expected a loop keyword, found {other}"))),
@@ -2847,9 +2885,9 @@ impl Parser {
 
     /// A `{ ... }` block, or a single (non-`return`) statement, as a conditional
     /// branch body.
-    fn parse_block_or_statement(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Vec<Statement>> {
+    fn parse_block_or_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Vec<Statement>> {
         if *self.peek() == Token::BraceOpen {
-            return self.parse_block(local_names);
+            return self.parse_block(local_names, block_locals);
         }
         // An empty body — `while (c) ;` / `if (c) ;` — is no statements.
         if *self.peek() == Token::Semicolon {
@@ -2857,13 +2895,13 @@ impl Parser {
             return Ok(Vec::new());
         }
         if *self.peek() == Token::KeywordIf {
-            return Ok(vec![self.parse_if_statement(local_names)?]);
+            return Ok(vec![self.parse_if_statement(local_names, block_locals)?]);
         }
         if *self.peek() == Token::KeywordReturn {
             return Ok(vec![self.parse_return_statement()?]);
         }
         if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
-            return Ok(vec![self.parse_loop_statement(local_names)?]);
+            return Ok(vec![self.parse_loop_statement(local_names, block_locals)?]);
         }
         Ok(vec![self.parse_simple_statement(local_names)?])
     }
@@ -2872,7 +2910,7 @@ impl Parser {
     /// trailing `if (c) { return X; } return Y;` collapses to `return (c ? X : Y)`
     /// (mwcc lowers an if-return followed by a return to a select), which also
     /// makes nested if-return chains fold into nested ternaries.
-    fn parse_block(&mut self, local_names: &std::collections::HashSet<&str>) -> Compilation<Vec<Statement>> {
+    fn parse_block(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Vec<Statement>> {
         self.expect(Token::BraceOpen)?;
         let mut statements = Vec::new();
         while *self.peek() != Token::BraceClose {
@@ -2882,7 +2920,7 @@ impl Parser {
                 continue;
             }
             if *self.peek() == Token::KeywordIf {
-                statements.push(self.parse_if_statement(local_names)?);
+                statements.push(self.parse_if_statement(local_names, block_locals)?);
                 continue;
             }
             if *self.peek() == Token::KeywordReturn {
@@ -2890,7 +2928,43 @@ impl Parser {
                 continue;
             }
             if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
-                statements.push(self.parse_loop_statement(local_names)?);
+                statements.push(self.parse_loop_statement(local_names, block_locals)?);
+                continue;
+            }
+            // A BLOCK-SCOPED declaration (`f32 guess = ...;` inside an if):
+            // hoist the local to the function and keep the initialization as
+            // an Assign at its position (it may be conditionally reached).
+            // `static` block locals defer (a named-datum shape).
+            if self.peek_is_type() {
+                if matches!(self.peek(), Token::Identifier(word) if word == "static") {
+                    return Err(Diagnostic::error("a static local in a nested block is not supported yet (roadmap)"));
+                }
+                let declared_type = self.parse_type()?;
+                if self.last_type_was_volatile {
+                    return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
+                }
+                loop {
+                    if *self.peek() == Token::Star {
+                        return Err(Diagnostic::error("a pointer declarator in a nested block is not supported yet (roadmap)"));
+                    }
+                    let name = self.parse_identifier()?;
+                    if local_names.contains(&name) {
+                        return Err(Diagnostic::error("a shadowing block-scoped declaration is not supported yet (roadmap)"));
+                    }
+                    if *self.peek() == Token::BracketOpen {
+                        return Err(Diagnostic::error("a block-scoped array is not supported yet (roadmap)"));
+                    }
+                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static: false });
+                    local_names.insert(name.clone());
+                    if self.eat_keyword(Token::Equals) {
+                        let value = self.expression()?;
+                        statements.push(Statement::Assign { name, value });
+                    }
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::Semicolon)?;
                 continue;
             }
             statements.push(self.parse_simple_statement(local_names)?);

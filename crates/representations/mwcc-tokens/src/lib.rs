@@ -11,6 +11,9 @@ pub enum Token {
     KeywordFloat,
     KeywordVoid,
     KeywordReturn,
+    /// A surfaced `#pragma` (cplusplus on/off, push, pop) — the payload is the
+    /// directive text after `pragma`.
+    Pragma(String),
     KeywordIf,
     KeywordStruct,
     // identifiers and literals
