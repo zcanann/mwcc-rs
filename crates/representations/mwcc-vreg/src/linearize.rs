@@ -398,8 +398,17 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             };
             // A FRESH non-store outranks weight (measured: the fresh return op
             // beats the heavier aged mulli; at cycle 0 everything is fresh so
-            // weight still decides).
-            let fresh_alu = if return_mode && nodes[candidate].kind != OpKind::Store && fresh(candidate) { 0u8 } else { 1 };
+            // weight still decides). A port-deferred LOAD keeps the tier while
+            // it ages (measured: s1_s2's fourth coefficient load outranks the
+            // fresh first fmadd — weight decides between them).
+            let fresh_alu = if return_mode
+                && nodes[candidate].kind != OpKind::Store
+                && (fresh(candidate) || nodes[candidate].kind == OpKind::Load)
+            {
+                0u8
+            } else {
+                1
+            };
 
             let kind_index = match nodes[candidate].kind {
                 OpKind::Alu => 0,
@@ -429,9 +438,12 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 let mut picked_hazards: Vec<u8> = Vec::new();
                 // A LOAD whose every consumer still waits on another UNISSUED
                 // operand STALLS (measured: the deep chain's second constant
-                // defers past the first fadd; the cycle stalls rather than
-                // hoist it). The fallback lifts the stall when nothing else
-                // can issue at all — livelock safety.
+                // defers past the first fadd — the allocator reuses the dying
+                // operand's register, a WAR the scheduler honors on ISSUE).
+                // The EMPTY-CYCLE LIFT: when nothing issued this cycle and no
+                // unblocked candidate is ready, the top blocked load issues
+                // anyway (measured: horner3/4 hoist every coefficient load
+                // that has a fresh register — one per empty cycle).
                 let load_blocked = |candidate: usize, issued_at: &Vec<Option<u32>>| -> bool {
                     nodes[candidate].kind == OpKind::Load
                         && !(0..count).any(|consumer| {
@@ -446,12 +458,6 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         })
                         && (0..count).any(|consumer| deps[consumer].contains(&candidate))
                 };
-                // The stall lifts only when nothing but loads remains unissued
-                // (livelock safety) — a pending ALU means waiting will help.
-                let non_load_pending = (0..count)
-                    .any(|node| issued_at[node].is_none() && nodes[node].kind != OpKind::Load && !ready.contains(&node));
-                let unblocked_exists = ready.iter().any(|&candidate| !load_blocked(candidate, &issued_at))
-                    || non_load_pending;
                 // Rescan after every pick: a WAR-deferred return final becomes
                 // eligible the moment the bound store lands in this window.
                 'fill: while picked.len() < model.issue_width {
@@ -459,8 +465,23 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         if picked.contains(&candidate) {
                             continue;
                         }
-                        if unblocked_exists && load_blocked(candidate, &issued_at) {
+                        // The LOAD PORT: one load issue per cycle (Gekko has a
+                        // single load/store unit; measured: horner coefficient
+                        // loads and the s1_s2 front serialize one per cycle).
+                        if nodes[candidate].kind == OpKind::Load
+                            && picked.iter().any(|&taken| nodes[taken].kind == OpKind::Load)
+                        {
                             continue;
+                        }
+                        if load_blocked(candidate, &issued_at) {
+                            let other_unblocked = ready.iter().any(|&other| {
+                                other != candidate
+                                    && !picked.contains(&other)
+                                    && !load_blocked(other, &issued_at)
+                            });
+                            if !picked.is_empty() || other_unblocked {
+                                continue;
+                            }
                         }
                         // The WAR constraint: the return final waits for (or
                         // follows, within this window) the bound r3-chain stores.
@@ -1505,7 +1526,7 @@ mod tests {
                     DagNode::new("st_h", STORE).kind(St).reads(&[21]),
                 ],
                 vec![0, 3, 1, 4, 2, 5],
-                false,
+                true,
             ),
             (
                 // g=(a+1.5)+2.5; h=b+3.5: lfd1.5 lfd3.5 faddg1 lfd2.5 faddh faddg2 sth stg
@@ -1521,7 +1542,7 @@ mod tests {
                     DagNode::new("st_h", STORE).kind(St).reads(&[21]),
                 ],
                 vec![0, 5, 1, 2, 6, 3, 7, 4],
-                false,
+                true,
             ),
             (
                 // g=a*b+1.5 (fmadd); h=c+2.5: lfd lfd fmadd fadd stg sth
@@ -1535,6 +1556,117 @@ mod tests {
                     DagNode::new("st_h", STORE).kind(St).reads(&[21]),
                 ],
                 vec![0, 3, 1, 4, 2, 5],
+                true,
+            ),
+            (
+                // return z*(1.5+z*2.5): lfd2.5 lfd1.5 fmadd fmul
+                "float_horner2",
+                vec![
+                    DagNode::new("lfd_c25", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[12]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 12]).writes(&[13]),
+                ],
+                vec![0, 1, 2, 3],
+                true,
+            ),
+            (
+                // return z*(1.5+z*(2.5+z*3.5)): ALL loads first inner->outer,
+                // then the serial fmadd chain (the third load LIFTS on the
+                // empty cycle — no unblocked work exists).
+                "float_horner3",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                ],
+                vec![0, 1, 2, 3, 4, 5],
+                true,
+            ),
+            (
+                // horner4: the FOURTH coefficient load defers past the first
+                // fmadd (blocked by fmadd2 pending; fmadd1 ranks above it at
+                // its ready cycle), then lifts on the next empty cycle.
+                "float_horner4",
+                vec![
+                    DagNode::new("lfd_c45", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[13]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[14]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 14, 12]).writes(&[15]),
+                    DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[1, 15, 13]).writes(&[16]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 16]).writes(&[17]),
+                ],
+                vec![0, 1, 2, 4, 3, 5, 6, 7],
+                true,
+            ),
+            (
+                // T[]-coefficient horner3: lis/addi materialize the base, the
+                // three lfd read it (descending offsets), then the chain.
+                "float_horner_array",
+                vec![
+                    DagNode::new("lis", ALU).writes(&[30]),
+                    DagNode::new("addi", ALU).reads(&[30]).writes(&[31]),
+                    DagNode::new("lfd_t2", LOAD).reads(&[31]).writes(&[10]),
+                    DagNode::new("lfd_t1", LOAD).reads(&[31]).writes(&[11]),
+                    DagNode::new("lfd_t0", LOAD).reads(&[31]).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[1, 14]).writes(&[15]),
+                ],
+                vec![0, 1, 2, 3, 4, 5, 6, 7],
+                true,
+            ),
+            (
+                // z*(1.5+w*(2.5+w*3.5)) + w*(4.5+w*5.5): four coefficient
+                // loads (one per cycle), fmadd_A slots after the load port,
+                // the 1.5 load unblocks the cycle after A issues.
+                "float_s1_s2",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c55", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c45", LOAD).writes(&[13]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[14]),
+                    DagNode::new("fmadd_a", FARITH).hazard(HAZARD_FPU).reads(&[2, 10, 11]).writes(&[20]),
+                    DagNode::new("fmadd_b", FARITH).hazard(HAZARD_FPU).reads(&[2, 12, 13]).writes(&[21]),
+                    DagNode::new("fmadd_c", FARITH).hazard(HAZARD_FPU).reads(&[2, 20, 14]).writes(&[22]),
+                    DagNode::new("fmul_d", FARITH).hazard(HAZARD_FPU).reads(&[2, 21]).writes(&[23]),
+                    DagNode::new("fmadd_f", FARITH).hazard(HAZARD_FPU).reads(&[1, 22, 23]).writes(&[24]),
+                ],
+                vec![0, 1, 2, 3, 5, 4, 6, 7, 8, 9],
+                true,
+            ),
+            (
+                // g=a*1.5; h=b+2.5: the fmul/fadd void pair keeps source
+                // order (one load per cycle serializes the front).
+                "float_fmul_vs_fadd",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fmul_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![0, 3, 1, 4, 2, 5],
+                true,
+            ),
+            (
+                // return *p + 1.5: the POOL constant loads before the pointer
+                // load (open tie-break — construction order says otherwise);
+                // not fit yet, kept as a measured miss.
+                "float_load_use",
+                vec![
+                    DagNode::new("lfd_p", LOAD).reads(&[1]).writes(&[10]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[11]),
+                    DagNode::new("fadd", FARITH).hazard(HAZARD_FPU).reads(&[10, 11]).writes(&[12]),
+                ],
+                vec![1, 0, 2],
                 false,
             ),
         ]
