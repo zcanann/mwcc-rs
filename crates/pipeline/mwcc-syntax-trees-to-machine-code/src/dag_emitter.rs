@@ -16,7 +16,7 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Pointee, Statement
 use mwcc_versions::GlobalAddressing;
 use mwcc_vreg::{assign_registers_v3, linearize, DagNode, OpKind, HAZARD_XER};
 
-use crate::analysis::{constant_value, function_makes_call};
+use crate::analysis::{constant_value, count_name_occurrences, function_makes_call};
 use crate::generator::Generator;
 
 /// The instruction each DAG node emits once its registers are known.
@@ -31,6 +31,14 @@ enum Template {
     ShiftRightAlgebraicImmediate(u8),
     /// `srwi` — the UNSIGNED right shift (an `rlwinm` form; no XER write).
     ShiftRightLogicalImmediate(u8),
+    /// `extsb`/`extsh` — re-extend a narrow SIGNED parameter before use.
+    SignExtendByte,
+    SignExtendHalf,
+    /// `clrlwi d,s,n` — zero-extend a narrow UNSIGNED parameter (clear the top n bits).
+    ClearLeft(u8),
+    /// `rlwinm d,s,shift,begin,end` — the folded zero-extension + right shift
+    /// of a narrow unsigned parameter (measured: (uchar)>>3 -> rlwinm 29,27,31).
+    RotateMask(u8, u8, u8),
     OrImmediate(u16),
     OrImmediateShifted(u16),
     /// `rlwinm d,s,0,begin,end` — an AND by a contiguous or wrap mask.
@@ -60,9 +68,22 @@ struct Builder {
     templates: Vec<Template>,
     sources: Vec<(u32, ValueSource)>,
     next_value: u32,
+    /// Narrow parameters already re-extended: (register, extension value) —
+    /// a second read shares the node (measured: one extsb, two consumers).
+    extended: Vec<(u8, u32)>,
+    /// Registers of parameters the body reads EXACTLY once — the only regime
+    /// where the zero-extension+shift rlwinm fold is measured.
+    read_once: Vec<u8>,
 }
 
 impl Builder {
+    fn raw_param(&self, register: u8) -> Option<u32> {
+        self.sources.iter().find_map(|&(value, source)| match source {
+            ValueSource::Parameter(parameter) if parameter == register => Some(value),
+            _ => None,
+        })
+    }
+
     fn value_of(&self, id: u32) -> ValueSource {
         self.sources.iter().find(|(value, _)| *value == id).map(|&(_, source)| source).expect("known value")
     }
@@ -90,20 +111,31 @@ impl Builder {
         match expression {
             Expression::Variable(name) => {
                 // A narrow (char/short) parameter arrives UNEXTENDED: mwcc
-                // re-extends it first (`extsb`/`extsh`, into a FRESH register)
-                // or folds the zero-extension into an rlwinm mask — vocabulary
-                // we don't have yet. Defer, never read the raw register.
+                // re-extends it before use (extsb/extsh signed, clrlwi
+                // unsigned) into a fresh node; repeat reads share it.
                 let location = generator.locations.get(name.as_str())?;
-                if location.width != 32 {
-                    return None;
-                }
                 let register = generator.lookup_general(name)?;
-                self.sources
-                    .iter()
-                    .find_map(|&(value, source)| match source {
-                        ValueSource::Parameter(parameter) if parameter == register => Some(value),
-                        _ => None,
-                    })
+                if location.width != 32 {
+                    // A SHARED extension (two chains reading one extsb) exposes a
+                    // multi-consumer liveness gap in the register model — the
+                    // own-dying-open rule frees it at the FIRST read (measured
+                    // DIFF: ours clobbers r4 before the second chain reads it).
+                    // Defer until the interval model closes at the LAST reader.
+                    if self.extended.iter().any(|(extended, _)| *extended == register) {
+                        return None;
+                    }
+                    let template = match (location.signed, location.width) {
+                        (true, 8) => Template::SignExtendByte,
+                        (true, 16) => Template::SignExtendHalf,
+                        (false, width @ (8 | 16)) => Template::ClearLeft(32 - width),
+                        _ => return None,
+                    };
+                    let raw = self.raw_param(register)?;
+                    let value = self.push(OpKind::Alu, 1, 1, vec![raw], template);
+                    self.extended.push((register, value));
+                    return Some(value);
+                }
+                self.raw_param(register)
             }
             // `*p` through a pointer parameter: a word load.
             Expression::Dereference { pointer } => {
@@ -153,6 +185,30 @@ impl Builder {
                         Some(self.push(OpKind::Alu, 3, 2, vec![value], Template::MultiplyImmediate(immediate)))
                     }
                     BinaryOperator::ShiftRight => {
+                        // FOLD: a read-once narrow UNSIGNED parameter >> constant
+                        // collapses the zero-extension and the shift into ONE
+                        // rlwinm (measured). A shared extension or a shift past
+                        // the width is unprobed — defer those.
+                        if let (Expression::Variable(name), Some(k)) =
+                            (left.as_ref(), constant_right.and_then(|constant| u8::try_from(constant).ok()).filter(|k| *k >= 1))
+                        {
+                            if let Some(location) = generator.locations.get(name.as_str()) {
+                                if matches!(location.width, 8 | 16) && !location.signed {
+                                    let register = generator.lookup_general(name)?;
+                                    if k >= location.width || !self.read_once.contains(&register) {
+                                        return None;
+                                    }
+                                    let raw = self.raw_param(register)?;
+                                    return Some(self.push(
+                                        OpKind::Alu,
+                                        1,
+                                        1,
+                                        vec![raw],
+                                        Template::RotateMask(32 - k, 32 - location.width + k, 31),
+                                    ));
+                                }
+                            }
+                        }
                         // The PROMOTED left operand picks the shift: signed ->
                         // srawi/sraw (XER.CA writers), unsigned -> srwi/srw
                         // (plain rlwinm/logical forms). Unknown signedness defers
@@ -334,7 +390,14 @@ impl Generator {
             return Ok(false);
         }
         // Parameters: ints and int pointers, all register-resident.
-        let mut builder = Builder { nodes: Vec::new(), templates: Vec::new(), sources: Vec::new(), next_value: 0 };
+        let mut builder = Builder {
+            nodes: Vec::new(),
+            templates: Vec::new(),
+            sources: Vec::new(),
+            next_value: 0,
+            extended: Vec::new(),
+            read_once: Vec::new(),
+        };
         let mut params: Vec<(u32, u8)> = Vec::new();
         for parameter in &function.parameters {
             let register = match self.lookup_general(&parameter.name) {
@@ -345,6 +408,24 @@ impl Generator {
             builder.next_value += 1;
             builder.sources.push((value, ValueSource::Parameter(register)));
             params.push((value, register));
+        }
+        for parameter in &function.parameters {
+            let Some(register) = self.lookup_general(&parameter.name) else { continue };
+            let reads: usize = function
+                .statements
+                .iter()
+                .map(|statement| match statement {
+                    Statement::Store { value, .. } => count_name_occurrences(value, &parameter.name),
+                    _ => 0,
+                })
+                .sum::<usize>()
+                + function
+                    .return_expression
+                    .as_ref()
+                    .map_or(0, |expression| count_name_occurrences(expression, &parameter.name));
+            if reads == 1 {
+                builder.read_once.push(register);
+            }
         }
         // Statements: stores of recognizable int expressions to DISTINCT
         // small-data scalar globals.
@@ -387,8 +468,20 @@ impl Generator {
             // the legacy fall-through would emit the store+return
             // SEQUENTIALLY (wrong order).
             if let Expression::Variable(_) = return_expression {
+                let nodes_before = builder.nodes.len();
                 let Some(value) = builder.expression(return_expression, self) else { return Ok(false) };
-                builder.push(OpKind::Alu, 1, 1, vec![value], Template::Move);
+                if builder.nodes.len() == nodes_before {
+                    match builder.value_of(value) {
+                        // A WIDE bare param is a raw register: the return is an mr node.
+                        ValueSource::Parameter(_) => {
+                            builder.push(OpKind::Alu, 1, 1, vec![value], Template::Move);
+                        }
+                        // A MEMOIZED narrow extension shared with a store chain —
+                        // a return chain with consumers is unprobed; defer.
+                        ValueSource::Node(_) => return Ok(false),
+                    }
+                }
+                // A fresh narrow extension IS the return op (measured: extsb r3,r3).
             } else if let Some(constant) = constant_value(return_expression) {
                 let Ok(immediate) = i16::try_from(constant) else { return Ok(false) };
                 builder.push(OpKind::Alu, 1, 1, vec![], Template::LoadImmediate(immediate));
@@ -408,6 +501,20 @@ impl Generator {
             if return_ops >= 2 && store_multiply_final {
                 return Ok(false);
             }
+        }
+        // A narrow extension in a VOID body (no return chain claiming r3):
+        // mwcc lets the extension reuse the dying param register (measured:
+        // extsb r3,r3 mid-body), a param-reuse regime the register model does
+        // not grant. Defer until that candidacy is modeled.
+        if !returns_int
+            && builder.templates.iter().any(|template| {
+                matches!(
+                    template,
+                    Template::SignExtendByte | Template::SignExtendHalf | Template::ClearLeft(_) | Template::RotateMask(..)
+                )
+            })
+        {
+            return Ok(false);
         }
         // The PPC r0-as-zero rule: a value consumed as an addi source (or any
         // base field) must not live in r0 — mark producers so the register
@@ -477,6 +584,26 @@ impl Generator {
                     a: destination.expect("value node"),
                     s: operand(0)?,
                     shift: *shift,
+                },
+                Template::SignExtendByte => Instruction::ExtendSignByte {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                },
+                Template::SignExtendHalf => Instruction::ExtendSignHalfword {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                },
+                Template::ClearLeft(clear) => Instruction::ClearLeftImmediate {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                    clear: *clear,
+                },
+                Template::RotateMask(shift, begin, end) => Instruction::RotateAndMask {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                    shift: *shift,
+                    begin: *begin,
+                    end: *end,
                 },
                 Template::OrImmediate(immediate) => Instruction::OrImmediate {
                     a: destination.expect("value node"),

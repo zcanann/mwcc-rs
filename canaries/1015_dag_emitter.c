@@ -152,3 +152,56 @@ int ret_mixed_shift(unsigned int a, int b)
 	u = a >> 3;
 	return b >> 4;
 }
+
+/* narrow (char/short) params re-extend before use: extsb/extsh signed,
+ * clrlwi unsigned; a read-once unsigned narrow >> constant folds extension
+ * and shift into ONE rlwinm; a bare narrow return extends IN PLACE
+ * (extsb r3,r3 — the return handoff). Void bodies with extensions defer
+ * (mwcc grants the extension the dying param register there — unmodeled). */
+int ret_extsb(char a, int b)
+{
+	g = a + 1;
+	return b + 2;
+}
+
+int ret_extsh(short a, int b)
+{
+	g = a + 1;
+	return b + 2;
+}
+
+int ret_clrlwi(unsigned char a, int b)
+{
+	g = a + 1;
+	return b + 2;
+}
+
+int ret_fold_uchar(unsigned char a, int b)
+{
+	u = a >> 3;
+	return b + 1;
+}
+
+int ret_fold_ushort(unsigned short a, int b)
+{
+	u = a >> 9;
+	return b + 1;
+}
+
+int ret_extsb_srawi(signed char a, int b)
+{
+	u = a >> 3;
+	return b + 1;
+}
+
+int ret_clrlwi_sraw(unsigned char a, int b)
+{
+	u = a >> b;
+	return b + 1;
+}
+
+int ret_bare_extsb(char a, int b)
+{
+	g = b + 1;
+	return a;
+}

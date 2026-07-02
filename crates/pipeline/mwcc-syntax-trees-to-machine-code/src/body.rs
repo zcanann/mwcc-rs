@@ -3557,7 +3557,13 @@ impl Generator {
     /// value (needs an intermediate), and a memory read (needs load hoisting).
     pub(crate) fn is_single_op_register_value(&self, value: &Expression) -> bool {
         let is_register_leaf = |operand: &Expression| match operand {
-            Expression::Variable(name) => !self.globals.contains_key(name.as_str()),
+            // A NARROW (char/short) register is not a single-op leaf: it needs a
+            // re-extension first (extsb/extsh/clrlwi), whose latency reorders the
+            // scheduled overlap — those shapes go through the DAG emitter.
+            Expression::Variable(name) => {
+                !self.globals.contains_key(name.as_str())
+                    && self.locations.get(name.as_str()).is_none_or(|location| location.width == 32)
+            }
             Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,
             _ => false,
         };
