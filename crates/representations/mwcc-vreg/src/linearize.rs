@@ -781,11 +781,42 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // own dying source (internal sources always; params in the relaxed
         // regime only). First candidate in pool order wins.
         let r0_eligible = (return_mode || on_last_chain || end < last_chain_first_def) && !nodes[node].forbid_r0;
+        // r0 ARBITRATION (measured, the contention captures): a store final
+        // avoids r0 exactly when a non-forbidden return-chain intermediate's
+        // interval OVERLAPS its own with tenancy no longer than its own
+        // (mask [1,2] beats mulli [0,3]; equal 2<=2 also yields). Disjoint
+        // tenancies share r0 serially (deep-store capture: mask r0 then
+        // addi r0). A forbidden intermediate (feeding the return addi) never
+        // contends.
+        let r0_contender = return_mode
+            && (0..count).any(|other| {
+                let other_start = position[other];
+                let other_end = value_end(other);
+                other != node
+                    && Some(other) != return_node
+                    && chain_of(other) == last_sink
+                    && nodes[other].kind != OpKind::Store
+                    && !nodes[other].writes.is_empty()
+                    && !nodes[other].forbid_r0
+                    && other_start <= end
+                    && other_end >= start
+                    && (other_end - other_start) <= end.saturating_sub(start)
+            });
         let pool: Vec<u8> = if !return_mode && on_last_chain && is_final && !nodes[node].forbid_r0 {
             vec![0]
+        } else if return_mode && is_final && !nodes[node].forbid_r0 && r0_contender {
+            // The yield: never touch r0 — the shorter-tenancy return
+            // intermediate takes it.
+            (3..=12).collect()
         } else if return_mode && is_final && !nodes[node].forbid_r0 {
             // A return-mode STORE-chain final PREFERS r0 (measured on all five
             // return captures; it falls through when r0 is occupied — cap2).
+            let mut pool = vec![0u8, 3, 4];
+            pool.extend(5..=12);
+            pool
+        } else if return_mode && on_last_chain && !nodes[node].forbid_r0 {
+            // A return-chain INTERMEDIATE prefers r0 over the r3 handoff
+            // (measured: clrlwi r0 / ori r3,r0 where r3 was available).
             let mut pool = vec![0u8, 3, 4];
             pool.extend(5..=12);
             pool
@@ -1297,6 +1328,64 @@ mod tests {
         ]
     }
 
+    /// Round 5: r0 tenancy arbitration (fire 304). The store-chain multiply
+    /// final yields r0 to a shorter-tenancy return intermediate; a forbidden
+    /// intermediate (feeding the return addi) never contends.
+    fn register_fixtures_round5() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+        use OpKind::Store as St;
+        vec![
+            (
+                // g=a*100; return (b&0x7fff)|1;  ->  mulli r5; mask r0; ori r3
+                "contend_mask_or",
+                vec![
+                    DagNode::new("mulli_g", MUL).gate(2).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("mask", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ori_ret", ALU).reads(&[20]).writes(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(5), None, Some(0), Some(3)],
+            ),
+            (
+                // g=a*100; return (b+1)*3;  ->  mulli r5; addi r0; mulli r3
+                "contend_ret_mulli",
+                vec![
+                    DagNode::new("mulli_g", MUL).gate(2).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("addi_r", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("mulli_ret", MUL).gate(2).reads(&[20]).writes(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(5), None, Some(0), Some(3)],
+            ),
+            (
+                // g=a+1; return (b&0x7fff)|1;  ->  the store final yields r0 with
+                // EQUAL tenancies too: addi r3 in place; mask r0; ori r3
+                "contend_equal_tenancy",
+                vec![
+                    DagNode::new("addi_g", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("mask", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ori_ret", ALU).reads(&[20]).writes(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(3), None, Some(0), Some(3)],
+            ),
+            (
+                // g=a*100; return (b>>2)+1;  ->  mulli KEEPS r0 (srawi is forbidden)
+                "no_contest_forbidden",
+                vec![
+                    DagNode::new("mulli_g", MUL).gate(2).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("srawi", ALU).hazard(HAZARD_XER).forbid_r0().reads(&[2]).writes(&[20]),
+                    DagNode::new("addi_ret", ALU).reads(&[20]).writes(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(0), None, Some(3), Some(3)],
+            ),
+        ]
+    }
+
     fn register_fixtures_round3() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
         use OpKind::Store as St;
         vec![
@@ -1469,6 +1558,13 @@ mod tests {
             assert_eq!(got, *expected, "round4 fixture {name}");
         }
         println!("v3 round4 (extensions): {}/{}", round4.len(), round4.len());
+        let round5 = register_fixtures_round5();
+        for (name, nodes, params, expected) in &round5 {
+            let order = linearize(nodes);
+            let got = assign_registers_v3(nodes, &order, params);
+            assert_eq!(got, *expected, "round5 fixture {name}");
+        }
+        println!("v3 round5 (r0 arbitration): {}/{}", round5.len(), round5.len());
         for (name, nodes, params, expected) in &round3 {
             let order = linearize(nodes);
             let order_labels: Vec<&str> = order.iter().map(|&index| nodes[index].label).collect();

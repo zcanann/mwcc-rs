@@ -487,25 +487,16 @@ impl Generator {
             } else if builder.expression(return_expression, self).is_none() {
                 return Ok(false);
             }
-            // r0 CONTENTION (open model boundary): when a store chain ends in a
-            // multiply and the return chain has intermediates, mwcc arbitrates
-            // r0 by tenancy length (the mulli yields) — a lookahead the model
-            // lacks. Defer the combination.
+            // TWO-PLUS store chains against a multi-op return: the H capture
+            // shows the store mulli reusing its dying param at an odd slot
+            // (contradicting the fitted multiply exclusion) and the I capture
+            // shows the return final issuing BEFORE the last store (a
+            // linearizer boundary). Defer the combination until both are
+            // measured.
             let return_ops = builder.nodes.len() - before_return;
-            let store_multiply_final = builder
-                .templates
-                .iter()
-                .take(before_return)
-                .any(|template| matches!(template, Template::MultiplyImmediate(_)));
-            if return_ops >= 2 && store_multiply_final {
+            if return_ops >= 2 && stored.len() >= 2 {
                 return Ok(false);
             }
-        }
-        // The extension+shift FOLD in a VOID body: the fold's own dying-param
-        // reuse regime is unprobed there (extensions are measured — the
-        // DagNode.extension candidacy; the fold is a shift, not an extension).
-        if !returns_int && builder.templates.iter().any(|template| matches!(template, Template::RotateMask(..))) {
-            return Ok(false);
         }
         // The PPC r0-as-zero rule: a value consumed as an addi source (or any
         // base field) must not live in r0 — mark producers so the register

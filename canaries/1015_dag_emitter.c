@@ -240,3 +240,50 @@ int ret_ext_shared_one_value(char a, int b)
 	g = a + a;
 	return b + 1;
 }
+
+/* r0 arbitration (the contention captures): a store final avoids r0 exactly
+ * when a non-forbidden return intermediate OVERLAPS its tenancy at equal-or-
+ * shorter length (mask beats mulli -> mulli r5; equal 2<=2 yields too);
+ * disjoint tenancies share r0 serially; a forbidden intermediate (feeding
+ * the return addi) never contends. Void folds ride the same final rules. */
+int ret_contend_mask(int a, int b)
+{
+	g = a * 100;
+	return (b & 0x7fff) | 1;
+}
+
+int ret_contend_mulli(int a, int b)
+{
+	g = a * 100;
+	return (b + 1) * 3;
+}
+
+int ret_no_contest(int a, int b)
+{
+	g = a * 100;
+	return (b >> 2) + 1;
+}
+
+int ret_deep_serial_r0(int a, int b)
+{
+	g = a * 100 + 1;
+	return (b & 0x7fff) | 1;
+}
+
+int ret_contend_equal(int a, int b)
+{
+	g = a + 1;
+	return (b & 0x7fff) | 1;
+}
+
+void void_fold_first(unsigned char a, int b)
+{
+	u = a >> 3;
+	h = b + 1;
+}
+
+void void_fold_last(unsigned char a, int b)
+{
+	h = b + 1;
+	u = a >> 3;
+}
