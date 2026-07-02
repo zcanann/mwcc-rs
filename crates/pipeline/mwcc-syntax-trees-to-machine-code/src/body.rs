@@ -1790,6 +1790,11 @@ impl Generator {
         if self.try_punned_guard_float_return(function)? {
             return Ok(());
         }
+        // The DUAL-TAIL float return (`if (c) return A; else return B;`) —
+        // two independent float DAGs behind one compare.
+        if self.try_dual_tail_float_return(function)? {
+            return Ok(());
+        }
         if self.try_frexp_family(function)? {
             return Ok(());
         }

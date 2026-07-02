@@ -34,6 +34,9 @@ enum Tree {
     /// factor_left * factor_right - subtrahend (fp_contract: fmsub d,a,c,b = a*c - b).
     Fmsub { factor_left: Box<Tree>, factor_right: Box<Tree>, subtrahend: Box<Tree> },
     Mul { left: Box<Tree>, right: Box<Tree> },
+    /// A plain unfused add (measured: a pooled constant + a non-mul value,
+    /// the constant in the A slot — fadd f1,f0,f1).
+    Fadd { left: Box<Tree>, right: Box<Tree> },
 }
 
 /// One emitted node, operands in the final instruction slots (the measured
@@ -46,6 +49,7 @@ enum FloatOp {
     Fnmsub { a: Operand, c: Operand, b: Operand },
     Fmsub { a: Operand, c: Operand, b: Operand },
     Mul { a: Operand, c: Operand },
+    Add { a: Operand, b: Operand },
 }
 
 const LOAD_LATENCY: u32 = 2;
@@ -365,9 +369,12 @@ impl Generator {
                         push_const(*bits, &mut nodes, &mut ops, &mut built, addend.as_ref() as *const Tree);
                     }
                 }
-                Tree::Mul { .. } => {
-                    // A constant Mul factor is uncaptured (only fmadd has the
-                    // const-in-A evidence) — build_tree already deferred it.
+                Tree::Mul { left, right } | Tree::Fadd { left, right } => {
+                    for side in [left, right] {
+                        if let Tree::Const(bits) = side.as_ref() {
+                            push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree);
+                        }
+                    }
                 }
                 _ => unreachable!("collect_arith yields arith nodes only"),
             }
@@ -454,6 +461,18 @@ impl Generator {
                     );
                     ops.push(FloatOp::Mul { a, c });
                 }
+                Tree::Fadd { left, right } => {
+                    let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let reads: Vec<u32> = [a, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    nodes.push(
+                        DagNode::new("fadd", FLOAT_ARITH_LATENCY)
+                            .hazard(HAZARD_FPU)
+                            .reads(&reads)
+                            .writes(&[10 + index as u32]),
+                    );
+                    ops.push(FloatOp::Add { a, b });
+                }
                 _ => unreachable!(),
             }
             built.push((arith as *const Tree, Operand::Node(index)));
@@ -535,16 +554,22 @@ impl Generator {
                 }),
                 FloatOp::Mul { a, c } => {
                     // Measured fmul slots: a PARAM-only product keeps source
-                    // order (fmul f0,f1,f2 for z*w); any VALUE operand sorts
-                    // the registers DESCENDING into A (every captured root
-                    // and chain fmul complies — shallow A=f1>f0, deep A=f4>f0).
+                    // order (fmul f0,f1,f2 for z*w); a pooled-CONSTANT factor
+                    // keeps A (fmul f1,f0,f1); otherwise any VALUE operand
+                    // sorts the registers DESCENDING into A.
                     let (mut ra, mut rc) = (register_of(*a), register_of(*c));
                     let both_params = matches!(a, Operand::Param(_)) && matches!(c, Operand::Param(_));
-                    if !both_params && rc > ra {
+                    let const_a = matches!(a, Operand::Node(index) if matches!(ops[*index], FloatOp::Const(_)));
+                    if !both_params && !const_a && rc > ra {
                         std::mem::swap(&mut ra, &mut rc);
                     }
                     self.output.instructions.push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
                 }
+                FloatOp::Add { a, b } => self.output.instructions.push(Instruction::FloatAddDouble {
+                    d,
+                    a: register_of(*a),
+                    b: register_of(*b),
+                }),
             }
         }
         Ok(true)
@@ -585,7 +610,20 @@ fn build_tree(
             let left_mul = matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. });
             let right_mul = matches!(right.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. });
             match (left_mul, right_mul) {
-                (false, false) => None,
+                (false, false) => {
+                    // A plain fadd: one pooled-constant side (canonical A),
+                    // the other a claimable non-mul value.
+                    let (constant, other) = if matches!(left.as_ref(), Expression::FloatLiteral(_)) {
+                        (left, right)
+                    } else if matches!(right.as_ref(), Expression::FloatLiteral(_)) {
+                        (right, left)
+                    } else {
+                        return None;
+                    };
+                    let constant = build_tree(constant, params, locals, seen_literals)?;
+                    let other = build_tree(other, params, locals, seen_literals)?;
+                    Some(Tree::Fadd { left: Box::new(constant), right: Box::new(other) })
+                }
                 (true, _) => {
                     let Expression::Binary { left: x, right: y, .. } = left.as_ref() else { unreachable!() };
                     make_madd(x, y, right, params, locals, seen_literals)
@@ -627,10 +665,21 @@ fn build_tree(
             Some(Tree::Fnmsub { factor_left: Box::new(factor_left), factor_right: Box::new(factor_right), base: Box::new(base) })
         }
         Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
-            // A constant fmul factor is uncaptured (const-in-A evidence
-            // exists only for fmadd); constant folding likewise.
-            if matches!(left.as_ref(), Expression::FloatLiteral(_)) || matches!(right.as_ref(), Expression::FloatLiteral(_)) {
+            // ONE pooled-constant fmul factor is measured (fmul f1,f0,f1 —
+            // the constant in A); both constant folds and stays deferred.
+            let left_const = matches!(left.as_ref(), Expression::FloatLiteral(_));
+            let right_const = matches!(right.as_ref(), Expression::FloatLiteral(_));
+            if left_const && right_const {
                 return None;
+            }
+            if left_const || right_const {
+                let (constant, other) = if left_const { (left, right) } else { (right, left) };
+                if matches!(other.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. }) {
+                    return None;
+                }
+                let constant = build_tree(constant, params, locals, seen_literals)?;
+                let other = build_tree(other, params, locals, seen_literals)?;
+                return Some(Tree::Mul { left: Box::new(constant), right: Box::new(other) });
             }
             let is_mul = |side: &Expression| matches!(side, Expression::Binary { operator: BinaryOperator::Multiply, .. });
             match (is_mul(left), is_mul(right)) {
@@ -721,7 +770,7 @@ fn collect_arith<'tree>(tree: &'tree Tree, level: u32, into: &mut Vec<(&'tree Tr
             collect_arith(factor_right, level + 1, into);
             collect_arith(addend, level + 1, into);
         }
-        Tree::Mul { left, right } => {
+        Tree::Mul { left, right } | Tree::Fadd { left, right } => {
             into.push((tree, level));
             collect_arith(left, level + 1, into);
             collect_arith(right, level + 1, into);
@@ -1039,6 +1088,105 @@ impl Generator {
             }
         }
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+}
+
+impl Generator {
+    /// The DUAL-TAIL float return (the k_sin iy split's simple form):
+    /// `if (<int cond>) return A; else return B;` — a leaf function, each
+    /// tail an INDEPENDENT float DAG ending in its own blr (measured: both
+    /// tails allocate with the full window; a bare-x tail flips to the bclr
+    /// guard form upstream and never reaches here).
+    pub(crate) fn try_dual_tail_float_return(&mut self, function: &Function) -> Compilation<bool> {
+        // The parser normalizes `if (c) return A; else return B;` into a
+        // guard {condition, value: A} + the trailing return B. The guard's
+        // value here is a COMPUTED tree (a bare x folds to the bclr form in
+        // the flat guard arm instead).
+        if function.return_type != Type::Double
+            || function.guards.len() != 1
+            || !function.locals.is_empty()
+            || !function.statements.is_empty()
+            || function.return_expression.is_none()
+        {
+            return Ok(false);
+        }
+        let guard = &function.guards[0];
+        let then_value = &guard.value;
+        let else_value = function.return_expression.as_ref().expect("checked above");
+        // A bare-variable guard value belongs to the bclr arm.
+        if matches!(then_value, Expression::Variable(_)) {
+            return Ok(false);
+        }
+        // The condition: an int-param leaf compare (the existing guard
+        // vocabulary via emit_condition_test).
+        let condition_ok = match &guard.condition {
+            Expression::Variable(name) => self
+                .locations
+                .get(name)
+                .is_some_and(|location| location.class == ValueClass::General),
+            Expression::Binary { operator, left, right } => {
+                matches!(
+                    operator,
+                    BinaryOperator::Less
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::Greater
+                        | BinaryOperator::GreaterEqual
+                        | BinaryOperator::Equal
+                        | BinaryOperator::NotEqual
+                ) && matches!(left.as_ref(), Expression::Variable(name)
+                    if self.locations.get(name).is_some_and(|location| location.class == ValueClass::General))
+                    && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok())
+            }
+            _ => false,
+        };
+        if !condition_ok {
+            return Ok(false);
+        }
+        let synthetic = |value: &Expression| Function {
+            return_type: function.return_type,
+            name: function.name.clone(),
+            is_static: function.is_static,
+            is_weak: function.is_weak,
+            parameters: function.parameters.clone(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(value.clone()),
+        };
+        let instructions_before = self.output.instructions.len();
+        let relocations_before = self.output.relocations.len();
+        let bump_before = self.output.anonymous_label_bump;
+        let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        // The if pair + the else-join label (measured: pools at @8/@9).
+        self.output.anonymous_label_bump += 3;
+        let rollback = |generator: &mut Generator| {
+            generator.output.instructions.truncate(instructions_before);
+            generator.output.relocations.truncate(relocations_before);
+            generator.output.anonymous_label_bump = bump_before;
+        };
+        match self.try_float_dag_return(&synthetic(then_value)) {
+            Ok(true) => {}
+            other => {
+                rollback(self);
+                return other.map(|_| false);
+            }
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        let else_start = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = else_start;
+        }
+        match self.try_float_dag_return(&synthetic(else_value)) {
+            Ok(true) => {}
+            other => {
+                rollback(self);
+                return other.map(|_| false);
+            }
+        }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
