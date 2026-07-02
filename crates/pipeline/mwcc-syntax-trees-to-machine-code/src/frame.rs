@@ -203,9 +203,11 @@ impl Generator {
         if let Some(tests) = guard_tests {
             let count = tests.len();
             let epilogue = self.fresh_label();
-            let mut loaded: Option<i16> = None;
+            // The shared loaded word, as (offset, VIRTUAL register): the words are
+            // virtuals now — the allocator reproduces r3/r4 from liveness here and
+            // scales to frexp's r4/r5/r6 as more values go live (the convergence).
+            let mut loaded: Option<(i16, u8)> = None;
             for (index, (disjuncts, guard_value)) in tests.into_iter().enumerate() {
-                let word = Eabi::general_result().number;
                 if disjuncts.len() > 1 {
                     // The disjunction: all loads up front (the second word rides the
                     // first's load latency, in r4 — r0 holds the hoisted constant),
@@ -215,19 +217,21 @@ impl Generator {
                     match disjuncts.as_slice() {
                         [GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, .. },
                          GuardTest::OrZero { right_offset, options: or_options, condition_bit: or_bit, .. }] => {
-                            const SECOND_WORD: u8 = 4; // r4
+                            let word = self.fresh_virtual_general();
+                            let second_word = self.fresh_virtual_general();
                             self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
-                            self.output.instructions.push(Instruction::LoadWord { d: SECOND_WORD, a: 1, offset: *right_offset });
+                            self.output.instructions.push(Instruction::LoadWord { d: second_word, a: 1, offset: *right_offset });
                             if *mask_top_bit {
                                 self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
                             }
                             self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
                             self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
-                            self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: SECOND_WORD });
+                            self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: second_word });
                             self.emit_branch_conditional_to(*or_options, *or_bit, epilogue);
                         }
                         [GuardTest::LisCompare { offset, options, condition_bit, .. },
                          GuardTest::LisCompare { options: second_options, condition_bit: second_bit, high: second_high, .. }] => {
+                            let word = self.fresh_virtual_general();
                             self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
                             self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
                             self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
@@ -252,37 +256,49 @@ impl Generator {
                         if index > 0 {
                             self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, high));
                         }
-                        if loaded != Some(offset) {
-                            self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
-                        }
+                        let word = match loaded {
+                            Some((shared_offset, shared_word)) if shared_offset == offset => shared_word,
+                            _ => {
+                                let word = self.fresh_virtual_general();
+                                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
+                                word
+                            }
+                        };
                         if mask_top_bit {
                             self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
                             loaded = None;
                         } else {
-                            loaded = Some(offset);
+                            loaded = Some((offset, word));
                         }
                         self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
                         (options, condition_bit)
                     }
                     GuardTest::AddisZero { offset, options, condition_bit, negated_high } => {
-                        if loaded != Some(offset) {
-                            self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
-                            loaded = Some(offset);
-                        }
+                        let word = match loaded {
+                            Some((shared_offset, shared_word)) if shared_offset == offset => shared_word,
+                            _ => {
+                                let word = self.fresh_virtual_general();
+                                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
+                                loaded = Some((offset, word));
+                                word
+                            }
+                        };
                         self.output.instructions.push(Instruction::AddImmediateShifted { d: GENERAL_SCRATCH, a: word, immediate: negated_high });
                         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: 0 });
                         (options, condition_bit)
                     }
                     GuardTest::OrZero { left_offset, right_offset, mask_top_bit, options, condition_bit } => {
                         // Both words load first — the second fills the first's latency —
-                        // then the mask, then the record-form or.
+                        // then the mask, then the record-form or. (The right word lives
+                        // in r0 here: this single-test form frees it before the branch.)
+                        let word = self.fresh_virtual_general();
                         self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: left_offset });
                         self.output.instructions.push(Instruction::LoadWord { d: GENERAL_SCRATCH, a: 1, offset: right_offset });
                         if mask_top_bit {
                             self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
                         }
                         self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: GENERAL_SCRATCH });
-                        loaded = if mask_top_bit { None } else { Some(left_offset) };
+                        loaded = if mask_top_bit { None } else { Some((left_offset, word)) };
                         (options, condition_bit)
                     }
                 };
