@@ -29,14 +29,18 @@ enum Template {
     MultiplyImmediate(i16),
     ShiftLeftImmediate(u8),
     ShiftRightAlgebraicImmediate(u8),
+    /// `srwi` — the UNSIGNED right shift (an `rlwinm` form; no XER write).
+    ShiftRightLogicalImmediate(u8),
     OrImmediate(u16),
     OrImmediateShifted(u16),
     /// `rlwinm d,s,0,begin,end` — an AND by a contiguous or wrap mask.
     Mask(u8, u8),
     XorImmediate(u16),
-    /// Variable shifts: `slw`/`sraw` (the arithmetic right shift writes XER).
+    /// Variable shifts: `slw`/`sraw`/`srw` (only the ARITHMETIC right shift
+    /// writes XER; the logical forms are plain ALU ops).
     ShiftLeftWord,
     ShiftRightAlgebraicWord,
+    ShiftRightWord,
     /// `mr` — a register move (the bare-parameter return chain).
     Move,
     LoadWord,
@@ -85,6 +89,14 @@ impl Builder {
         }
         match expression {
             Expression::Variable(name) => {
+                // A narrow (char/short) parameter arrives UNEXTENDED: mwcc
+                // re-extends it first (`extsb`/`extsh`, into a FRESH register)
+                // or folds the zero-extension into an rlwinm mask — vocabulary
+                // we don't have yet. Defer, never read the raw register.
+                let location = generator.locations.get(name.as_str())?;
+                if location.width != 32 {
+                    return None;
+                }
                 let register = generator.lookup_general(name)?;
                 self.sources
                     .iter()
@@ -141,15 +153,16 @@ impl Builder {
                         Some(self.push(OpKind::Alu, 3, 2, vec![value], Template::MultiplyImmediate(immediate)))
                     }
                     BinaryOperator::ShiftRight => {
-                        // srawi/sraw are the SIGNED shifts; an unsigned operand
-                        // lowers to srwi (a different encoding) — defer it.
-                        if let Expression::Variable(name) = left.as_ref() {
-                            if generator.locations.get(name.as_str()).is_some_and(|location| !location.signed) {
-                                return None;
-                            }
-                        }
+                        // The PROMOTED left operand picks the shift: signed ->
+                        // srawi/sraw (XER.CA writers), unsigned -> srwi/srw
+                        // (plain rlwinm/logical forms). Unknown signedness defers
+                        // — a guess either way is wrong bytes.
+                        let unsigned = promoted_unsigned(left, generator)?;
                         if let Some(shift) = constant_right.and_then(|constant| u8::try_from(constant).ok()).filter(|shift| *shift < 32) {
                             let value = self.expression(left, generator)?;
+                            if unsigned {
+                                return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightLogicalImmediate(shift)));
+                            }
                             // srawi writes XER.CA — two cannot dual-issue (measured).
                             let node = self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightAlgebraicImmediate(shift));
                             self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_XER);
@@ -157,6 +170,9 @@ impl Builder {
                         }
                         let value = self.expression(left, generator)?;
                         let amount = self.expression(right, generator)?;
+                        if unsigned {
+                            return Some(self.push(OpKind::Alu, 1, 1, vec![value, amount], Template::ShiftRightWord));
+                        }
                         let node = self.push(OpKind::Alu, 1, 1, vec![value, amount], Template::ShiftRightAlgebraicWord);
                         self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_XER);
                         Some(node)
@@ -211,6 +227,59 @@ impl Builder {
 
 /// `(begin, end)` for an rlwinm-expressible mask: one contiguous run of ones,
 /// possibly wrapping past bit 31 to bit 0 (PowerPC bit numbering).
+/// Whether an integer expression's PROMOTED value is unsigned, per the C usual
+/// arithmetic conversions at int rank: a sub-int-width operand (char/short,
+/// either signedness) promotes to SIGNED int; at 32-bit rank an unsigned
+/// operand makes a mixed pair unsigned. A shift's type is its promoted LEFT
+/// operand's alone. `None` = cannot tell — the caller defers, never guesses.
+fn promoted_unsigned(expression: &Expression, generator: &Generator) -> Option<bool> {
+    // An int literal is a signed int (unsigned-typed literals defer via the
+    // i16 immediate gates before signedness matters).
+    if constant_value(expression).is_some() {
+        return Some(false);
+    }
+    match expression {
+        Expression::Variable(name) => {
+            if let Some(location) = generator.locations.get(name.as_str()) {
+                return Some(!location.signed && location.width == 32);
+            }
+            match generator.globals.get(name.as_str())? {
+                Type::UnsignedInt => Some(true),
+                Type::Int | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort => Some(false),
+                _ => None,
+            }
+        }
+        Expression::Dereference { pointer } => {
+            let Expression::Variable(name) = pointer.as_ref() else { return None };
+            match generator.locations.get(name.as_str())?.pointee? {
+                Pointee::UnsignedInt => Some(true),
+                Pointee::Int | Pointee::Char | Pointee::UnsignedChar | Pointee::Short | Pointee::UnsignedShort => Some(false),
+                _ => None,
+            }
+        }
+        Expression::Cast { target_type, operand: _ } => match target_type {
+            Type::UnsignedInt => Some(true),
+            Type::Int | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort => Some(false),
+            _ => None,
+        },
+        Expression::Binary { operator, left, right } => match operator {
+            BinaryOperator::Add
+            | BinaryOperator::Subtract
+            | BinaryOperator::Multiply
+            | BinaryOperator::BitAnd
+            | BinaryOperator::BitOr
+            | BinaryOperator::BitXor => match (promoted_unsigned(left, generator), promoted_unsigned(right, generator)) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+            BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => promoted_unsigned(left, generator),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn contiguous_or_wrap_mask(mask: u32) -> Option<(u8, u8)> {
     if mask == 0 || mask == u32::MAX {
         return None;
@@ -404,6 +473,11 @@ impl Generator {
                     s: operand(0)?,
                     shift: *shift,
                 },
+                Template::ShiftRightLogicalImmediate(shift) => Instruction::ShiftRightLogicalImmediate {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                    shift: *shift,
+                },
                 Template::OrImmediate(immediate) => Instruction::OrImmediate {
                     a: destination.expect("value node"),
                     s: operand(0)?,
@@ -432,6 +506,11 @@ impl Generator {
                     b: operand(1)?,
                 },
                 Template::ShiftRightAlgebraicWord => Instruction::ShiftRightAlgebraicWord {
+                    a: destination.expect("value node"),
+                    s: operand(0)?,
+                    b: operand(1)?,
+                },
+                Template::ShiftRightWord => Instruction::ShiftRightWord {
                     a: destination.expect("value node"),
                     s: operand(0)?,
                     b: operand(1)?,

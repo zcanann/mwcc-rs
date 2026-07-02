@@ -123,3 +123,32 @@ int ret_bare(int a, int b)
 	g = a + 1;
 	return b;
 }
+
+/* unsigned right shifts: srwi/srw (rlwinm/logical forms — NO XER hazard,
+ * unlike srawi/sraw); the promoted-signedness of the LEFT operand picks the
+ * form, so a composite unsigned left ((a+b)>>3) is srwi too. Narrow (char/
+ * short) params defer — they need re-extension vocabulary. */
+unsigned int u;
+int ret_srwi(unsigned int a, int b)
+{
+	u = a >> 3;
+	return b + 1;
+}
+
+int ret_srw(unsigned int a, int b)
+{
+	u = a >> b;
+	return b + 1;
+}
+
+int ret_srwi_wide(unsigned int a, unsigned int b, int c)
+{
+	u = (a + b) >> 3;
+	return c + 1;
+}
+
+int ret_mixed_shift(unsigned int a, int b)
+{
+	u = a >> 3;
+	return b >> 4;
+}
