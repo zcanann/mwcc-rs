@@ -2499,48 +2499,79 @@ impl Generator {
             return Ok(false);
         }
         let home = location.register;
-        // The probed then-body forms only (see above; longer bodies reschedule).
-        let (store, assign) = match then_body.as_slice() {
-            [assign @ Statement::Assign { .. }] => (None, Some(assign)),
-            [store @ Statement::Store { .. }] => (Some(store), None),
-            [store @ Statement::Store { .. }, assign @ Statement::Assign { .. }] => (Some(store), Some(assign)),
-            _ => return Ok(false),
-        };
-        if let Some(Statement::Store { target, value }) = store {
-            // One word store to a scalar global, from a register-resident variable — the
-            // exact captured store; constants/computed values would stage through r0 with
-            // unprobed placement.
-            let Expression::Variable(global) = target else { return Ok(false) };
-            if !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt)) {
-                return Ok(false);
-            }
-            if self.global_array_sizes.contains_key(global.as_str()) {
-                return Ok(false);
-            }
-            let Expression::Variable(source) = value else { return Ok(false) };
-            if self.lookup_general(source).is_none() {
-                return Ok(false);
-            }
+        // The probed then-body vocabulary: up to THREE statements — scalar-global stores
+        // of register variables, and AT MOST ONE in-place reassignment of v (`mr` from a
+        // register variable, `addi` self-adjust, or `li` constant). A store AFTER a
+        // var-copy or constant reassignment value-forwards the source register instead
+        // (measured: `b=a; g=b;` stores r3, not r4) — that class defers to value tracking.
+        if then_body.is_empty() || then_body.len() > 3 {
+            return Ok(false);
         }
-        if let Some(Statement::Assign { name, value }) = assign {
-            // Only the returned variable may be reassigned, in place: `v = w` (mr) or
-            // `v = v +- C` (addi). Other RHS forms are unprobed placements.
-            if name != returned {
-                return Ok(false);
-            }
-            match value {
-                Expression::Variable(source) => {
+        let mut assign_count = 0usize;
+        let mut stores_blocked = false;
+        for statement in then_body {
+            match statement {
+                Statement::Store { target, value } => {
+                    if stores_blocked {
+                        return Ok(false);
+                    }
+                    let Expression::Variable(global) = target else { return Ok(false) };
+                    if !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt)) {
+                        return Ok(false);
+                    }
+                    if self.global_array_sizes.contains_key(global.as_str()) {
+                        return Ok(false);
+                    }
+                    let Expression::Variable(source) = value else { return Ok(false) };
                     if self.lookup_general(source).is_none() {
                         return Ok(false);
                     }
                 }
-                Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
-                    let reads_self = matches!(left.as_ref(), Expression::Variable(source) if source == returned);
-                    if !reads_self || constant_value(right).and_then(|value| i16::try_from(value).ok()).is_none() {
+                Statement::Assign { name, value } => {
+                    if name != returned {
                         return Ok(false);
+                    }
+                    assign_count += 1;
+                    if assign_count > 1 {
+                        return Ok(false);
+                    }
+                    match value {
+                        Expression::Variable(source) => {
+                            if self.lookup_general(source).is_none() {
+                                return Ok(false);
+                            }
+                            stores_blocked = true;
+                        }
+                        Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
+                            let reads_self = matches!(left.as_ref(), Expression::Variable(source) if source == returned);
+                            if !reads_self || constant_value(right).and_then(|value| i16::try_from(value).ok()).is_none() {
+                                return Ok(false);
+                            }
+                        }
+                        other if constant_value(other).and_then(|value| i16::try_from(value).ok()).is_some() => {
+                            stores_blocked = true;
+                        }
+                        _ => return Ok(false),
                     }
                 }
                 _ => return Ok(false),
+            }
+        }
+        // Emission order: source order, then the STORE-PAIR BREAK — mwcc pulls a
+        // following reassignment between two adjacent stores (`g=b; h=a; b=b+2` emits
+        // stw; addi; stw — measured), blocked when the jumped store reads v (its stored
+        // value would change), and the merge move never participates.
+        let mut order: Vec<&Statement> = then_body.iter().collect();
+        for index in 0..order.len().saturating_sub(2) {
+            if !matches!((order[index], order[index + 1]), (Statement::Store { .. }, Statement::Store { .. })) {
+                continue;
+            }
+            if matches!(order[index + 2], Statement::Assign { .. }) {
+                let Statement::Store { value, .. } = order[index + 1] else { unreachable!() };
+                let jumped_reads_v = matches!(value, Expression::Variable(source) if source == returned);
+                if !jumped_reads_v {
+                    order.swap(index + 1, index + 2);
+                }
             }
         }
         // -- commit (an Err past here defers the whole function; never Ok(false)) --
@@ -2552,20 +2583,24 @@ impl Generator {
             Some(label) => self.emit_branch_conditional_to(options, condition_bit, label),
             None => self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit }),
         }
-        if let Some(Statement::Store { target, value }) = store {
-            self.emit_store(target, value)?;
-        }
-        if let Some(Statement::Assign { value, .. }) = assign {
-            match value {
-                Expression::Variable(source) => {
-                    let source = self.lookup_general(source).expect("gated: register-resident");
-                    self.output.instructions.push(Instruction::move_register(home, source));
-                }
-                Expression::Binary { operator, right, .. } => {
-                    let constant = constant_value(right).expect("gated: i16 constant") as i16;
-                    let immediate = if *operator == BinaryOperator::Subtract { -constant } else { constant };
-                    self.output.instructions.push(Instruction::AddImmediate { d: home, a: home, immediate });
-                }
+        for statement in order {
+            match statement {
+                Statement::Store { target, value } => self.emit_store(target, value)?,
+                Statement::Assign { value, .. } => match value {
+                    Expression::Variable(source) => {
+                        let source = self.lookup_general(source).expect("gated: register-resident");
+                        self.output.instructions.push(Instruction::move_register(home, source));
+                    }
+                    Expression::Binary { operator, right, .. } => {
+                        let constant = constant_value(right).expect("gated: i16 constant") as i16;
+                        let immediate = if *operator == BinaryOperator::Subtract { -constant } else { constant };
+                        self.output.instructions.push(Instruction::AddImmediate { d: home, a: home, immediate });
+                    }
+                    other => {
+                        let constant = constant_value(other).expect("gated: i16 constant") as i16;
+                        self.output.instructions.push(Instruction::load_immediate(home, constant));
+                    }
+                },
                 _ => unreachable!("gated"),
             }
         }

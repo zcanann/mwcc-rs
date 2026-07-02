@@ -89,3 +89,99 @@ int third(int a, int b, int c)
 	}
 	return c;
 }
+
+extern int h;
+
+/* THE STORE-PAIR BREAK: a following reassignment is pulled between two adjacent
+ * stores (stw; addi; stw — not stw; stw; addi). */
+int two(int a, int b)
+{
+	if (a == 0) {
+		g = b;
+		h = a;
+		b = b + 2;
+	}
+	return b;
+}
+
+/* two adjacent stores, nothing to pull (the merge move never participates). */
+int twostores(int a, int b)
+{
+	if (a == 0) {
+		g = b;
+		h = a;
+	}
+	return b;
+}
+
+/* assign first: no adjacent pair, source order. */
+int assign_store(int a, int b)
+{
+	if (a == 0) {
+		b = b + 2;
+		g = b;
+	}
+	return b;
+}
+
+/* three statements already alternating: source order, the second store reads
+ * the updated register in place. */
+int threes(int a, int b)
+{
+	if (a == 0) {
+		g = b;
+		b = b + 2;
+		h = b;
+	}
+	return b;
+}
+
+/* the pull is blocked when the jumped store reads v — here both stores read b,
+ * but there is no assign; still source order. */
+int m1(int a, int b)
+{
+	if (a == 0) {
+		g = b;
+		h = b;
+	}
+	return b;
+}
+
+/* the pulled reassignment may be a constant (li) or a copy (mr). */
+int m2(int a, int b)
+{
+	if (a == 0) {
+		g = b;
+		h = a;
+		b = 5;
+	}
+	return b;
+}
+
+int m3(int a, int b)
+{
+	if (a == 0) {
+		g = b;
+		h = a;
+		b = a;
+	}
+	return b;
+}
+
+/* constant reassignment alone, and after one store. */
+int csn(int a, int b)
+{
+	if (a == 0) {
+		b = 5;
+	}
+	return b;
+}
+
+int cs2(int a, int b)
+{
+	if (a == 0) {
+		g = b;
+		b = 5;
+	}
+	return b;
+}
