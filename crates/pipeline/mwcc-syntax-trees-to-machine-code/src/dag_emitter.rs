@@ -116,13 +116,11 @@ impl Builder {
                 let location = generator.locations.get(name.as_str())?;
                 let register = generator.lookup_general(name)?;
                 if location.width != 32 {
-                    // A SHARED extension (two chains reading one extsb) exposes a
-                    // multi-consumer liveness gap in the register model — the
-                    // own-dying-open rule frees it at the FIRST read (measured
-                    // DIFF: ours clobbers r4 before the second chain reads it).
-                    // Defer until the interval model closes at the LAST reader.
-                    if self.extended.iter().any(|(extended, _)| *extended == register) {
-                        return None;
+                    // A repeat read shares the extension node (measured: one
+                    // extsb, two consumers — the DagNode.extension candidacy
+                    // rule covers both the shared and in-place register forms).
+                    if let Some(&(_, value)) = self.extended.iter().find(|(extended, _)| *extended == register) {
+                        return Some(value);
                     }
                     let template = match (location.signed, location.width) {
                         (true, 8) => Template::SignExtendByte,
@@ -132,6 +130,7 @@ impl Builder {
                     };
                     let raw = self.raw_param(register)?;
                     let value = self.push(OpKind::Alu, 1, 1, vec![raw], template);
+                    self.nodes.last_mut().expect("just pushed").extension = true;
                     self.extended.push((register, value));
                     return Some(value);
                 }
@@ -502,18 +501,10 @@ impl Generator {
                 return Ok(false);
             }
         }
-        // A narrow extension in a VOID body (no return chain claiming r3):
-        // mwcc lets the extension reuse the dying param register (measured:
-        // extsb r3,r3 mid-body), a param-reuse regime the register model does
-        // not grant. Defer until that candidacy is modeled.
-        if !returns_int
-            && builder.templates.iter().any(|template| {
-                matches!(
-                    template,
-                    Template::SignExtendByte | Template::SignExtendHalf | Template::ClearLeft(_) | Template::RotateMask(..)
-                )
-            })
-        {
+        // The extension+shift FOLD in a VOID body: the fold's own dying-param
+        // reuse regime is unprobed there (extensions are measured — the
+        // DagNode.extension candidacy; the fold is a shift, not an extension).
+        if !returns_int && builder.templates.iter().any(|template| matches!(template, Template::RotateMask(..))) {
             return Ok(false);
         }
         // The PPC r0-as-zero rule: a value consumed as an addi source (or any

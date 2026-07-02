@@ -55,6 +55,11 @@ pub struct DagNode {
     /// This value is consumed as an addi source or a load/store BASE — where
     /// PPC reads r0 as literal zero — so it must never be assigned r0.
     pub forbid_r0: bool,
+    /// A narrow-parameter re-extension (extsb/extsh/clrlwi). A SINGLE-consumer
+    /// extension may reuse its dying param register even as a first-of-pair
+    /// intermediate (measured: void extsb r3,r3); a multi-consumer one may not
+    /// (it must outlive the first chain's final — measured: extsb r4,r3).
+    pub extension: bool,
 }
 
 /// The XER (carry) hazard class: srawi, subfc, addc.
@@ -66,7 +71,11 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false }
+        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false }
+    }
+    pub fn extension(mut self) -> DagNode {
+        self.extension = true;
+        self
     }
     pub fn forbid_r0(mut self) -> DagNode {
         self.forbid_r0 = true;
@@ -735,7 +744,11 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             && last_chain_depth <= 2
             && !own_chain_has_multiply
             && (return_mode || chain_of(node) != last_sink)
-            && (return_mode || node_is_final || start % 2 == 1 || nodes[node].kind == OpKind::Load);
+            && (return_mode
+                || node_is_final
+                || start % 2 == 1
+                || nodes[node].kind == OpKind::Load
+                || (nodes[node].extension && consumer_of[node].len() == 1));
         let own_dying: Option<u8> = nodes[node]
             .reads
             .iter()
@@ -1248,6 +1261,42 @@ mod tests {
 
     /// Round 3: the RETURN-MODE fixtures (a consumerless non-store node is the
     /// returned value, forced to r3).
+    /// Round 4: narrow-parameter EXTENSION nodes in void bodies (fires 302-303).
+    /// A single-consumer extension reuses its dying param register in place
+    /// (extsb r3,r3); a multi-consumer one takes the next closed-free register
+    /// and the first chain's final claims the freed param home.
+    fn register_fixtures_round4() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+        use OpKind::Store as St;
+        vec![
+            (
+                // char a; g=a+1; h=a+2;  ->  extsb r4; addi r3; addi r0 (capture)
+                "ext_shared_two_chains",
+                vec![
+                    DagNode::new("extsb", ALU).extension().forbid_r0().reads(&[1]).writes(&[10]),
+                    DagNode::new("addi_g", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("addi_h", ALU).reads(&[10]).writes(&[12]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[12]),
+                ],
+                vec![(1, 3)],
+                vec![Some(4), Some(3), None, Some(0), None],
+            ),
+            (
+                // char a, int b; g=a+1; h=b+2;  ->  extsb r3,r3 (in place); addi_h r0; addi_g r3
+                "ext_single_reuses_in_place",
+                vec![
+                    DagNode::new("extsb", ALU).extension().forbid_r0().reads(&[1]).writes(&[10]),
+                    DagNode::new("addi_g", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("addi_h", ALU).reads(&[2]).writes(&[12]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[12]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(3), Some(3), None, Some(0), None],
+            ),
+        ]
+    }
+
     fn register_fixtures_round3() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
         use OpKind::Store as St;
         vec![
@@ -1413,6 +1462,13 @@ mod tests {
             })
             .count();
         println!("v3 round3 (returns): {round3_passed}/{}", round3.len());
+        let round4 = register_fixtures_round4();
+        for (name, nodes, params, expected) in &round4 {
+            let order = linearize(nodes);
+            let got = assign_registers_v3(nodes, &order, params);
+            assert_eq!(got, *expected, "round4 fixture {name}");
+        }
+        println!("v3 round4 (extensions): {}/{}", round4.len(), round4.len());
         for (name, nodes, params, expected) in &round3 {
             let order = linearize(nodes);
             let order_labels: Vec<&str> = order.iter().map(|&index| nodes[index].label).collect();

@@ -205,3 +205,38 @@ int ret_bare_extsb(char a, int b)
 	g = b + 1;
 	return a;
 }
+
+/* void bodies with extensions — the DagNode.extension candidacy: a
+ * SINGLE-consumer extension reuses its dying param register in place
+ * (extsb r3,r3); a SHARED (multi-consumer) one takes the next closed-free
+ * register and the first chain's final claims the freed param home
+ * (extsb r4,r3; addi r3; addi r0). */
+void void_ext_shared(char a)
+{
+	g = a + 1;
+	h = a + 2;
+}
+
+void void_ext_inplace(char a, int b)
+{
+	g = a + 1;
+	h = b + 2;
+}
+
+void void_ext_shared_short(short a)
+{
+	g = a + 1;
+	h = a + 2;
+}
+
+void void_ext_inplace_clrlwi(unsigned char a, int b)
+{
+	g = a + 1;
+	h = b + 2;
+}
+
+int ret_ext_shared_one_value(char a, int b)
+{
+	g = a + a;
+	return b + 1;
+}
