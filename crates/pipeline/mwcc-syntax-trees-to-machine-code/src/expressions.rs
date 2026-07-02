@@ -1925,7 +1925,10 @@ impl Generator {
                 .map_err(|_| Diagnostic::error("a global-array element offset out of displacement range (roadmap)"))?;
             let index_register = self.general_register_of_leaf(index_leaf)?;
             let shift = size.trailing_zeros() as u8;
-            let high = self.free_register_avoiding(&[index_leaf])?;
+            // Phase D migration: the base-high register is a VIRTUAL the allocator
+            // places (its live range overlaps the pinned index register, so linear
+            // scan lands on the same free register the inline choice picked).
+            let high = self.fresh_virtual_general();
             self.emit_address_high(high, name);
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
             self.record_relocation(RelocationKind::Addr16Lo, name);

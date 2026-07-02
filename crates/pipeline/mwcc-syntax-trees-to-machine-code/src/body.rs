@@ -1024,7 +1024,7 @@ impl Generator {
         if let Some(register) = stored_register {
             // Register value: the base stays OUT of the index register (the return needs
             // r3 live before the store) — `lis B; slwi; addi B,B; li r3,R; stwx v,B,r0`.
-            let base = self.free_register_avoiding(&[index_leaf, stored])?;
+            let base = self.fresh_virtual_general();
             self.emit_address_high(base, array);
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
             self.record_relocation(RelocationKind::Addr16Lo, array);
@@ -1033,7 +1033,16 @@ impl Generator {
             self.output.instructions.push(crate::expressions::indexed_store(pointee, register, base, GENERAL_SCRATCH));
         } else {
             let constant = stored_constant.expect("checked above");
-            let high = self.free_register_avoiding(&[index_leaf])?;
+            // Phase D migration note: the offset==0 form's base-high is a virtual (its
+            // redefinition by the `li` re-lands on the same register). The offset≠0
+            // form REUSES the high for the effective address after the value's `li` —
+            // the per-definition interval split scrambles a linear scan there, so it
+            // keeps the explicit physical choice until ranges can span redefinitions.
+            let high = if offset == 0 {
+                self.fresh_virtual_general()
+            } else {
+                self.free_register_avoiding(&[index_leaf])?
+            };
             self.emit_address_high(high, array);
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
             self.record_relocation(RelocationKind::Addr16Lo, array);
@@ -3793,12 +3802,8 @@ impl Generator {
             // survive for the store: `lis r4; slwi r5,i,2; stw r0,20; addi r3,r4;
             // stw r31,12; lwzx r31,r3,r5`.
             let index_register = self.general_register_of_leaf(load_index)?;
-            let high = self.free_register_avoiding(&[load_index])?;
-            let reserved = self.reserved.insert(high);
-            let scaled = self.free_register_avoiding(&[load_index])?;
-            if reserved {
-                self.reserved.remove(&high);
-            }
+            let high = self.fresh_virtual_general();
+            let scaled = self.fresh_virtual_general();
             self.emit_address_high(high, load_name);
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: 2 });
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
@@ -3893,7 +3898,7 @@ impl Generator {
             }
             MemoryLoad::Array { name, index } => {
                 let index_register = self.general_register_of_leaf(index)?;
-                let high = self.free_register_avoiding(&[index])?;
+                let high = self.fresh_virtual_general();
                 self.emit_address_high(high, name);
                 self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
                 self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: 2 });
