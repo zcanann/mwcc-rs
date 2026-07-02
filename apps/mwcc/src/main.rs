@@ -183,7 +183,8 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // the first function's block (measured: math.h's fabs helper shifts s_frexp's
     // pool constant from @11 to @14).
     if let Some(first) = machine_functions.first_mut() {
-        first.anonymous_label_bump += 3 * unit.skipped_inline_functions as u32;
+        // The parser accumulates the measured PER-BODY label bump directly.
+        first.anonymous_label_bump += unit.skipped_inline_functions as u32;
     }
     // Deferred inlining (`-inline …,deferred`) emits the object's functions — and
     // hence their `.text`, symbols, and metadata records — in reverse order.

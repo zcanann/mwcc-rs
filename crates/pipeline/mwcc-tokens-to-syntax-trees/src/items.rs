@@ -1104,10 +1104,10 @@ impl Parser {
                 if self.inline_function_has_static_local() {
                     return Err(Diagnostic::error("a static local in an inline function is not supported yet (emits .sdata2/.sdata data)"));
                 }
-                // A skipped INLINE function definition still advanced mwcc's `@N`
-                // counter by 3 (compiled, then dropped) — count it for the writer.
-                if self.item_is_inline_function_definition() {
-                    self.skipped_inline_functions += 1;
+                // A skipped INLINE function definition still advances mwcc's `@N`
+                // counter by the labels its (compiled, then dropped) body uses.
+                if let Some(bump) = self.skipped_inline_label_bump()? {
+                    self.skipped_inline_functions += bump;
                 }
                 // A skipped `typedef` still registers its alias name, so function
                 // bodies that use the type as a pointer (`FILE *fp`) still parse.
@@ -1807,7 +1807,13 @@ impl Parser {
     /// (a function we are expected to compile). Pure lookahead — consumes nothing.
     /// Like `item_is_function_definition`, but for the `inline`/`__inline`
     /// definitions that check deliberately skips.
-    fn item_is_inline_function_definition(&self) -> bool {
+    /// If the item at the cursor is a skipped INLINE function definition,
+    /// the @N labels mwcc consumes compiling (then dropping) it — measured per
+    /// construct: a STATIC definition has base 3, a plain one 0; each `if`
+    /// adds 2; `else`/`switch`/`case`/`default`/`||`/`&&` add 1; `while` adds
+    /// 4, `for` 5; a ternary adds 0. Unmeasured control constructs (`do`,
+    /// `goto`) return an Err so the unit defers rather than mis-bump.
+    fn skipped_inline_label_bump(&self) -> Compilation<Option<usize>> {
         let mut index = self.position;
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
@@ -1815,7 +1821,7 @@ impl Parser {
         let mut saw_static = false;
         while let Some(token) = self.tokens.get(index) {
             match token {
-                Token::Identifier(word) if word == "typedef" => return false,
+                Token::Identifier(word) if word == "typedef" => return Ok(None),
                 Token::Identifier(word) if word == "static" => saw_static = true,
                 Token::Identifier(word) if word == "inline" || word == "__inline" => saw_inline = true,
                 Token::ParenOpen => paren_depth += 1,
@@ -1825,17 +1831,50 @@ impl Parser {
                         saw_parameter_list = true;
                     }
                 }
-                Token::Semicolon if paren_depth == 0 => return false,
-                // Only a STATIC inline definition advances mwcc's @N counter
-                // (+3); a plain `inline` one does not (measured: baseline @5,
-                // static inline @8, plain inline @5).
-                Token::BraceOpen if paren_depth == 0 => return saw_inline && saw_static && saw_parameter_list,
-                Token::EndOfFile => return false,
+                Token::Semicolon if paren_depth == 0 => return Ok(None),
+                Token::BraceOpen if paren_depth == 0 => {
+                    if !(saw_inline && saw_parameter_list) {
+                        return Ok(None);
+                    }
+                    // Scan the body braces, summing the measured label weights.
+                    let mut bump = if saw_static { 3usize } else { 0 };
+                    let mut brace_depth = 0i32;
+                    while let Some(token) = self.tokens.get(index) {
+                        match token {
+                            Token::BraceOpen => brace_depth += 1,
+                            Token::BraceClose => {
+                                brace_depth -= 1;
+                                if brace_depth == 0 {
+                                    return Ok(Some(bump));
+                                }
+                            }
+                            Token::KeywordIf => bump += 2,
+                            Token::Identifier(word) if word == "else" => bump += 1,
+                            Token::Identifier(word) if word == "switch" => bump += 1,
+                            Token::Identifier(word) if word == "case" => bump += 1,
+                            Token::Identifier(word) if word == "default" => bump += 1,
+                            Token::PipePipe | Token::AmpersandAmpersand => bump += 1,
+                            Token::KeywordWhile => bump += 4,
+                            Token::KeywordFor => bump += 5,
+                            Token::KeywordDo => {
+                                return Err(Diagnostic::error("a skipped inline function with a do-loop has an unmeasured @N bump (roadmap)"));
+                            }
+                            Token::Identifier(word) if word == "goto" => {
+                                return Err(Diagnostic::error("a skipped inline function with goto has an unmeasured @N bump (roadmap)"));
+                            }
+                            Token::EndOfFile => return Ok(None),
+                            _ => {}
+                        }
+                        index += 1;
+                    }
+                    return Ok(None);
+                }
+                Token::EndOfFile => return Ok(None),
                 _ => {}
             }
             index += 1;
         }
-        false
+        Ok(None)
     }
 
     fn item_is_function_definition(&self) -> bool {
