@@ -8,6 +8,16 @@ use crate::parser::{Parser, StructField, StructLayout};
 
 /// `target` assigned `value`: a reassignment of a tracked local, or a memory
 /// store to any other lvalue (`*p`, `p[i]`, a member, a global).
+/// A `static` local parsed out of a SKIPPED inline definition.
+struct SkippedStaticLocal {
+    name: String,
+    declared_type: Type,
+    is_const: bool,
+    /// The byte image; `None` = zero-initialized (.sbss).
+    bytes: Option<Vec<u8>>,
+    byte_size: u16,
+}
+
 fn store_or_assign(target: Expression, value: Expression, local_names: &std::collections::HashSet<&str>) -> Statement {
     match &target {
         Expression::Variable(name) if local_names.contains(name.as_str()) => Statement::Assign { name: name.clone(), value },
@@ -1121,13 +1131,38 @@ impl Parser {
                 if let Some(name) = self.inline_asm_function_name() {
                     self.inline_asm_symbols.push(name);
                 }
-                // A skipped inline function whose body declares a `static` local still
-                // emits that static's data (`.sdata2`/`.sdata`/`.sbss`) in mwcc, even
-                // though the inline body itself is never emitted out-of-line. We don't
-                // model function-scope static data yet, so defer the unit rather than
-                // drop it — leaving a partial object is a silent whole-object DIFF.
+                // A skipped inline function's `static` locals (measured matrix):
+                // a PLAIN inline emits each as a WEAK object named
+                // `<local>$localstatic<K>$<function>` (K from 3, statics only,
+                // per function; const -> .sdata2, non-zero -> .sdata, zero ->
+                // .sbss), laid ahead of the pool constants, with NO @N shift.
+                // A STATIC inline emits NO data but bumps the @N counter by 1
+                // per static local. A CALL to either defers (the
+                // skipped_inline_names check) — the called materialization is
+                // unmodeled.
                 if self.inline_function_has_static_local() {
-                    return Err(Diagnostic::error("a static local in an inline function is not supported yet (emits .sdata2/.sdata data)"));
+                    let (function_name, is_static_inline, statics) = self.parse_skipped_inline_statics()?;
+                    if is_static_inline {
+                        self.skipped_inline_functions += statics.len();
+                    } else {
+                        for (slot, local) in statics.into_iter().enumerate() {
+                            let mangled = format!("{}$localstatic{}${}", local.name, slot + 3, function_name);
+                            self.global_sizes.insert(mangled.clone(), (local.byte_size as u32, None));
+                            globals.push(GlobalDeclaration {
+                                non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(),
+                                declared_type: local.declared_type,
+                                name: mangled,
+                                is_extern: false,
+                                is_static: false,
+                                array_length: None,
+                                initializer: None,
+                                is_const: local.is_const,
+                                address_initializer: None,
+                                data_bytes: local.bytes,
+                                is_weak: true,
+                            });
+                        }
+                    }
                 }
                 // A skipped INLINE function definition still advances mwcc's `@N`
                 // counter by the labels its (compiled, then dropped) body uses.
@@ -1399,6 +1434,132 @@ impl Parser {
     /// extra data beyond the baseline. We don't model function-scope static data yet,
     /// so the caller defers the unit rather than silently drop that data (a whole-object
     /// DIFF). Pure lookahead — consumes nothing.
+    /// Parse the skipped inline definition's `static` locals: the function
+    /// name, whether the inline itself is `static`, and each local's type,
+    /// const-ness, and byte image (`None` bytes = zero-initialized .sbss).
+    fn parse_skipped_inline_statics(&self) -> Compilation<(String, bool, Vec<SkippedStaticLocal>)> {
+        let mut index = self.position;
+        let mut is_static_inline = false;
+        let mut name = String::new();
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::Identifier(word) if word == "static" => is_static_inline = true,
+                Token::Identifier(word) if word == "inline" || word == "__inline" => {}
+                Token::Identifier(word) => name = word.clone(),
+                Token::ParenOpen => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        // Skip the parameter list.
+        let mut parens = 0i32;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::ParenOpen => parens += 1,
+                Token::ParenClose => {
+                    parens -= 1;
+                    if parens == 0 {
+                        index += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        let mut statics = Vec::new();
+        let mut braces = 0i32;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::BraceOpen => braces += 1,
+                Token::BraceClose => {
+                    braces -= 1;
+                    if braces == 0 {
+                        break;
+                    }
+                }
+                Token::Identifier(word) if word == "static" && braces >= 1 => {
+                    index += 1;
+                    let mut is_const = false;
+                    while matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "const" || word == "volatile") {
+                        if matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "const") {
+                            is_const = true;
+                        }
+                        index += 1;
+                    }
+                    // The type: one keyword/typedef token (compound int forms defer).
+                    let declared_type = match self.tokens.get(index) {
+                        Some(Token::Identifier(word)) if word == "double" => Type::Double,
+                        Some(Token::KeywordFloat) => Type::Float,
+                        Some(Token::KeywordInt) => Type::Int,
+                        Some(Token::Identifier(word)) if self.typedefs.get(word) == Some(&Type::Double) => Type::Double,
+                        Some(Token::Identifier(word)) if self.typedefs.get(word) == Some(&Type::Float) => Type::Float,
+                        Some(Token::Identifier(word)) if self.typedefs.get(word) == Some(&Type::Int) => Type::Int,
+                        Some(Token::Identifier(word)) if self.typedefs.get(word) == Some(&Type::UnsignedInt) => Type::UnsignedInt,
+                        _ => return Err(Diagnostic::error("a static local of this type in an inline function is not supported yet (roadmap)")),
+                    };
+                    index += 1;
+                    let local_name = match self.tokens.get(index) {
+                        Some(Token::Identifier(word)) => word.clone(),
+                        _ => return Err(Diagnostic::error("a static local declarator in an inline function is not supported yet (roadmap)")),
+                    };
+                    index += 1;
+                    let bytes = match self.tokens.get(index) {
+                        Some(Token::Semicolon) => None,
+                        Some(Token::Equals) => {
+                            index += 1;
+                            let mut negative = false;
+                            if matches!(self.tokens.get(index), Some(Token::Minus)) {
+                                negative = true;
+                                index += 1;
+                            }
+                            let image = match (self.tokens.get(index), declared_type) {
+                                (Some(Token::FloatLiteral(value)), Type::Double) => {
+                                    let value = if negative { -*value } else { *value };
+                                    Some(value.to_be_bytes().to_vec())
+                                }
+                                (Some(Token::FloatLiteral(value)), Type::Float) => {
+                                    let value = if negative { -*value } else { *value };
+                                    Some((value as f32).to_be_bytes().to_vec())
+                                }
+                                (Some(Token::IntegerLiteral(value)), Type::Double) => {
+                                    let value = if negative { -*value } else { *value };
+                                    Some((value as f64).to_be_bytes().to_vec())
+                                }
+                                (Some(Token::IntegerLiteral(value)), Type::Float) => {
+                                    let value = if negative { -*value } else { *value };
+                                    Some((value as f32).to_be_bytes().to_vec())
+                                }
+                                (Some(Token::IntegerLiteral(value)), Type::Int | Type::UnsignedInt) => {
+                                    let value = if negative { -*value } else { *value };
+                                    let all_zero = value == 0;
+                                    if all_zero { None } else { Some((value as i32).to_be_bytes().to_vec()) }
+                                }
+                                _ => return Err(Diagnostic::error("a static local initializer in an inline function is not supported yet (roadmap)")),
+                            };
+                            index += 1;
+                            if !matches!(self.tokens.get(index), Some(Token::Semicolon)) {
+                                return Err(Diagnostic::error("a static local initializer in an inline function is not supported yet (roadmap)"));
+                            }
+                            image
+                        }
+                        _ => return Err(Diagnostic::error("a static local declarator in an inline function is not supported yet (roadmap)")),
+                    };
+                    let byte_size = match declared_type {
+                        Type::Double => 8u16,
+                        _ => 4,
+                    };
+                    statics.push(SkippedStaticLocal { name: local_name, declared_type, is_const, bytes, byte_size });
+                    continue;
+                }
+                Token::EndOfFile => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        Ok((name, is_static_inline, statics))
+    }
+
     fn inline_function_has_static_local(&self) -> bool {
         let mut index = self.position;
         let mut is_inline = false;
@@ -1628,7 +1789,7 @@ impl Parser {
                         return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
                     }
                     self.variable_structs.insert(name.clone(), tag.clone());
-                    globals.push(GlobalDeclaration { non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None });
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {
@@ -1673,7 +1834,7 @@ impl Parser {
                     None
                 };
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer, data_bytes: None });
+                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer, data_bytes: None });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -1805,7 +1966,7 @@ impl Parser {
                     let total_bytes = element_bytes * array_length.map_or(1, u32::from);
                     let array_element = array_length.map(|_| element_bytes);
                     self.global_sizes.insert(declarator_name.clone(), (total_bytes, array_element));
-                    globals.push(GlobalDeclaration { non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type

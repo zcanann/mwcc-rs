@@ -96,6 +96,8 @@ pub struct GlobalDeclaration {
     pub name: String,
     pub is_extern: bool,
     pub is_static: bool,
+    /// A weak object symbol (an inline function's emitted static local).
+    pub is_weak: bool,
     /// How many NON-STATIC functions were defined before this declaration —
     /// mwcc's symbol table interleaves defined data with function symbols by
     /// source position (static functions' LOCAL symbols precede the data run,

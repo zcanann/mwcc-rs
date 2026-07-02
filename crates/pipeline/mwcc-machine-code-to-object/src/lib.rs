@@ -32,6 +32,8 @@ pub struct DefinedGlobal {
     pub relocations: Vec<mwcc_object::DataRelocation>,
     /// Non-static functions defined before this object (source-order symbol interleaving).
     pub non_static_functions_before: usize,
+    /// A WEAK object symbol (an inline function's emitted static local).
+    pub is_weak: bool,
 }
 
 /// Assemble a relocatable object from one or more lowered functions (in source
@@ -96,7 +98,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone(), non_static_functions_before: global.non_static_functions_before })
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone(), non_static_functions_before: global.non_static_functions_before, is_weak: global.is_weak })
         .collect();
     mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data, inline_asm_symbols })
 }

@@ -33,6 +33,7 @@ const STT_SECTION: u8 = 3; // STB_LOCAL | STT_SECTION
 const STB_LOCAL_OBJECT: u8 = 1; // STB_LOCAL | STT_OBJECT (the @N unwind entries)
 const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
 const STB_WEAK_FUNC: u8 = (2 << 4) | 2; // STB_WEAK | STT_FUNC (__declspec(weak))
+const STB_WEAK_OBJECT: u8 = (2 << 4) | 1; // STB_WEAK | STT_OBJECT (an inline's static local)
 const STB_LOCAL_FUNC: u8 = 2; // STB_LOCAL | STT_FUNC (a `static` function)
 const STB_GLOBAL_OBJECT: u8 = (1 << 4) | 1; // STB_GLOBAL | STT_OBJECT (a defined global)
 const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
@@ -575,8 +576,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let object = $object;
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
-            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
-            comment_values.push((data_aligns[object.name], 0));
+            let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
+            // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
+            let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
+            comment_values.push((data_aligns[object.name], flags));
             for relocation in object.relocations.iter().rev() {
                 let target = relocation.target.as_str();
                 if global_symbols.contains_key(target) || local_data_symbols.contains_key(target) {
@@ -702,8 +706,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if !object.is_static && !global_symbols.contains_key(object.name) {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
-            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_GLOBAL_OBJECT, 0, section);
-            comment_values.push((data_aligns[object.name], 0));
+            let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
+            // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
+            let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
+            comment_values.push((data_aligns[object.name], flags));
         }
     }
     // The `.comment` trailer is now fully determined by the symbol alignments.

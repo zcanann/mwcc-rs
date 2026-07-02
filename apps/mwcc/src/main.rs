@@ -268,7 +268,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                             string_pool.insert(string_bytes.clone(), name.clone());
                             let mut object_bytes = string_bytes.clone();
                             object_bytes.push(0);
-                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { non_static_functions_before: 0,
+                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: false, non_static_functions_before: 0,
                                 name: name.clone(),
                                 size: object_bytes.len() as u32,
                                 alignment: 4,
@@ -290,7 +290,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // An address initializer that resolved to no bytes is an all-null pointer
             // (`int *p = 0;`) — an EXPLICIT zero, so it orders ahead of the uninitialized run.
             let is_explicit_zero = initial_bytes.is_none();
-            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { non_static_functions_before: global.non_static_functions_before,
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                 name: global.name.clone(),
                 size,
                 alignment: 4,
@@ -339,7 +339,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // A const struct value/array carries its pre-serialized field bytes
             // directly into the read-only section.
             if let Some(bytes) = &global.data_bytes {
-                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { non_static_functions_before: global.non_static_functions_before,
+                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                     name: global.name.clone(),
                     size,
                     alignment,
@@ -364,7 +364,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 .as_ref()
                 .ok_or_else(|| Diagnostic::error("an uninitialized const global is not supported yet (roadmap)"))?;
             let initial_bytes = serialize(values, element_size, size);
-            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { non_static_functions_before: global.non_static_functions_before,
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                 name: global.name.clone(),
                 size,
                 alignment,
@@ -408,7 +408,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             Some(_) => (None, true),
             None => (None, false),
         };
-        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { non_static_functions_before: global.non_static_functions_before,
+        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
             name: global.name.clone(),
             size,
             alignment,
@@ -456,7 +456,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 string_pool.insert(bytes.clone(), name.clone());
                 let mut object_bytes = bytes.clone();
                 object_bytes.push(0);
-                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { non_static_functions_before: 0,
+                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: false, non_static_functions_before: 0,
                     name: name.clone(),
                     size: object_bytes.len() as u32,
                     alignment: 4,
