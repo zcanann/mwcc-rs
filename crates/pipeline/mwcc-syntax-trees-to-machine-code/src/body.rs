@@ -3656,23 +3656,28 @@ impl Generator {
             }
             _ => return Ok(false),
         };
-        // An optional LEADING guard reading the loaded local: `int t = gi; if (!t)
-        // return -1; g(); return t;` — the raise() core shape. Its constant early
-        // return branches to the shared epilogue.
-        let (guard, calls) = match function.statements.split_first() {
-            Some((Statement::If { condition, then_body, else_body }, rest))
-                if else_body.is_empty() && matches!(then_body.as_slice(), [Statement::Return(Some(_))]) =>
-            {
-                let [Statement::Return(Some(value))] = then_body.as_slice() else {
-                    return Ok(false);
-                };
-                let Some(constant) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
-                    return Ok(false);
-                };
-                (Some((condition, constant)), rest)
+        // An optional LEADING guard CHAIN reading the loaded local: `int t = gi; if (!t)
+        // return -1; if (t == 1) return 0; g(); return t;` — the raise() shape. Every
+        // guard compares the STAGED r0 copy (still valid — no call intervenes), each
+        // constant early return branches to the shared epilogue, and only the first
+        // compare carries the `mr r31,r0` in its latency slot.
+        let mut guard_chain: Vec<(&Expression, i16)> = Vec::new();
+        let mut rest = function.statements.as_slice();
+        while let Some((Statement::If { condition, then_body, else_body }, tail)) = rest.split_first() {
+            if !else_body.is_empty() || !matches!(then_body.as_slice(), [Statement::Return(Some(_))]) {
+                break;
             }
-            _ => (None, function.statements.as_slice()),
-        };
+            let [Statement::Return(Some(value))] = then_body.as_slice() else {
+                break;
+            };
+            let Some(constant) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
+                return Ok(false);
+            };
+            guard_chain.push((condition, constant));
+            rest = tail;
+        }
+        let guard = (!guard_chain.is_empty()).then_some(());
+        let calls = rest;
         if calls.is_empty() {
             return Ok(false);
         }
@@ -3723,6 +3728,10 @@ impl Generator {
 
         // The PAIRED form is verified for the guard-free scalar load only.
         if paired_parameter.is_some() && (guard.is_some() || matches!(load, MemoryLoad::Array { .. })) {
+            return Ok(false);
+        }
+        // A multi-guard chain over the ARRAY form is unverified — defer.
+        if guard_chain.len() > 1 && matches!(load, MemoryLoad::Array { .. }) {
             return Ok(false);
         }
         self.non_leaf = true;
@@ -3794,44 +3803,52 @@ impl Generator {
             }
         }
         let result = mwcc_target::Eabi::general_result().number;
-        if let Some((condition, early_constant)) = guard {
-            // The guard tests the just-loaded value (r0 for the staged scalar, r31 for
-            // the array form), then the early return `li r3,K; b EPILOGUE` and the calls
-            // as the fall-through. The scalar's `mr r31,r0` rides the compare latency.
-            // The branch labels advance mwcc's anonymous-`@N` counter: two for the
-            // array form; the staged scalar's guarded load adds one more (measured
-            // against the real extab/extabindex `@N` numbering).
-            self.output.anonymous_label_bump = if matches!(load, MemoryLoad::Scalar) { 3 } else { 2 };
+        if guard.is_some() {
+            // Each guard tests the just-loaded value (the staged r0 copy for a scalar —
+            // valid across the whole chain, no call intervenes — or r31 for the array
+            // form), then `li r3,K; b EPILOGUE`; the next guard or the calls are the
+            // fall-through. Only the FIRST compare carries the `mr r31,r0` in its
+            // latency slot. A multi-guard array chain is unverified — deferred above.
+            // The labels advance mwcc's anonymous-`@N` counter: one per guard's
+            // fall-through label plus the shared epilogue; the staged scalar load adds
+            // one more (measured against the real extab/extabindex `@N` numbering).
+            self.output.anonymous_label_bump =
+                2 * guard_chain.len() as u32 + if matches!(load, MemoryLoad::Scalar) { 1 } else { 0 };
             if matches!(load, MemoryLoad::Array { .. }) {
                 self.locations.insert(
                     local.name.clone(),
                     Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
                 );
             }
-            let (options, condition_bit) = self.emit_condition_test(condition)?;
-            if matches!(load, MemoryLoad::Scalar) {
-                self.output.instructions.push(Instruction::Or { a: 31, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
-                self.locations.insert(
-                    local.name.clone(),
-                    Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
-                );
+            let mut epilogue_branches = Vec::new();
+            for (position, (condition, early_constant)) in guard_chain.iter().enumerate() {
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                if position == 0 && matches!(load, MemoryLoad::Scalar) {
+                    self.output.instructions.push(Instruction::Or { a: 31, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                }
+                let skip_branch = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: *early_constant });
+                epilogue_branches.push(self.output.instructions.len());
+                self.output.instructions.push(Instruction::Branch { target: 0 });
+                let fall_through = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_branch] {
+                    *target = fall_through;
+                }
             }
-            let continuation_branch = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-            self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: early_constant });
-            let epilogue_branch = self.output.instructions.len();
-            self.output.instructions.push(Instruction::Branch { target: 0 });
-            let continuation = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[continuation_branch] {
-                *target = continuation;
-            }
+            self.locations.insert(
+                local.name.clone(),
+                Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+            );
             for statement in calls {
                 self.emit_statement(statement)?;
             }
             self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
             let epilogue_label = self.output.instructions.len();
-            if let Instruction::Branch { target } = &mut self.output.instructions[epilogue_branch] {
-                *target = epilogue_label;
+            for branch in epilogue_branches {
+                if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
+                    *target = epilogue_label;
+                }
             }
             // With the result already placed on both paths, the epilogue is plain:
             // `lwz r0,20; lwz r31,12; mtlr; addi; blr`.
