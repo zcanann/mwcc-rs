@@ -1068,6 +1068,10 @@ fn signed_skip_when_false(operator: BinaryOperator) -> Option<(u8, u8)> {
 
 /// The word offset a punned READ of `&variable` accesses: `*(int*)&x` is 0,
 /// `*(1+(int*)&x)` (either operand order) is 4. `None` for anything else.
+pub(crate) fn pun_word_offset_pub(expression: &Expression, variable: &str) -> Option<i16> {
+    pun_word_offset(expression, variable)
+}
+
 fn pun_word_offset(expression: &Expression, variable: &str) -> Option<i16> {
     let Expression::Dereference { pointer } = expression else { return None };
     pun_pointer_offset(pointer, variable)

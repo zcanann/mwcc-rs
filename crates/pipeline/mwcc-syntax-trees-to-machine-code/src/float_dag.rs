@@ -705,3 +705,207 @@ fn collect_arith<'tree>(tree: &'tree Tree, level: u32, into: &mut Vec<(&'tree Tr
         Tree::Param(_) | Tree::LocalRef(_) | Tree::Const(_) => {}
     }
 }
+
+impl Generator {
+    /// The PUNNED-BITS guard + float-DAG composition (the k_sin prefix):
+    /// `int ix = *(int*)&x [& 0x7fffffff]; if (ix < C) return x; <float tail>`
+    /// emits the measured frame form — stwu -16; [lis r0 staged FIRST for a
+    /// lis-able C]; stfd f1,8(r1); lwz; [clrlwi ,1]; cmpw/cmpwi; bge +8;
+    /// b EPILOGUE — extra int guards in branch form, the float tail, then
+    /// the SHARED addi/blr epilogue.
+    pub(crate) fn try_punned_guard_float_return(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double
+            || !function.statements.is_empty()
+            || function.guards.is_empty()
+            || function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let Some(first_param) = function.parameters.first() else {
+            return Ok(false);
+        };
+        if first_param.parameter_type != Type::Double {
+            return Ok(false);
+        }
+        let x = first_param.name.as_str();
+        // locals[0] = the punned int read of x's high word.
+        let ix_local = &function.locals[0];
+        if ix_local.declared_type != Type::Int || ix_local.array_length.is_some() {
+            return Ok(false);
+        }
+        let Some(ix_init) = ix_local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        let (pun, masked) = match crate::frame::pun_word_offset_pub(ix_init, x) {
+            Some(0) => (true, false),
+            _ => match ix_init {
+                Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
+                    let mask31 = |side: &Expression| crate::analysis::constant_value(side) == Some(0x7fff_ffff);
+                    if crate::frame::pun_word_offset_pub(left, x) == Some(0) && mask31(right) {
+                        (true, true)
+                    } else if crate::frame::pun_word_offset_pub(right, x) == Some(0) && mask31(left) {
+                        (true, true)
+                    } else {
+                        (false, false)
+                    }
+                }
+                _ => (false, false),
+            },
+        };
+        if !pun {
+            return Ok(false);
+        }
+        let ix = ix_local.name.as_str();
+        // guards[0] = `if (ix < C) return x;` (Less only — the measured k_sin
+        // family); C either cmpwi-able or lis-able (low half zero).
+        let first_guard = &function.guards[0];
+        if !matches!(&first_guard.value, Expression::Variable(name) if name == x) {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Less, left, right } = &first_guard.condition else {
+            return Ok(false);
+        };
+        if !matches!(left.as_ref(), Expression::Variable(name) if name == ix) {
+            return Ok(false);
+        }
+        let Some(compare_constant) = crate::analysis::constant_value(right) else {
+            return Ok(false);
+        };
+        let small_compare = i16::try_from(compare_constant).ok();
+        let lis_high: Option<i16> = (small_compare.is_none()
+            && (compare_constant & 0xffff) == 0
+            && u32::try_from(compare_constant).is_ok())
+        .then(|| (compare_constant >> 16) as i16);
+        if small_compare.is_none() && lis_high.is_none() {
+            return Ok(false);
+        }
+        // ix appears nowhere else.
+        let ix_uses_elsewhere = function
+            .guards
+            .iter()
+            .skip(1)
+            .map(|guard| {
+                crate::analysis::count_name_occurrences(&guard.condition, ix)
+                    + crate::analysis::count_name_occurrences(&guard.value, ix)
+            })
+            .sum::<usize>()
+            + function
+                .locals
+                .iter()
+                .skip(1)
+                .filter_map(|local| local.initializer.as_ref())
+                .map(|init| crate::analysis::count_name_occurrences(init, ix))
+                .sum::<usize>()
+            + function
+                .return_expression
+                .as_ref()
+                .map(|ret| crate::analysis::count_name_occurrences(ret, ix))
+                .unwrap_or(0);
+        if ix_uses_elsewhere != 0 {
+            return Ok(false);
+        }
+        // Extra guards: int-param leaf conditions returning x (branch form).
+        for guard in &function.guards[1..] {
+            if !matches!(&guard.value, Expression::Variable(name) if name == x) {
+                return Ok(false);
+            }
+            let ok = match &guard.condition {
+                Expression::Variable(name) => self
+                    .locations
+                    .get(name)
+                    .is_some_and(|location| location.class == ValueClass::General),
+                _ => false,
+            };
+            if !ok {
+                return Ok(false);
+            }
+        }
+        // The synthetic tail: the double locals + return, no guards.
+        let synthetic = Function {
+            return_type: function.return_type,
+            name: function.name.clone(),
+            is_static: function.is_static,
+            is_weak: function.is_weak,
+            parameters: function.parameters.clone(),
+            locals: function.locals[1..].to_vec(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: function.return_expression.clone(),
+        };
+        let _ = Statement::Return(None); // keep the use import stable
+
+        // ---- emission (rollback on a tail decline) ----
+        let instructions_before = self.output.instructions.len();
+        let relocations_before = self.output.relocations.len();
+        let bump_before = self.output.anonymous_label_bump;
+        let frame_before = self.frame_size;
+        // The frame drives the extab/extabindex sections.
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        if let Some(high) = lis_high {
+            self.output.instructions.push(Instruction::load_immediate_shifted(0, high));
+        }
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        let int_params = function
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.parameter_type != Type::Double)
+            .count() as u8;
+        let target_register = if lis_high.is_some() { 3 + int_params } else { 0 };
+        self.output.instructions.push(Instruction::LoadWord { d: target_register, a: 1, offset: 8 });
+        if masked {
+            self.output.instructions.push(Instruction::ClearLeftImmediate { a: target_register, s: target_register, clear: 1 });
+        }
+        if lis_high.is_some() {
+            self.output.instructions.push(Instruction::CompareWord { a: target_register, b: 0 });
+        } else {
+            self.output.instructions.push(Instruction::CompareWordImmediate {
+                a: target_register,
+                immediate: small_compare.expect("checked above"),
+            });
+        }
+        // bge +8 skips the epilogue branch (Less guard: skip on the inverse).
+        let mut epilogue_branches: Vec<usize> = Vec::new();
+        let skip_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: skip_index + 2 });
+        epilogue_branches.push(self.output.instructions.len());
+        self.output.instructions.push(Instruction::Branch { target: 0 });
+        self.output.anonymous_label_bump += 2;
+        for guard in &function.guards[1..] {
+            let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+            let skip_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: skip_index + 2 });
+            epilogue_branches.push(self.output.instructions.len());
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output.anonymous_label_bump += 2;
+        }
+        // The SHARED epilogue block consumes ONE extra label ahead of the
+        // pooled constants (measured: the one-guard shape pools at @8/@9
+        // with 2 if-labels + this 1).
+        self.output.anonymous_label_bump += 1;
+        // The float tail treats x as its f1 param (the spill stays valid).
+        let saved_frame_slots = std::mem::take(&mut self.frame_slots);
+        let claimed = self.try_float_dag_return(&synthetic);
+        self.frame_slots = saved_frame_slots;
+        match claimed {
+            Ok(true) => {}
+            other => {
+                self.output.instructions.truncate(instructions_before);
+                self.output.relocations.truncate(relocations_before);
+                self.output.anonymous_label_bump = bump_before;
+                self.frame_size = frame_before;
+                return other.map(|_| false);
+            }
+        }
+        let epilogue = self.output.instructions.len();
+        for branch in epilogue_branches {
+            if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
+                *target = epilogue;
+            }
+        }
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+}

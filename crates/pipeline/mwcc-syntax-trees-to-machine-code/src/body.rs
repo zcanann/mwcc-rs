@@ -1718,6 +1718,12 @@ impl Generator {
         // since an address-taken variable cannot be value-tracked in a register.
         // The frexp family (locals REASSIGNED across a writeback diamond) runs
         // before the inline pass, which cannot fold reassigned locals.
+        // The PUNNED-BITS guard + float-tail composition (the k_sin prefix)
+        // claims ahead of the frame families: its x-spill frame form and the
+        // float DAG tail are one measured unit.
+        if self.try_punned_guard_float_return(function)? {
+            return Ok(());
+        }
         if self.try_frexp_family(function)? {
             return Ok(());
         }
