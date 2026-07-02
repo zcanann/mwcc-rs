@@ -59,10 +59,49 @@ impl Generator {
     pub(crate) fn try_float_dag_return(&mut self, function: &Function) -> Compilation<bool> {
         if function.return_type != Type::Double
             || !function.statements.is_empty()
-            || !function.guards.is_empty()
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
+        }
+        // GUARDS compose as `cmpwi; bXXlr` ahead of the float tail
+        // (measured: the value must be the double param ALREADY in f1 — a
+        // different float would need fmr + a real branch — and the condition
+        // an int-param leaf compare).
+        for guard in &function.guards {
+            let Expression::Variable(value_name) = &guard.value else {
+                return Ok(false);
+            };
+            let value_in_f1 = self
+                .locations
+                .get(value_name)
+                .is_some_and(|location| location.class == ValueClass::Float && location.register == 1);
+            if !value_in_f1 {
+                return Ok(false);
+            }
+            let condition_param_ok = |name: &String| {
+                self.locations
+                    .get(name)
+                    .is_some_and(|location| location.class == ValueClass::General)
+            };
+            let condition_ok = match &guard.condition {
+                Expression::Variable(name) => condition_param_ok(name),
+                Expression::Binary { operator, left, right } => {
+                    matches!(
+                        operator,
+                        BinaryOperator::Less
+                            | BinaryOperator::LessEqual
+                            | BinaryOperator::Greater
+                            | BinaryOperator::GreaterEqual
+                            | BinaryOperator::Equal
+                            | BinaryOperator::NotEqual
+                    ) && matches!(left.as_ref(), Expression::Variable(name) if condition_param_ok(name))
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok())
+                }
+                _ => false,
+            };
+            if !condition_ok {
+                return Ok(false);
+            }
         }
         // Named double locals are WINDOW-TOP tier values (measured: k_sin's
         // z/v take f4/f3): each must be a plain scalar double with a
@@ -78,22 +117,27 @@ impl Generator {
         let Some(return_expression) = function.return_expression.as_ref() else {
             return Ok(false);
         };
-        // Every parameter must be a double already living in its FPR.
+        // Double parameters join the float DAG with their FPRs; int
+        // (general-class) parameters are allowed alongside — they exist for
+        // the guard conditions and never enter the DAG.
         let mut params: Vec<(u32, u8)> = Vec::new();
         let mut param_ids: Vec<(String, u32)> = Vec::new();
-        for (index, parameter) in function.parameters.iter().enumerate() {
-            if parameter.parameter_type != Type::Double {
-                return Ok(false);
-            }
+        for parameter in &function.parameters {
             let Some(location) = self.locations.get(&parameter.name) else {
                 return Ok(false);
             };
-            if location.class != ValueClass::Float || location.width != 64 {
-                return Ok(false);
+            match parameter.parameter_type {
+                Type::Double => {
+                    if location.class != ValueClass::Float || location.width != 64 {
+                        return Ok(false);
+                    }
+                    let value = (params.len() + 1) as u32;
+                    params.push((value, location.register));
+                    param_ids.push((parameter.name.clone(), value));
+                }
+                _ if location.class == ValueClass::General => {}
+                _ => return Ok(false),
             }
-            let value = (index + 1) as u32;
-            params.push((value, location.register));
-            param_ids.push((parameter.name.clone(), value));
         }
         // Lower the expression to the contracted tree (or bail).
         let mut seen_literals: Vec<u64> = Vec::new();
@@ -380,7 +424,35 @@ impl Generator {
                 Operand::Node(index) => registers[index].unwrap_or(1),
             }
         };
+        // The guards sit AFTER the local-init prefix (measured: the z fmul
+        // hoists above the cmpwi) and before the loads/chain. A local
+        // scheduled past any non-local (the v shapes) is uncaptured with
+        // guards — defer.
+        let split = order
+            .iter()
+            .rposition(|&node| nodes[node].local_home)
+            .map(|position| position + 1)
+            .unwrap_or(0);
+        if !function.guards.is_empty() && order[..split].iter().any(|&node| !nodes[node].local_home) {
+            return Ok(false);
+        }
+        let mut emitted = 0usize;
         for &node in &order {
+            if emitted == split {
+                for guard in &function.guards {
+                    let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+                    // The TRUE-condition conditional return (bnelr/bltlr...):
+                    // invert the skip-branch encoding.
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister {
+                        options: options ^ 8,
+                        condition_bit,
+                    });
+                    // The folded if's branch labels advance @N by 2 ahead of
+                    // the pooled constants.
+                    self.output.anonymous_label_bump += 2;
+                }
+            }
+            emitted += 1;
             let d = registers[node].expect("checked above");
             match &ops[node] {
                 FloatOp::Const(bits) => self.load_double_constant(d, *bits),
