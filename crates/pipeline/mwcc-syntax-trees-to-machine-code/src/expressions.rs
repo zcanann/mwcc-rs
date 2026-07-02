@@ -1825,12 +1825,26 @@ impl Generator {
         let element_type = self.globals[name];
         let pointee = pointee_of_type(element_type)
             .ok_or_else(|| Diagnostic::error("a global array of this element type is not supported yet (roadmap)"))?;
-        // A non-register (constant/computed) value is materialized with its own
-        // instruction, which mwcc's scheduler interleaves into the base
-        // materialization (`lis; li value; addi; stw`) — an ordering not modeled
-        // here, so only a register-valued store is byte-exact.
-        if !matches!(value, Expression::Variable(_)) {
-            return Err(Diagnostic::error("a global-array store of a non-register value is not supported yet (needs the value/base scheduler)"));
+        // A CONSTANT value over a VARIABLE index on a large (ADDR16) array is handled in
+        // the variable-index path below: the constant materializes into the freed
+        // base-high register after the `addi` — `lis r4,@ha; slwi r0,i,2; addi r3,r4,@lo;
+        // li r4,C; stwx r4,r3,r0`. Any other non-register value (a computed value, or a
+        // constant with a constant index / small array) interleaves through the
+        // scheduler in unmodeled orders — defer.
+        let constant_store_value = if matches!(value, Expression::Variable(_)) {
+            None
+        } else {
+            Some(
+                constant_value(value)
+                    .and_then(|constant| i16::try_from(constant).ok())
+                    .ok_or_else(|| Diagnostic::error("a global-array store of a non-register value is not supported yet (needs the value/base scheduler)"))?,
+            )
+        };
+        if constant_store_value.is_some()
+            && (constant_value(index).is_some()
+                || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8))
+        {
+            return Err(Diagnostic::error("a global-array constant store of this shape is not supported yet (needs the value/base scheduler)"));
         }
         // Constant index: base into a free register (avoiding the value), then a
         // displacement store at the element offset.
@@ -1879,6 +1893,51 @@ impl Generator {
         let size = pointee.size();
         if size == 1 {
             return Err(Diagnostic::error("a variable store to a byte global array is not supported yet (roadmap)"));
+        }
+        // A CONSTANT value (large array; rejected above otherwise): the constant
+        // materializes into the freed base-high register after the `addi` —
+        // `lis r4,@ha; slwi r0,i,2; addi r3,r4,@lo; li r4,C; stwx r4,r3,r0`. An index
+        // with a folded constant offset (`arr[i-1] = 0`) adds the scaled index into the
+        // base and rides the element offset on the store's displacement instead:
+        // `…; li r4,C; add r3,r3,r0; stw r4,-4(r3)`.
+        if let Some(constant) = constant_store_value {
+            if matches!(pointee, Pointee::Float | Pointee::Double) {
+                return Err(Diagnostic::error("a float global-array constant store is not supported yet (roadmap)"));
+            }
+            let mut index_leaf = index;
+            let mut element_offset: i64 = 0;
+            if let Expression::Binary { operator, left, right } = index {
+                if let Some(k) = constant_value(right) {
+                    match operator {
+                        BinaryOperator::Add => {
+                            index_leaf = left.as_ref();
+                            element_offset = k * size as i64;
+                        }
+                        BinaryOperator::Subtract => {
+                            index_leaf = left.as_ref();
+                            element_offset = -k * size as i64;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let offset = i16::try_from(element_offset)
+                .map_err(|_| Diagnostic::error("a global-array element offset out of displacement range (roadmap)"))?;
+            let index_register = self.general_register_of_leaf(index_leaf)?;
+            let shift = size.trailing_zeros() as u8;
+            let high = self.free_register_avoiding(&[index_leaf])?;
+            self.emit_address_high(high, name);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: high, a: 0, immediate: constant });
+            if offset == 0 {
+                self.output.instructions.push(indexed_store(pointee, high, index_register, GENERAL_SCRATCH));
+            } else {
+                self.output.instructions.push(Instruction::Add { d: index_register, a: index_register, b: GENERAL_SCRATCH });
+                self.output.instructions.push(displacement_store(pointee, high, index_register, offset));
+            }
+            return Ok(());
         }
         // A float/double value lives in an FPR (stored via stfsx/stfdx); an integer in a GPR. The
         // base register is the index register either way — a float value doesn't occupy it.
