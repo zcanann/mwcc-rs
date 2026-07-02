@@ -3836,33 +3836,32 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
-        // Phase D: the guard-free scalar's callee-saved home is a VIRTUAL — its range
+        // Phase D: the callee-saved home is a VIRTUAL in every form — its range
         // crosses the calls, so the allocator assigns it from the callee-saved pool
-        // (r31), and apply() rewrites the save/restore fields along with the value's.
-        // The guarded/array/paired forms keep the explicit r31 until their schedules
-        // move onto the frame builder.
-        let saved: u8 = if guard.is_none() && paired_parameter.is_none() && matches!(load, MemoryLoad::Scalar) {
-            self.fresh_virtual_general()
-        } else {
-            31
-        };
+        // (r31), and apply() rewrites the saves, loads, moves, and restores together.
+        // (The paired form allocates its second virtual below; creation order makes
+        // the ids deterministic: the local first -> r31, the parameter -> r30.)
+        let saved: u8 = self.fresh_virtual_general();
         // The paired parameter saves in r30 between the r31 save and the memory load:
         // `stw r31,12; stw r30,8; mr r30,<param>; lwz r31,<gi>`.
         if let Some(parameter) = paired_parameter {
             let Some(incoming) = self.lookup_general(parameter) else {
                 return Ok(false);
             };
+            // The parameter's callee-saved home is the SECOND virtual: created after
+            // `saved`, both widen to entry, so the scan assigns saved->r31, pair->r30.
+            let pair = self.fresh_virtual_general();
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-            self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::StoreWord { s: 30, a: 1, offset: 8 });
-            self.output.instructions.push(Instruction::Or { a: 30, s: incoming, b: incoming });
+            self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::StoreWord { s: pair, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::Or { a: pair, s: incoming, b: incoming });
             if let Some(location) = self.locations.get_mut(parameter) {
-                location.register = 30;
+                location.register = pair;
             }
-            self.evaluate_general(initializer, 31)?;
+            self.evaluate_general(initializer, saved)?;
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+                Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
             );
             for statement in calls {
                 self.emit_statement(statement)?;
@@ -3872,8 +3871,8 @@ impl Generator {
             let result = mwcc_target::Eabi::general_result().number;
             self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
             self.evaluate_tail(function.return_expression.as_ref().expect("checked above"), function.return_type, result)?;
-            self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::LoadWord { d: 30, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::LoadWord { d: pair, a: 1, offset: 8 });
             self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
             self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
             self.output.instructions.push(Instruction::BranchToLinkRegister);
@@ -3904,8 +3903,8 @@ impl Generator {
                 self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: 2 });
                 self.record_relocation(RelocationKind::Addr16Lo, name);
                 self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
-                self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-                self.output.instructions.push(Instruction::LoadWordIndexed { d: 31, a: index_register, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+                self.output.instructions.push(Instruction::LoadWordIndexed { d: saved, a: index_register, b: GENERAL_SCRATCH });
             }
         }
         let result = mwcc_target::Eabi::general_result().number;
@@ -3923,14 +3922,14 @@ impl Generator {
             if matches!(load, MemoryLoad::Array { .. }) {
                 self.locations.insert(
                     local.name.clone(),
-                    Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+                    Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
                 );
             }
             let mut epilogue_branches = Vec::new();
             for (position, (condition, early_constant)) in guard_chain.iter().enumerate() {
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
                 if position == 0 && matches!(load, MemoryLoad::Scalar) {
-                    self.output.instructions.push(Instruction::Or { a: 31, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                    self.output.instructions.push(Instruction::Or { a: saved, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
                 }
                 let skip_branch = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
@@ -3944,12 +3943,12 @@ impl Generator {
             }
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+                Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
             );
             for statement in calls {
                 self.emit_statement(statement)?;
             }
-            self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
+            self.output.instructions.push(Instruction::Or { a: result, s: saved, b: saved });
             let epilogue_label = self.output.instructions.len();
             for branch in epilogue_branches {
                 if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
@@ -3959,7 +3958,7 @@ impl Generator {
             // With the result already placed on both paths, the epilogue is plain:
             // `lwz r0,20; lwz r31,12; mtlr; addi; blr`.
             self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-            self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
             self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
             self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
             self.output.instructions.push(Instruction::BranchToLinkRegister);
