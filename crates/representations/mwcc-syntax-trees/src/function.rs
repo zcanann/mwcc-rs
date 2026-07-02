@@ -27,6 +27,11 @@ pub struct LocalDeclaration {
     /// frame slot, so it is codegen'd like a file-scope global, not a local. The
     /// `register`/`auto` hints do not set this — they are ordinary automatic locals.
     pub is_static: bool,
+    /// A static local's constant byte image (a brace-initialized array or a
+    /// scalar literal); `None` for a zero-initialized or automatic local.
+    pub data_bytes: Option<Vec<u8>>,
+    /// Whether the static local was declared `const` (routes .sdata2/.rodata).
+    pub is_const: bool,
 }
 
 /// A guarded early return: `if (condition) return value;`.

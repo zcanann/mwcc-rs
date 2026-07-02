@@ -304,8 +304,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // function got — a deduped reuse consumes no new number, so the reusing
     // function's subsequent unwind `@N` shift down accordingly.
     let mut numbered_constant: HashMap<(u64, u8), u32> = HashMap::new();
-    for function in functions {
-        let mut number = counter + function.anonymous_bump;
+    // Real functions' STATIC LOCALS: numbered at counter-1+i (measured: the
+    // first function's static is $4 against the base-5 counter), and the
+    // owner's constants shift by the static count.
+    let mut static_local_numbers: HashMap<&str, u32> = HashMap::new();
+    for (function_index, function) in functions.iter().enumerate() {
+        let owned_statics: Vec<&DataObject> = input
+            .data_objects
+            .iter()
+            .filter(|object| object.static_local_owner == Some(function_index))
+            .collect();
+        for (offset_index, object) in owned_statics.iter().enumerate() {
+            static_local_numbers.insert(object.name, counter - 1 + offset_index as u32);
+        }
+        let mut number = counter + owned_statics.len() as u32 + function.anonymous_bump;
         // This function's own strings sit at the front of its `@N` block, before its constants.
         number += function.string_count;
         let mut numbers = Vec::new();
@@ -469,7 +481,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         !is_zero_section(object.name) || (data_section[object.name] == ".sbss" && object.is_explicit_zero)
     };
     for object in &input.data_objects {
-        if object.is_static && static_forward(object) && !function_string_names.contains(object.name) {
+        if object.is_static
+            && static_forward(object)
+            && !function_string_names.contains(object.name)
+            && object.static_local_owner.is_none()
+        {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
@@ -478,7 +494,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`), REVERSE order.
     for object in input.data_objects.iter().rev() {
-        if object.is_static && is_zero_section(object.name) && !static_forward(object) {
+        if object.is_static
+            && is_zero_section(object.name)
+            && !static_forward(object)
+            && object.static_local_owner.is_none()
+        {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
@@ -510,6 +530,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // symbol the first function emitted (its `@N` and offset already shared above).
     let mut constant_symbol: HashMap<(u64, u8), u32> = HashMap::new();
     for (index, function) in functions.iter().enumerate() {
+        // The function's STATIC LOCALS lead its `@N` block (they carry the
+        // block's first numbers — displayed `name$K`, keyed by raw name).
+        for object in &input.data_objects {
+            if object.static_local_owner == Some(index) {
+                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                let display = match static_local_numbers.get(object.name) {
+                    Some(&number) => strtab.add(&format!("{}${}", object.name, number)),
+                    None => strtab.add(object.name),
+                };
+                write_symbol(&mut symtab, display, data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                comment_values.push((data_aligns[object.name], 0));
+            }
+        }
         // This function's NEW strings sit at the FRONT of its `@N` block, before its constants and
         // unwind entries. Each `@N` name already has a laid-out data object (`.sdata`/`.data`); emit
         // its LOCAL symbol here and record it so relocations (this function's, and a later function

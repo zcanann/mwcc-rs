@@ -182,6 +182,27 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // (compiled, then dropped) before the real functions were numbered — pre-bump
     // the first function's block (measured: math.h's fabs helper shifts s_frexp's
     // pool constant from @11 to @14).
+    // Real functions' STATIC LOCALS become LOCAL data objects keyed by their
+    // raw names; the writer numbers each off its owner's @N sequence and
+    // displays `name$K`.
+    let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    for (function_index, function) in machine_functions.iter().enumerate() {
+        for (name, bytes, size, alignment, is_const) in &function.static_locals {
+            static_local_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
+                static_local_owner: Some(function_index),
+                is_weak: false,
+                non_static_functions_before: 0,
+                name: name.clone(),
+                size: *size,
+                alignment: *alignment,
+                initial_bytes: bytes.clone(),
+                is_const: *is_const,
+                is_static: true,
+                is_explicit_zero: false,
+                relocations: Vec::new(),
+            });
+        }
+    }
     if let Some(first) = machine_functions.first_mut() {
         // The parser accumulates the measured PER-BODY label bump directly.
         first.anonymous_label_bump += unit.skipped_inline_functions as u32;
@@ -268,7 +289,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                             string_pool.insert(string_bytes.clone(), name.clone());
                             let mut object_bytes = string_bytes.clone();
                             object_bytes.push(0);
-                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: false, non_static_functions_before: 0,
+                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: false, non_static_functions_before: 0,
                                 name: name.clone(),
                                 size: object_bytes.len() as u32,
                                 alignment: 4,
@@ -290,7 +311,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // An address initializer that resolved to no bytes is an all-null pointer
             // (`int *p = 0;`) — an EXPLICIT zero, so it orders ahead of the uninitialized run.
             let is_explicit_zero = initial_bytes.is_none();
-            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                 name: global.name.clone(),
                 size,
                 alignment: 4,
@@ -339,7 +360,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // A const struct value/array carries its pre-serialized field bytes
             // directly into the read-only section.
             if let Some(bytes) = &global.data_bytes {
-                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                     name: global.name.clone(),
                     size,
                     alignment,
@@ -364,7 +385,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 .as_ref()
                 .ok_or_else(|| Diagnostic::error("an uninitialized const global is not supported yet (roadmap)"))?;
             let initial_bytes = serialize(values, element_size, size);
-            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                 name: global.name.clone(),
                 size,
                 alignment,
@@ -408,7 +429,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             Some(_) => (None, true),
             None => (None, false),
         };
-        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
             name: global.name.clone(),
             size,
             alignment,
@@ -456,7 +477,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 string_pool.insert(bytes.clone(), name.clone());
                 let mut object_bytes = bytes.clone();
                 object_bytes.push(0);
-                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { is_weak: false, non_static_functions_before: 0,
+                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: false, non_static_functions_before: 0,
                     name: name.clone(),
                     size: object_bytes.len() as u32,
                     alignment: 4,
@@ -494,6 +515,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         }
     }
     defined_globals.extend(function_string_objects);
+    defined_globals.extend(static_local_globals);
 
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
 

@@ -2455,19 +2455,74 @@ impl Parser {
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                 }
-                // A local array `type buf[N];` — a frame slot of `N` elements. (A
-                // multi-dimensional or initialized local array defers for now.)
+                // A local array `type buf[N];` — a frame slot of `N` elements. A
+                // STATIC local array (`static const f32 c[] = {...};`) captures its
+                // byte image instead (it is static storage, not a frame slot).
+                let mut data_bytes: Option<Vec<u8>> = None;
                 let array_length = if *self.peek() == Token::BracketOpen {
                     self.advance();
-                    let length = self.parse_integer_constant()? as u16;
+                    let explicit = if *self.peek() == Token::BracketClose {
+                        None
+                    } else {
+                        Some(self.parse_integer_constant()? as u16)
+                    };
                     self.expect(Token::BracketClose)?;
                     if *self.peek() == Token::BracketOpen {
                         return Err(Diagnostic::error("a multi-dimensional local array is not supported yet (roadmap)"));
                     }
                     if *self.peek() == Token::Equals {
-                        return Err(Diagnostic::error("an initialized local array is not supported yet (roadmap)"));
+                        if !is_static {
+                            return Err(Diagnostic::error("an initialized automatic local array is not supported yet (roadmap)"));
+                        }
+                        self.advance();
+                        self.expect(Token::BraceOpen)?;
+                        let mut bytes = Vec::new();
+                        let mut count = 0u16;
+                        loop {
+                            if *self.peek() == Token::BraceClose {
+                                break;
+                            }
+                            let mut negative = false;
+                            if self.eat_keyword(Token::Minus) {
+                                negative = true;
+                            }
+                            match (self.advance().clone(), declared_type) {
+                                (Token::FloatLiteral(value), Type::Float) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as f32).to_be_bytes());
+                                }
+                                (Token::FloatLiteral(value), Type::Double) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&value.to_be_bytes());
+                                }
+                                (Token::IntegerLiteral(value), Type::Float) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as f32).to_be_bytes());
+                                }
+                                (Token::IntegerLiteral(value), Type::Double) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as f64).to_be_bytes());
+                                }
+                                (Token::IntegerLiteral(value), Type::Int | Type::UnsignedInt) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as i32).to_be_bytes());
+                                }
+                                _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
+                            }
+                            count += 1;
+                            if !self.eat_keyword(Token::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(Token::BraceClose)?;
+                        data_bytes = Some(bytes);
+                        Some(explicit.unwrap_or(count))
+                    } else {
+                        match explicit {
+                            Some(length) => Some(length),
+                            None => return Err(Diagnostic::error("an array with no length needs an initializer")),
+                        }
                     }
-                    Some(length)
                 } else {
                     None
                 };
@@ -2484,7 +2539,7 @@ impl Parser {
                     };
                     self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
                 }
-                locals.push(LocalDeclaration { declared_type, name, initializer, array_length, is_static });
+                locals.push(LocalDeclaration { declared_type, name, initializer, array_length, is_static, data_bytes, is_const: self.last_type_was_const });
                 if *self.peek() == Token::Comma {
                     self.advance();
                 } else {
@@ -2954,7 +3009,7 @@ impl Parser {
                     if *self.peek() == Token::BracketOpen {
                         return Err(Diagnostic::error("a block-scoped array is not supported yet (roadmap)"));
                     }
-                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static: false });
+                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static: false, data_bytes: None, is_const: false });
                     local_names.insert(name.clone());
                     if self.eat_keyword(Token::Equals) {
                         let value = self.expression()?;

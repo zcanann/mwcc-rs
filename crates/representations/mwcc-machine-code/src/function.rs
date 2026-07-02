@@ -54,6 +54,10 @@ pub struct MachineFunction {
     /// rather than a global one.
     pub is_static: bool,
     pub is_weak: bool,
+    /// The function's STATIC LOCALS: (name, byte image or None for zero,
+    /// byte size, alignment, is_const). Emitted as `name$K` LOCAL objects,
+    /// K taken from the function's @N sequence front.
+    pub static_locals: Vec<(String, Option<Vec<u8>>, u32, u32, bool)>,
     /// Whether the function performs an int<->float conversion. mwcc's anonymous
     /// `@N` counter starts one higher for such functions.
     pub has_conversion: bool,
@@ -99,6 +103,7 @@ impl MachineFunction {
             new_string_names: Vec::new(),
             is_static: false,
             is_weak: false,
+            static_locals: Vec::new(),
             has_conversion: false,
             has_float_branch: false,
             anonymous_label_bump: 0,

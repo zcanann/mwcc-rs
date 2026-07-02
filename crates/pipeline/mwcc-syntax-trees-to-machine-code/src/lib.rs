@@ -47,9 +47,51 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // codegen'd like a file-scope global, not a frame slot. That path (the `$N = @N-1` numbering, the
     // per-function symbol, global-style access) is not built yet, so defer rather than mis-treat it as
     // an automatic local (`register`/`auto` hints, in contrast, are ordinary automatics and proceed).
-    if function.locals.iter().any(|local| local.is_static) {
-        return Err(Diagnostic::error("a static local variable is not supported yet (roadmap)"));
+    // STATIC locals have static storage: they compile as GLOBAL references
+    // (`name$K` LOCAL objects — the writer numbers them off the function's
+    // @N sequence). Register each in the operand maps and record its datum;
+    // the automatic-local machinery never sees it.
+    let static_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = function.locals.iter().filter(|local| local.is_static).cloned().collect();
+    let mut static_local_data: Vec<(String, Option<Vec<u8>>, u32, u32, bool)> = Vec::new();
+    for local in &static_locals {
+        if globals.iter().any(|global| global.name == local.name) {
+            return Err(Diagnostic::error("a static local shadowing a global is not supported yet (roadmap)"));
+        }
+        let element = local.declared_type.width() as u32 / 8;
+        let size = element * local.array_length.map_or(1, u32::from);
+        // The byte image: a brace-list array, or a scalar literal folded here.
+        let bytes = match (&local.data_bytes, &local.initializer) {
+            (Some(bytes), _) => Some(bytes.clone()),
+            (None, Some(mwcc_syntax_trees::Expression::IntegerLiteral(value))) => {
+                (*value != 0).then(|| match local.declared_type {
+                    mwcc_syntax_trees::Type::Double => (*value as f64).to_be_bytes().to_vec(),
+                    mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
+                    _ => (*value as i32).to_be_bytes().to_vec(),
+                })
+            }
+            (None, Some(mwcc_syntax_trees::Expression::FloatLiteral(value))) => Some(match local.declared_type {
+                mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
+                _ => value.to_be_bytes().to_vec(),
+            }),
+            (None, Some(_)) => {
+                return Err(Diagnostic::error("a non-constant static local initializer is not supported yet (roadmap)"));
+            }
+            (None, None) => None,
+        };
+        let alignment = element.max(4);
+        static_local_data.push((local.name.clone(), bytes, size, alignment, local.is_const));
     }
+    // The body machinery never sees the statics as automatic locals.
+    let stripped;
+    let function = if static_locals.is_empty() {
+        function
+    } else {
+        stripped = mwcc_syntax_trees::Function {
+            locals: function.locals.iter().filter(|local| !local.is_static).cloned().collect(),
+            ..function.clone()
+        };
+        &stripped
+    };
     let mut generator = Generator {
         output: MachineFunction::new(function.name.clone()),
         labels: mwcc_vreg::Labels::default(),
@@ -66,13 +108,27 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
             .iter()
             .filter(|global| !global.is_const || global.array_length.is_some())
             .map(|global| (global.name.clone(), global.declared_type))
+            .chain(
+                // Static locals address like globals (const scalars stay
+                // visible too: their `name$K` datum is always materialized,
+                // never value-folded — measured).
+                static_locals.iter().map(|local| (local.name.clone(), local.declared_type)),
+            )
             .collect(),
         // Subscriptable array globals (non-const) with their total byte size, so a
         // `g[i]` picks the right address mode (SDA21 vs ADDR16) by size. An EXTERN
         // array is included: mwcc addresses it identically to a defined one (verified
         // — the section is irrelevant to the SDA21/ADDR16 choice), referencing it
         // through a relocation to the undefined symbol.
-        global_array_sizes: globals
+        global_array_sizes: static_locals
+            .iter()
+            .filter_map(|local| {
+                local.array_length.map(|length| {
+                    let element = local.declared_type.width() as u32 / 8;
+                    (local.name.clone(), element * length as u32)
+                })
+            })
+            .chain(globals
             .iter()
             .filter(|global| !global.is_const || global.array_length.is_some())
             .filter_map(|global| {
@@ -86,7 +142,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
                     };
                     (global.name.clone(), element_size * length as u32)
                 })
-            })
+            }))
             .collect(),
         reserved: HashSet::new(),
         frame_size: 0,
@@ -138,6 +194,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     }
     generator.output.is_static = function.is_static;
     generator.output.is_weak = function.is_weak;
+    generator.output.static_locals = static_local_data;
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled

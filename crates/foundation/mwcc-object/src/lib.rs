@@ -69,6 +69,8 @@ pub struct DataObject<'a> {
     pub non_static_functions_before: usize,
     /// A WEAK object symbol (an inline function's emitted static local).
     pub is_weak: bool,
+    /// A real function's static local: the owning function index (numbering).
+    pub static_local_owner: Option<usize>,
 }
 
 /// An `R_PPC_ADDR32` relocation inside a data object: 4 bytes at `offset` resolve
