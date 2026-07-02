@@ -2491,98 +2491,219 @@ impl Generator {
         let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
             return Ok(false);
         };
-        if !else_body.is_empty() {
-            return Ok(false);
-        }
         let Some(location) = self.locations.get(returned.as_str()) else { return Ok(false) };
         if location.class != ValueClass::General || location.width != 32 {
             return Ok(false);
         }
         let home = location.register;
-        // The probed then-body vocabulary: up to THREE statements — scalar-global stores
-        // of register variables, and AT MOST ONE in-place reassignment of v (`mr` from a
-        // register variable, `addi` self-adjust, or `li` constant). A store AFTER a
-        // var-copy or constant reassignment value-forwards the source register instead
-        // (measured: `b=a; g=b;` stores r3, not r4) — that class defers to value tracking.
-        if then_body.is_empty() || then_body.len() > 3 {
+        let result = Eabi::general_result().number;
+        let Some(then_order) = self.conditional_reassign_plan(then_body, returned) else { return Ok(false) };
+
+        if else_body.is_empty() {
+            // SINGLE-SIDED: v keeps its incoming register; the merge is `mr r3,v`, empty
+            // (and folded to a conditional return) when v already lives in r3.
+            // -- commit (an Err past here defers the whole function; never Ok(false)) --
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let merge = if home == result { None } else { Some(self.fresh_label()) };
+            match merge {
+                Some(label) => self.emit_branch_conditional_to(options, condition_bit, label),
+                None => self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit }),
+            }
+            self.emit_conditional_reassign_body(&then_order, home)?;
+            if let Some(label) = merge {
+                self.bind_label(label);
+                self.output.instructions.push(Instruction::move_register(result, home));
+            }
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
+
+        // The if/ELSE lowerings need a side effect (a store) in some arm; pure-assign
+        // diamonds take the select layouts instead (coalesce into the else source /
+        // speculate into r0 in the compare latency slot — measured on sel/sel2; deferred).
+        let has_store = then_body.iter().chain(else_body).any(|statement| matches!(statement, Statement::Store { .. }));
+        if !has_store {
             return Ok(false);
+        }
+        let Some(else_order) = self.conditional_reassign_plan(else_body, returned) else { return Ok(false) };
+        let then_ends_assign = matches!(then_body.last(), Some(Statement::Assign { .. }));
+        let else_ends_assign = matches!(else_body.last(), Some(Statement::Assign { .. }));
+
+        if then_ends_assign && else_ends_assign {
+            // ARM-EXIT: both arms rewrite v last, so each arm computes the RETURN VALUE
+            // directly into r3 and returns — no merge, no re-test (measured: `addi
+            // r3,r4,1; blr` / an else of `b=a` with a in r3 emits NOTHING, its branch
+            // folding to `b<c>lr`). Two statements per arm at most: a THREE-statement
+            // arm takes the working-register diamond (through r0, an unconditional
+            // branch to a shared `mr r3,r0` merge — measured on x6) — deferred.
+            if then_body.len() > 2 || else_body.len() > 2 {
+                return Ok(false);
+            }
+            let then_empty = self.reassign_arm_is_empty(&then_order, result);
+            let else_empty = self.reassign_arm_is_empty(&else_order, result);
+            if then_empty && else_empty {
+                return Ok(false);
+            }
+            // -- commit --
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            if else_empty {
+                // The else returns v unchanged (already r3): branch-to-LR on !c.
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                self.emit_reassign_arm_into_result(&then_order, home, result)?;
+            } else if then_empty {
+                // The mirror: return unchanged on c, fall into the else arm.
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                self.emit_reassign_arm_into_result(&else_order, home, result)?;
+            } else {
+                let else_label = self.fresh_label();
+                self.emit_branch_conditional_to(options, condition_bit, else_label);
+                self.emit_reassign_arm_into_result(&then_order, home, result)?;
+                self.emit_epilogue_and_return();
+                self.bind_label(else_label);
+                self.emit_reassign_arm_into_result(&else_order, home, result)?;
+            }
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
+
+        // RE-TEST SPLIT: two independent guards — the then-arm, then the same compare
+        // RE-EMITTED with the branch sense inverted for the else-arm; the second guard
+        // folds to a conditional return when the merge is empty (the single-sided rules).
+        // -- commit --
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let skip_then = self.fresh_label();
+        self.emit_branch_conditional_to(options, condition_bit, skip_then);
+        self.emit_conditional_reassign_body(&then_order, home)?;
+        self.bind_label(skip_then);
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let inverted = options ^ 8;
+        let merge = if home == result { None } else { Some(self.fresh_label()) };
+        match merge {
+            Some(label) => self.emit_branch_conditional_to(inverted, condition_bit, label),
+            None => self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: inverted, condition_bit }),
+        }
+        self.emit_conditional_reassign_body(&else_order, home)?;
+        if let Some(label) = merge {
+            self.bind_label(label);
+            self.output.instructions.push(Instruction::move_register(result, home));
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// True when an arm emits no code: no stores, and its reassignment is a copy whose
+    /// source already lives in the result register.
+    fn reassign_arm_is_empty(&self, order: &[&Statement], result: u8) -> bool {
+        order.iter().all(|statement| match statement {
+            Statement::Assign { value: Expression::Variable(source), .. } => self.lookup_general(source) == Some(result),
+            _ => false,
+        })
+    }
+
+    /// Emit one arm-exit arm: stores, then the final reassignment computed DIRECTLY into
+    /// the result register (`mr r3,w` elided when w is r3; `addi r3,v,±C`; `li r3,C`).
+    fn emit_reassign_arm_into_result(&mut self, order: &[&Statement], home: u8, result: u8) -> Compilation<()> {
+        for statement in order {
+            match statement {
+                Statement::Store { target, value } => self.emit_store(target, value)?,
+                Statement::Assign { value, .. } => match value {
+                    Expression::Variable(source) => {
+                        let source = self.lookup_general(source).expect("gated: register-resident");
+                        if source != result {
+                            self.output.instructions.push(Instruction::move_register(result, source));
+                        }
+                    }
+                    Expression::Binary { operator, right, .. } => {
+                        let constant = constant_value(right).expect("gated: i16 constant") as i16;
+                        let immediate = if *operator == BinaryOperator::Subtract { -constant } else { constant };
+                        self.output.instructions.push(Instruction::AddImmediate { d: result, a: home, immediate });
+                    }
+                    other => {
+                        let constant = constant_value(other).expect("gated: i16 constant") as i16;
+                        self.output.instructions.push(Instruction::load_immediate(result, constant));
+                    }
+                },
+                _ => unreachable!("gated"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Gate and order one arm of the conditional-reassign form: up to THREE statements
+    /// — scalar-global stores of register variables and AT MOST ONE in-place
+    /// reassignment of `returned` (`mr` from a register variable, `addi` self-adjust,
+    /// or `li` constant) — in source order after the STORE-PAIR BREAK (mwcc pulls a
+    /// following reassignment between two adjacent stores; blocked when the jumped
+    /// store reads the reassigned variable). A store AFTER a var-copy or constant
+    /// reassignment value-forwards the source register instead (measured) — `None`.
+    fn conditional_reassign_plan<'a>(&self, body: &'a [Statement], returned: &str) -> Option<Vec<&'a Statement>> {
+        if body.is_empty() || body.len() > 3 {
+            return None;
         }
         let mut assign_count = 0usize;
         let mut stores_blocked = false;
-        for statement in then_body {
+        for statement in body {
             match statement {
                 Statement::Store { target, value } => {
                     if stores_blocked {
-                        return Ok(false);
+                        return None;
                     }
-                    let Expression::Variable(global) = target else { return Ok(false) };
+                    let Expression::Variable(global) = target else { return None };
                     if !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt)) {
-                        return Ok(false);
+                        return None;
                     }
                     if self.global_array_sizes.contains_key(global.as_str()) {
-                        return Ok(false);
+                        return None;
                     }
-                    let Expression::Variable(source) = value else { return Ok(false) };
-                    if self.lookup_general(source).is_none() {
-                        return Ok(false);
-                    }
+                    let Expression::Variable(source) = value else { return None };
+                    self.lookup_general(source)?;
                 }
                 Statement::Assign { name, value } => {
-                    if name != returned {
-                        return Ok(false);
+                    if name.as_str() != returned {
+                        return None;
                     }
                     assign_count += 1;
                     if assign_count > 1 {
-                        return Ok(false);
+                        return None;
                     }
                     match value {
                         Expression::Variable(source) => {
-                            if self.lookup_general(source).is_none() {
-                                return Ok(false);
-                            }
+                            self.lookup_general(source)?;
                             stores_blocked = true;
                         }
                         Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
-                            let reads_self = matches!(left.as_ref(), Expression::Variable(source) if source == returned);
+                            let reads_self = matches!(left.as_ref(), Expression::Variable(source) if source.as_str() == returned);
                             if !reads_self || constant_value(right).and_then(|value| i16::try_from(value).ok()).is_none() {
-                                return Ok(false);
+                                return None;
                             }
                         }
                         other if constant_value(other).and_then(|value| i16::try_from(value).ok()).is_some() => {
                             stores_blocked = true;
                         }
-                        _ => return Ok(false),
+                        _ => return None,
                     }
                 }
-                _ => return Ok(false),
+                _ => return None,
             }
         }
-        // Emission order: source order, then the STORE-PAIR BREAK — mwcc pulls a
-        // following reassignment between two adjacent stores (`g=b; h=a; b=b+2` emits
-        // stw; addi; stw — measured), blocked when the jumped store reads v (its stored
-        // value would change), and the merge move never participates.
-        let mut order: Vec<&Statement> = then_body.iter().collect();
+        let mut order: Vec<&Statement> = body.iter().collect();
         for index in 0..order.len().saturating_sub(2) {
             if !matches!((order[index], order[index + 1]), (Statement::Store { .. }, Statement::Store { .. })) {
                 continue;
             }
             if matches!(order[index + 2], Statement::Assign { .. }) {
                 let Statement::Store { value, .. } = order[index + 1] else { unreachable!() };
-                let jumped_reads_v = matches!(value, Expression::Variable(source) if source == returned);
+                let jumped_reads_v = matches!(value, Expression::Variable(source) if source.as_str() == returned);
                 if !jumped_reads_v {
                     order.swap(index + 1, index + 2);
                 }
             }
         }
-        // -- commit (an Err past here defers the whole function; never Ok(false)) --
-        let result = Eabi::general_result().number;
-        let (options, condition_bit) = self.emit_condition_test(condition)?;
-        // v already in r3 means an empty merge: the skip folds to a conditional return.
-        let merge = if home == result { None } else { Some(self.fresh_label()) };
-        match merge {
-            Some(label) => self.emit_branch_conditional_to(options, condition_bit, label),
-            None => self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit }),
-        }
+        Some(order)
+    }
+
+    /// Emit one planned arm: stores through the store path, reassignments in place.
+    fn emit_conditional_reassign_body(&mut self, order: &[&Statement], home: u8) -> Compilation<()> {
         for statement in order {
             match statement {
                 Statement::Store { target, value } => self.emit_store(target, value)?,
@@ -2604,12 +2725,7 @@ impl Generator {
                 _ => unreachable!("gated"),
             }
         }
-        if let Some(label) = merge {
-            self.bind_label(label);
-            self.output.instructions.push(Instruction::move_register(result, home));
-        }
-        self.emit_epilogue_and_return();
-        Ok(true)
+        Ok(())
     }
 
     pub(crate) fn try_constant_store_fill(&mut self, function: &Function) -> Compilation<bool> {
