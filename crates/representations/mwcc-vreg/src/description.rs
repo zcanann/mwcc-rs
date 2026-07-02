@@ -112,6 +112,13 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(D, G, d);
             if *a != 0 { visit(U, G, a); }
         }
+        // The update form reads AND rewrites the base; the Use keeps the base's
+        // range open (its post-update value extends through later uses anyway).
+        LoadWordWithUpdate { d, a, .. } => {
+            visit(D, G, d);
+            visit(U, G, a);
+            visit(D, G, a);
+        }
         LoadWordIndexed { d, a, b } | LoadByteZeroIndexed { d, a, b } | LoadHalfwordZeroIndexed { d, a, b }
         | LoadHalfwordAlgebraicIndexed { d, a, b } => {
             visit(D, G, d);

@@ -1715,6 +1715,10 @@ impl Generator {
         if self.try_frexp_family(function)? {
             return Ok(());
         }
+        // The raise family (a fn-pointer local live across calls) likewise.
+        if self.try_raise_family(function)? {
+            return Ok(());
+        }
         // Register locals feeding a frame-resident body (`int hx = *(int*)&x; return
         // f(hx);`) inline away first: the frame path cannot bind them, and once
         // substituted the body is the proven direct form (`return f(*(int*)&x);`).
@@ -5295,6 +5299,198 @@ impl Generator {
         }
         let result = Eabi::general_result().number;
         self.evaluate_tail(return_expr, function.return_type, result)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// The raise FAMILY (the call-class acceptance target): a function-pointer
+    /// local loaded from a static dispatch table, tested through guard blocks,
+    /// conditionally cleared, and finally CALLED — with the local and the int
+    /// parameter living in callee-saved registers across the calls. Every order
+    /// below is the measured 44-instruction signal.c raise() capture; the
+    /// registers are allocator-chosen (v_temp -> r31, v_sig -> r30 from the
+    /// call-crossing pool; the address chain's virtual takes the freed r3).
+    pub(crate) fn try_raise_family(&mut self, function: &Function) -> Compilation<bool> {
+        macro_rules! decline {
+            ($n:expr) => {{
+                if std::env::var("RAISE_DEBUG").is_ok() {
+                    eprintln!("raise decline {}", $n);
+                }
+                return Ok(false);
+            }};
+        }
+        if !function.guards.is_empty() || function.return_type != Type::Int {
+            decline!(1);
+        }
+        let [param] = function.parameters.as_slice() else { decline!(2) };
+        if param.parameter_type != Type::Int {
+            decline!(3);
+        }
+        let sig = param.name.as_str();
+        let [local] = function.locals.as_slice() else { decline!(4) };
+        if local.initializer.is_some() || local.array_length.is_some() {
+            decline!(5);
+        }
+        let temp = local.name.as_str();
+        if !matches!(&function.return_expression, Some(expression) if constant_value(expression) == Some(0)) {
+            decline!(6);
+        }
+        let [s0, s1, s2, s3, s4, s5] = function.statements.as_slice() else { decline!(7) };
+        let is_sig = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == sig);
+        let is_temp = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == temp);
+        // temp compared to a constant, through an optional cast (the source
+        // writes `(unsigned long) temp != 1`).
+        let temp_versus = |expression: &Expression, operator: BinaryOperator, constant: i64| -> bool {
+            let Expression::Binary { operator: found, left, right } = expression else { return false };
+            if *found != operator || constant_value(right) != Some(constant) {
+                return false;
+            }
+            match left.as_ref() {
+                Expression::Cast { operand, .. } => is_temp(operand),
+                other => is_temp(other),
+            }
+        };
+        // The table subscript `funcs[sig - 1]`, returning the table's name.
+        let table_of = |expression: &Expression| -> Option<String> {
+            let Expression::Index { base, index } = expression else { return None };
+            let Expression::Variable(table) = base.as_ref() else { return None };
+            let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = index.as_ref() else { return None };
+            (is_sig(left) && constant_value(right) == Some(1)).then(|| table.clone())
+        };
+        // s0: if (sig < 1 || sig > BOUND) return -1;
+        let Statement::If { condition, then_body, else_body } = s0 else { decline!(8) };
+        if !else_body.is_empty() || !matches!(then_body.as_slice(), [Statement::Return(Some(value))] if constant_value(value) == Some(-1)) {
+            decline!(9);
+        }
+        let Expression::Binary { operator: BinaryOperator::LogicalOr, left, right } = condition else { decline!(10) };
+        let low_test = matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Less, left, right }
+            if is_sig(left) && constant_value(right) == Some(1));
+        let Expression::Binary { operator: BinaryOperator::Greater, left: bound_left, right: bound_right } = right.as_ref() else {
+            decline!(11)
+        };
+        let Some(bound) = constant_value(bound_right).and_then(|bound| i16::try_from(bound).ok()) else { decline!(12) };
+        if !low_test || !is_sig(bound_left) {
+            decline!(13);
+        }
+        // s1: temp = funcs[sig - 1];
+        let Statement::Assign { name: s1_name, value: s1_value } = s1 else { decline!(14) };
+        let Some(table) = table_of(s1_value) else { decline!(15) };
+        if s1_name != temp {
+            decline!(16);
+        }
+        // s2: if ((cast) temp != 1) funcs[sig - 1] = 0;
+        let Statement::If { condition, then_body, else_body } = s2 else { decline!(17) };
+        if !else_body.is_empty() || !temp_versus(condition, BinaryOperator::NotEqual, 1) {
+            decline!(18);
+        }
+        let [Statement::Store { target, value }] = then_body.as_slice() else { decline!(19) };
+        if table_of(target).as_deref() != Some(table.as_str()) || !matches!(constant_value(value), Some(0)) {
+            decline!(20);
+        }
+        // s3: if ((cast) temp == 1 || (temp == 0 && sig == 1)) return 0;
+        let Statement::If { condition, then_body, else_body } = s3 else { decline!(21) };
+        if !else_body.is_empty() || !matches!(then_body.as_slice(), [Statement::Return(Some(value))] if constant_value(value) == Some(0)) {
+            decline!(22);
+        }
+        let Expression::Binary { operator: BinaryOperator::LogicalOr, left, right } = condition else { decline!(23) };
+        if !temp_versus(left, BinaryOperator::Equal, 1) {
+            decline!(24);
+        }
+        let Expression::Binary { operator: BinaryOperator::LogicalAnd, left: and_left, right: and_right } = right.as_ref() else {
+            decline!(25)
+        };
+        if !temp_versus(and_left, BinaryOperator::Equal, 0)
+            || !matches!(and_right.as_ref(), Expression::Binary { operator: BinaryOperator::Equal, left, right }
+                if is_sig(left) && constant_value(right) == Some(1))
+        {
+            decline!(26);
+        }
+        // s4: if (temp == 0) exit(0);
+        let Statement::If { condition, then_body, else_body } = s4 else { decline!(27) };
+        if !else_body.is_empty() || !temp_versus(condition, BinaryOperator::Equal, 0) {
+            decline!(28);
+        }
+        let [Statement::Expression(Expression::Call { name: exit_name, arguments })] = then_body.as_slice() else { decline!(29) };
+        if arguments.len() != 1 || constant_value(&arguments[0]) != Some(0) {
+            decline!(30);
+        }
+        let exit_name = exit_name.clone();
+        // s5: temp(sig);
+        if !matches!(s5, Statement::Expression(Expression::Call { name, arguments })
+            if name == temp && arguments.len() == 1 && is_sig(&arguments[0]))
+        {
+            decline!(31);
+        }
+
+
+        // ---- emission (the measured 44-instruction schedule) ----
+        self.frame_size = 16;
+        self.non_leaf = true;
+        self.epilogue_lr_before_gprs = true;
+        let virtual_temp = self.fresh_virtual_general();
+        let virtual_sig = self.fresh_virtual_general();
+        self.callee_saved = vec![virtual_temp, virtual_sig];
+        let plan = mwcc_vreg::FramePlan::sized_for(vec![virtual_temp, virtual_sig]);
+        self.output.instructions.extend(plan.prologue());
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(Instruction::move_register(virtual_sig, result));
+        let taken = self.fresh_label();
+        let load = self.fresh_label();
+        let skip_store = self.fresh_label();
+        let return_zero = self.fresh_label();
+        let after = self.fresh_label();
+        let call_label = self.fresh_label();
+        let epilogue = self.fresh_label();
+        // RANGE: blt into the taken block, ble past it to the load.
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: virtual_sig, immediate: 1 });
+        self.emit_branch_conditional_to(12, 0, taken);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: virtual_sig, immediate: bound });
+        self.emit_branch_conditional_to(4, 1, load);
+        self.bind_label(taken);
+        self.output.instructions.push(Instruction::load_immediate(result, -1));
+        self.emit_branch_to(epilogue);
+        // LOAD: the address chain in a fresh virtual (takes the freed r3), the
+        // element folded through lwzu's pre-decrement.
+        self.bind_label(load);
+        let address = self.fresh_virtual_general();
+        self.emit_address_high(address, &table);
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: virtual_sig, shift: 2 });
+        self.record_relocation(RelocationKind::Addr16Lo, &table);
+        self.output.instructions.push(Instruction::AddImmediate { d: address, a: address, immediate: 0 });
+        self.output.instructions.push(Instruction::Add { d: address, a: address, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::LoadWordWithUpdate { d: virtual_temp, a: address, offset: -4 });
+        // STORE-IF: clear the slot through the updated base.
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: virtual_temp, immediate: 1 });
+        self.emit_branch_conditional_to(12, 2, skip_store);
+        self.output.instructions.push(Instruction::load_immediate(GENERAL_SCRATCH, 0));
+        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: address, offset: 0 });
+        // GUARD3: the mixed ==||(&&) chain sharing one cold return block.
+        self.bind_label(skip_store);
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: virtual_temp, immediate: 1 });
+        self.emit_branch_conditional_to(12, 2, return_zero);
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: virtual_temp, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, after);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: virtual_sig, immediate: 1 });
+        self.emit_branch_conditional_to(4, 2, after);
+        self.bind_label(return_zero);
+        self.output.instructions.push(Instruction::load_immediate(result, 0));
+        self.emit_branch_to(epilogue);
+        // CALL-IF: branch over the exit call.
+        self.bind_label(after);
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: virtual_temp, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, call_label);
+        self.output.instructions.push(Instruction::load_immediate(result, 0));
+        self.record_relocation(RelocationKind::Rel24, &exit_name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: exit_name });
+        // TAIL: the dispatch through ctr.
+        self.bind_label(call_label);
+        self.output.instructions.push(Instruction::move_register(12, virtual_temp));
+        self.output.instructions.push(Instruction::move_register(result, virtual_sig));
+        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
+        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+        self.output.instructions.push(Instruction::load_immediate(result, 0));
+        self.bind_label(epilogue);
+        self.output.anonymous_label_bump += 13;
         self.emit_epilogue_and_return();
         Ok(true)
     }
