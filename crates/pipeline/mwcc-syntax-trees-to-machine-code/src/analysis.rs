@@ -133,7 +133,9 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
                 + count_name_occurrences(when_true, name)
                 + count_name_occurrences(when_false, name)
         }
-        Expression::Call { arguments, .. } => arguments.iter().map(|argument| count_name_occurrences(argument, name)).sum(),
+        Expression::Call { name: callee, arguments } => {
+            usize::from(callee == name) + arguments.iter().map(|argument| count_name_occurrences(argument, name)).sum::<usize>()
+        }
         Expression::Assign { target, value } => count_name_occurrences(target, name) + count_name_occurrences(value, name),
         Expression::Comma { left, right } => count_name_occurrences(left, name) + count_name_occurrences(right, name),
     }
@@ -417,7 +419,11 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
                 || reads_register(when_true, registers)
                 || reads_register(when_false, registers)
         }
-        Expression::Call { arguments, .. } => arguments.iter().any(|argument| reads_register(argument, registers)),
+        // A call THROUGH a register-resident name (a function-pointer local/param) READS
+        // that name — the callee NAME counts, not just the arguments.
+        Expression::Call { name, arguments } => {
+            registers.contains(name.as_str()) || arguments.iter().any(|argument| reads_register(argument, registers))
+        }
         Expression::Assign { target, value } => {
             reads_register(target, registers) || reads_register(value, registers)
         }

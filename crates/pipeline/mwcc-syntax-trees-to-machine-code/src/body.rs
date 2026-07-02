@@ -154,6 +154,42 @@ fn remove_dead_locals(function: &Function) -> Option<Function> {
     Some(Function { locals: kept, ..function.clone() })
 }
 
+/// Fold a pure function-pointer alias local into the single call THROUGH it: `F t = gf;
+/// t();` compiles exactly like `gf();` (mwcc loads the pointer right before `mtctr`
+/// either way — the load position is unchanged). Only the exactly-safe shape folds: the
+/// alias's ONLY use is as the call target of the FIRST statement (a later call-through
+/// would observe a possibly-rewritten global; a read anywhere else needs the register
+/// allocation the fold erases).
+fn inline_first_call_target_alias(function: &Function) -> Option<Function> {
+    if function.locals.len() != 1 {
+        return None;
+    }
+    let local = &function.locals[0];
+    if local.is_static {
+        return None;
+    }
+    let Some(Expression::Variable(target)) = &local.initializer else {
+        return None;
+    };
+    let Some(Statement::Expression(Expression::Call { name, arguments })) = function.statements.first() else {
+        return None;
+    };
+    if name != &local.name {
+        return None;
+    }
+    let reads_local = |expression: &Expression| expression_reads_name(expression, &local.name);
+    if arguments.iter().any(reads_local)
+        || function.statements[1..].iter().any(|statement| statement_references_name(statement, &local.name))
+        || function.guards.iter().any(|guard| reads_local(&guard.condition) || reads_local(&guard.value))
+        || function.return_expression.as_ref().is_some_and(reads_local)
+    {
+        return None;
+    }
+    let mut statements = function.statements.clone();
+    statements[0] = Statement::Expression(Expression::Call { name: target.clone(), arguments: arguments.clone() });
+    Some(Function { locals: Vec::new(), statements, ..function.clone() })
+}
+
 /// Fold single-assignment, return-only locals (whose initializers make no call) into
 /// the return expression, dropping them — so `int z = x + 1; g(); return z;` becomes
 /// the equivalent `g(); return x + 1;`, which the parameter-preservation path compiles.
@@ -573,6 +609,7 @@ fn inline_single_call_result(function: &Function) -> Option<Function> {
 impl Generator {
 
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
+        self.known_locals = function.locals.iter().map(|local| local.name.clone()).collect();
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         for parameter in &function.parameters {
@@ -1282,6 +1319,11 @@ impl Generator {
         if let Some(hoisted) = self.hoist_order_independent_leading_guards(function) {
             return self.evaluate_body(&hoisted);
         }
+        // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
+        // folds to the direct `gf();` (identical bytes: the pointer loads at the call).
+        if let Some(folded) = inline_first_call_target_alias(function) {
+            return self.evaluate_body(&folded);
+        }
         // Returning a struct BY VALUE (`struct S f(...) { return s; }`) uses the struct-return
         // ABI — a small struct in r3:r4, a larger one via a hidden pointer argument — which is
         // not modeled. Defer rather than emit a bare `blr` that drops the result (a miscompile:
@@ -1783,6 +1825,10 @@ impl Generator {
             }
             // `int t = gi; g(); return t;` — a memory-loaded local carried across calls in r31.
             if self.try_callee_saved_memory_local(function)? {
+                return Ok(());
+            }
+            // `F t = gf; if (!t) return; t();` — a guarded call through a global fn-pointer.
+            if self.try_guarded_global_pointer_call(function)? {
                 return Ok(());
             }
             // Parameters live across the call go in callee-saved registers (r31
@@ -3496,6 +3542,68 @@ impl Generator {
     /// fetch) interleaves the address build into the prologue: `stwu; mflr; lis r4;
     /// stw r0; slwi r0,i; addi r3,r4; stw r31; lwzx r31,r3,r0; bl; …`. Call arguments
     /// must be constants (a register argument after a call reads clobbered state).
+    /// A guarded call through a GLOBAL function pointer held in a local (the signal.c
+    /// dispatch tail): `F t = gf; if (!t) return; t();` loads the pointer into r12,
+    /// tests it, branches to the shared epilogue when the guard fires, and calls
+    /// through — `stwu; mflr; stw r0; lwz r12,gf; cmplwi r12,0; beq EPILOGUE; mtctr;
+    /// bctrl; EPILOGUE: lwz r0; mtlr; addi; blr`. Zero-argument, void, single call.
+    fn try_guarded_global_pointer_call(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || function.locals.len() != 1
+            || function.return_expression.is_some()
+        {
+            return Ok(false);
+        }
+        let local = &function.locals[0];
+        if local.is_static {
+            return Ok(false);
+        }
+        let Some(Expression::Variable(global)) = &local.initializer else {
+            return Ok(false);
+        };
+        if !self.globals.contains_key(global.as_str()) || self.global_array_sizes.contains_key(global.as_str()) {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }, Statement::Expression(Expression::Call { name, arguments })] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !matches!(then_body.as_slice(), [Statement::Return(None)]) || !else_body.is_empty() {
+            return Ok(false);
+        }
+        if name != &local.name || !arguments.is_empty() {
+            return Ok(false);
+        }
+
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.emit_global_load_value(global, 12)?;
+        // The pointer local is UNSIGNED (cmplwi) and lives in r12 for the test.
+        self.locations.insert(
+            local.name.clone(),
+            Location { class: ValueClass::General, register: 12, signed: false, width: 32, pointee: None, stride: None },
+        );
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        // The guard branches ON TRUE straight to the shared epilogue (the bare-void fold).
+        // The branch label and the staged pointer load advance the anonymous-`@N` counter.
+        self.output.anonymous_label_bump = 3;
+        let epilogue_branch = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: options ^ 8, condition_bit, target: 0 });
+        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
+        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+        let epilogue_label = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[epilogue_branch] {
+            *target = epilogue_label;
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     fn try_callee_saved_memory_local(&mut self, function: &Function) -> Compilation<bool> {
         if !function.guards.is_empty()
             || function.locals.len() != 1

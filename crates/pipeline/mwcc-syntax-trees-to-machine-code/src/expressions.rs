@@ -2771,6 +2771,13 @@ impl Generator {
             }
             return Ok(());
         }
+        // A call through a DECLARED LOCAL that never got a register (a function-pointer
+        // local no path allocated) must not fall through to the direct call below — that
+        // would emit `bl <local>` with a relocation against the local's NAME (a link
+        // error or a call to an unrelated symbol). Defer instead.
+        if self.known_locals.contains(name) {
+            return Err(Diagnostic::error("a call through an unallocated function-pointer local is not supported yet (roadmap)"));
+        }
         self.emit_arguments(arguments, name)?;
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });

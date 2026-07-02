@@ -89,6 +89,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
         narrow_truncation_context: false,
+        known_locals: std::collections::HashSet::new(),
         call_return_types: call_return_types.clone(),
         call_parameter_types: call_parameter_types.clone(),
     };

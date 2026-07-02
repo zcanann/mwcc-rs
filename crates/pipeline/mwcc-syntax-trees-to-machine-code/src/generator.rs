@@ -145,6 +145,10 @@ pub(crate) struct Generator {
     /// truncation makes the extension redundant. Only enabled for truncation-safe
     /// operators with leaf operands, never for div/mod/shift-right.
     pub(crate) narrow_truncation_context: bool,
+    /// The current function's declared local names — a CALL through one of these that
+    /// never got a register must defer (the fallback would emit a direct `bl <local>`,
+    /// a relocation against the local's name).
+    pub(crate) known_locals: std::collections::HashSet<String>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
