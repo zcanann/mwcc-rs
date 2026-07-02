@@ -450,10 +450,23 @@ impl Parser {
                     // itself, so unwrap one dereference level here (the index_stride check
                     // above already saw the original shape). Without this the base would be
                     // `*p` and codegen would emit a spurious extra load.
+                    let mut base_offset = 0u16;
+                    let mut base_stride: Option<u16> = None;
                     expression = match expression {
                         Expression::Dereference { pointer } => *pointer,
+                        // An EMBEDDED struct-value member folds into its base:
+                        // `p->state.eof` is ONE access at offset(state)+offset(eof)
+                        // — a struct VALUE member is storage, not a pointer, so no
+                        // intermediate load exists.
+                        Expression::Member { base, offset: outer_offset, member_type: Type::Struct { .. }, index_stride: outer_stride } => {
+                            base_offset = outer_offset;
+                            base_stride = outer_stride;
+                            *base
+                        }
                         other => other,
                     };
+                    let offset = offset + base_offset;
+                    let index_stride = base_stride.or(index_stride);
                     if let Some((bit_offset, width)) = bit_field {
                         // A bit-field read is the containing unit load shifted+masked to
                         // the field's bits: `(load >> shift) & mask`, which lowers to

@@ -745,7 +745,12 @@ impl Parser {
                     }
                 }
                 self.expect(Token::Semicolon)?;
-                bit_unit = None;
+                if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
+                    // mwcc TRIMS the container to the bytes its bits use
+                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
+                    // -> +2; the container type still sets the alignment).
+                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                }
                 continue;
             }
             // An inline union member `union [Tag] { … } [name];`. An ANONYMOUS one
@@ -764,7 +769,12 @@ impl Parser {
                 let inner_align = (inner.align as u16).max(1);
                 let member_name = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
                 self.expect(Token::Semicolon)?;
-                bit_unit = None;
+                if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
+                    // mwcc TRIMS the container to the bytes its bits use
+                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
+                    // -> +2; the container type still sets the alignment).
+                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                }
                 match (tag, member_name) {
                     // A named union *value* member (`union {…} u;`) needs union-value
                     // access — defer rather than mis-place it.
@@ -812,9 +822,14 @@ impl Parser {
                         self.expect(Token::BracketClose)?;
                         count = count.saturating_mul(extra);
                     }
+                    if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
+                    // mwcc TRIMS the container to the bytes its bits use
+                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
+                    // -> +2; the container type still sets the alignment).
+                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                }
                     alignment_max = alignment_max.max(alignment);
                     offset = offset.div_ceil(alignment) * alignment;
-                    bit_unit = None;
                     layout.fields.insert(field_name, StructField { member_type: element, offset, struct_tag: None, array_element: Some(pointee_of(element)?), bit_field: None });
                     offset += count.saturating_mul(element_size);
                     if !self.eat_keyword(Token::Comma) {
@@ -851,7 +866,12 @@ impl Parser {
                             _ => {}
                         }
                     }
-                    bit_unit = None;
+                    if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
+                    // mwcc TRIMS the container to the bytes its bits use
+                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
+                    // -> +2; the container type still sets the alignment).
+                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                }
                     let alignment = 4u16;
                     alignment_max = alignment_max.max(alignment);
                     offset = offset.div_ceil(alignment) * alignment;
@@ -932,7 +952,12 @@ impl Parser {
                     continue;
                 }
                 // An ordinary member closes any open bit-field unit.
-                bit_unit = None;
+                if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
+                    // mwcc TRIMS the container to the bytes its bits use
+                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
+                    // -> +2; the container type still sets the alignment).
+                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                }
                 // An array member `type name[N]` occupies `N` elements; its access
                 // yields the array address rather than a loaded value.
                 let mut array_element = None;
