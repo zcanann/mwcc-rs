@@ -21,3 +21,5 @@ tail_pair_hx_live	extern int g; void f(double x, int* eptr, int ix, int hx) { *e
 tail_pair_root_swap	void f(double x, int* eptr, int ix, int hx) { *eptr += (ix & 0x0ff0) - 1022; *(int*)&x = (hx >> 12) | 0x3fe00000; }
 tail_pair_depth5	void f(double x, int* eptr, int ix, int hx, int k) { *eptr += ((ix >> 20) + k) - 1022; *(int*)&x = (hx & 0x800fffff) | 0x3fe00000; }
 tail_pair_equal3	void f(double x, int* eptr, int ix, int hx) { *eptr = (ix >> 20) - 1022; *(int*)&x = (hx & 0x800fffff) | 0x3fe00000; }
+clean_load_pair	extern int g; extern int h; void f(int* eptr, int ix, int hx) { g = (ix >> 20) + *eptr; h = (hx & 0x0ff0) | 4096; }
+clean_alu_pair	extern int g; extern int h; void f(int* eptr, int ix, int hx, int k) { g = (ix >> 20) + k; h = (hx & 0x0ff0) | 4096; }

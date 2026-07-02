@@ -1,0 +1,7 @@
+srawi r3,r4,20
+rlwinm r0,r5,0,20,27
+add r3,r3,r6
+ori r0,r0,4096
+stw r3,0(0)
+stw r0,0(0)
+blr

@@ -91,15 +91,41 @@ pub struct Model {
     pub kind_rank: [u8; 3],
     /// Weight (critical path) position: true = before kind in the key.
     pub weight_before_kind: bool,
+    /// The selection strategy (global key vs chain round-robin).
+    pub strategy: Strategy,
 }
 
-/// The frozen model (v3): dual-issue, completion-gated, critical-path first.
+/// How the next ops are chosen: one global priority key, or per-CHAIN
+/// round-robin (a chain = the ops feeding one sink), which several captures'
+/// alternation patterns suggest.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Strategy {
+    GlobalKey,
+    ChainRobin { lead: LeadRule, offer_non_load_first: bool },
+}
+
+/// Which chain leads a round-robin step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LeadRule {
+    /// The latency-heaviest chain always leads.
+    Heaviest,
+    /// Load-free chains lead load-bearing ones; weight breaks ties.
+    LoadFreeFirst,
+    /// The lead alternates each step, starting from the LoadFreeFirst pick.
+    Alternating,
+}
+
+/// The frozen model (v4, fitter-selected at 9/10): dual-issue, completion-
+/// gated, critical-path first, with STORES ranking before alu before loads on
+/// weight ties (the fitter's discovery — explains the equal-chain stfd
+/// placement). The one open fixture is the frame-context tail_pair anomaly.
 pub const FROZEN: Model = Model {
     issue_width: 2,
     gate_on_complete: true,
     gated_last: false,
-    kind_rank: [0, 0, 0],
+    kind_rank: [1, 2, 0],
     weight_before_kind: true,
+    strategy: Strategy::GlobalKey,
 };
 
 /// Linearize the DAG with the frozen model.
@@ -173,9 +199,24 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
         })
         .collect();
 
+    // Chain id = the sink each node ultimately feeds (self for sinks); chain
+    // weight = the heaviest path within it; chain has_load per member kinds.
+    let chain: Vec<usize> = (0..count)
+        .map(|node| (node..count).find(|&sink| (node == sink || reaches[node][sink]) && (sink + 1..count).all(|later| !reaches[sink][later])).unwrap_or(node))
+        .collect();
+    let chain_weight: Vec<u32> = (0..count).map(|node| {
+        let id = chain[node];
+        (0..count).filter(|&other| chain[other] == id).map(|other| weight[other]).max().unwrap_or(0)
+    }).collect();
+    let chain_has_load: Vec<bool> = (0..count).map(|node| {
+        let id = chain[node];
+        (0..count).any(|other| chain[other] == id && nodes[other].kind == OpKind::Load)
+    }).collect();
+
     let mut order = Vec::with_capacity(count);
     let mut issued_at: Vec<Option<u32>> = vec![None; count];
     let mut time = 0u32;
+    let mut robin_flip = false;
     while order.len() < count {
         let mut ready: Vec<usize> = (0..count)
             .filter(|&candidate| issued_at[candidate].is_none())
@@ -209,8 +250,45 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 (gate, kind, inverse_weight, candidate)
             }
         };
-        ready.sort_by_key(|&candidate| rank(candidate));
-        for &pick in ready.iter().take(model.issue_width) {
+        match model.strategy {
+            Strategy::GlobalKey => {
+                ready.sort_by_key(|&candidate| rank(candidate));
+                ready.truncate(model.issue_width);
+            }
+            Strategy::ChainRobin { lead, offer_non_load_first } => {
+                // Each chain offers ONE ready op; the lead chain's offer goes first.
+                let mut offers: Vec<usize> = Vec::new();
+                let mut seen_chains: Vec<usize> = Vec::new();
+                let mut by_chain = ready.clone();
+                by_chain.sort_by_key(|&candidate| {
+                    let load = if offer_non_load_first && nodes[candidate].kind == OpKind::Load { 1u8 } else { 0 };
+                    (chain[candidate], load, candidate)
+                });
+                for &candidate in &by_chain {
+                    if !seen_chains.contains(&chain[candidate]) {
+                        seen_chains.push(chain[candidate]);
+                        offers.push(candidate);
+                    }
+                }
+                let lead_key = |candidate: &usize| -> (u8, std::cmp::Reverse<u32>, usize) {
+                    let load_penalty = if chain_has_load[*candidate] { 1u8 } else { 0 };
+                    match lead {
+                        LeadRule::Heaviest => (0, std::cmp::Reverse(chain_weight[*candidate]), chain[*candidate]),
+                        LeadRule::LoadFreeFirst | LeadRule::Alternating => {
+                            (load_penalty, std::cmp::Reverse(chain_weight[*candidate]), chain[*candidate])
+                        }
+                    }
+                };
+                offers.sort_by_key(lead_key);
+                if lead == LeadRule::Alternating && robin_flip {
+                    offers.reverse();
+                }
+                robin_flip = !robin_flip;
+                offers.truncate(model.issue_width);
+                ready = offers;
+            }
+        }
+        for &pick in &ready {
             issued_at[pick] = Some(time);
             order.push(pick);
         }
@@ -307,6 +385,31 @@ mod tests {
                 vec!["a1", "a2", "a3", "st1", "st2", "st3"],
             ),
             (
+                "clean_load_pair",
+                vec![
+                    DagNode::new("lwz", LOAD).reads(&[1]).writes(&[10]),
+                    DagNode::new("srawi", ALU).reads(&[2]).writes(&[11]),
+                    DagNode::new("add", ALU).reads(&[10, 11]).writes(&[12]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[12]),
+                    DagNode::new("rlwinm", ALU).reads(&[3]).writes(&[20]),
+                    DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec!["lwz", "srawi", "rlwinm", "add", "ori", "stw_g", "stw_h"],
+            ),
+            (
+                "clean_alu_pair",
+                vec![
+                    DagNode::new("srawi", ALU).reads(&[2]).writes(&[11]),
+                    DagNode::new("add", ALU).reads(&[11, 4]).writes(&[12]),
+                    DagNode::new("stw_g", STORE).kind(St).reads(&[12]),
+                    DagNode::new("rlwinm", ALU).reads(&[3]).writes(&[20]),
+                    DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
+                    DagNode::new("stw_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec!["srawi", "rlwinm", "add", "ori", "stw_g", "stw_h"],
+            ),
+            (
                 "tail_pair",
                 vec![
                     DagNode::new("srawi", ALU).reads(&[1]).writes(&[10]),
@@ -360,7 +463,16 @@ mod tests {
                             [0, 0, 1],
                             [1, 0, 0],
                         ] {
-                            let model = Model { issue_width, gate_on_complete, gated_last, kind_rank, weight_before_kind };
+                        for strategy in [
+                            Strategy::GlobalKey,
+                            Strategy::ChainRobin { lead: LeadRule::Heaviest, offer_non_load_first: false },
+                            Strategy::ChainRobin { lead: LeadRule::Heaviest, offer_non_load_first: true },
+                            Strategy::ChainRobin { lead: LeadRule::LoadFreeFirst, offer_non_load_first: false },
+                            Strategy::ChainRobin { lead: LeadRule::LoadFreeFirst, offer_non_load_first: true },
+                            Strategy::ChainRobin { lead: LeadRule::Alternating, offer_non_load_first: false },
+                            Strategy::ChainRobin { lead: LeadRule::Alternating, offer_non_load_first: true },
+                        ] {
+                            let model = Model { issue_width, gate_on_complete, gated_last, kind_rank, weight_before_kind, strategy };
                             let passed = shapes
                                 .iter()
                                 .filter(|(_, nodes, expected)| {
@@ -372,9 +484,24 @@ mod tests {
                             if passed == shapes.len() {
                                 winners.push(model);
                             }
+                            if passed == shapes.len() - 1 {
+                                let failing: Vec<&str> = shapes
+                                    .iter()
+                                    .filter(|(_, nodes, expected)| {
+                                        let order: Vec<&str> = linearize_with(nodes, model)
+                                            .into_iter()
+                                            .map(|index| nodes[index].label)
+                                            .collect();
+                                        order != *expected
+                                    })
+                                    .map(|(name, _, _)| *name)
+                                    .collect();
+                                println!("near: fails {:?} — {:?}", failing, model.strategy);
+                            }
                             if passed > best.0 {
                                 best = (passed, Some(model));
                             }
+                        }
                         }
                     }
                 }
