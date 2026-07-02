@@ -125,22 +125,53 @@ impl Generator {
         // the prologue latency slot (a later guard materializes its lis inline —
         // measured). In a CHAIN every test must be an unmasked lis/addis compare
         // sharing one loaded word; other kinds are single-guard only.
-        let guard_tests: Option<Vec<(GuardTest, f64)>> = match guard_plan {
+        let guard_tests: Option<Vec<(Vec<GuardTest>, f64)>> = match guard_plan {
             None => None,
             Some(plans) => {
                 let mut tests = Vec::new();
                 let chained = plans.len() > 1;
                 for (condition, value) in plans {
-                    let test = self.classify_guard_test(condition);
+                    // `T1 || T2` inside ONE guard is a DISJUNCTION: the first test
+                    // branches INTO the value block on TRUE, the second skips past
+                    // it. Only a lone guard takes it (chains of disjunctions are
+                    // unprobed), and only the two measured pairings emit.
+                    let disjuncts: Vec<GuardTest> = match condition {
+                        Expression::Binary { operator: BinaryOperator::LogicalOr, left, right } => {
+                            if chained {
+                                return Ok(false);
+                            }
+                            vec![self.classify_guard_test(left), self.classify_guard_test(right)]
+                        }
+                        _ => vec![self.classify_guard_test(condition)],
+                    };
                     if chained
                         && !matches!(
-                            test,
-                            GuardTest::LisCompare { mask_top_bit: false, .. } | GuardTest::AddisZero { .. }
+                            disjuncts.as_slice(),
+                            [GuardTest::LisCompare { mask_top_bit: false, .. } | GuardTest::AddisZero { .. }]
                         )
                     {
                         return Ok(false);
                     }
-                    tests.push((test, value));
+                    if disjuncts.len() > 1 {
+                        // The measured pairings: a lis compare, then EITHER an or.-zero
+                        // over the SAME (offset, mask) word plus a second word, OR a
+                        // second lis compare of the same unmasked word.
+                        let ok = matches!(
+                            disjuncts.as_slice(),
+                            [GuardTest::LisCompare { offset: o1, mask_top_bit: m1, .. },
+                             GuardTest::OrZero { left_offset, mask_top_bit: m2, .. }]
+                                if o1 == left_offset && m1 == m2
+                        ) || matches!(
+                            disjuncts.as_slice(),
+                            [GuardTest::LisCompare { offset: o1, mask_top_bit: false, .. },
+                             GuardTest::LisCompare { offset: o2, mask_top_bit: false, .. }]
+                                if o1 == o2
+                        );
+                        if !ok {
+                            return Ok(false);
+                        }
+                    }
+                    tests.push((disjuncts, value));
                 }
                 Some(tests)
             }
@@ -148,7 +179,9 @@ impl Generator {
         // Prologue: allocate the frame, save the link register if non-leaf, then
         // spill the address-taken parameters to their slots.
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        if let Some((GuardTest::LisCompare { high, .. }, _)) = guard_tests.as_deref().and_then(<[_]>::first) {
+        if let Some(GuardTest::LisCompare { high, .. }) =
+            guard_tests.as_deref().and_then(<[_]>::first).and_then(|(disjuncts, _)| disjuncts.first())
+        {
             self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *high));
         }
         if non_leaf {
@@ -171,9 +204,47 @@ impl Generator {
             let count = tests.len();
             let epilogue = self.fresh_label();
             let mut loaded: Option<i16> = None;
-            for (index, (test, guard_value)) in tests.into_iter().enumerate() {
+            for (index, (disjuncts, guard_value)) in tests.into_iter().enumerate() {
                 let word = Eabi::general_result().number;
-                let (options, condition_bit) = match test {
+                if disjuncts.len() > 1 {
+                    // The disjunction: all loads up front (the second word rides the
+                    // first's load latency, in r4 — r0 holds the hoisted constant),
+                    // mask after, first test branches INTO the value on TRUE, the
+                    // second skips past it (measured).
+                    let value_label = self.fresh_label();
+                    match disjuncts.as_slice() {
+                        [GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, .. },
+                         GuardTest::OrZero { right_offset, options: or_options, condition_bit: or_bit, .. }] => {
+                            const SECOND_WORD: u8 = 4; // r4
+                            self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
+                            self.output.instructions.push(Instruction::LoadWord { d: SECOND_WORD, a: 1, offset: *right_offset });
+                            if *mask_top_bit {
+                                self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
+                            }
+                            self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                            self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
+                            self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: SECOND_WORD });
+                            self.emit_branch_conditional_to(*or_options, *or_bit, epilogue);
+                        }
+                        [GuardTest::LisCompare { offset, options, condition_bit, .. },
+                         GuardTest::LisCompare { options: second_options, condition_bit: second_bit, high: second_high, .. }] => {
+                            self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
+                            self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                            self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
+                            self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *second_high));
+                            self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                            self.emit_branch_conditional_to(*second_options, *second_bit, epilogue);
+                        }
+                        _ => unreachable!("gated at classification"),
+                    }
+                    self.bind_label(value_label);
+                    self.evaluate(&Expression::FloatLiteral(guard_value), Type::Double, Eabi::float_result().number)?;
+                    // A disjunction advances the label counter 3 — two tests sharing
+                    // one value block (measured @N: real @8 vs @9 at +4).
+                    self.output.anonymous_label_bump += 3;
+                    continue;
+                }
+                let (options, condition_bit) = match disjuncts.into_iter().next().expect("one disjunct") {
                     GuardTest::General(condition) => self.emit_condition_test(condition)?,
                     GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, high } => {
                         // The first guard's lis is hoisted into the prologue; a later

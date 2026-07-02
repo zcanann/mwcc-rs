@@ -218,7 +218,16 @@ fn is_punned_frame_read(expression: &Expression) -> bool {
             _ => false,
         }
     }
-    matches!(expression, Expression::Dereference { pointer } if is_address_of_variable(pointer))
+    match expression {
+        Expression::Dereference { pointer } => is_address_of_variable(pointer),
+        // The masked word (`hx & 0x7fffffff`) shares its punned load AND the mask
+        // through the guard-chain emitter, so it is dedup-safe in guard conditions
+        // the same way the bare read is.
+        Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
+            constant_value(right).is_some() && is_punned_frame_read(left)
+        }
+        _ => false,
+    }
 }
 
 fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
@@ -272,7 +281,9 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
                 .map(|guard| count_name_occurrences(&guard.value, &local.name))
                 .sum::<usize>()
             + count_name_occurrences(return_expression, &local.name);
-        let dedup_safe = is_punned_frame_read(initializer) && other_reads == 0;
+        // The pun check runs on the SUBSTITUTED initializer — `int ix = hx & C;`
+        // resolves through hx's own punned read first.
+        let dedup_safe = is_punned_frame_read(&crate::value_tracking::substitute(initializer, &values)) && other_reads == 0;
         if other_reads + if dedup_safe { 0 } else { guard_condition_reads } > 1 {
             return None;
         }
