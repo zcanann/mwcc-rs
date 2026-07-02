@@ -409,10 +409,18 @@ impl Generator {
             return Ok(*pointee);
         }
         let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("pointer access needs a pointer variable (roadmap)"))?;
-        self.locations
-            .get(name)
-            .and_then(|location| location.pointee)
-            .ok_or_else(|| Diagnostic::error(format!("'{name}' is not a pointer")))
+        if let Some(pointee) = self.locations.get(name).and_then(|location| location.pointee) {
+            return Ok(pointee);
+        }
+        // A global ARRAY's name classifies by its element type (`map[i]` over
+        // `unsigned char map[256]` reads a byte) — the subscript emitters carry
+        // the addressing; this is only the width/signedness classification.
+        if self.global_array_sizes.contains_key(name) {
+            if let Some(pointee) = self.globals.get(name).copied().and_then(crate::expressions::pointee_of_type) {
+                return Ok(pointee);
+            }
+        }
+        Err(Diagnostic::error(format!("'{name}' is not a pointer")))
     }
 
     /// (register, width-bits, signed) for a general-register leaf variable.

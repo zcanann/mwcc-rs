@@ -1682,8 +1682,9 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("a global array of this element type is not supported yet (roadmap)"))?;
         // The base materializes into `destination` and is then its own load base, so
         // `destination` cannot be the scratch r0 (an `addi`/load based on r0 reads
-        // literal zero, not the register).
-        if destination == GENERAL_SCRATCH {
+        // literal zero, not the register). A BYTE element's base is a separate
+        // (virtual) register, so its variable-index path below tolerates r0.
+        if destination == GENERAL_SCRATCH && !(pointee.size() == 1 && constant_value(index).is_none()) {
             return Err(Diagnostic::error("a global-array subscript into the scratch register is not supported yet (roadmap)"));
         }
         // A constant index folds into the load displacement.
@@ -1732,8 +1733,34 @@ impl Generator {
         // (mwcc: `slwi r0,r4,2; lis r3,g@ha; addi r3,r3,g@l; lfsx f1,r3,r0`).
         let size = pointee.size();
         if size == 1 {
-            // An unscaled `char` element risks clobbering the index — defer.
-            return Err(Diagnostic::error("a variable subscript of a byte global array is not supported yet (roadmap)"));
+            // A BYTE element needs no scale: the index feeds lbzx raw. Measured
+            // (ADDR16, the ctype table shape):
+            //   plain:  lis b,@ha; addi b,b,@l; lbzx dest,b,index    (one free base)
+            //   cast:   lis h,@ha; clrlwi r0,i,24; addi b,h,@l; lbzx dest,b,r0
+            // — the u8 cast stages through r0 in the lis latency, and the base's
+            // addi lands in the register the dead index frees (allocator-chosen).
+            let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+            if small {
+                return Err(Diagnostic::error("a variable subscript of a SMALL byte global array is not supported yet (roadmap)"));
+            }
+            if let Expression::Cast { target_type: Type::UnsignedChar, operand } = index {
+                let source = self.general_register_of_leaf(operand)?;
+                let high = self.fresh_virtual_general();
+                self.emit_address_high(high, name);
+                self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: source, clear: 24 });
+                let base = self.fresh_virtual_general();
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(Instruction::AddImmediate { d: base, a: high, immediate: 0 });
+                self.output.instructions.push(indexed_load(pointee, destination, base, GENERAL_SCRATCH));
+                return Ok(());
+            }
+            let index_register = self.general_register_of_leaf(index)?;
+            let base = self.fresh_virtual_general();
+            self.emit_address_high(base, name);
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: base, a: base, immediate: 0 });
+            self.output.instructions.push(indexed_load(pointee, destination, base, index_register));
+            return Ok(());
         }
         let index_register = self.general_register_of_leaf(index)?;
         let shift = size.trailing_zeros() as u8;
