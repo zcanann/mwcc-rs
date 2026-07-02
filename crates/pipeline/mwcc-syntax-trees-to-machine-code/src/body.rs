@@ -3517,7 +3517,27 @@ impl Generator {
         if returned != &local.name {
             return Ok(false);
         }
-        for statement in &function.statements {
+        // An optional LEADING guard reading the loaded local: `int t = gi; if (!t)
+        // return -1; g(); return t;` — the raise() core shape. Its constant early
+        // return branches to the shared epilogue.
+        let (guard, calls) = match function.statements.split_first() {
+            Some((Statement::If { condition, then_body, else_body }, rest))
+                if else_body.is_empty() && matches!(then_body.as_slice(), [Statement::Return(Some(_))]) =>
+            {
+                let [Statement::Return(Some(value))] = then_body.as_slice() else {
+                    return Ok(false);
+                };
+                let Some(constant) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
+                    return Ok(false);
+                };
+                (Some((condition, constant)), rest)
+            }
+            _ => (None, function.statements.as_slice()),
+        };
+        if calls.is_empty() {
+            return Ok(false);
+        }
+        for statement in calls {
             let Statement::Expression(Expression::Call { arguments, .. }) = statement else {
                 return Ok(false);
             };
@@ -3567,11 +3587,23 @@ impl Generator {
         self.callee_saved = vec![31];
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        let signed = !matches!(local.declared_type, Type::UnsignedInt);
         match load {
             MemoryLoad::Scalar => {
                 self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
                 self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-                self.evaluate_general(initializer, 31)?;
+                if guard.is_some() {
+                    // With a guard the load STAGES through r0: the compare reads r0 and
+                    // the `mr r31,r0` fills its latency slot — `lwz r0,gi; cmpwi r0,0;
+                    // mr r31,r0; bne CONT` (the guard emission below issues the branch).
+                    self.evaluate_general(initializer, GENERAL_SCRATCH)?;
+                    self.locations.insert(
+                        local.name.clone(),
+                        Location { class: ValueClass::General, register: GENERAL_SCRATCH, signed, width: 32, pointee: None, stride: None },
+                    );
+                } else {
+                    self.evaluate_general(initializer, 31)?;
+                }
             }
             MemoryLoad::Array { name, index } => {
                 let index_register = self.general_register_of_leaf(index)?;
@@ -3585,16 +3617,63 @@ impl Generator {
                 self.output.instructions.push(Instruction::LoadWordIndexed { d: 31, a: index_register, b: GENERAL_SCRATCH });
             }
         }
-        let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        let result = mwcc_target::Eabi::general_result().number;
+        if let Some((condition, early_constant)) = guard {
+            // The guard tests the just-loaded value (r0 for the staged scalar, r31 for
+            // the array form), then the early return `li r3,K; b EPILOGUE` and the calls
+            // as the fall-through. The scalar's `mr r31,r0` rides the compare latency.
+            // The branch labels advance mwcc's anonymous-`@N` counter: two for the
+            // array form; the staged scalar's guarded load adds one more (measured
+            // against the real extab/extabindex `@N` numbering).
+            self.output.anonymous_label_bump = if matches!(load, MemoryLoad::Scalar) { 3 } else { 2 };
+            if matches!(load, MemoryLoad::Array { .. }) {
+                self.locations.insert(
+                    local.name.clone(),
+                    Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+                );
+            }
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            if matches!(load, MemoryLoad::Scalar) {
+                self.output.instructions.push(Instruction::Or { a: 31, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                self.locations.insert(
+                    local.name.clone(),
+                    Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+                );
+            }
+            let continuation_branch = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: early_constant });
+            let epilogue_branch = self.output.instructions.len();
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            let continuation = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[continuation_branch] {
+                *target = continuation;
+            }
+            for statement in calls {
+                self.emit_statement(statement)?;
+            }
+            self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
+            let epilogue_label = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[epilogue_branch] {
+                *target = epilogue_label;
+            }
+            // With the result already placed on both paths, the epilogue is plain:
+            // `lwz r0,20; lwz r31,12; mtlr; addi; blr`.
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(true);
+        }
         self.locations.insert(
             local.name.clone(),
             Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
         );
-        for statement in &function.statements {
+        for statement in calls {
             self.emit_statement(statement)?;
         }
         // The epilogue interleaves the result move between the LR and r31 reloads.
-        let result = mwcc_target::Eabi::general_result().number;
         self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
         self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
         self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
