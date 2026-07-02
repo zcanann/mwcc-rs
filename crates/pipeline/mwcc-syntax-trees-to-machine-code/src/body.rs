@@ -231,7 +231,13 @@ fn is_punned_frame_read(expression: &Expression) -> bool {
 }
 
 fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
-    if function.locals.is_empty() || !function.statements.is_empty() {
+    if function.locals.is_empty() {
+        return None;
+    }
+    // Store statements may ride along (frexp's `*eptr = 0;` before its guards);
+    // their reads count toward each local's read budget below. Other statement
+    // kinds keep the pass out.
+    if !function.statements.iter().all(|statement| matches!(statement, Statement::Store { .. })) {
         return None;
     }
     if function_makes_call(function) {
@@ -280,6 +286,16 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
                 .iter()
                 .map(|guard| count_name_occurrences(&guard.value, &local.name))
                 .sum::<usize>()
+            + function
+                .statements
+                .iter()
+                .map(|statement| match statement {
+                    Statement::Store { target, value } => {
+                        count_name_occurrences(target, &local.name) + count_name_occurrences(value, &local.name)
+                    }
+                    _ => 0,
+                })
+                .sum::<usize>()
             + count_name_occurrences(return_expression, &local.name);
         // The pun check runs on the SUBSTITUTED initializer — `int ix = hx & C;`
         // resolves through hx's own punned read first.
@@ -296,7 +312,17 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
         is_static: function.is_static,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
-        statements: Vec::new(),
+        statements: function
+            .statements
+            .iter()
+            .map(|statement| match statement {
+                Statement::Store { target, value } => Statement::Store {
+                    target: crate::value_tracking::substitute(target, &values),
+                    value: crate::value_tracking::substitute(value, &values),
+                },
+                other => other.clone(),
+            })
+            .collect(),
         guards: function
             .guards
             .iter()

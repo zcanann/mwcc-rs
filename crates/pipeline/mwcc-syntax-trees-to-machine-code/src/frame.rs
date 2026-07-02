@@ -34,8 +34,25 @@ impl Generator {
         let guard_plan: Option<Vec<(&Expression, f64)>> = match function.guards.as_slice() {
             [] => None,
             guards @ ([_] | [_, _]) => {
-                if !function.statements.is_empty() || function.return_type != Type::Double || function_makes_call(function) {
+                if function.return_type != Type::Double || function_makes_call(function) {
                     return Ok(false);
+                }
+                // One leading `*ptr = C;` through an int-pointer PARAMETER may precede
+                // the guards (frexp's `*eptr = 0`): its li hoists into the prologue
+                // ahead of the guard's lis, and the store lands between the guard
+                // word's load and its compare (measured). Anything else defers.
+                match function.statements.as_slice() {
+                    [] => {}
+                    [Statement::Store { target: Expression::Dereference { pointer }, value }] => {
+                        let Expression::Variable(pointer_name) = pointer.as_ref() else { return Ok(false) };
+                        if !function.parameters.iter().any(|parameter| &parameter.name == pointer_name) {
+                            return Ok(false);
+                        }
+                        if constant_value(value).and_then(|constant| i16::try_from(constant).ok()).is_none() {
+                            return Ok(false);
+                        }
+                    }
+                    _ => return Ok(false),
                 }
                 // The fall-through must be the FIRST double parameter, unwritten —
                 // still live in f1, so the merge emits nothing.
@@ -120,6 +137,22 @@ impl Generator {
         self.non_leaf = non_leaf;
         self.frame_size = frame_size;
 
+        // The leading store's pieces: the pointer parameter's register and a fresh
+        // virtual for its li'd value (materialized in the prologue, stored after
+        // the first guard word's load). Requires the first test to be the probed
+        // lis-compare shape.
+        let store_plan: Option<(u8, u8, i16)> = match (guard_plan.is_some(), function.statements.as_slice()) {
+            (true, [Statement::Store { target: Expression::Dereference { pointer }, value }]) => {
+                let Expression::Variable(pointer_name) = pointer.as_ref() else { return Ok(false) };
+                let Some(register) = self.lookup_general(pointer_name) else { return Ok(false) };
+                let Some(constant) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
+                    return Ok(false);
+                };
+                let value_home = self.fresh_virtual_general();
+                Some((value_home, register, constant))
+            }
+            _ => None,
+        };
         // The guard tests classify once slots exist (their punned loads resolve
         // against them); only the FIRST guard's lis-staged constant hoists into
         // the prologue latency slot (a later guard materializes its lis inline —
@@ -179,9 +212,14 @@ impl Generator {
         // Prologue: allocate the frame, save the link register if non-leaf, then
         // spill the address-taken parameters to their slots.
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        if let Some(GuardTest::LisCompare { high, .. }) =
-            guard_tests.as_deref().and_then(<[_]>::first).and_then(|(disjuncts, _)| disjuncts.first())
-        {
+        let first_test = guard_tests.as_deref().and_then(<[_]>::first).and_then(|(disjuncts, _)| disjuncts.first());
+        if store_plan.is_some() && !matches!(first_test, Some(GuardTest::LisCompare { .. })) {
+            return Ok(false); // the store's schedule is only measured against a lis-compare
+        }
+        if let Some((value_home, _, constant)) = store_plan {
+            self.output.instructions.push(Instruction::load_immediate(value_home, constant));
+        }
+        if let Some(GuardTest::LisCompare { high, .. }) = first_test {
             self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *high));
         }
         if non_leaf {
@@ -221,9 +259,13 @@ impl Generator {
                             let second_word = self.fresh_virtual_general();
                             self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
                             self.output.instructions.push(Instruction::LoadWord { d: second_word, a: 1, offset: *right_offset });
-                            if *mask_top_bit {
-                                self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
-                            }
+                            let word = if *mask_top_bit {
+                                let masked = self.fresh_virtual_general();
+                                self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
+                                masked
+                            } else {
+                                word
+                            };
                             self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
                             self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
                             self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: second_word });
@@ -264,12 +306,25 @@ impl Generator {
                                 word
                             }
                         };
-                        if mask_top_bit {
-                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
+                        // The leading store fills the load latency — BEFORE the mask
+                        // (measured: lwz; stw; clrlwi; cmpw).
+                        if index == 0 {
+                            if let Some((value_home, pointer, _)) = store_plan {
+                                self.output.instructions.push(Instruction::StoreWord { s: value_home, a: pointer, offset: 0 });
+                            }
+                        }
+                        let word = if mask_top_bit {
+                            // The masked value is a NEW value home (mwcc hands it the
+                            // lowest register freed by that point — the die-at-definition
+                            // reuse gives the same register back when nothing freed).
+                            let masked = self.fresh_virtual_general();
+                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
                             loaded = None;
+                            masked
                         } else {
                             loaded = Some((offset, word));
-                        }
+                            word
+                        };
                         self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
                         (options, condition_bit)
                     }
@@ -294,9 +349,13 @@ impl Generator {
                         let word = self.fresh_virtual_general();
                         self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: left_offset });
                         self.output.instructions.push(Instruction::LoadWord { d: GENERAL_SCRATCH, a: 1, offset: right_offset });
-                        if mask_top_bit {
-                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
-                        }
+                        let word = if mask_top_bit {
+                            let masked = self.fresh_virtual_general();
+                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
+                            masked
+                        } else {
+                            word
+                        };
                         self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: GENERAL_SCRATCH });
                         loaded = if mask_top_bit { None } else { Some((left_offset, word)) };
                         (options, condition_bit)
