@@ -344,7 +344,27 @@ impl Parser {
                     }
                 }
                 self.expect(Token::ParenClose)?;
-                Expression::Call { name, arguments }
+                // A call to a PARSED single-return inline definition substitutes
+                // the body (mwcc -inline auto inlines it; a bl would be wrong
+                // bytes). Only PURE arguments (a variable or literal) substitute
+                // — the body may read a parameter several times; an impure call
+                // stays a Call and the skipped-inline check defers the unit.
+                match self.inline_bodies.get(&name) {
+                    Some((parameters, body))
+                        if parameters.len() == arguments.len()
+                            && arguments
+                                .iter()
+                                .all(|argument| matches!(argument, Expression::Variable(_) | Expression::IntegerLiteral(_))) =>
+                    {
+                        let map: std::collections::HashMap<&str, &Expression> = parameters
+                            .iter()
+                            .map(String::as_str)
+                            .zip(arguments.iter())
+                            .collect();
+                        substitute_variables(body, &map)
+                    }
+                    _ => Expression::Call { name, arguments },
+                }
             }
             // A bare name is an enumerator (its integer value) if known, else a variable.
             Token::Identifier(name) => match self.enum_constants.get(&name) {
@@ -538,5 +558,65 @@ fn increment_assignment(target: Expression, operator: BinaryOperator) -> Express
             left: Box::new(target),
             right: Box::new(Expression::IntegerLiteral(1)),
         }),
+    }
+}
+
+
+/// Clone `expression` with every `Variable(name)` in `map` replaced by its
+/// argument — the single-return inline substitution.
+pub(crate) fn substitute_variables(expression: &Expression, map: &std::collections::HashMap<&str, &Expression>) -> Expression {
+    match expression {
+        Expression::Variable(name) => match map.get(name.as_str()) {
+            Some(&replacement) => replacement.clone(),
+            None => expression.clone(),
+        },
+        Expression::Binary { operator, left, right } => Expression::Binary {
+            operator: *operator,
+            left: Box::new(substitute_variables(left, map)),
+            right: Box::new(substitute_variables(right, map)),
+        },
+        Expression::Unary { operator, operand } => Expression::Unary {
+            operator: *operator,
+            operand: Box::new(substitute_variables(operand, map)),
+        },
+        Expression::Cast { target_type, operand } => Expression::Cast {
+            target_type: *target_type,
+            operand: Box::new(substitute_variables(operand, map)),
+        },
+        Expression::Dereference { pointer } => Expression::Dereference {
+            pointer: Box::new(substitute_variables(pointer, map)),
+        },
+        Expression::AddressOf { operand } => Expression::AddressOf {
+            operand: Box::new(substitute_variables(operand, map)),
+        },
+        Expression::Index { base, index } => Expression::Index {
+            base: Box::new(substitute_variables(base, map)),
+            index: Box::new(substitute_variables(index, map)),
+        },
+        Expression::Member { base, offset, member_type, index_stride } => Expression::Member {
+            base: Box::new(substitute_variables(base, map)),
+            offset: *offset,
+            member_type: *member_type,
+            index_stride: *index_stride,
+        },
+        Expression::MemberAddress { base, offset, element } => Expression::MemberAddress {
+            base: Box::new(substitute_variables(base, map)),
+            offset: *offset,
+            element: *element,
+        },
+        Expression::Conditional { condition, when_true, when_false } => Expression::Conditional {
+            condition: Box::new(substitute_variables(condition, map)),
+            when_true: Box::new(substitute_variables(when_true, map)),
+            when_false: Box::new(substitute_variables(when_false, map)),
+        },
+        Expression::Call { name, arguments } => Expression::Call {
+            name: name.clone(),
+            arguments: arguments.iter().map(|argument| substitute_variables(argument, map)).collect(),
+        },
+        Expression::Assign { target, value } => Expression::Assign {
+            target: Box::new(substitute_variables(target, map)),
+            value: Box::new(substitute_variables(value, map)),
+        },
+        other => other.clone(),
     }
 }

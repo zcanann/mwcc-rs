@@ -1133,9 +1133,11 @@ impl Parser {
                 // counter by the labels its (compiled, then dropped) body uses.
                 if let Some(bump) = self.skipped_inline_label_bump()? {
                     self.skipped_inline_functions += bump;
-                    // Record the NAME: a later call to it would need mwcc's
-                    // inline expansion (mwcc inlines, we would emit a bl to an
-                    // undefined symbol — wrong bytes), so such units defer.
+                    // A SINGLE-RETURN body is recorded for call-site
+                    // substitution (mwcc -inline auto inlines it); anything
+                    // else keeps only the NAME — a later call to it defers
+                    // (a bl to the undefined local would be wrong bytes).
+                    self.try_record_inline_body();
                     if let Some(name) = self.skipped_function_name() {
                         self.skipped_inline_names.insert(name);
                     }
@@ -1240,6 +1242,69 @@ impl Parser {
     /// If the item at the cursor is an `inline`/`static inline` function whose body
     /// contains an inline `asm` block, return its name (mwcc emits a local symbol
     /// for it). Pure lookahead — consumes nothing.
+    /// Try to parse the inline definition at the cursor as
+    /// `inline T name(T a, ...) { return expr; }` and record its body for
+    /// call-site substitution. Restores the cursor either way.
+    fn try_record_inline_body(&mut self) {
+        let saved = self.position;
+        let recorded = (|| -> Option<(String, Vec<String>, Expression)> {
+            while matches!(self.peek(), Token::Identifier(word) if word == "static" || word == "inline" || word == "__inline") {
+                self.advance();
+            }
+            self.parse_type().ok()?;
+            let name = match self.advance().clone() {
+                Token::Identifier(name) => name,
+                _ => return None,
+            };
+            if *self.peek() != Token::ParenOpen {
+                return None;
+            }
+            self.advance();
+            let mut parameters = Vec::new();
+            if *self.peek() == Token::KeywordVoid && self.tokens.get(self.position + 1) == Some(&Token::ParenClose) {
+                self.advance();
+            } else if *self.peek() != Token::ParenClose {
+                loop {
+                    self.parse_type().ok()?;
+                    match self.advance().clone() {
+                        Token::Identifier(parameter) => parameters.push(parameter),
+                        _ => return None,
+                    }
+                    if *self.peek() == Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if *self.peek() != Token::ParenClose {
+                return None;
+            }
+            self.advance();
+            if *self.peek() != Token::BraceOpen {
+                return None;
+            }
+            self.advance();
+            if *self.peek() != Token::KeywordReturn {
+                return None;
+            }
+            self.advance();
+            let body = self.expression().ok()?;
+            if *self.peek() != Token::Semicolon {
+                return None;
+            }
+            self.advance();
+            if *self.peek() != Token::BraceClose {
+                return None;
+            }
+            Some((name, parameters, body))
+        })();
+        self.position = saved;
+        if let Some((name, parameters, body)) = recorded {
+            self.inline_bodies.insert(name, (parameters, body));
+        }
+    }
+
     /// The name of the (inline) function definition at the cursor: the last
     /// identifier before the parameter list's `(`.
     fn skipped_function_name(&self) -> Option<String> {

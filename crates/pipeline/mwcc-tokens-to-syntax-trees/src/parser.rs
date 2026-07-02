@@ -80,6 +80,9 @@ pub(crate) struct Parser {
     pub(crate) weak_functions: std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
+    /// Parsed single-return inline bodies: name -> (parameter names, body) —
+    /// substituted at call sites with pure arguments (mwcc -inline auto).
+    pub(crate) inline_bodies: std::collections::HashMap<String, (Vec<String>, mwcc_syntax_trees::Expression)>,
     /// `typedef`-declared struct aliases (`typedef struct _FILE {…} FILE;`) mapped
     /// to their struct tag, so `FILE *p` resolves to the right layout.
     pub(crate) struct_typedefs: HashMap<String, String>,
