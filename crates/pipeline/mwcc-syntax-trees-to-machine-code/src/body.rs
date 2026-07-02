@@ -457,6 +457,66 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
     })
 }
 
+/// C89 fdlibm style for the FLOAT paths: a double-returning body whose
+/// locals are ALL declared uninitialized and assigned once by LEADING
+/// Assign statements normalizes them into initializers (locals reordered to
+/// assignment order — the definition order the float tier uses). The guard
+/// hoist and this pass alternate through evaluate_body recursion, so
+/// `ix = ..; if (..) return x; z = ..;` cleans fully.
+fn normalize_leading_local_assigns(function: &Function) -> Option<Function> {
+    if function.return_type != Type::Double
+        || function.locals.is_empty()
+        || function.statements.is_empty()
+        || function.locals.iter().any(|local| local.initializer.is_some() || local.array_length.is_some())
+    {
+        return None;
+    }
+    let mut assigned: Vec<(String, Expression)> = Vec::new();
+    let mut rest = function.statements.as_slice();
+    while let [Statement::Assign { name, value }, tail @ ..] = rest {
+        let is_declared = function.locals.iter().any(|local| &local.name == name);
+        if !is_declared || assigned.iter().any(|(seen, _)| seen == name) || expression_has_call(value) {
+            break;
+        }
+        assigned.push((name.clone(), value.clone()));
+        rest = tail;
+    }
+    if assigned.is_empty() {
+        return None;
+    }
+    // Later statements must not REASSIGN a normalized local (single
+    // assignment only).
+    let reassigned = rest.iter().any(|statement| {
+        matches!(statement, Statement::Assign { name, .. } if assigned.iter().any(|(seen, _)| seen == name))
+    });
+    if reassigned {
+        return None;
+    }
+    let mut locals: Vec<LocalDeclaration> = Vec::new();
+    for (name, value) in &assigned {
+        let declared = function.locals.iter().find(|local| &local.name == name).expect("checked above");
+        let mut normalized = declared.clone();
+        normalized.initializer = Some(value.clone());
+        locals.push(normalized);
+    }
+    for local in &function.locals {
+        if !assigned.iter().any(|(name, _)| name == &local.name) {
+            locals.push(local.clone());
+        }
+    }
+    Some(Function {
+        return_type: function.return_type,
+        name: function.name.clone(),
+        is_static: function.is_static,
+        is_weak: function.is_weak,
+        parameters: function.parameters.clone(),
+        locals,
+        statements: rest.to_vec(),
+        guards: function.guards.clone(),
+        return_expression: function.return_expression.clone(),
+    })
+}
+
 fn inline_return_only_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() || !function_makes_call(function) || !function.guards.is_empty() {
         return None;
@@ -1589,6 +1649,12 @@ impl Generator {
         // stays ordered for try_ordered_early_return_branch.
         if let Some(hoisted) = self.hoist_order_independent_leading_guards(function) {
             return self.evaluate_body(&hoisted);
+        }
+        // C89 fdlibm locals (`double z; z = x*x;`) normalize into
+        // initializers for the float paths, alternating with the guard
+        // hoist through this recursion.
+        if let Some(cleaned) = normalize_leading_local_assigns(function) {
+            return self.evaluate_body(&cleaned);
         }
         // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
         // folds to the direct `gf();` (identical bytes: the pointer loads at the call).
