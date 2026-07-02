@@ -1152,9 +1152,22 @@ impl Parser {
             }
             // An emittable (non-`extern`, non-`const`) `static` global declared after
             // a function would need its local symbol interleaved among the functions'
-            // `@N` entries — not yet modeled, so defer the unit honestly.
+            // `@N` entries — not yet modeled, so defer the unit honestly. A DEFINED
+            // non-static global after a function needs the same source-order
+            // interleaving in the global symbol run (mwcc: __upper_map AFTER
+            // tolower in the MSL ctype shape) — also deferred until the writer
+            // models it.
             if seen_function && globals[globals_before..].iter().any(|global| global.is_static && !global.is_const && !global.is_extern) {
                 return Err(Diagnostic::error("a static global declared after a function is not supported yet (local-symbol ordering)"));
+            }
+            // (Static functions' LOCAL symbols precede the data run, so only a
+            // GLOBAL function before the object forces the interleaving.)
+            if functions.iter().any(|function| !function.is_static)
+                && globals[globals_before..]
+                    .iter()
+                    .any(|global| !global.is_extern && !global.is_static && (global.initializer.is_some() || global.data_bytes.is_some()))
+            {
+                return Err(Diagnostic::error("an initialized global declared after a function is not supported yet (symbol-order interleaving)"));
             }
         }
         // A CALL to a skipped inline definition would need mwcc's inline
@@ -2167,8 +2180,40 @@ impl Parser {
     /// Parse a function definition's body, given its already-parsed signature.
     /// `{` then zero or more local declarations, statements, `if (...) return ...;`
     /// guards, and an optional final `return <expression>;`.
+    /// Whether the `{` at the cursor closes immediately before the function's
+    /// own closing brace — i.e. it wraps the WHOLE remaining body.
+    fn brace_wraps_whole_body(&self) -> bool {
+        let mut index = self.position;
+        let mut depth = 0i32;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::BraceOpen => depth += 1,
+                Token::BraceClose => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return self.tokens.get(index + 1) == Some(&Token::BraceClose);
+                    }
+                }
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
     fn function_body(&mut self, return_type: Type, name: String, is_static: bool, parameters: Vec<Parameter>) -> Compilation<Function> {
         self.expect(Token::BraceOpen)?;
+        // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro artifact
+        // — the MSL ctype shape) could unwrap transparently, but the TUs that
+        // carry it also need source-order SYMBOL INTERLEAVING in the writer
+        // (functions and defined globals mixed by declaration position). Defer
+        // until the writer models that — unwrapping today trades a parse defer
+        // for a symbol-order DIFF.
+        if *self.peek() == Token::BraceOpen && self.brace_wraps_whole_body() {
+            return Err(Diagnostic::error("a whole-body block needs source-order symbol interleaving (roadmap)"));
+        }
+        let redundant_blocks = 0usize;
 
         // Track each parameter's type (function-scoped — cleared per function) so `sizeof(param)`
         // folds to a `size_t` constant.
@@ -2425,6 +2470,9 @@ impl Parser {
             self.advance();
         }
         self.expect(Token::BraceClose)?;
+        for _ in 0..redundant_blocks {
+            self.expect(Token::BraceClose)?;
+        }
 
         Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression })
     }
