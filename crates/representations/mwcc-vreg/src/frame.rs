@@ -46,6 +46,23 @@ impl FramePlan {
         instructions
     }
 
+    /// The INTERLEAVED-MOVE prologue: each save immediately followed by the move
+    /// that parks its incoming value — `stwu; mflr; stw r0; stw rS,fs-4; mr rS,rX;
+    /// stw rS',fs-8; mr rS',rY; …` — the captured schedule for parameters saved
+    /// across calls. `incoming[k]` pairs with `saved[k]`.
+    pub fn prologue_interleaved(&self, incoming: &[u8]) -> Vec<Instruction> {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
+        ];
+        for (slot, (&register, &source)) in self.saved.iter().zip(incoming).enumerate() {
+            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::Or { a: register, s: source, b: source });
+        }
+        instructions
+    }
+
     /// The canonical epilogue: `lwz r0; lwz rS…; mtlr; addi; blr` (restores in
     /// slot order after the LR reload).
     pub fn epilogue(&self) -> Vec<Instruction> {
@@ -85,6 +102,16 @@ mod tests {
                 Instruction::BranchToLinkRegister,
             ]
         );
+    }
+
+    #[test]
+    fn the_interleaved_prologue_pairs_each_save_with_its_move() {
+        let plan = FramePlan::sized_for(vec![31, 30]);
+        let prologue = plan.prologue_interleaved(&[4, 3]);
+        assert_eq!(prologue[3], Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        assert_eq!(prologue[4], Instruction::Or { a: 31, s: 4, b: 4 });
+        assert_eq!(prologue[5], Instruction::StoreWord { s: 30, a: 1, offset: 8 });
+        assert_eq!(prologue[6], Instruction::Or { a: 30, s: 3, b: 3 });
     }
 
     #[test]

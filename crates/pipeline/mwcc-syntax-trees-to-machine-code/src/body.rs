@@ -4087,23 +4087,15 @@ impl Generator {
             callee_saved.push(register);
         }
 
-        // 8-byte linkage + one word per saved GPR, rounded up to a 16-byte frame.
-        let frame_size: i16 = ((8 + 4 * count as i16 + 15) / 16) * 16;
+        // The interleaved save+move prologue, from the FRAME BUILDER (each pointer
+        // parks in its callee-saved home right after that home's save).
+        let plan = mwcc_vreg::FramePlan::sized_for(callee_saved.clone());
         self.non_leaf = true;
-        self.frame_size = frame_size;
+        self.frame_size = plan.frame_size;
         self.callee_saved = callee_saved;
         self.epilogue_lr_before_gprs = true;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        // Save each callee-saved register then move its pointer in, highest register first:
-        // `stw r31,fs-4; mr r31,<highest>; stw r30,fs-8; mr r30,<next>; …`.
-        for (slot, &index) in order.iter().enumerate() {
-            let register = saved_reg[index];
-            let offset = frame_size - 4 * (slot as i16 + 1);
-            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
-            self.output.instructions.push(Instruction::Or { a: register, s: incoming[index], b: incoming[index] });
-        }
+        let incoming_ordered: Vec<u8> = order.iter().map(|&index| incoming[index]).collect();
+        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
         for (index, (pointer_name, _, _, _)) in decoded.iter().enumerate() {
             if let Some(location) = self.locations.get_mut(pointer_name) {
                 location.register = saved_reg[index];
