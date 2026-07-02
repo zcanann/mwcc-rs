@@ -423,6 +423,12 @@ impl Generator {
         // and the last-true path falls through to a trailing `blr`.
         let taken_in_result = leaf_name(when_true).and_then(|name| self.lookup_general(name)) == Some(result);
         let use_conditional_return = taken_in_result;
+        // The FALL-THROUGH value already in the result folds an OR's last term into a
+        // conditional return (`if (s < 1 || s > 6) return -1; return s;` — the false side
+        // of `s > 6` is `blelr`, no fall block at all; the taken block follows).
+        let fall_folded = !use_conditional_return
+            && operator == BinaryOperator::LogicalOr
+            && leaf_name(when_false).and_then(|name| self.lookup_general(name)) == Some(result);
 
         let mut to_taken = Vec::new();
         let mut to_fall = Vec::new();
@@ -440,9 +446,14 @@ impl Generator {
                     to_fall.push(branch_index);
                 }
             } else if index == last {
-                // OR: the last term false branches to the fall block; true falls through.
-                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-                to_fall.push(branch_index);
+                if fall_folded {
+                    // The last term's FALSE side returns the fall-through value directly.
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                } else {
+                    // OR: the last term false branches to the fall block; true falls through.
+                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    to_fall.push(branch_index);
+                }
             } else if use_conditional_return {
                 // OR taken-in-result: an early true term returns the taken value in the result.
                 self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
@@ -467,11 +478,15 @@ impl Generator {
                 self.patch_forward(branch_index, taken_block);
             }
         }
-        let fall_block = self.output.instructions.len();
-        self.place_select_value(when_false, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
-        for branch_index in to_fall {
-            self.patch_forward(branch_index, fall_block);
+        // With the fall side folded into the last term's conditional return, there is no
+        // fall block (nothing branches to one).
+        if !fall_folded {
+            let fall_block = self.output.instructions.len();
+            self.place_select_value(when_false, result)?;
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            for branch_index in to_fall {
+                self.patch_forward(branch_index, fall_block);
+            }
         }
         Ok(true)
     }
