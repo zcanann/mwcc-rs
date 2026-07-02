@@ -245,10 +245,56 @@ impl Generator {
         // Prologue: allocate the frame, save the link register if non-leaf, then
         // spill the address-taken parameters to their slots.
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
+        // The trailing WRITEBACK BLOCK (no guards): `if (test) { x *= C; } return x;`
+        // — the guard-style skip over a float-multiply written back to x's slot,
+        // with the merge reloading x unconditionally (measured m1). The test's lis
+        // hoists exactly like a guard's.
+        let writeback_plan: Option<(GuardTest, i16, f64)> = if guard_tests.is_none() {
+            match function.statements.as_slice() {
+                [Statement::If { condition, then_body, else_body }] if else_body.is_empty() => {
+                    let returned = match &function.return_expression {
+                        Some(Expression::Variable(name)) => Some(name.as_str()),
+                        _ => None,
+                    };
+                    let spilled_double = returned.and_then(|name| {
+                        self.frame_slots
+                            .get(name)
+                            .filter(|slot| slot.class == ValueClass::Float && slot.size == 8 && slot.parameter_register.is_some())
+                            .map(|slot| (name, slot.offset))
+                    });
+                    let assign = match then_body.as_slice() {
+                        [Statement::Assign { name, value }] => Some((name.as_str(), value)),
+                        _ => None,
+                    };
+                    match (spilled_double, assign) {
+                        (Some((x, slot_offset)), Some((target, value))) if x == target => match value {
+                            Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
+                                let self_multiply = matches!(left.as_ref(), Expression::Variable(name) if name.as_str() == x);
+                                match (self_multiply, right.as_ref()) {
+                                    (true, Expression::FloatLiteral(constant)) => {
+                                        match self.classify_guard_test(condition) {
+                                            test @ GuardTest::LisCompare { .. } => Some((test, slot_offset, *constant)),
+                                            _ => None,
+                                        }
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         let first_test = guard_tests
             .as_ref()
             .and_then(|(tests, _)| tests.first())
-            .and_then(|(disjuncts, _)| disjuncts.first());
+            .and_then(|(disjuncts, _)| disjuncts.first())
+            .or(writeback_plan.as_ref().map(|(test, _, _)| test));
         if store_plan.is_some() && !matches!(first_test, Some(GuardTest::LisCompare { .. })) {
             return Ok(false); // the store's schedule is only measured against a lis-compare
         }
@@ -351,9 +397,31 @@ impl Generator {
             self.emit_epilogue_and_return();
             return Ok(true);
         }
-        // Body statements, then the return value.
-        for statement in &function.statements {
-            self.emit_statement(statement)?;
+        // The writeback block: guard-style skip over `x *= C` stored to the slot;
+        // the merge falls into the return, which reloads (the slot is written).
+        if let Some((test, slot_offset, constant)) = writeback_plan {
+            let mut loaded: Option<(i16, u8)> = None;
+            let (options, condition_bit) = self.emit_frame_guard_test(test, 0, &mut loaded, None)?;
+            let merge = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, merge);
+            let x_register = self
+                .frame_slots
+                .values()
+                .find(|slot| slot.offset == slot_offset)
+                .and_then(|slot| slot.parameter_register)
+                .expect("gated: spilled parameter");
+            self.load_double_constant(FLOAT_SCRATCH, constant.to_bits());
+            self.output.instructions.push(Instruction::FloatMultiplyDouble { d: FLOAT_SCRATCH, a: x_register, c: FLOAT_SCRATCH });
+            self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: slot_offset });
+            self.written_slots.insert(slot_offset);
+            self.bind_label(merge);
+            // The block advances the label counter like a guard (measured @N).
+            self.output.anonymous_label_bump += 2;
+        } else {
+            // Body statements, then the return value.
+            for statement in &function.statements {
+                self.emit_statement(statement)?;
+            }
         }
         if function.return_type != Type::Void {
             let result = match function.return_type {

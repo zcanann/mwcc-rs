@@ -203,6 +203,42 @@ fn inline_first_call_target_alias(function: &Function) -> Option<Function> {
 /// (`int hx = *(int*)&x; return hx & C;` -> `return (*(int*)&x) & C;`). Leaf,
 /// statement-free bodies only: a call could rewrite the punned memory, a store
 /// could alias it, and a twice-read local would duplicate its load.
+/// Reads of `name` in a statement's NON-CONDITION positions (store targets and
+/// values, assign values, if-block bodies) — the if CONDITION is counted in the
+/// dedup-safe bucket by the caller.
+/// Substitute values into every expression position of a statement (recursing
+/// into if-blocks).
+fn substitute_statement(statement: &Statement, values: &std::collections::HashMap<String, Expression>) -> Statement {
+    match statement {
+        Statement::Store { target, value } => Statement::Store {
+            target: crate::value_tracking::substitute(target, values),
+            value: crate::value_tracking::substitute(value, values),
+        },
+        Statement::Assign { name, value } => Statement::Assign {
+            name: name.clone(),
+            value: crate::value_tracking::substitute(value, values),
+        },
+        Statement::If { condition, then_body, else_body } => Statement::If {
+            condition: crate::value_tracking::substitute(condition, values),
+            then_body: then_body.iter().map(|inner| substitute_statement(inner, values)).collect(),
+            else_body: else_body.iter().map(|inner| substitute_statement(inner, values)).collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+fn statement_reads(statement: &Statement, name: &str) -> usize {
+    match statement {
+        Statement::Store { target, value } => count_name_occurrences(target, name) + count_name_occurrences(value, name),
+        Statement::Assign { value, .. } => count_name_occurrences(value, name),
+        Statement::If { then_body, else_body, .. } => {
+            then_body.iter().map(|inner| statement_reads(inner, name)).sum::<usize>()
+                + else_body.iter().map(|inner| statement_reads(inner, name)).sum::<usize>()
+        }
+        _ => 0,
+    }
+}
+
 /// A dereference whose pointer reduces to a cast/offset around `&variable` — the
 /// type-punned frame read (`*(int*)&x`, `*(1+(int*)&x)`). Pure and side-effect
 /// free, so re-emitting it is only a duplicated load.
@@ -305,10 +341,16 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() {
         return None;
     }
-    // Store statements may ride along (frexp's `*eptr = 0;` before its guards);
-    // their reads count toward each local's read budget below. Other statement
-    // kinds keep the pass out.
-    if !function.statements.iter().all(|statement| matches!(statement, Statement::Store { .. })) {
+    // Store statements may ride along (frexp's `*eptr = 0;` before its guards),
+    // as may a single-level If whose body is stores/assigns (the writeback
+    // block); their reads count toward each local's read budget below. Other
+    // statement kinds keep the pass out.
+    let simple = |statement: &Statement| matches!(statement, Statement::Store { .. } | Statement::Assign { .. });
+    if !function.statements.iter().all(|statement| match statement {
+        Statement::Store { .. } => true,
+        Statement::If { then_body, else_body, .. } => then_body.iter().all(simple) && else_body.iter().all(simple),
+        _ => false,
+    }) {
         return None;
     }
     if function_makes_call(function) {
@@ -346,7 +388,15 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
             .guards
             .iter()
             .map(|guard| count_name_occurrences(&guard.condition, &local.name))
-            .sum::<usize>();
+            .sum::<usize>()
+            + function
+                .statements
+                .iter()
+                .map(|statement| match statement {
+                    Statement::If { condition, .. } => count_name_occurrences(condition, &local.name),
+                    _ => 0,
+                })
+                .sum::<usize>();
         let other_reads = function.locals[index + 1..]
             .iter()
             .filter_map(|later| later.initializer.as_ref())
@@ -360,12 +410,7 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
             + function
                 .statements
                 .iter()
-                .map(|statement| match statement {
-                    Statement::Store { target, value } => {
-                        count_name_occurrences(target, &local.name) + count_name_occurrences(value, &local.name)
-                    }
-                    _ => 0,
-                })
+                .map(|statement| statement_reads(statement, &local.name))
                 .sum::<usize>()
             + count_name_occurrences(return_expression, &local.name);
         // The pun check runs on the SUBSTITUTED initializer — `int ix = hx & C;`
@@ -386,13 +431,7 @@ fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
         statements: function
             .statements
             .iter()
-            .map(|statement| match statement {
-                Statement::Store { target, value } => Statement::Store {
-                    target: crate::value_tracking::substitute(target, &values),
-                    value: crate::value_tracking::substitute(value, &values),
-                },
-                other => other.clone(),
-            })
+            .map(|statement| substitute_statement(statement, &values))
             .collect(),
         guards: function
             .guards
