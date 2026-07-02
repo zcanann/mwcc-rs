@@ -250,6 +250,37 @@ mod tests {
         assert_eq!(labels(&nodes), ["lfd_c1", "lfd_c2", "fmul", "fadd", "stfd_g", "stfd_h"]);
     }
 
+    /// THE MODEL'S KNOWN BOUNDARY (fire 278): the frexp tail pair. Measured
+    /// order (statement-order-INDEPENDENT): rlwinm, srawi, lwz, oris, stfd,
+    /// add, addi, stw_slot, stw_eptr — the r0-staging chain (rlwinm->oris->
+    /// stw) STARTS FIRST despite the LOWEST critical-path weight, and the lwz
+    /// (heaviest path) issues third. Dual-issue critical-path predicts
+    /// lwz+srawi first. Hypotheses for v4: staging-resource-first priority
+    /// (start the r0 bottleneck early), or register-pressure coupling (ops
+    /// reading dying registers first, allocating loads later). Un-ignore when
+    /// the model explains it WITHOUT breaking the ten passing fixtures.
+    #[test]
+    #[ignore = "model v3 boundary: the staging-chain-first priority is unexplained"]
+    fn tail_pair_starts_the_staging_chain() {
+        let nodes = [
+            // s1: *eptr += (ix >> 20) - 1022
+            DagNode::new("srawi", ALU).reads(&[1]).writes(&[10]),
+            DagNode::new("lwz_e", LOAD).reads(&[2]).writes(&[11]),
+            DagNode::new("add", ALU).reads(&[10, 11]).writes(&[12]),
+            DagNode::new("addi", ALU).reads(&[12]).writes(&[13]),
+            DagNode::new("stw_eptr", STORE).reads(&[13]).alias(1),
+            // s2: *(int*)&x = (hx & M) | C   (through the x slot, after the spill)
+            DagNode::new("rlwinm", ALU).reads(&[3]).writes(&[20]),
+            DagNode::new("oris", ALU).reads(&[20]).writes(&[21]),
+            DagNode::new("stfd_spill", STORE).alias(2),
+            DagNode::new("stw_slot", STORE).reads(&[21]).alias(2),
+        ];
+        assert_eq!(
+            labels(&nodes),
+            ["rlwinm", "srawi", "lwz_e", "oris", "stfd_spill", "add", "addi", "stw_slot", "stw_eptr"]
+        );
+    }
+
     #[test]
     fn the_staging_conflict_serializes_load_store_pairs() {
         // g = *p; h = *q; with both values staged through r0 (extra edge):
