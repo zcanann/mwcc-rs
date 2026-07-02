@@ -31,7 +31,7 @@ impl Generator {
         // parameter (`if (<punned test>) return 0.0; return x;` — measured: the
         // guard value falls INTO the shared epilogue; the skip branch targets it;
         // the fall-through emits nothing). Anything else defers.
-        let guard_plan: Option<Vec<(&Expression, f64)>> = match function.guards.as_slice() {
+        let guard_plan: Option<(Vec<(&Expression, FrameOutcome)>, FrameFall)> = match function.guards.as_slice() {
             [] => None,
             guards @ ([_] | [_, _]) => {
                 if function.return_type != Type::Double || function_makes_call(function) {
@@ -54,22 +54,36 @@ impl Generator {
                     }
                     _ => return Ok(false),
                 }
-                // The fall-through must be the FIRST double parameter, unwritten —
-                // still live in f1, so the merge emits nothing.
-                let Some(Expression::Variable(returned)) = &function.return_expression else { return Ok(false) };
+                // Guard values and the fall-through may each be a float literal or
+                // the FIRST double parameter (unwritten, still live in f1). Probed
+                // combinations only: literal guards over a param fall-through (any
+                // count), or ONE param-returning guard over a literal fall-through.
                 let first_float_parameter = function
                     .parameters
                     .iter()
-                    .find(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double));
-                if first_float_parameter.map(|parameter| parameter.name.as_str()) != Some(returned.as_str()) {
-                    return Ok(false);
-                }
+                    .find(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double))
+                    .map(|parameter| parameter.name.as_str());
+                let fall = match &function.return_expression {
+                    Some(Expression::Variable(returned)) if first_float_parameter == Some(returned.as_str()) => FrameFall::Param,
+                    Some(Expression::FloatLiteral(value)) => FrameFall::Literal(*value),
+                    _ => return Ok(false),
+                };
                 let mut plans = Vec::new();
                 for GuardedReturn { condition, value } in guards {
-                    let Expression::FloatLiteral(guard_value) = value else { return Ok(false) };
-                    plans.push((condition, *guard_value));
+                    let outcome = match value {
+                        Expression::FloatLiteral(guard_value) => FrameOutcome::Literal(*guard_value),
+                        Expression::Variable(name) if first_float_parameter == Some(name.as_str()) => FrameOutcome::Param,
+                        _ => return Ok(false),
+                    };
+                    plans.push((condition, outcome));
                 }
-                Some(plans)
+                let all_literal = plans.iter().all(|(_, outcome)| matches!(outcome, FrameOutcome::Literal(_)));
+                match (plans.len(), all_literal, fall) {
+                    (_, true, FrameFall::Param) => {}
+                    (1, false, FrameFall::Literal(_)) => {}
+                    _ => return Ok(false),
+                }
+                Some((plans, fall))
             }
             _ => return Ok(false),
         };
@@ -158,9 +172,9 @@ impl Generator {
         // the prologue latency slot (a later guard materializes its lis inline —
         // measured). In a CHAIN every test must be an unmasked lis/addis compare
         // sharing one loaded word; other kinds are single-guard only.
-        let guard_tests: Option<Vec<(Vec<GuardTest>, f64)>> = match guard_plan {
+        let guard_tests: Option<(Vec<(Vec<GuardTest>, FrameOutcome)>, FrameFall)> = match guard_plan {
             None => None,
-            Some(plans) => {
+            Some((plans, fall)) => {
                 let mut tests = Vec::new();
                 let chained = plans.len() > 1;
                 for (condition, value) in plans {
@@ -173,7 +187,22 @@ impl Generator {
                             if chained {
                                 return Ok(false);
                             }
-                            vec![self.classify_guard_test(left), self.classify_guard_test(right)]
+                            let first = self.classify_guard_test(left.as_ref());
+                            let mut second = self.classify_guard_test(right.as_ref());
+                            // The shared-word cmpwi form: a small compare in second
+                            // position over the SAME unmasked word (measured g2).
+                            if let (GuardTest::LisCompare { offset, mask_top_bit: false, .. }, GuardTest::General(condition)) =
+                                (&first, &second)
+                            {
+                                if let Some(small @ GuardTest::SmallCompare { offset: small_offset, .. }) =
+                                    self.classify_small_compare(condition)
+                                {
+                                    if small_offset == *offset {
+                                        second = small;
+                                    }
+                                }
+                            }
+                            vec![first, second]
                         }
                         _ => vec![self.classify_guard_test(condition)],
                     };
@@ -188,7 +217,8 @@ impl Generator {
                     if disjuncts.len() > 1 {
                         // The measured pairings: a lis compare, then EITHER an or.-zero
                         // over the SAME (offset, mask) word plus a second word, OR a
-                        // second lis compare of the same unmasked word.
+                        // second lis compare of the same unmasked word, OR a shared-word
+                        // small compare.
                         let ok = matches!(
                             disjuncts.as_slice(),
                             [GuardTest::LisCompare { offset: o1, mask_top_bit: m1, .. },
@@ -199,6 +229,9 @@ impl Generator {
                             [GuardTest::LisCompare { offset: o1, mask_top_bit: false, .. },
                              GuardTest::LisCompare { offset: o2, mask_top_bit: false, .. }]
                                 if o1 == o2
+                        ) || matches!(
+                            disjuncts.as_slice(),
+                            [GuardTest::LisCompare { mask_top_bit: false, .. }, GuardTest::SmallCompare { .. }]
                         );
                         if !ok {
                             return Ok(false);
@@ -206,13 +239,16 @@ impl Generator {
                     }
                     tests.push((disjuncts, value));
                 }
-                Some(tests)
+                Some((tests, fall))
             }
         };
         // Prologue: allocate the frame, save the link register if non-leaf, then
         // spill the address-taken parameters to their slots.
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        let first_test = guard_tests.as_deref().and_then(<[_]>::first).and_then(|(disjuncts, _)| disjuncts.first());
+        let first_test = guard_tests
+            .as_ref()
+            .and_then(|(tests, _)| tests.first())
+            .and_then(|(disjuncts, _)| disjuncts.first());
         if store_plan.is_some() && !matches!(first_test, Some(GuardTest::LisCompare { .. })) {
             return Ok(false); // the store's schedule is only measured against a lis-compare
         }
@@ -238,51 +274,57 @@ impl Generator {
         // where a NON-final guard's value takes `b` to the shared epilogue and the
         // final one falls into it. One loaded word is shared down the chain
         // (`loaded` tracks what r3 holds); only unmasked words stay shared.
-        if let Some(tests) = guard_tests {
+        if let Some((tests, fall)) = guard_tests {
+            // The reversed form: ONE guard returning the parameter over a literal
+            // fall-through. Plain: `test; b<skip> FALL; b EPI; FALL: lfd literal; EPI`
+            // (g1 — the empty value block still gets its unconditional branch, no
+            // condition inversion). Disjunction: the value block is a branch JOIN, so
+            // `return x` RELOADS from the slot (`lfd f1,slot; b EPI` — g2).
+            if let FrameFall::Literal(fall_value) = fall {
+                let (disjuncts, _) = tests.into_iter().next().expect("gated: one guard");
+                let epilogue = self.fresh_label();
+                if disjuncts.len() > 1 {
+                    let value_label = self.fresh_label();
+                    let fall_label = self.fresh_label();
+                    self.emit_frame_disjunction(&disjuncts, value_label, fall_label)?;
+                    self.bind_label(value_label);
+                    let slot = function
+                        .parameters
+                        .iter()
+                        .find(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double))
+                        .and_then(|parameter| self.frame_slots.get(&parameter.name))
+                        .expect("gated: spilled double parameter");
+                    self.output.instructions.push(Instruction::LoadFloatDouble { d: Eabi::float_result().number, a: 1, offset: slot.offset });
+                    self.emit_branch_to(epilogue);
+                    self.bind_label(fall_label);
+                    self.evaluate(&Expression::FloatLiteral(fall_value), Type::Double, Eabi::float_result().number)?;
+                    self.output.anonymous_label_bump += 3;
+                } else {
+                    let mut loaded: Option<(i16, u8)> = None;
+                    let test = disjuncts.into_iter().next().expect("one disjunct");
+                    let (options, condition_bit) = self.emit_frame_guard_test(test, 0, &mut loaded, store_plan)?;
+                    let fall_label = self.fresh_label();
+                    self.emit_branch_conditional_to(options, condition_bit, fall_label);
+                    self.emit_branch_to(epilogue);
+                    self.bind_label(fall_label);
+                    self.evaluate(&Expression::FloatLiteral(fall_value), Type::Double, Eabi::float_result().number)?;
+                    self.output.anonymous_label_bump += 2;
+                }
+                self.bind_label(epilogue);
+                self.emit_epilogue_and_return();
+                return Ok(true);
+            }
             let count = tests.len();
             let epilogue = self.fresh_label();
             // The shared loaded word, as (offset, VIRTUAL register): the words are
             // virtuals now — the allocator reproduces r3/r4 from liveness here and
             // scales to frexp's r4/r5/r6 as more values go live (the convergence).
             let mut loaded: Option<(i16, u8)> = None;
-            for (index, (disjuncts, guard_value)) in tests.into_iter().enumerate() {
+            for (index, (disjuncts, outcome)) in tests.into_iter().enumerate() {
+                let FrameOutcome::Literal(guard_value) = outcome else { unreachable!("gated: literal guards") };
                 if disjuncts.len() > 1 {
-                    // The disjunction: all loads up front (the second word rides the
-                    // first's load latency, in r4 — r0 holds the hoisted constant),
-                    // mask after, first test branches INTO the value on TRUE, the
-                    // second skips past it (measured).
                     let value_label = self.fresh_label();
-                    match disjuncts.as_slice() {
-                        [GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, .. },
-                         GuardTest::OrZero { right_offset, options: or_options, condition_bit: or_bit, .. }] => {
-                            let word = self.fresh_virtual_general();
-                            let second_word = self.fresh_virtual_general();
-                            self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
-                            self.output.instructions.push(Instruction::LoadWord { d: second_word, a: 1, offset: *right_offset });
-                            let word = if *mask_top_bit {
-                                let masked = self.fresh_virtual_general();
-                                self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
-                                masked
-                            } else {
-                                word
-                            };
-                            self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
-                            self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
-                            self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: second_word });
-                            self.emit_branch_conditional_to(*or_options, *or_bit, epilogue);
-                        }
-                        [GuardTest::LisCompare { offset, options, condition_bit, .. },
-                         GuardTest::LisCompare { options: second_options, condition_bit: second_bit, high: second_high, .. }] => {
-                            let word = self.fresh_virtual_general();
-                            self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
-                            self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
-                            self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
-                            self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *second_high));
-                            self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
-                            self.emit_branch_conditional_to(*second_options, *second_bit, epilogue);
-                        }
-                        _ => unreachable!("gated at classification"),
-                    }
+                    self.emit_frame_disjunction(&disjuncts, value_label, epilogue)?;
                     self.bind_label(value_label);
                     self.evaluate(&Expression::FloatLiteral(guard_value), Type::Double, Eabi::float_result().number)?;
                     // A disjunction advances the label counter 3 — two tests sharing
@@ -290,77 +332,8 @@ impl Generator {
                     self.output.anonymous_label_bump += 3;
                     continue;
                 }
-                let (options, condition_bit) = match disjuncts.into_iter().next().expect("one disjunct") {
-                    GuardTest::General(condition) => self.emit_condition_test(condition)?,
-                    GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, high } => {
-                        // The first guard's lis is hoisted into the prologue; a later
-                        // guard materializes its constant inline (measured).
-                        if index > 0 {
-                            self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, high));
-                        }
-                        let word = match loaded {
-                            Some((shared_offset, shared_word)) if shared_offset == offset => shared_word,
-                            _ => {
-                                let word = self.fresh_virtual_general();
-                                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
-                                word
-                            }
-                        };
-                        // The leading store fills the load latency — BEFORE the mask
-                        // (measured: lwz; stw; clrlwi; cmpw).
-                        if index == 0 {
-                            if let Some((value_home, pointer, _)) = store_plan {
-                                self.output.instructions.push(Instruction::StoreWord { s: value_home, a: pointer, offset: 0 });
-                            }
-                        }
-                        let word = if mask_top_bit {
-                            // The masked value is a NEW value home (mwcc hands it the
-                            // lowest register freed by that point — the die-at-definition
-                            // reuse gives the same register back when nothing freed).
-                            let masked = self.fresh_virtual_general();
-                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
-                            loaded = None;
-                            masked
-                        } else {
-                            loaded = Some((offset, word));
-                            word
-                        };
-                        self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
-                        (options, condition_bit)
-                    }
-                    GuardTest::AddisZero { offset, options, condition_bit, negated_high } => {
-                        let word = match loaded {
-                            Some((shared_offset, shared_word)) if shared_offset == offset => shared_word,
-                            _ => {
-                                let word = self.fresh_virtual_general();
-                                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
-                                loaded = Some((offset, word));
-                                word
-                            }
-                        };
-                        self.output.instructions.push(Instruction::AddImmediateShifted { d: GENERAL_SCRATCH, a: word, immediate: negated_high });
-                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: 0 });
-                        (options, condition_bit)
-                    }
-                    GuardTest::OrZero { left_offset, right_offset, mask_top_bit, options, condition_bit } => {
-                        // Both words load first — the second fills the first's latency —
-                        // then the mask, then the record-form or. (The right word lives
-                        // in r0 here: this single-test form frees it before the branch.)
-                        let word = self.fresh_virtual_general();
-                        self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: left_offset });
-                        self.output.instructions.push(Instruction::LoadWord { d: GENERAL_SCRATCH, a: 1, offset: right_offset });
-                        let word = if mask_top_bit {
-                            let masked = self.fresh_virtual_general();
-                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
-                            masked
-                        } else {
-                            word
-                        };
-                        self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: GENERAL_SCRATCH });
-                        loaded = if mask_top_bit { None } else { Some((left_offset, word)) };
-                        (options, condition_bit)
-                    }
-                };
+                let (options, condition_bit) =
+                    self.emit_frame_guard_test(disjuncts.into_iter().next().expect("one disjunct"), index, &mut loaded, store_plan)?;
                 if index + 1 == count {
                     self.emit_branch_conditional_to(options, condition_bit, epilogue);
                     self.evaluate(&Expression::FloatLiteral(guard_value), Type::Double, Eabi::float_result().number)?;
@@ -401,6 +374,141 @@ impl Generator {
     /// `(pointee, byte offset from r1)` it accesses, or `None` if it does not
     /// reduce to a frame-resident address. This is how a type-pun such as
     /// `*(1 + (int*)&x)` becomes a plain displacement load/store from `r1`.
+
+    /// Emit one single-test frame guard's compare, returning the skip branch's
+    /// (options, condition bit). `loaded` is the chain's shared-word tracker;
+    /// `store_plan` is the leading `*ptr = C` store landing after the first load.
+    fn emit_frame_guard_test(
+        &mut self,
+        test: GuardTest,
+        index: usize,
+        loaded: &mut Option<(i16, u8)>,
+        store_plan: Option<(u8, u8, i16)>,
+    ) -> Compilation<(u8, u8)> {
+        let result = match test {
+                    GuardTest::General(condition) => self.emit_condition_test(condition)?,
+                    GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, high } => {
+                        // The first guard's lis is hoisted into the prologue; a later
+                        // guard materializes its constant inline (measured).
+                        if index > 0 {
+                            self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, high));
+                        }
+                        let word = match *loaded {
+                            Some((shared_offset, shared_word)) if shared_offset == offset => shared_word,
+                            _ => {
+                                let word = self.fresh_virtual_general();
+                                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
+                                word
+                            }
+                        };
+                        // The leading store fills the load latency — BEFORE the mask
+                        // (measured: lwz; stw; clrlwi; cmpw).
+                        if index == 0 {
+                            if let Some((value_home, pointer, _)) = store_plan {
+                                self.output.instructions.push(Instruction::StoreWord { s: value_home, a: pointer, offset: 0 });
+                            }
+                        }
+                        let word = if mask_top_bit {
+                            // The masked value is a NEW value home (mwcc hands it the
+                            // lowest register freed by that point — the die-at-definition
+                            // reuse gives the same register back when nothing freed).
+                            let masked = self.fresh_virtual_general();
+                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
+                            *loaded = None;
+                            masked
+                        } else {
+                            *loaded = Some((offset, word));
+                            word
+                        };
+                        self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                        (options, condition_bit)
+                    }
+                    GuardTest::AddisZero { offset, options, condition_bit, negated_high } => {
+                        let word = match *loaded {
+                            Some((shared_offset, shared_word)) if shared_offset == offset => shared_word,
+                            _ => {
+                                let word = self.fresh_virtual_general();
+                                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
+                                *loaded = Some((offset, word));
+                                word
+                            }
+                        };
+                        self.output.instructions.push(Instruction::AddImmediateShifted { d: GENERAL_SCRATCH, a: word, immediate: negated_high });
+                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: 0 });
+                        (options, condition_bit)
+                    }
+                    GuardTest::OrZero { left_offset, right_offset, mask_top_bit, options, condition_bit } => {
+                        // Both words load first — the second fills the first's latency —
+                        // then the mask, then the record-form or. (The right word lives
+                        // in r0 here: this single-test form frees it before the branch.)
+                        let word = self.fresh_virtual_general();
+                        self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: left_offset });
+                        self.output.instructions.push(Instruction::LoadWord { d: GENERAL_SCRATCH, a: 1, offset: right_offset });
+                        let word = if mask_top_bit {
+                            let masked = self.fresh_virtual_general();
+                            self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
+                            masked
+                        } else {
+                            word
+                        };
+                        self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: GENERAL_SCRATCH });
+                        *loaded = if mask_top_bit { None } else { Some((left_offset, word)) };
+                        (options, condition_bit)
+                    }
+                    GuardTest::SmallCompare { .. } => unreachable!("a small compare only pairs as a disjunction's second test"),
+                };
+        Ok(result)
+    }
+
+    /// Emit a two-test disjunction's loads, compares, and branches: the first test
+    /// branches INTO `value_label` on TRUE, the second skips to `skip_target` when
+    /// false. All loads come first (the or.-pairing's second word rides the first's
+    /// load latency), the mask after (a fresh value home), then the tests.
+    fn emit_frame_disjunction(&mut self, disjuncts: &[GuardTest], value_label: mwcc_vreg::Label, skip_target: mwcc_vreg::Label) -> Compilation<()> {
+        match disjuncts {
+            [GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, .. },
+             GuardTest::OrZero { right_offset, options: or_options, condition_bit: or_bit, .. }] => {
+                let word = self.fresh_virtual_general();
+                let second_word = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
+                self.output.instructions.push(Instruction::LoadWord { d: second_word, a: 1, offset: *right_offset });
+                let word = if *mask_top_bit {
+                    let masked = self.fresh_virtual_general();
+                    self.output.instructions.push(Instruction::ClearLeftImmediate { a: masked, s: word, clear: 1 });
+                    masked
+                } else {
+                    word
+                };
+                self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
+                self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: word, b: second_word });
+                self.emit_branch_conditional_to(*or_options, *or_bit, skip_target);
+            }
+            [GuardTest::LisCompare { offset, options, condition_bit, .. },
+             GuardTest::LisCompare { options: second_options, condition_bit: second_bit, high: second_high, .. }] => {
+                let word = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
+                self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
+                self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *second_high));
+                self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                self.emit_branch_conditional_to(*second_options, *second_bit, skip_target);
+            }
+            [GuardTest::LisCompare { offset, options, condition_bit, .. },
+             GuardTest::SmallCompare { constant, options: second_options, condition_bit: second_bit, .. }] => {
+                // The shared-word cmpwi second test (measured g2).
+                let word = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset: *offset });
+                self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                self.emit_branch_conditional_to(options ^ 8, *condition_bit, value_label);
+                self.output.instructions.push(Instruction::CompareWordImmediate { a: word, immediate: *constant });
+                self.emit_branch_conditional_to(*second_options, *second_bit, skip_target);
+            }
+            _ => unreachable!("gated at classification"),
+        }
+        Ok(())
+    }
+
     /// Classify a frame-guard condition (see [`GuardTest`]). Frame slots must
     /// already be laid out — the punned load resolves against them.
     fn classify_guard_test<'a>(&self, condition: &'a Expression) -> GuardTest<'a> {
@@ -452,6 +560,19 @@ impl Generator {
             }
         }
         GuardTest::General(condition)
+    }
+
+    /// A cmpwi-range compare over a bare punned word — only meaningful as a
+    /// disjunction's SECOND test, where it reuses the shared loaded word
+    /// (`cmpwi r3,C` — measured on g2). A lone small compare stays General
+    /// (staging through r0), so this is a separate, pairing-time classification.
+    fn classify_small_compare<'a>(&self, condition: &'a Expression) -> Option<GuardTest<'a>> {
+        let Expression::Binary { operator, left, right } = condition else { return None };
+        let constant = constant_value(right).and_then(|constant| i16::try_from(constant).ok())?;
+        let Expression::Dereference { pointer } = left.as_ref() else { return None };
+        let (Pointee::Int, offset) = self.resolve_frame_pointer(pointer)? else { return None };
+        let (options, condition_bit) = signed_skip_when_false(*operator)?;
+        Some(GuardTest::SmallCompare { offset, constant, options, condition_bit })
     }
 
     pub(crate) fn resolve_frame_pointer(&self, pointer: &Expression) -> Option<(Pointee, i16)> {
@@ -615,6 +736,25 @@ enum GuardTest<'a> {
     /// first's latency, the mask following BOTH), then `or. r0,r3,r0` sets CR0
     /// with no separate compare.
     OrZero { left_offset: i16, right_offset: i16, mask_top_bit: bool, options: u8, condition_bit: u8 },
+    /// `<punned word> CMP <cmpwi-range constant>` — only as a disjunction's SECOND
+    /// test, reusing the shared loaded word (`cmpwi r3,C` — measured on g2).
+    SmallCompare { offset: i16, constant: i16, options: u8, condition_bit: u8 },
+}
+
+/// What a frame guard returns when taken.
+#[derive(Clone, Copy)]
+enum FrameOutcome {
+    Literal(f64),
+    /// The double parameter itself: nothing when the value block falls in, an
+    /// `lfd` slot reload when it is a branch JOIN target (measured g1 vs g2).
+    Param,
+}
+
+/// What the fall-through return is.
+#[derive(Clone, Copy)]
+enum FrameFall {
+    Param,
+    Literal(f64),
 }
 
 /// The skip-when-false branch (options, CR bit) for a SIGNED compare — the
