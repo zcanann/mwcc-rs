@@ -1033,16 +1033,11 @@ impl Generator {
             self.output.instructions.push(crate::expressions::indexed_store(pointee, register, base, GENERAL_SCRATCH));
         } else {
             let constant = stored_constant.expect("checked above");
-            // Phase D migration note: the offset==0 form's base-high is a virtual (its
-            // redefinition by the `li` re-lands on the same register). The offset≠0
-            // form REUSES the high for the effective address after the value's `li` —
-            // the per-definition interval split scrambles a linear scan there, so it
-            // keeps the explicit physical choice until ranges can span redefinitions.
-            let high = if offset == 0 {
-                self.fresh_virtual_general()
-            } else {
-                self.free_register_avoiding(&[index_leaf])?
-            };
+            // Phase D: the base-high is a virtual in both forms — a redefined vreg keeps
+            // ONE live range spanning the redefinition (the offset≠0 form reuses it for
+            // the effective address), so the value's overlapping virtual lands on the
+            // next register, matching mwcc's r4/r5 split.
+            let high = self.fresh_virtual_general();
             self.emit_address_high(high, array);
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
             self.record_relocation(RelocationKind::Addr16Lo, array);
@@ -1053,14 +1048,9 @@ impl Generator {
                 self.output.instructions.push(crate::expressions::indexed_store(pointee, high, index_register, GENERAL_SCRATCH));
                 self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
             } else {
-                // The value takes the next free register past the (reserved) high, the
-                // effective address lands in the freed high, and the return interleaves
-                // before the displacement store.
-                let reserved = self.reserved.insert(high);
-                let value_register = self.free_register_avoiding(&[index_leaf])?;
-                if reserved {
-                    self.reserved.remove(&high);
-                }
+                // The value's virtual overlaps the still-live high (which the `add`
+                // redefines as the effective address), so it allocates past it.
+                let value_register = self.fresh_virtual_general();
                 self.output.instructions.push(Instruction::AddImmediate { d: value_register, a: 0, immediate: constant });
                 self.output.instructions.push(Instruction::Add { d: high, a: index_register, b: GENERAL_SCRATCH });
                 self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });

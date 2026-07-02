@@ -55,13 +55,24 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
             let entry = open.entry((operand.class, operand.register)).or_insert((0, index));
             entry.1 = index;
         }
-        // Then definitions: the old value's range ends, a new one begins here.
+        // Then definitions: a PHYSICAL register's old value ends and a new range
+        // begins (the classic r3 parameter/temporary/result reuse). A VIRTUAL
+        // register redefined mid-stream instead EXTENDS its one range: the vreg is a
+        // single value home — mwcc keeps the same physical register across a
+        // redefinition (a base register reused for the effective address) — so the
+        // allocator must too; a split would let the linear scan hand the two halves
+        // different homes.
         for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Define) {
             let key = (operand.class, operand.register);
-            if let Some((start, end)) = open.remove(&key) {
-                ranges.push((key, start, end));
+            if Reg::is_virtual_field(operand.register) {
+                let entry = open.entry(key).or_insert((index, index));
+                entry.1 = index;
+            } else {
+                if let Some((start, end)) = open.remove(&key) {
+                    ranges.push((key, start, end));
+                }
+                open.insert(key, (index, index));
             }
-            open.insert(key, (index, index));
         }
     }
     for (key, (start, end)) in open {
@@ -126,6 +137,31 @@ mod tests {
             .collect();
         // Two distinct lives of r3: the first value [0,1], the redefinition [2,2].
         assert_eq!(r3, [(0, 1), (2, 2)]);
+    }
+
+    #[test]
+    fn a_redefined_virtual_keeps_one_range_spanning_the_redefinition() {
+        // v0 = base high; a value materializes between v0's use and its
+        // redefinition as the effective address (the offset≠0 store shape):
+        //   lis v0; addi r3,v0; li v1,C; add v0,r3,r0; stw v1,-4(v0)
+        // v0 must span [0,4] (one home across the redefinition at 3), so v1's
+        // overlapping range gets the NEXT register — matching mwcc's r4/r5.
+        let stream = [
+            Instruction::AddImmediate { d: v(0), a: 0, immediate: 0 },  // lis-ish: def v0
+            Instruction::AddImmediate { d: 3, a: v(0), immediate: 0 },  // use v0
+            Instruction::AddImmediate { d: v(1), a: 0, immediate: 9 },  // def v1
+            Instruction::Add { d: v(0), a: 3, b: 0 },                   // REDEFINE v0
+            Instruction::StoreWord { s: v(1), a: v(0), offset: -4 },    // use both
+        ];
+        let liveness = analyze(&stream);
+        let v0 = liveness.intervals.iter().find(|interval| interval.vreg.id == 0).unwrap();
+        assert_eq!((v0.start, v0.end), (0, 4));
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &constraints).unwrap();
+        let home0 = allocation.physical(VirtualRegister::new(0, Class::General)).unwrap();
+        let home1 = allocation.physical(VirtualRegister::new(1, Class::General)).unwrap();
+        assert_ne!(home0, home1);
+        assert!(home0 < home1, "the earlier-defined base takes the lower register");
     }
 
     #[test]
