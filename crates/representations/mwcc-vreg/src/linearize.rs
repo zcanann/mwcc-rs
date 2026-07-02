@@ -73,6 +73,10 @@ pub const HAZARD_XER: u8 = 1;
 /// mulli never dual-issue (measured: the two-mulli return tail threads the
 /// return chain into the serialization gap).
 pub const HAZARD_MUL: u8 = 2;
+/// The FPU structural hazard: Gekko has ONE float pipe — no two float
+/// arithmetic ops issue the same cycle (measured: independent fadd chains
+/// keep source order with no hoist).
+pub const HAZARD_FPU: u8 = 3;
 
 impl DagNode {
     pub fn new(label: &'static str, latency: u32) -> DagNode {
@@ -396,6 +400,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             // beats the heavier aged mulli; at cycle 0 everything is fresh so
             // weight still decides).
             let fresh_alu = if return_mode && nodes[candidate].kind != OpKind::Store && fresh(candidate) { 0u8 } else { 1 };
+
             let kind_index = match nodes[candidate].kind {
                 OpKind::Alu => 0,
                 OpKind::Load => 1,
@@ -422,11 +427,39 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 // srawi+srawi serializing where rlwinm+rlwinm pairs).
                 let mut picked: Vec<usize> = Vec::new();
                 let mut picked_hazards: Vec<u8> = Vec::new();
+                // A LOAD whose every consumer still waits on another UNISSUED
+                // operand STALLS (measured: the deep chain's second constant
+                // defers past the first fadd; the cycle stalls rather than
+                // hoist it). The fallback lifts the stall when nothing else
+                // can issue at all — livelock safety.
+                let load_blocked = |candidate: usize, issued_at: &Vec<Option<u32>>| -> bool {
+                    nodes[candidate].kind == OpKind::Load
+                        && !(0..count).any(|consumer| {
+                            deps[consumer].contains(&candidate)
+                                && deps[consumer].iter().all(|&dependency| {
+                                    dependency == candidate
+                                        || issued_at[dependency].is_some()
+                                        // A pending fellow LOAD does not block
+                                        // (loads awaiting loads is fine).
+                                        || nodes[dependency].kind == OpKind::Load
+                                })
+                        })
+                        && (0..count).any(|consumer| deps[consumer].contains(&candidate))
+                };
+                // The stall lifts only when nothing but loads remains unissued
+                // (livelock safety) — a pending ALU means waiting will help.
+                let non_load_pending = (0..count)
+                    .any(|node| issued_at[node].is_none() && nodes[node].kind != OpKind::Load && !ready.contains(&node));
+                let unblocked_exists = ready.iter().any(|&candidate| !load_blocked(candidate, &issued_at))
+                    || non_load_pending;
                 // Rescan after every pick: a WAR-deferred return final becomes
                 // eligible the moment the bound store lands in this window.
                 'fill: while picked.len() < model.issue_width {
                     for &candidate in &ready {
                         if picked.contains(&candidate) {
+                            continue;
+                        }
+                        if unblocked_exists && load_blocked(candidate, &issued_at) {
                             continue;
                         }
                         // The WAR constraint: the return final waits for (or
@@ -1453,6 +1486,82 @@ mod tests {
     /// A single-consumer extension reuses its dying param register in place
     /// (extsb r3,r3); a multi-consumer one takes the next closed-free register
     /// and the first chain's final claims the freed param home.
+    /// FLOAT ORDER fixtures (fire 331-332 captures): float arithmetic is
+    /// latency-3 single-pipe (HAZARD_FPU); loads are the int Load class.
+    /// Expected EMISSION order as node indices.
+    fn float_order_fixtures() -> Vec<(&'static str, Vec<DagNode>, Vec<usize>, bool)> {
+        use OpKind::Store as St;
+        const FARITH: u32 = 3;
+        vec![
+            (
+                // g=a+1.5; h=b+2.5: lfd lfd fadd fadd stfd stfd (source order)
+                "float_two_fadd",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fadd_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![0, 3, 1, 4, 2, 5],
+                false,
+            ),
+            (
+                // g=(a+1.5)+2.5; h=b+3.5: lfd1.5 lfd3.5 faddg1 lfd2.5 faddh faddg2 sth stg
+                "float_deep_vs_shallow",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fadd_g1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10]).writes(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[12]),
+                    DagNode::new("fadd_g2", FARITH).hazard(HAZARD_FPU).reads(&[11, 12]).writes(&[13]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[13]),
+                    DagNode::new("lfd_c3", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![0, 5, 1, 2, 6, 3, 7, 4],
+                false,
+            ),
+            (
+                // g=a*b+1.5 (fmadd); h=c+2.5: lfd lfd fmadd fadd stg sth
+                "float_fmadd_latency",
+                vec![
+                    DagNode::new("lfd_c1", LOAD).writes(&[10]),
+                    DagNode::new("fmadd_g", FARITH).hazard(HAZARD_FPU).reads(&[1, 2, 10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("lfd_c2", LOAD).writes(&[20]),
+                    DagNode::new("fadd_h", FARITH).hazard(HAZARD_FPU).reads(&[3, 20]).writes(&[21]),
+                    DagNode::new("st_h", STORE).kind(St).reads(&[21]),
+                ],
+                vec![0, 3, 1, 4, 2, 5],
+                false,
+            ),
+        ]
+    }
+
+    /// Diagnostic: score FROZEN against the float order captures.
+    #[test]
+    fn float_orders() {
+        let shapes = float_order_fixtures();
+        let mut passed = 0;
+        for (name, nodes, expected, must_pass) in &shapes {
+            let got = linearize(nodes);
+            let ok = got == *expected;
+            if ok {
+                passed += 1;
+            } else {
+                let labels: Vec<&str> = got.iter().map(|&index| nodes[index].label).collect();
+                let want: Vec<&str> = expected.iter().map(|&index| nodes[index].label).collect();
+                println!("float MISS {name}: got {labels:?} want {want:?}");
+            }
+            if *must_pass {
+                assert!(ok, "float fixture {name} regressed");
+            }
+        }
+        println!("float orders: {passed}/{}", shapes.len());
+    }
+
     /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order
     /// as node indices. The tail rank (store vs return final) is the open
     /// sub-model; shapes marked false do not pass FROZEN yet.
