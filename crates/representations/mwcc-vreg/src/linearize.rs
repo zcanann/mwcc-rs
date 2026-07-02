@@ -708,6 +708,153 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
     result
 }
 
+/// DIAGNOSTIC: assign registers processing chains in an EXPLICIT sequence
+/// (values within a chain in issue order), with forced positions pre-claimed
+/// (a return value's r3; the store-only last chain's final r0) and in-place
+/// ALWAYS eligible (conflicts resolve via the sequence). Used by the fitter to
+/// enumerate chain orders per fixture and expose the ordering rule.
+pub fn assign_registers_sequenced(
+    nodes: &[DagNode],
+    order: &[usize],
+    params: &[(u32, u8)],
+    chain_sequence: &[usize],
+) -> Vec<Option<u8>> {
+    let count = nodes.len();
+    let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
+    for (index, node) in nodes.iter().enumerate() {
+        for read in &node.reads {
+            if let Some(writer) = (0..index).rev().find(|&w| nodes[w].writes.contains(read)) {
+                consumer_of[writer].push(index);
+            }
+        }
+    }
+    let position: Vec<usize> = {
+        let mut position = vec![0; count];
+        for (slot, &node) in order.iter().enumerate() {
+            position[node] = slot;
+        }
+        position
+    };
+    let chain_of = |mut node: usize| -> usize {
+        loop {
+            match consumer_of[node].first() {
+                Some(&next) => node = next,
+                None => return node,
+            }
+        }
+    };
+    let param_end = |value: u32| -> usize {
+        (0..count)
+            .filter(|&reader| nodes[reader].reads.contains(&value))
+            .map(|reader| position[reader])
+            .max()
+            .unwrap_or(0)
+    };
+    let value_end = |node: usize| -> usize {
+        consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node])
+    };
+    let return_sink: Option<usize> = chain_sequence
+        .iter()
+        .copied()
+        .find(|&sink| nodes[sink].kind != OpKind::Store && consumer_of[sink].is_empty());
+    let return_mode = return_sink.is_some();
+    let last_store_sink = chain_sequence
+        .iter()
+        .copied()
+        .filter(|&sink| nodes[sink].kind == OpKind::Store)
+        .max();
+    let mut occupied: Vec<(u8, usize, usize)> =
+        params.iter().map(|&(value, register)| (register, 0, param_end(value))).collect();
+    let mut result: Vec<Option<u8>> = vec![None; count];
+    // Pre-claim forced positions: the return VALUE's r3; store-only, the last
+    // chain's final r0.
+    let mut forced: Vec<(usize, u8)> = Vec::new();
+    for node in 0..count {
+        if return_mode && consumer_of[node].is_empty() && nodes[node].kind != OpKind::Store {
+            forced.push((node, 3));
+        }
+        if !return_mode
+            && Some(chain_of(node)) == last_store_sink
+            && consumer_of[node].len() == 1
+            && nodes[consumer_of[node][0]].kind == OpKind::Store
+        {
+            forced.push((node, 0));
+        }
+    }
+    for &(node, register) in &forced {
+        result[node] = Some(register);
+        occupied.push((register, position[node], value_end(node)));
+    }
+    for &sink in chain_sequence {
+        let mut members: Vec<usize> = (0..count)
+            .filter(|&node| {
+                chain_of(node) == sink && nodes[node].kind != OpKind::Store && result[node].is_none()
+            })
+            .collect();
+        members.sort_by_key(|&node| position[node]);
+        for node in members {
+            let start = position[node];
+            let end = value_end(node);
+            let closed_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+                occupied.iter().all(|&(taken, s, e)| taken != register || e < start || s > end)
+            };
+            let open_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
+                occupied.iter().all(|&(taken, s, e)| taken != register || e <= start || s > end)
+            };
+            let own_dying: Option<u8> = nodes[node]
+                .reads
+                .iter()
+                .filter_map(|read| {
+                    params
+                        .iter()
+                        .find(|&&(value, _)| value == *read)
+                        .map(|&(_, register)| (register, param_end(*read), false))
+                        .or_else(|| {
+                            (0..count)
+                                .rev()
+                                .find(|&w| nodes[w].writes.contains(read))
+                                .and_then(|writer| result[writer].map(|register| (register, value_end(writer), true)))
+                        })
+                })
+                .filter(|&(_, death, internal)| {
+                    death == start && (internal || nodes[node].latency < 3)
+                })
+                .map(|(register, _, _)| register)
+                .min();
+            let r0_eligible = return_mode || Some(chain_of(node)) == last_store_sink || {
+                let last_first_def = last_store_sink
+                    .map(|sink| {
+                        (0..count)
+                            .filter(|&member| chain_of(member) == sink && nodes[member].kind != OpKind::Store)
+                            .map(|member| position[member])
+                            .min()
+                            .unwrap_or(usize::MAX)
+                    })
+                    .unwrap_or(usize::MAX);
+                end < last_first_def
+            };
+            let pool: Vec<u8> = if r0_eligible {
+                let mut pool = vec![3u8, 4, 0];
+                pool.extend(5..=12);
+                pool
+            } else {
+                (3..=12).collect()
+            };
+            let pick = pool.iter().copied().find(|&register| {
+                if own_dying == Some(register) {
+                    open_free(register, &occupied)
+                } else {
+                    closed_free(register, &occupied)
+                }
+            });
+            let register = pick.unwrap_or(0);
+            result[node] = Some(register);
+            occupied.push((register, start, end));
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,6 +1152,44 @@ mod tests {
                 vec![Some(4), Some(4), None, Some(0), Some(3), Some(0), None],
             ),
         ]
+    }
+
+    /// CHAIN-ORDER DIAGNOSTIC: for each register fixture, try every chain
+    /// permutation through assign_registers_sequenced and print the passing
+    /// ones — the ordering rule should be visible across fixtures.
+    /// Run: `cargo test -p mwcc-vreg chain_order_diagnostic -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "diagnostic; run with --nocapture"]
+    fn chain_order_diagnostic() {
+        fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
+            if items.len() <= 1 {
+                return vec![items.to_vec()];
+            }
+            let mut all = Vec::new();
+            for (index, &head) in items.iter().enumerate() {
+                let mut rest = items.to_vec();
+                rest.remove(index);
+                for mut tail in permutations(&rest) {
+                    tail.insert(0, head);
+                    all.push(tail);
+                }
+            }
+            all
+        }
+        let mut shapes = register_fixtures();
+        shapes.extend(register_fixtures_round2());
+        for (name, nodes, params, expected) in &shapes {
+            let order = linearize(nodes);
+            let sinks: Vec<usize> = (0..nodes.len())
+                .filter(|&node| nodes[node].kind == OpKind::Store)
+                .collect();
+            let passing: Vec<String> = permutations(&sinks)
+                .into_iter()
+                .filter(|sequence| assign_registers_sequenced(nodes, &order, params, sequence) == *expected)
+                .map(|sequence| format!("{sequence:?}"))
+                .collect();
+            println!("{name}: sinks {sinks:?} passing {passing:?}");
+        }
     }
 
     /// THE REGISTER FITTER: enumerate policies against the register fixtures.
