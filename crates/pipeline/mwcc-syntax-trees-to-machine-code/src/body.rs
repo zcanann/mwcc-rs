@@ -3805,11 +3805,13 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
             self.record_relocation(RelocationKind::Addr16Lo, load_name);
             self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
-            self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::LoadWordIndexed { d: 31, a: index_register, b: scaled });
+            let saved = self.fresh_virtual_general();
+            self.callee_saved = vec![saved];
+            self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::LoadWordIndexed { d: saved, a: index_register, b: scaled });
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+                Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
             );
             // The conditional store skips on the condition's FALSE side, the value
             // materializes into r0, and the base/scaled pair is reused. (@N: measured
@@ -3829,8 +3831,8 @@ impl Generator {
             }
             let result = mwcc_target::Eabi::general_result().number;
             self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-            self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
-            self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::Or { a: result, s: saved, b: saved });
+            self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
             self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
             self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
             self.output.instructions.push(Instruction::BranchToLinkRegister);
@@ -4168,14 +4170,16 @@ impl Generator {
         let frame_size = ((8 + 4 * count as i32 + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        self.callee_saved = (0..count as u8).map(|rank| 31 - rank).collect();
+        // Phase D: virtual homes, highest-rank first.
+        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        self.callee_saved = homes.clone();
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
         // Save each parameter to a callee-saved register — highest (r31) to the last
         // parameter, descending — interleaving the store with the move, as mwcc emits.
         for (rank, (_, incoming_register)) in incoming.iter().rev().enumerate() {
-            let register = 31 - rank as u8;
+            let register = homes[rank];
             let offset = frame_size - 4 * (rank as i16 + 1);
             self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
             self.output.instructions.push(Instruction::Or { a: register, s: *incoming_register, b: *incoming_register });
@@ -4184,7 +4188,7 @@ impl Generator {
         // moves); afterward they live only in their callee-saved registers.
         self.emit_statement(&function.statements[0])?;
         for (rank, (name, _)) in incoming.iter().rev().enumerate() {
-            let register = 31 - rank as u8;
+            let register = homes[rank];
             if let Some(location) = self.locations.get_mut(name) {
                 location.register = register;
             }
@@ -4564,12 +4568,14 @@ impl Generator {
         let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        self.callee_saved = (0..count as u8).map(|rank| 31 - rank).collect();
+        // Phase D: virtual homes, created highest-rank first (id order -> r31, r30, …).
+        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        self.callee_saved = homes.clone();
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
         for rank in 0..count {
-            let register = 31 - rank as u8;
+            let register = homes[rank];
             let offset = frame_size - 4 * (rank as i16 + 1);
             self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
         }
@@ -4580,7 +4586,8 @@ impl Generator {
         for (index, local) in function.locals.iter().enumerate() {
             let (init_name, init_arguments) = &init_calls[index];
             self.emit_call(init_name, init_arguments, None, false)?;
-            let register = (32 - count + index) as u8;
+            // The first local takes the LOWEST home (homes are highest-first).
+            let register = homes[count - 1 - index];
             self.output.instructions.push(Instruction::Or { a: register, s: 3, b: 3 });
             let signed = !matches!(local.declared_type, Type::UnsignedInt);
             self.locations.insert(
@@ -4658,16 +4665,18 @@ impl Generator {
         // Prologue, then compute z into r31, then the argument calls, then the return.
         self.non_leaf = true;
         self.frame_size = 16;
-        self.callee_saved = vec![31];
+        // Phase D: the computed local's home is a virtual (call-crossing -> r31).
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-        self.evaluate_general(initializer, 31)?;
+        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+        self.evaluate_general(initializer, saved)?;
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+            Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
         );
         for statement in &function.statements {
             self.emit_statement(statement)?;
