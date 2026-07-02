@@ -632,7 +632,10 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let last_chain_depth = (0..count)
             .filter(|&member| chain_of(member) == last_sink && nodes[member].kind != OpKind::Store)
             .count();
-        let relaxed = chain_count <= 2 && last_chain_depth <= 2 && nodes[node].latency < 3;
+        let relaxed = chain_count <= 2
+            && last_chain_depth <= 2
+            && nodes[node].latency < 3
+            && chain_of(node) != last_sink;
         let own_dying: Option<u8> = nodes[node]
             .reads
             .iter()
@@ -657,16 +660,33 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         };
         let on_last_chain = chain_of(node) == last_sink;
         let is_final = consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
-        let r0_allowed = on_last_chain || end < last_chain_first_def;
-        let pick = if r0_allowed && closed_free(0, &occupied) {
-            Some(0)
-        } else if is_final || relaxed {
-            own_dying
-                .filter(|&register| open_free(register, &occupied))
-                .or_else(|| (3..=12).find(|&register| closed_free(register, &occupied)))
+        // The pool, in mwcc's preference order (measured, 10/10 dataset shapes):
+        // the LAST chain's FINAL is forced to r0 (the store staging register);
+        // last-chain intermediates and values wholly preceding the last chain
+        // slot r0 BETWEEN r4 and r5; everything else never touches r0. A
+        // register is candidate when closed-free — or open-free for the op's
+        // own dying source (internal sources always; params in the relaxed
+        // regime only). First candidate in pool order wins.
+        let r0_eligible = on_last_chain || end < last_chain_first_def;
+        let pool: Vec<u8> = if on_last_chain && is_final {
+            vec![0]
+        } else if r0_eligible {
+            let mut pool = vec![3u8, 4, 0];
+            pool.extend(5..=12);
+            pool
         } else {
-            (3..=12).find(|&register| closed_free(register, &occupied))
+            (3..=12).collect()
         };
+        let pick = pool
+            .iter()
+            .copied()
+            .find(|&register| {
+                if own_dying == Some(register) {
+                    open_free(register, &occupied)
+                } else {
+                    closed_free(register, &occupied)
+                }
+            });
         let register = pick.unwrap_or(0);
         result[node] = Some(register);
         occupied.push((register, start, end));
