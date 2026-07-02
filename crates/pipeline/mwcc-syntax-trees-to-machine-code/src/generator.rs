@@ -397,6 +397,12 @@ impl Generator {
                 return Ok(pointee);
             }
         }
+        // `*(T*)p` — a pointer cast reinterprets the address: the pointee is the cast's
+        // target regardless of what `p` is (mirrors `resolve_pointer`, so value tracking
+        // classifies a punned `*(int*)&x` the same way the direct evaluator emits it).
+        if let Expression::Cast { target_type: Type::Pointer(pointee), .. } = pointer {
+            return Ok(*pointee);
+        }
         let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("pointer access needs a pointer variable (roadmap)"))?;
         self.locations
             .get(name)

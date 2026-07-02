@@ -275,10 +275,18 @@ fn spill_instruction(register: u8, slot: FrameSlot) -> Instruction {
 }
 
 /// The set of variable names whose address is taken anywhere in the function.
-fn collect_address_taken(function: &Function) -> HashSet<String> {
+pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {
     let mut names = HashSet::new();
     for statement in &function.statements {
         walk_statement(statement, &mut names);
+    }
+    // A local INITIALIZER taking an address (`int hx = *(int*)&x;`) forces the
+    // addressed variable frame-resident just as a statement would — value tracking
+    // substitutes the initializer into the uses, where the slot must exist.
+    for local in &function.locals {
+        if let Some(initializer) = &local.initializer {
+            walk(initializer, &mut names);
+        }
     }
     if let Some(expression) = &function.return_expression {
         walk(expression, &mut names);

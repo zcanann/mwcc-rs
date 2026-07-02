@@ -196,6 +196,68 @@ fn inline_first_call_target_alias(function: &Function) -> Option<Function> {
 /// Only a call-making body whose locals are pure return aliases qualifies; a local
 /// initialized by a call (preserved as a call result), reassigned, read by a statement,
 /// or feeding control flow leaves the function unchanged (`None`).
+/// Inline register locals whose function routes through the FRAME-RESIDENT path
+/// (an address-taken variable is present): that path evaluates the body directly
+/// and cannot bind register locals, but with each read-once, call-free local
+/// substituted away the body is the direct form it already compiles byte-exactly
+/// (`int hx = *(int*)&x; return hx & C;` -> `return (*(int*)&x) & C;`). Leaf,
+/// statement-free bodies only: a call could rewrite the punned memory, a store
+/// could alias it, and a twice-read local would duplicate its load.
+fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
+    if function.locals.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+        return None;
+    }
+    if function_makes_call(function) {
+        return None;
+    }
+    let address_taken = crate::frame::collect_address_taken(function);
+    if address_taken.is_empty() {
+        return None;
+    }
+    let return_expression = function.return_expression.as_ref()?;
+    for local in &function.locals {
+        // Only REGISTER locals inline; an address-taken or array local is the frame
+        // path's own business (and a register local must be full width — a narrow
+        // local carries a truncation substitution would drop).
+        if address_taken.contains(local.name.as_str()) || local.array_length.is_some() {
+            return None;
+        }
+        if local.declared_type.width() < 32 {
+            return None;
+        }
+    }
+    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    for (index, local) in function.locals.iter().enumerate() {
+        let initializer = local.initializer.as_ref()?;
+        if expression_has_call(initializer) {
+            return None;
+        }
+        // Read-once: across the later initializers and the return, so the
+        // substitution cannot duplicate a load mwcc would keep in a register.
+        let reads = function.locals[index + 1..]
+            .iter()
+            .filter_map(|later| later.initializer.as_ref())
+            .map(|later| count_name_occurrences(later, &local.name))
+            .sum::<usize>()
+            + count_name_occurrences(return_expression, &local.name);
+        if reads > 1 {
+            return None;
+        }
+        let resolved = crate::value_tracking::substitute(initializer, &values);
+        values.insert(local.name.clone(), resolved);
+    }
+    Some(Function {
+        return_type: function.return_type,
+        name: function.name.clone(),
+        is_static: function.is_static,
+        parameters: function.parameters.clone(),
+        locals: Vec::new(),
+        statements: Vec::new(),
+        guards: Vec::new(),
+        return_expression: Some(crate::value_tracking::substitute(return_expression, &values)),
+    })
+}
+
 fn inline_return_only_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() || !function_makes_call(function) || !function.guards.is_empty() {
         return None;
@@ -1451,6 +1513,12 @@ impl Generator {
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,
         // since an address-taken variable cannot be value-tracked in a register.
+        // Register locals feeding a frame-resident body (`int hx = *(int*)&x; return
+        // f(hx);`) inline away first: the frame path cannot bind them, and once
+        // substituted the body is the proven direct form (`return f(*(int*)&x);`).
+        if let Some(inlined) = inline_frame_feeding_locals(function) {
+            return self.evaluate_body(&inlined);
+        }
         if self.try_frame_resident(function)? {
             return Ok(());
         }
