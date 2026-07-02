@@ -5936,10 +5936,14 @@ impl Generator {
     /// and `double t = x; if (c) t = -x;` canonicalizes identically). The
     /// bare-copy local aliases to the param when the param is otherwise dead.
     pub(crate) fn try_float_param_reassign(&mut self, function: &Function) -> Compilation<bool> {
+        // The only "calls" allowed are the __fabs INTRINSIC in the arms
+        // (a single fabs instruction, not a real call — checked per arm below).
+        let has_real_call = function.return_expression.as_ref().is_some_and(crate::analysis::expression_has_call)
+            || function.locals.iter().any(|local| local.initializer.as_ref().is_some_and(crate::analysis::expression_has_call));
         if !matches!(function.return_type, Type::Float | Type::Double)
             || function.return_expression.is_none()
             || !function.guards.is_empty()
-            || function_makes_call(function)
+            || has_real_call
             || self.behavior.global_addressing != GlobalAddressing::SmallData
         {
             return Ok(false);
@@ -5969,7 +5973,7 @@ impl Generator {
             }
         }
         // Statements: `if (int-param cmp const) { fparam = -fparam; }` runs.
-        let mut reassigns: Vec<(&Expression, &str)> = Vec::new();
+        let mut reassigns: Vec<(&Expression, &str, bool)> = Vec::new();
         for statement in &function.statements {
             let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
             if !else_body.is_empty() || then_body.len() != 1 {
@@ -5988,12 +5992,22 @@ impl Generator {
             }
             let Statement::Assign { name, value } = &then_body[0] else { return Ok(false) };
             let target = resolve(alias, name);
-            let Expression::Unary { operator: UnaryOperator::Negate, operand } = value else { return Ok(false) };
-            let Expression::Variable(source) = operand.as_ref() else { return Ok(false) };
+            // `x = -x` (fneg) or `x = __fabs(x)` (the fabs instruction).
+            let (source, is_abs) = match value {
+                Expression::Unary { operator: UnaryOperator::Negate, operand } => match operand.as_ref() {
+                    Expression::Variable(source) => (source, false),
+                    _ => return Ok(false),
+                },
+                Expression::Call { name: callee, arguments } if is_intrinsic_call(callee) => match arguments.as_slice() {
+                    [Expression::Variable(source)] => (source, true),
+                    _ => return Ok(false),
+                },
+                _ => return Ok(false),
+            };
             if resolve(alias, source) != target || self.float_register_of(target).is_err() {
                 return Ok(false);
             }
-            reassigns.push((condition, target));
+            reassigns.push((condition, target, is_abs));
         }
         if reassigns.is_empty() {
             return Ok(false);
@@ -6017,12 +6031,16 @@ impl Generator {
         }
         // Each if's join label advances mwcc's anonymous-@N counter by 2.
         self.output.anonymous_label_bump += 2 * reassigns.len() as u32;
-        for (condition, target) in &reassigns {
+        for (condition, target, is_abs) in &reassigns {
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             let branch_index = self.output.instructions.len();
             self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
             let register = self.float_register_of(target).expect("checked");
-            self.output.instructions.push(Instruction::FloatNegate { d: register, b: register });
+            self.output.instructions.push(if *is_abs {
+                Instruction::FloatAbsolute { d: register, b: register }
+            } else {
+                Instruction::FloatNegate { d: register, b: register }
+            });
             let join = self.output.instructions.len();
             if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
                 *target = join;

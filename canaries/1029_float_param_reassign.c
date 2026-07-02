@@ -28,3 +28,31 @@ double two_flips(double x, int c, int d)
 	}
 	return x * 2.0;
 }
+
+/* the fabs form: `x = __fabs(x)` (directly or through the MSL inline
+ * wrapper) is the fabs INSTRUCTION in place — same shape as fneg. */
+double __fabs(double);
+
+inline double fabs_wrap(double x)
+{
+	return __fabs(x);
+}
+
+double abs_reassign(double x, int c)
+{
+	if (c) {
+		x = fabs_wrap(x);
+	}
+	return x * 2.0;
+}
+
+double mixed_ops(double x, int c, int d)
+{
+	if (c) {
+		x = __fabs(x);
+	}
+	if (d) {
+		x = -x;
+	}
+	return x * 2.0;
+}
