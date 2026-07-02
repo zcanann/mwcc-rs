@@ -66,3 +66,24 @@ double dual_shared_z_single(double x, int c)
 		return z * 62.5;
 	}
 }
+
+double plain_fsub(double x, double y)
+{
+	return x - (y + 71.5);
+}
+
+double const_fmsub(double y, double z)
+{
+	return 72.5 * y - z;
+}
+
+double dual_shared_z_deep(double x, int c)
+{
+	double z;
+	z = x * x;
+	if (c == 0) {
+		return z * (81.5 + z * (82.5 + z * 83.5));
+	} else {
+		return z * (84.5 + z * 85.5);
+	}
+}

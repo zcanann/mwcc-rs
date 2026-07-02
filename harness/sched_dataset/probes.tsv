@@ -92,3 +92,4 @@ float_reload_z3	(fctiwz tail c)
 float_dual_shared_z	(dual z probe 1)
 float_dual_shared_zv	(dual z+v probe 2: tier DEFINITION-ASC to top!)
 float_dual_shared_zvw	(dual z+v+w probe 4)
+float_ksin_else	double f(double x, double y, double v, double r, double z) { return x - ((z*(0.5*y - v*r) - y) - v*1.5); }

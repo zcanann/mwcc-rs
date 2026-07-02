@@ -37,6 +37,9 @@ enum Tree {
     /// A plain unfused add (measured: a pooled constant + a non-mul value,
     /// the constant in the A slot — fadd f1,f0,f1).
     Fadd { left: Box<Tree>, right: Box<Tree> },
+    /// A plain unfused subtract (neither side a product): source slots
+    /// (fsub f1,f1,f0 — the k_sin else-tail's outer x-minus).
+    Fsub { left: Box<Tree>, right: Box<Tree> },
 }
 
 /// One emitted node, operands in the final instruction slots (the measured
@@ -50,6 +53,7 @@ enum FloatOp {
     Fmsub { a: Operand, c: Operand, b: Operand },
     Mul { a: Operand, c: Operand },
     Add { a: Operand, b: Operand },
+    Sub { a: Operand, b: Operand },
 }
 
 const LOAD_LATENCY: u32 = 2;
@@ -374,7 +378,7 @@ impl Generator {
                         push_const(*bits, &mut nodes, &mut ops, &mut built, addend.as_ref() as *const Tree);
                     }
                 }
-                Tree::Mul { left, right } | Tree::Fadd { left, right } => {
+                Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
                     for side in [left, right] {
                         if let Tree::Const(bits) = side.as_ref() {
                             push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree);
@@ -407,11 +411,12 @@ impl Generator {
             let index = nodes.len();
             match arith {
                 Tree::Fmsub { factor_left, factor_right, subtrahend } => {
-                    let a = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let c = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     let b = resolve(subtrahend, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    // Measured: the source-left factor keeps A (constant
-                    // factors are deferred at build).
+                    // Measured: a pooled-constant factor takes A; else the
+                    // source-left factor keeps it.
+                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
                     let reads: Vec<u32> = [a, c, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
                     nodes.push(
                         DagNode::new("fmsub", FLOAT_ARITH_LATENCY)
@@ -477,6 +482,18 @@ impl Generator {
                             .writes(&[10 + index as u32]),
                     );
                     ops.push(FloatOp::Add { a, b });
+                }
+                Tree::Fsub { left, right } => {
+                    let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let reads: Vec<u32> = [a, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    nodes.push(
+                        DagNode::new("fsub", FLOAT_ARITH_LATENCY)
+                            .hazard(HAZARD_FPU)
+                            .reads(&reads)
+                            .writes(&[10 + index as u32]),
+                    );
+                    ops.push(FloatOp::Sub { a, b });
                 }
                 _ => unreachable!(),
             }
@@ -575,6 +592,11 @@ impl Generator {
                     a: register_of(*a),
                     b: register_of(*b),
                 }),
+                FloatOp::Sub { a, b } => self.output.instructions.push(Instruction::FloatSubtractDouble {
+                    d,
+                    a: register_of(*a),
+                    b: register_of(*b),
+                }),
             }
         }
         Ok(true)
@@ -645,7 +667,9 @@ fn build_tree(
             // the simple, deep, and wmul fmsub roots). A constant fmsub
             // FACTOR is uncaptured — deferred inside the branch.
             if let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = left.as_ref() {
-                if matches!(x.as_ref(), Expression::FloatLiteral(_)) || matches!(y.as_ref(), Expression::FloatLiteral(_)) {
+                // ONE pooled-constant factor takes the A slot (measured:
+                // fmsub f0,f4,f2,f0 = 0.5*y - v*r); both fold — defer.
+                if matches!(x.as_ref(), Expression::FloatLiteral(_)) && matches!(y.as_ref(), Expression::FloatLiteral(_)) {
                     return None;
                 }
                 let factor_left = build_tree(x, params, locals, seen_literals)?;
@@ -658,7 +682,16 @@ fn build_tree(
                 });
             }
             let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = right.as_ref() else {
-                return None;
+                // Neither side a product: the plain unfused FSUB in source
+                // slots. The DEEP form (the k_sin else-tail: >= 2 arith in
+                // the subtrahend) still misses one register rule
+                // (reg_ksin_else) — defer it.
+                let minuend = build_tree(left, params, locals, seen_literals)?;
+                let subtrahend = build_tree(right, params, locals, seen_literals)?;
+                if count_arith(&subtrahend) >= 2 {
+                    return None;
+                }
+                return Some(Tree::Fsub { left: Box::new(minuend), right: Box::new(subtrahend) });
             };
             let both_const = matches!(x.as_ref(), Expression::FloatLiteral(_)) && matches!(y.as_ref(), Expression::FloatLiteral(_));
             if both_const {
@@ -775,7 +808,7 @@ fn collect_arith<'tree>(tree: &'tree Tree, level: u32, into: &mut Vec<(&'tree Tr
             collect_arith(factor_right, level + 1, into);
             collect_arith(addend, level + 1, into);
         }
-        Tree::Mul { left, right } | Tree::Fadd { left, right } => {
+        Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
             into.push((tree, level));
             collect_arith(left, level + 1, into);
             collect_arith(right, level + 1, into);
@@ -1188,7 +1221,7 @@ impl Generator {
             let mut else_literals: Vec<u64> = Vec::new();
             collect_literals(else_value, &mut else_literals);
             let max_constants = then_literals.len().max(else_literals.len());
-            if !(1..=2).contains(&max_constants) {
+            if !(1..=3).contains(&max_constants) {
                 return Ok(false);
             }
             // x must DIE at the shared local (the tails read only z) — a
