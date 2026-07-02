@@ -1790,6 +1790,9 @@ impl Generator {
         if self.try_ordered_early_return_branch(function)? {
             return Ok(());
         }
+        if self.try_float_param_reassign(function)? {
+            return Ok(());
+        }
         if self.try_live_across_branches(function)? {
             return Ok(());
         }
@@ -5928,6 +5931,109 @@ impl Generator {
     /// Each guard is its own block ending in `blr`; the last guard collapses the
     /// final return into a conditional return when the final value already sits in
     /// the result register.
+    /// FLOAT PARAM REASSIGNMENT: `if (c) { x = -x; } return <expr of x>;` —
+    /// the live float stays IN ITS PARAM REGISTER (an in-place fneg; measured,
+    /// and `double t = x; if (c) t = -x;` canonicalizes identically). The
+    /// bare-copy local aliases to the param when the param is otherwise dead.
+    pub(crate) fn try_float_param_reassign(&mut self, function: &Function) -> Compilation<bool> {
+        if !matches!(function.return_type, Type::Float | Type::Double)
+            || function.return_expression.is_none()
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || self.behavior.global_addressing != GlobalAddressing::SmallData
+        {
+            return Ok(false);
+        }
+        // An optional single bare-copy local (`double t = x;`) aliases to the
+        // param; more locals are outside this slice.
+        let mut alias: Option<(&str, &str)> = None;
+        match function.locals.as_slice() {
+            [] => {}
+            [local]
+                if matches!(local.declared_type, Type::Float | Type::Double)
+                    && !local.is_static
+                    && local.array_length.is_none() =>
+            {
+                let Some(Expression::Variable(source)) = &local.initializer else { return Ok(false) };
+                if self.float_register_of(source).is_err() {
+                    return Ok(false);
+                }
+                alias = Some((local.name.as_str(), source.as_str()));
+            }
+            _ => return Ok(false),
+        }
+        fn resolve<'a>(alias: Option<(&'a str, &'a str)>, name: &'a str) -> &'a str {
+            match alias {
+                Some((local, source)) if local == name => source,
+                _ => name,
+            }
+        }
+        // Statements: `if (int-param cmp const) { fparam = -fparam; }` runs.
+        let mut reassigns: Vec<(&Expression, &str)> = Vec::new();
+        for statement in &function.statements {
+            let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
+            if !else_body.is_empty() || then_body.len() != 1 {
+                return Ok(false);
+            }
+            let condition_ok = match condition {
+                Expression::Variable(name) => self.lookup_general(name).is_some(),
+                Expression::Binary { left, right, .. } => {
+                    matches!(left.as_ref(), Expression::Variable(name) if self.lookup_general(name).is_some())
+                        && constant_value(right).is_some()
+                }
+                _ => false,
+            };
+            if !condition_ok {
+                return Ok(false);
+            }
+            let Statement::Assign { name, value } = &then_body[0] else { return Ok(false) };
+            let target = resolve(alias, name);
+            let Expression::Unary { operator: UnaryOperator::Negate, operand } = value else { return Ok(false) };
+            let Expression::Variable(source) = operand.as_ref() else { return Ok(false) };
+            if resolve(alias, source) != target || self.float_register_of(target).is_err() {
+                return Ok(false);
+            }
+            reassigns.push((condition, target));
+        }
+        if reassigns.is_empty() {
+            return Ok(false);
+        }
+        // The aliased param must not be read under its own name afterwards
+        // (the alias takes the register over).
+        let return_expression = function.return_expression.as_ref().expect("gated");
+        if let Some((local, source)) = alias {
+            if count_name_occurrences(return_expression, source) > 0 {
+                return Ok(false);
+            }
+            let register = self.float_register_of(source).expect("checked");
+            self.locations.insert(local.to_string(), crate::generator::Location {
+                class: crate::generator::ValueClass::Float,
+                register,
+                signed: true,
+                width: if function.return_type == Type::Float { 32 } else { 64 },
+                pointee: None,
+                stride: None,
+            });
+        }
+        // Each if's join label advances mwcc's anonymous-@N counter by 2.
+        self.output.anonymous_label_bump += 2 * reassigns.len() as u32;
+        for (condition, target) in &reassigns {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let branch_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            let register = self.float_register_of(target).expect("checked");
+            self.output.instructions.push(Instruction::FloatNegate { d: register, b: register });
+            let join = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                *target = join;
+            }
+        }
+        let result = Eabi::float_result().number;
+        self.evaluate_tail(return_expression, function.return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// LIVE-ACROSS-BRANCHES: initialized int locals reassigned inside simple
     /// if-blocks, read after the joins (the s_atan `id`/`x` skeleton). The
     /// measured model: the condition's cmpwi leads; the inits compute
@@ -6121,7 +6227,9 @@ impl Generator {
         let home_of = |name: &str| homes.iter().find(|(local, _)| local == name).map(|&(_, register)| register);
 
         // EMISSION. First branch: cmpwi, speculative inits, branch; later
-        // branches: cmpwi, branch, arm.
+        // branches: cmpwi, branch, arm. Each if's join label advances mwcc's
+        // anonymous-@N counter by 2.
+        self.output.anonymous_label_bump += 2 * branch_conditions.len() as u32;
         for (index, statement) in function.statements.iter().enumerate() {
             // Tail stores emit after the branch structure.
             let Statement::If { condition, then_body, .. } = statement else { break };
