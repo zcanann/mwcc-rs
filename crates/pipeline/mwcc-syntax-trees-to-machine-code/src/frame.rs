@@ -116,9 +116,16 @@ impl Generator {
         self.non_leaf = non_leaf;
         self.frame_size = frame_size;
 
+        // The guard test classifies once slots exist (its punned load resolves
+        // against them); a lis-staged compare hoists its constant into the
+        // prologue latency slot below.
+        let guard_test = guard_plan.map(|(condition, guard_value)| (self.classify_guard_test(condition), guard_value));
         // Prologue: allocate the frame, save the link register if non-leaf, then
         // spill the address-taken parameters to their slots.
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
+        if let Some((GuardTest::LisCompare { high, .. }, _)) = &guard_test {
+            self.output.instructions.push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *high));
+        }
         if non_leaf {
             self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
@@ -133,8 +140,28 @@ impl Generator {
 
         // The single-guard shape: test, skip-to-epilogue, guard value into f1,
         // shared epilogue (the fall-through parameter is already in f1).
-        if let Some((condition, guard_value)) = guard_plan {
-            let (options, condition_bit) = self.emit_condition_test(condition)?;
+        if let Some((test, guard_value)) = guard_test {
+            let (options, condition_bit) = match test {
+                GuardTest::General(condition) => self.emit_condition_test(condition)?,
+                GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, .. } => {
+                    // The word loads into r3 — r0 holds the lis'd constant — and the
+                    // 0x7fffffff mask folds in place.
+                    let word = Eabi::general_result().number;
+                    self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
+                    if mask_top_bit {
+                        self.output.instructions.push(Instruction::ClearLeftImmediate { a: word, s: word, clear: 1 });
+                    }
+                    self.output.instructions.push(Instruction::CompareWord { a: word, b: GENERAL_SCRATCH });
+                    (options, condition_bit)
+                }
+                GuardTest::AddisZero { offset, options, condition_bit, negated_high } => {
+                    let word = Eabi::general_result().number;
+                    self.output.instructions.push(Instruction::LoadWord { d: word, a: 1, offset });
+                    self.output.instructions.push(Instruction::AddImmediateShifted { d: GENERAL_SCRATCH, a: word, immediate: negated_high });
+                    self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: 0 });
+                    (options, condition_bit)
+                }
+            };
             let epilogue = self.fresh_label();
             self.emit_branch_conditional_to(options, condition_bit, epilogue);
             self.evaluate(&Expression::FloatLiteral(guard_value), Type::Double, Eabi::float_result().number)?;
@@ -168,6 +195,39 @@ impl Generator {
     /// `(pointee, byte offset from r1)` it accesses, or `None` if it does not
     /// reduce to a frame-resident address. This is how a type-pun such as
     /// `*(1 + (int*)&x)` becomes a plain displacement load/store from `r1`.
+    /// Classify a frame-guard condition (see [`GuardTest`]). Frame slots must
+    /// already be laid out — the punned load resolves against them.
+    fn classify_guard_test<'a>(&self, condition: &'a Expression) -> GuardTest<'a> {
+        if let Expression::Binary { operator, left, right } = condition {
+            if let Some(constant) = constant_value(right) {
+                let lis_able = i16::try_from(constant).is_err() && (constant & 0xffff) == 0 && u32::try_from(constant).is_ok();
+                if lis_able {
+                    let (word, mask_top_bit) = match left.as_ref() {
+                        Expression::Binary { operator: BinaryOperator::BitAnd, left: inner, right: mask }
+                            if constant_value(mask) == Some(0x7fff_ffff) => (inner.as_ref(), true),
+                        other => (other, false),
+                    };
+                    if let Expression::Dereference { pointer } = word {
+                        if let Some((Pointee::Int, offset)) = self.resolve_frame_pointer(pointer) {
+                            // Equality folds the constant as `addis -HI; cmplwi 0` (no
+                            // mask form measured); relations stage it with a hoisted lis.
+                            if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) && !mask_top_bit {
+                                let (options, condition_bit) = signed_skip_when_false(*operator).expect("eq/ne mapped");
+                                return GuardTest::AddisZero { offset, options, condition_bit, negated_high: -((constant >> 16) as i16) };
+                            }
+                            if !matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                                if let Some((options, condition_bit)) = signed_skip_when_false(*operator) {
+                                    return GuardTest::LisCompare { offset, mask_top_bit, options, condition_bit, high: (constant >> 16) as i16 };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        GuardTest::General(condition)
+    }
+
     pub(crate) fn resolve_frame_pointer(&self, pointer: &Expression) -> Option<(Pointee, i16)> {
         match pointer {
             Expression::AddressOf { operand } => {
@@ -311,6 +371,36 @@ fn spill_instruction(register: u8, slot: FrameSlot) -> Instruction {
 }
 
 /// The set of variable names whose address is taken anywhere in the function.
+/// How a single frame-guard's condition is emitted.
+enum GuardTest<'a> {
+    /// The generic condition emitter (small-immediate compares: `lwz r0; cmpwi`).
+    General(&'a Expression),
+    /// `<punned word> [& 0x7fffffff] CMP <lis-able constant>` — measured: the
+    /// constant's `lis r0,HI` is HOISTED into the prologue latency slot (between
+    /// `stwu` and the spill), the word loads into r3 (r0 is taken), the mask
+    /// folds in place (`clrlwi r3,r3,1`), and a register `cmpw r3,r0` feeds the
+    /// skip branch.
+    LisCompare { offset: i16, mask_top_bit: bool, options: u8, condition_bit: u8, high: i16 },
+    /// `<punned word> ==/!= <lis-able constant>` — measured: no lis at all;
+    /// `addis r0,r3,-HI` folds the subtraction, then `cmplwi r0,0` feeds beq/bne.
+    AddisZero { offset: i16, options: u8, condition_bit: u8, negated_high: i16 },
+}
+
+/// The skip-when-false branch (options, CR bit) for a SIGNED compare — the
+/// branch taken when the guard condition does NOT hold. LT=0, GT=1, EQ=2;
+/// options 12 = branch-if-set, 4 = branch-if-clear.
+fn signed_skip_when_false(operator: BinaryOperator) -> Option<(u8, u8)> {
+    match operator {
+        BinaryOperator::GreaterEqual => Some((12, 0)), // skip on LT
+        BinaryOperator::Less => Some((4, 0)),          // skip on !LT
+        BinaryOperator::LessEqual => Some((12, 1)),    // skip on GT
+        BinaryOperator::Greater => Some((4, 1)),       // skip on !GT
+        BinaryOperator::Equal => Some((4, 2)),         // skip on !EQ
+        BinaryOperator::NotEqual => Some((12, 2)),     // skip on EQ
+        _ => None,
+    }
+}
+
 pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {
     let mut names = HashSet::new();
     for statement in &function.statements {
