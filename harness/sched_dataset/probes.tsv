@@ -38,3 +38,5 @@ const_amid_three	extern int g; extern int h; extern int k; void f(int a, int b) 
 ret_after_store	extern int g; int f(int a, int b) { g = a + 1; return b + 2; }
 ret_both_deep	extern int g; int f(int a, int b) { g = (a + 1) * 2; return (b + 2) * 3; }
 ret_first_source	extern int g; int f(int a, int b) { g = (b + 2) * 3; return a + 1; }
+ret_equal_twin	extern int g; int f(int a, int b) { g = (a >> 1) + 5; return (b >> 2) + 7; }
+ret_deep_chain	extern int g; int f(int a, int b) { g = (a + 1) * 2; return ((b + 2) * 3) + 4; }

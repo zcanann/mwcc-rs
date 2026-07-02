@@ -587,6 +587,14 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         }
     };
     let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
+    // RETURN MODE: a consumerless non-store node is the returned value — its
+    // register is FORCED to r3 (pre-claimed so in-place checks see it), store
+    // chains become r0-eligible, and the parity gate lifts (measured, the
+    // five return captures).
+    let return_node: Option<usize> = (0..count).find(|&node| {
+        consumer_of[node].is_empty() && nodes[node].kind != OpKind::Store && !nodes[node].writes.is_empty()
+    });
+    let return_mode = return_node.is_some();
     let last_chain_first_def = (0..count)
         .filter(|&node| chain_of(node) == last_sink && nodes[node].kind != OpKind::Store)
         .map(|node| position[node])
@@ -608,7 +616,16 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         .map(|&(value, register)| (register, 0, param_end(value)))
         .collect();
     let mut result: Vec<Option<u8>> = vec![None; count];
+    // Pre-claim the return value's r3 (its occupancy participates in every
+    // in-place conflict check below).
+    if let Some(return_node) = return_node {
+        result[return_node] = Some(3);
+        occupied.push((3, position[return_node], value_end(return_node)));
+    }
     for &node in order {
+        if Some(node) == return_node {
+            continue;
+        }
         if nodes[node].kind == OpKind::Store || nodes[node].writes.is_empty() {
             continue;
         }
@@ -645,11 +662,17 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // takes a closed-pool register (equal-pair's r5) while the same op
         // second-of-pair reuses (mult_vs_shift's r3). Loads are exempt.
         let node_is_final = consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
+        // The mulli exclusion is per-CHAIN (a chain containing a multiply keeps
+        // its params closed — cap3 vs cap2); the parity gate applies only in
+        // store-only mode (the return captures reuse at even slots).
+        let own_chain_has_multiply = (0..count).any(|member| {
+            chain_of(member) == chain_of(node) && nodes[member].kind != OpKind::Store && nodes[member].latency >= 3
+        });
         let relaxed = chain_count <= 2
             && last_chain_depth <= 2
-            && nodes[node].latency < 3
-            && chain_of(node) != last_sink
-            && (node_is_final || start % 2 == 1 || nodes[node].kind == OpKind::Load);
+            && !own_chain_has_multiply
+            && (return_mode || chain_of(node) != last_sink)
+            && (return_mode || node_is_final || start % 2 == 1 || nodes[node].kind == OpKind::Load);
         let own_dying: Option<u8> = nodes[node]
             .reads
             .iter()
@@ -681,8 +704,8 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // register is candidate when closed-free — or open-free for the op's
         // own dying source (internal sources always; params in the relaxed
         // regime only). First candidate in pool order wins.
-        let r0_eligible = on_last_chain || end < last_chain_first_def;
-        let pool: Vec<u8> = if on_last_chain && is_final {
+        let r0_eligible = return_mode || on_last_chain || end < last_chain_first_def;
+        let pool: Vec<u8> = if !return_mode && on_last_chain && is_final {
             vec![0]
         } else if r0_eligible {
             let mut pool = vec![3u8, 4, 0];
@@ -1154,6 +1177,77 @@ mod tests {
         ]
     }
 
+    /// Round 3: the RETURN-MODE fixtures (a consumerless non-store node is the
+    /// returned value, forced to r3).
+    fn register_fixtures_round3() -> Vec<(&'static str, Vec<DagNode>, Vec<(u32, u8)>, Vec<Option<u8>>)> {
+        use OpKind::Store as St;
+        vec![
+            (
+                // g=a+1; return b+2;  ->  g r0, ret r3
+                "ret_after_store",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[10]),
+                    DagNode::new("ret", ALU).reads(&[2]).writes(&[20]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(0), None, Some(3)],
+            ),
+            (
+                // g=(a+1)*2; return (b+2)*3;  ->  g1 r3, g2 r4, ret1 r0, ret2 r3
+                "ret_both_deep",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("g2", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("ret1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ret2", MUL).gate(2).reads(&[20]).writes(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(3), Some(4), None, Some(0), Some(3)],
+            ),
+            (
+                // g=(b+2)*3; return a+1;  ->  g1 r0, g2 r0, ret r3
+                "ret_first_source",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[2]).writes(&[10]),
+                    DagNode::new("g2", MUL).gate(2).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("ret", ALU).reads(&[1]).writes(&[20]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(0), Some(0), None, Some(3)],
+            ),
+            (
+                // g=(a>>1)+5; return (b>>2)+7;  ->  g1 r3, g2 r0, ret1 r3, ret2 r3
+                "ret_equal_twin",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("g2", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("ret1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ret2", ALU).reads(&[20]).writes(&[21]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(3), Some(0), None, Some(3), Some(3)],
+            ),
+            (
+                // g=(a+1)*2; return ((b+2)*3)+4;  ->  g1 r4, g2 r0, ret1 r0, ret2 r3, ret3 r3
+                "ret_deep_chain",
+                vec![
+                    DagNode::new("g1", ALU).reads(&[1]).writes(&[10]),
+                    DagNode::new("g2", ALU).reads(&[10]).writes(&[11]),
+                    DagNode::new("st_g", STORE).kind(St).reads(&[11]),
+                    DagNode::new("ret1", ALU).reads(&[2]).writes(&[20]),
+                    DagNode::new("ret2", MUL).gate(2).reads(&[20]).writes(&[21]),
+                    DagNode::new("ret3", ALU).reads(&[21]).writes(&[22]),
+                ],
+                vec![(1, 3), (2, 4)],
+                vec![Some(4), Some(0), None, Some(0), Some(3), Some(3)],
+            ),
+        ]
+    }
+
     /// CHAIN-ORDER DIAGNOSTIC: for each register fixture, try every chain
     /// permutation through assign_registers_sequenced and print the passing
     /// ones — the ordering rule should be visible across fixtures.
@@ -1241,6 +1335,23 @@ mod tests {
             })
             .count();
         println!("v3 round2: {round2_passed}/{}", round2.len());
+        let round3 = register_fixtures_round3();
+        let round3_passed = round3
+            .iter()
+            .filter(|(_, nodes, params, expected)| {
+                let order = linearize(nodes);
+                assign_registers_v3(nodes, &order, params) == *expected
+            })
+            .count();
+        println!("v3 round3 (returns): {round3_passed}/{}", round3.len());
+        for (name, nodes, params, expected) in &round3 {
+            let order = linearize(nodes);
+            let order_labels: Vec<&str> = order.iter().map(|&index| nodes[index].label).collect();
+            let got = assign_registers_v3(nodes, &order, params);
+            if got != *expected {
+                println!("  r3 FAIL {name}: order {order_labels:?}\n     got {got:?}\n    want {expected:?}");
+            }
+        }
         for (name, nodes, params, expected) in &round2 {
             let order = linearize(nodes);
             let order_labels: Vec<&str> = order.iter().map(|&index| nodes[index].label).collect();
