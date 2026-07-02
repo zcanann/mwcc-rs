@@ -160,17 +160,48 @@ fn remove_dead_locals(function: &Function) -> Option<Function> {
 /// Only a call-making body whose locals are pure return aliases qualifies; a local
 /// initialized by a call (preserved as a call result), reassigned, read by a statement,
 /// or feeding control flow leaves the function unchanged (`None`).
+/// Whether an expression OBSERVES MEMORY — an array element, a dereference, a member,
+/// or a global variable read (any name outside `register_names`, the parameters and
+/// locals). Such a value is a load: moving it across a call or a store changes what it
+/// observes, so the inlining folds must not carry it past either.
+fn expression_reads_memory(expression: &Expression, register_names: &std::collections::HashSet<&str>) -> bool {
+    match expression {
+        Expression::Variable(name) => !register_names.contains(name.as_str()),
+        Expression::Index { .. } | Expression::Dereference { .. } | Expression::Member { .. } => true,
+        Expression::Binary { left, right, .. } => {
+            expression_reads_memory(left, register_names) || expression_reads_memory(right, register_names)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => expression_reads_memory(operand, register_names),
+        Expression::Conditional { condition, when_true, when_false } => {
+            expression_reads_memory(condition, register_names)
+                || expression_reads_memory(when_true, register_names)
+                || expression_reads_memory(when_false, register_names)
+        }
+        Expression::Call { arguments, .. } => arguments.iter().any(|argument| expression_reads_memory(argument, register_names)),
+        _ => false,
+    }
+}
+
 fn inline_return_only_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() || !function_makes_call(function) || !function.guards.is_empty() {
         return None;
     }
     let return_expression = function.return_expression.as_ref()?;
     // Each local's value, with earlier locals already folded in. A call-bearing
-    // initializer is a call result (preserved, not inlined), so bail.
+    // initializer is a call result (preserved, not inlined), and a MEMORY-reading one
+    // (`int t = arr[i]; g(); return t;` — an array element or global) must load BEFORE
+    // the calls it would be carried past (the callee can write that memory) — bail on
+    // both so those defer to the callee-saved paths.
+    let register_names: std::collections::HashSet<&str> = function
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .collect();
     let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
     for local in &function.locals {
         let initializer = local.initializer.as_ref()?;
-        if expression_has_call(initializer) {
+        if expression_has_call(initializer) || expression_reads_memory(initializer, &register_names) {
             return None;
         }
         let resolved = crate::value_tracking::substitute(initializer, &values);
