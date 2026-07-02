@@ -49,3 +49,7 @@ ret_tail_three_stores	extern int g; extern int h; extern int k; int f(int a, int
 ret_tail_deep_return	extern int g; int f(int a, int b) { g = a + 1; return ((b & 15) | 1) + 2; }
 ret_tail_single_store	extern int g; int f(int a, int b) { g = a + 1; return (b & 15) | 1; }
 ret_tail_forbidden_feeder	extern int g; extern int h; int f(int a, int b, int c) { g = a + 1; h = b - 3; return (c >> 2) + 1; }
+block_live_reassign	int f(int a, int c) { int t = a + 1; if (c) { t = a * 3; } return t + 2; }
+block_branch_init	int f(int a, int c) { int t; if (c) { t = a * 3; } else { t = a + 1; } return t + 2; }
+block_live_into	extern int g; void f(int a, int c) { int t = a + 1; if (c) { g = t; } }
+block_if_else_tail	extern int g; extern int h; void f(int a, int c) { if (c) { g = a + 1; } else { h = a + 2; } }

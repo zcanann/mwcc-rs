@@ -1,0 +1,6 @@
+cmpwi r4,0
+addi r4,r3,1
+beq 10 <f+0x10>
+mulli r4,r3,3
+addi r3,r4,2
+blr
