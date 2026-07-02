@@ -3836,6 +3836,16 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        // Phase D: the guard-free scalar's callee-saved home is a VIRTUAL — its range
+        // crosses the calls, so the allocator assigns it from the callee-saved pool
+        // (r31), and apply() rewrites the save/restore fields along with the value's.
+        // The guarded/array/paired forms keep the explicit r31 until their schedules
+        // move onto the frame builder.
+        let saved: u8 = if guard.is_none() && paired_parameter.is_none() && matches!(load, MemoryLoad::Scalar) {
+            self.fresh_virtual_general()
+        } else {
+            31
+        };
         // The paired parameter saves in r30 between the r31 save and the memory load:
         // `stw r31,12; stw r30,8; mr r30,<param>; lwz r31,<gi>`.
         if let Some(parameter) = paired_parameter {
@@ -3872,7 +3882,7 @@ impl Generator {
         match load {
             MemoryLoad::Scalar => {
                 self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-                self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+                self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
                 if guard.is_some() {
                     // With a guard the load STAGES through r0: the compare reads r0 and
                     // the `mr r31,r0` fills its latency slot — `lwz r0,gi; cmpwi r0,0;
@@ -3883,7 +3893,7 @@ impl Generator {
                         Location { class: ValueClass::General, register: GENERAL_SCRATCH, signed, width: 32, pointee: None, stride: None },
                     );
                 } else {
-                    self.evaluate_general(initializer, 31)?;
+                    self.evaluate_general(initializer, saved)?;
                 }
             }
             MemoryLoad::Array { name, index } => {
@@ -3957,15 +3967,17 @@ impl Generator {
         }
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+            Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
         );
         for statement in calls {
             self.emit_statement(statement)?;
         }
-        // The epilogue interleaves the result move between the LR and r31 reloads.
+        // The epilogue interleaves the result move between the LR and callee-saved
+        // reloads. `saved` is the virtual for the guard-free scalar (apply() rewrites
+        // the restore's field with the value's home) and the literal r31 otherwise.
         self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::Or { a: result, s: saved, b: saved });
+        self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
