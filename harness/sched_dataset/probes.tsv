@@ -1,0 +1,19 @@
+alu_tie_three	extern int g; extern int h; extern int k; void f(int a, int b, int c) { g = a + 1; h = b + 2; k = c + 3; }
+mult_vs_shift	extern int g; extern int h; void f(int a, int b) { g = (a + 1) * 2; h = (b + 2) * 3; }
+load_vs_mult	extern int g; extern int h; void f(int* p, int b) { g = *p + 5; h = (b + 2) * 3; }
+mult_in_expr	int f(int* p, int a) { return *p + (a * 3); }
+load_then_store	extern int g; void f(int* p, int* q, int a) { g = *p; *q = a; }
+two_load_stores	extern int g; extern int h; void f(int* p, int* q) { g = *p; h = *q; }
+load_mult_mix	extern int g; extern int h; void f(int* p, int a, int b) { g = *p + 1; h = a * b; }
+tail_pair	void f(double x, int* eptr, int ix, int hx) { *eptr += (ix >> 20) - 1022; *(int*)&x = (hx & 0x800fffff) | 0x3fe00000; }
+tail_pair_swapped	void f(double x, int* eptr, int ix, int hx) { *(int*)&x = (hx & 0x800fffff) | 0x3fe00000; *eptr += (ix >> 20) - 1022; }
+fmul_chain	extern double gd; extern double hd; void f(double a, double b) { gd = a * 2.5; hd = b + 1.5; }
+fdiv_priority	extern double gd; extern double hd; void f(double a, double b) { gd = a / 2.0; hd = b + 1.0; }
+three_deep_vs_shallow	extern int g; extern int h; void f(int a, int b) { g = ((a + 1) * 2) + 3; h = b + 4; }
+two_mults	extern int g; extern int h; void f(int a, int b) { g = a * 5; h = b * 7; }
+srawi_vs_rlwinm	extern int g; extern int h; void f(int a, int b) { g = a >> 4; h = b & 0x0ff0; }
+guard_cmp_fill	extern int g; int f(int a, int b) { g = b + 2; if (a > 3) return 1; return 2; }
+divide_chain	extern int g; extern int h; void f(int a, int b) { g = a / b; h = a + b; }
+neg_and_or	extern int g; extern int h; void f(int a, int b) { g = -a; h = a | b; }
+same_reg_chains	extern int g; extern int h; void f(int a) { g = a + 1; h = a + 2; }
+true_fdiv	extern double gd; extern double hd; void f(double a, double b) { gd = a / 3.0; hd = b + 1.0; }

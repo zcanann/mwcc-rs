@@ -1,0 +1,7 @@
+lfd f3,0(0)
+lfd f0,0(0)
+fmul f1,f3,f1
+fadd f0,f0,f2
+stfd f1,0(0)
+stfd f0,0(0)
+blr

@@ -1,0 +1,5 @@
+srawi r3,r3,4
+rlwinm r0,r4,0,20,27
+stw r3,0(0)
+stw r0,0(0)
+blr

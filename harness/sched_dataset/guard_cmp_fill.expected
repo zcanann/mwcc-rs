@@ -1,0 +1,9 @@
+li r5,3
+addi r4,r4,2
+subfc r0,r3,r5
+srwi r3,r3,31
+srwi r0,r5,31
+stw r4,0(0)
+subfe r3,r0,r3
+addi r3,r3,2
+blr
