@@ -369,9 +369,33 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
         values.insert(local.name.clone(), crate::value_tracking::substitute(initializer, &values));
     }
     let mut new_statements = Vec::new();
+    let mut in_leading_ifs = true;
     for statement in &function.statements {
         match statement {
+            // A LEADING early-return if passes through unchanged: it executes before any
+            // reassignment, so its reads are the pristine registers — correct for a
+            // reassigned parameter (its pre-assignment value) — while the substituted
+            // stores after it carry their own dataflow. An if reading a LOCAL cannot pass
+            // through (the fold removes locals); an if after an assign/store bails.
+            Statement::If { condition, then_body, else_body } if in_leading_ifs => {
+                if !matches!(then_body.as_slice(), [Statement::Return(_)]) || !else_body.is_empty() {
+                    return None;
+                }
+                let reads_local =
+                    |expression: &Expression| local_name_set.iter().any(|name| expression_reads_name(expression, name));
+                if reads_local(condition) {
+                    return None;
+                }
+                if let [Statement::Return(Some(value))] = then_body.as_slice() {
+                    if reads_local(value) {
+                        return None;
+                    }
+                }
+                new_statements.push(statement.clone());
+                continue;
+            }
             Statement::Assign { name, value } => {
+                in_leading_ifs = false;
                 if !tracked_names.contains(name.as_str()) || expression_has_call(value) {
                     return None;
                 }
@@ -382,6 +406,7 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
                 read_count.insert(name.clone(), 0);
             }
             Statement::Store { target, value } => {
+                in_leading_ifs = false;
                 if expression_has_call(value) || expression_has_call(target) {
                     return None;
                 }
@@ -410,9 +435,9 @@ fn inline_store_bearing_locals(function: &Function) -> Option<Function> {
             return None;
         }
     }
-    // A store-free body (a pure dead-local, or pure return-folding) is the value-tracking
-    // path's job, not ours.
-    if new_statements.is_empty() {
+    // A store-free body (a pure dead-local, pure return-folding, or a guard prefix with
+    // no store behind it) belongs to the value-tracking / guard paths, not ours.
+    if !new_statements.iter().any(|statement| matches!(statement, Statement::Store { .. })) {
         return None;
     }
     let folded_return = function

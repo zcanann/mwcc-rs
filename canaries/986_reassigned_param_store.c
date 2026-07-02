@@ -11,3 +11,11 @@ void reassign_store_two_reg(int *p, int x, int y) { x = x + y; *p = x; }
 void reassign_global(int x)                   { x = x * 2; gi = x; }
 void store_reassign_store(int *p, int x)      { *p = x; x = x + 1; p[1] = x; }
 void local_param_mix(int *p, int x)           { int t = x + 1; x = t * 2; *p = x; }
+
+// The fold composes with a LEADING early-return guard (passed through unchanged -- it
+// executes before any reassignment, so it reads the pristine registers), the folded
+// store landing in the guard-continuation schedule:
+// `cmpwi; beq CONT; li r3,-1; blr; CONT: addi r0,r5,1; li r3,0; stw r0,0(r4); blr`.
+int guarded_reassign_store(int a, int *p, int x)  { if (a) return -1; x = x + 1; *p = x; return 0; }
+void void_guard_reassign(int a, int *p, int x)    { if (a) return; x = x + 1; *p = x; }
+void void_guard_reassign_global(int a, int x)     { if (a) return; x = x * 2; gi = x; }
