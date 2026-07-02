@@ -1222,6 +1222,16 @@ pub struct FloatRegModel {
     pub arith_share_two_op_only: bool,
     /// Reverse machine: shares are allowed only into f0 (the accumulator).
     pub share_f0_only: bool,
+    /// Reverse machine: a share is REFUSED when the consumer has another
+    /// VALUE operand that is a still-unallocated arith (measured: s1_s2's
+    /// fifth load takes fresh f4 while mA is pending; horner4/A/B/C shares
+    /// all have load or already-allocated-arith siblings).
+    pub share_blocked_by_pending_arith: bool,
+    /// Reverse machine: process defs by (death DESC, start DESC) instead of
+    /// slot-reverse (measured: corrected s1_s2_shallow — mB at slot 3 must
+    /// allocate before L15 at slot 4 because it dies later; horner4's
+    /// "anomalous" second load falls out naturally under this order).
+    pub order_by_death: bool,
     /// The reverse machine applies only to RETURN bodies; void bodies run
     /// the forward stack (measured: deep_vs_shallow's g-chain inherits the
     /// param home through forward in-place reuse).
@@ -1248,15 +1258,19 @@ pub enum DyingPick {
     NewestDef,
 }
 
-/// The FROZEN float register model (fire 335 fit: 8/9 captures; the OPEN
-/// case is s1_s2's fifth load, which refuses the consumer addend-share that
-/// horner4's identical-role load takes — undistinguished pending probes).
+/// The FROZEN float register model (fires 335-336: 12/12 captures). The
+/// fire-336 probes (h4_wmul, s1_s2_shallow, h3_wmul) cracked the two open
+/// rules: a share is refused iff the consumer has a still-pending arith
+/// sibling operand (share_blocked_by_pending_arith), and defs process by
+/// (death DESC, start DESC) — not slot-reverse (order_by_death).
 pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     reverse: true,
     share_loads: true,
     share_arith: true,
     arith_share_two_op_only: true,
     share_f0_only: false,
+    share_blocked_by_pending_arith: true,
+    order_by_death: true,
     dying_pick: DyingPick::MinReg,
     init_ascending: true,
     void_forward: true,
@@ -1332,20 +1346,44 @@ pub fn assign_float_registers(
             occupied.push((1, position[ret], value_end(ret), ret));
         }
         let mut sequence: Vec<usize> = (0..count).filter(|&node| is_value(node)).collect();
-        sequence.sort_by_key(|&node| std::cmp::Reverse(position[node]));
+        if model.order_by_death {
+            sequence.sort_by_key(|&node| std::cmp::Reverse((value_end(node), position[node])));
+        } else {
+            sequence.sort_by_key(|&node| std::cmp::Reverse(position[node]));
+        }
         for node in sequence {
             if result[node].is_some() {
                 continue;
             }
             let start = position[node];
             let end = value_end(node);
-            let share_ok = |owner: usize| -> bool {
-                if nodes[node].kind == OpKind::Load {
+            let share_ok = |owner: usize, result: &Vec<Option<u8>>| -> bool {
+                let class_ok = if nodes[node].kind == OpKind::Load {
                     model.share_loads
                 } else {
                     model.share_arith
                         && (!model.arith_share_two_op_only || nodes[owner].reads.len() <= 2)
+                };
+                if !class_ok {
+                    return false;
                 }
+                if model.share_blocked_by_pending_arith {
+                    // The consumer's OTHER value operands: a pending (still
+                    // unallocated) arith sibling blocks the join.
+                    let blocked = nodes[owner].reads.iter().any(|read| {
+                        (0..count).rev().find(|&writer| nodes[writer].writes.contains(read)).is_some_and(
+                            |writer| {
+                                writer != node
+                                    && nodes[writer].kind != OpKind::Load
+                                    && result[writer].is_none()
+                            },
+                        )
+                    });
+                    if blocked {
+                        return false;
+                    }
+                }
+                true
             };
             let pick = (0u8..14).find(|&register| {
                 occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
@@ -1357,7 +1395,7 @@ pub fn assign_float_registers(
                     if owner != usize::MAX
                         && consumer_of[node].contains(&owner)
                         && taken_start == end
-                        && share_ok(owner)
+                        && share_ok(owner, &result)
                         && (!model.share_f0_only || register == 0)
                     {
                         return true;
@@ -2097,6 +2135,57 @@ mod tests {
                 vec![],
                 vec![Some(1), Some(0), Some(1)],
             ),
+            (
+                // FIRE-336 PROBE A — w*(h4 inner): window 5; L15 takes the
+                // m3 addend-share (f0) even with f4 free; L45 factor-shares f4.
+                "reg_h4_wmul",
+                vec![
+                    DagNode::new("lfd_c45", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[13]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[14]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 14, 12]).writes(&[15]),
+                    DagNode::new("fmadd3", FARITH).hazard(HAZARD_FPU).reads(&[1, 15, 13]).writes(&[16]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[2, 16]).writes(&[17]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(4), Some(0), Some(3), Some(0), Some(4), Some(3), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-336 PROBE B — z*(1.5+w*2.5) + w*(3.5+w*4.5): mwcc
+                // evaluates the s2 subtree FIRST (loads 4.5, 3.5, 2.5, 1.5);
+                // mB accumulates in its addend's f0, the s1 chain in f3, and
+                // mB (slot 3, dies 6) allocates BEFORE L15 (slot 4, dies 5)
+                // — the death-order keystone.
+                "reg_s1_s2_shallow",
+                vec![
+                    DagNode::new("lfd_c45", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c35", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[12]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[13]),
+                    DagNode::new("fmadd_b", FARITH).hazard(HAZARD_FPU).reads(&[2, 10, 11]).writes(&[20]),
+                    DagNode::new("fmadd_a", FARITH).hazard(HAZARD_FPU).reads(&[2, 12, 13]).writes(&[21]),
+                    DagNode::new("fmul_d", FARITH).hazard(HAZARD_FPU).reads(&[2, 20]).writes(&[22]),
+                    DagNode::new("fmadd_f", FARITH).hazard(HAZARD_FPU).reads(&[1, 21, 22]).writes(&[23]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(3), Some(0), Some(4), Some(3), Some(0), Some(3), Some(0), Some(1)],
+            ),
+            (
+                // FIRE-336 PROBE C — w*(h3 inner): window 5; loads f4 f3 f0.
+                "reg_h3_wmul",
+                vec![
+                    DagNode::new("lfd_c35", LOAD).writes(&[10]),
+                    DagNode::new("lfd_c25", LOAD).writes(&[11]),
+                    DagNode::new("lfd_c15", LOAD).writes(&[12]),
+                    DagNode::new("fmadd1", FARITH).hazard(HAZARD_FPU).reads(&[1, 10, 11]).writes(&[13]),
+                    DagNode::new("fmadd2", FARITH).hazard(HAZARD_FPU).reads(&[1, 13, 12]).writes(&[14]),
+                    DagNode::new("fmul", FARITH).hazard(HAZARD_FPU).reads(&[2, 14]).writes(&[15]),
+                ],
+                vec![(1, 1), (2, 2)],
+                vec![Some(4), Some(3), Some(0), Some(3), Some(0), Some(1)],
+            ),
         ]
     }
 
@@ -2109,20 +2198,26 @@ mod tests {
             for share_arith in [false, true] {
                 for arith_share_two_op_only in [false, true] {
                     for share_f0_only in [false, true] {
-                        for void_forward in [false, true] {
-                            for dying_pick in
-                                [DyingPick::MinReg, DyingPick::MaxReg, DyingPick::OldestDef, DyingPick::NewestDef]
-                            {
-                                models.push(FloatRegModel {
-                                    reverse: true,
-                                    share_loads,
-                                    share_arith,
-                                    arith_share_two_op_only,
-                                    share_f0_only,
-                                    dying_pick,
-                                    init_ascending: true,
-                                    void_forward,
-                                });
+                        for share_blocked_by_pending_arith in [false, true] {
+                            for order_by_death in [false, true] {
+                                for void_forward in [false, true] {
+                                    for dying_pick in
+                                        [DyingPick::MinReg, DyingPick::MaxReg, DyingPick::OldestDef, DyingPick::NewestDef]
+                                    {
+                                        models.push(FloatRegModel {
+                                            reverse: true,
+                                            share_loads,
+                                            share_arith,
+                                            arith_share_two_op_only,
+                                            share_f0_only,
+                                            share_blocked_by_pending_arith,
+                                            order_by_death,
+                                            dying_pick,
+                                            init_ascending: true,
+                                            void_forward,
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
@@ -2137,6 +2232,8 @@ mod tests {
                     share_arith: false,
                     arith_share_two_op_only: false,
                     share_f0_only: false,
+                    share_blocked_by_pending_arith: false,
+                    order_by_death: false,
                     dying_pick,
                     init_ascending,
                     void_forward: false,
@@ -2167,14 +2264,10 @@ mod tests {
                 frozen_passed += 1;
             } else {
                 println!("  frozen reg MISS {name}: got {got:?} want {expected:?}");
-                assert_eq!(
-                    *name, "reg_s1_s2",
-                    "float register fixture {name} regressed under FROZEN_FLOAT_REG"
-                );
             }
         }
         println!("float registers FROZEN: {frozen_passed}/{}", shapes.len());
-        assert!(frozen_passed >= 8, "FROZEN_FLOAT_REG regressed below 8/9");
+        assert_eq!(frozen_passed, shapes.len(), "FROZEN_FLOAT_REG regressed");
     }
 
     /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order

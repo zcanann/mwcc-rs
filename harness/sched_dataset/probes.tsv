@@ -63,3 +63,6 @@ float_fmul_vs_fadd	extern double g; extern double h; void f(double a, double b) 
 float_load_use	double f(double* p) { return *p + 1.5; }
 float_deep_vs_shallow	extern double g; extern double h; void f(double a, double b) { g = (a + 1.5) + 2.5; h = b + 3.5; }
 float_fmadd_latency	extern double g; extern double h; void f(double a, double b, double c) { g = a * b + 1.5; h = c + 2.5; }
+float_h4_wmul	double f(double z, double w) { return w * (1.5 + z * (2.5 + z * (3.5 + z * 4.5))); }
+float_s1_s2_shallow	double f(double z, double w) { return z * (1.5 + w * 2.5) + w * (3.5 + w * 4.5); }
+float_h3_wmul	double f(double z, double w) { return w * (1.5 + z * (2.5 + z * 3.5)); }
