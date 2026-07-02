@@ -3677,7 +3677,26 @@ impl Generator {
             rest = tail;
         }
         let guard = (!guard_chain.is_empty()).then_some(());
-        let calls = rest;
+        // An optional CONDITIONAL STORE back into the loaded element (`int t = garr[i];
+        // if (t != 1) garr[i] = 0; g(); return t;` — the raise() handler-reset). The
+        // scaled index survives in its own register for the store's reuse of the
+        // address. Verified without return-guards; the mixed chain defers.
+        let (conditional_store, calls) = match rest.split_first() {
+            Some((Statement::If { condition, then_body, else_body }, tail))
+                if guard_chain.is_empty()
+                    && else_body.is_empty()
+                    && matches!(then_body.as_slice(), [Statement::Store { .. }]) =>
+            {
+                let [Statement::Store { target, value }] = then_body.as_slice() else {
+                    return Ok(false);
+                };
+                let Some(constant) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
+                    return Ok(false);
+                };
+                (Some((condition, target, constant)), tail)
+            }
+            _ => (None, rest),
+        };
         if calls.is_empty() {
             return Ok(false);
         }
@@ -3733,6 +3752,88 @@ impl Generator {
         // A multi-guard chain over the ARRAY form is unverified — defer.
         if guard_chain.len() > 1 && matches!(load, MemoryLoad::Array { .. }) {
             return Ok(false);
+        }
+        // The conditional store: verified for the ARRAY load storing back into the SAME
+        // element (same array, same index variable), with no paired parameter. The
+        // scaled index survives in its own register and the base/index pair is reused:
+        // `lis r4; slwi r5,i,2; stw r0; addi r3,r4; stw r31; lwzx r31,r3,r5;
+        // cmpwi r31,K; beq SKIP; li r0,C; stwx r0,r3,r5; SKIP: bl; …`.
+        if let Some((store_condition, store_target, store_constant)) = conditional_store {
+            if paired_parameter.is_some() {
+                return Ok(false);
+            }
+            let MemoryLoad::Array { name: load_name, index: load_index } = load else {
+                return Ok(false);
+            };
+            let Expression::Index { base, index } = store_target else {
+                return Ok(false);
+            };
+            let Expression::Variable(store_name) = base.as_ref() else {
+                return Ok(false);
+            };
+            if store_name != load_name {
+                return Ok(false);
+            }
+            let (Expression::Variable(load_index_name), Expression::Variable(store_index_name)) =
+                (load_index, index.as_ref())
+            else {
+                return Ok(false);
+            };
+            if load_index_name != store_index_name {
+                return Ok(false);
+            }
+
+            self.non_leaf = true;
+            self.frame_size = 16;
+            self.callee_saved = vec![31];
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            let signed = !matches!(local.declared_type, Type::UnsignedInt);
+            // The scaled index lands past the (reserved) base-high register so both
+            // survive for the store: `lis r4; slwi r5,i,2; stw r0,20; addi r3,r4;
+            // stw r31,12; lwzx r31,r3,r5`.
+            let index_register = self.general_register_of_leaf(load_index)?;
+            let high = self.free_register_avoiding(&[load_index])?;
+            let reserved = self.reserved.insert(high);
+            let scaled = self.free_register_avoiding(&[load_index])?;
+            if reserved {
+                self.reserved.remove(&high);
+            }
+            self.emit_address_high(high, load_name);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: 2 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            self.record_relocation(RelocationKind::Addr16Lo, load_name);
+            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::LoadWordIndexed { d: 31, a: index_register, b: scaled });
+            self.locations.insert(
+                local.name.clone(),
+                Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+            );
+            // The conditional store skips on the condition's FALSE side, the value
+            // materializes into r0, and the base/scaled pair is reused. (@N: measured
+            // against the real extab numbering.)
+            self.output.anonymous_label_bump = 3;
+            let (options, condition_bit) = self.emit_condition_test(store_condition)?;
+            let skip_branch = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: 0, immediate: store_constant });
+            self.output.instructions.push(Instruction::StoreWordIndexed { s: GENERAL_SCRATCH, a: index_register, b: scaled });
+            let skip_label = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_branch] {
+                *target = skip_label;
+            }
+            for statement in calls {
+                self.emit_statement(statement)?;
+            }
+            let result = mwcc_target::Eabi::general_result().number;
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
+            self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(true);
         }
         self.non_leaf = true;
         self.frame_size = 16;
