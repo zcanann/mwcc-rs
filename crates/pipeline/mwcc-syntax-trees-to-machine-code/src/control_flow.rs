@@ -523,6 +523,21 @@ impl Generator {
                     return self.emit_conditional(inner_condition, inner_true, inner_false, destination, tail);
                 }
             }
+            // `cond ? <leaf/const> : <memory read>` — the ctype tolower shape
+            // (`c == -1 ? -1 : map[(u8)c]`): the same early-return layout, the
+            // memory-reading false arm as the fall-through (measured: cmpwi;
+            // bne ELSE; li r3,-1; blr; ELSE: <the load>; caller's blr).
+            if matches!(when_false, Expression::Index { .. } | Expression::Dereference { .. })
+                && (leaf_name(when_true).is_some() || constant_value(when_true).is_some())
+            {
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                let else_label = self.fresh_label();
+                self.emit_branch_conditional_to(options, condition_bit, else_label);
+                self.place_select_value(when_true, destination)?;
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                self.bind_label(else_label);
+                return self.evaluate_general(when_false, destination);
+            }
         }
 
         // `comparison ? 1 : 0` is the comparison; `comparison ? 0 : 1` is its negation.
