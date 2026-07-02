@@ -32,3 +32,10 @@ double mul_of_mul_deep(double z, double w)
 {
 	return (z * w) * (41.5 + z * (42.5 + z * 43.5));
 }
+
+double local_zv_deep(double x)
+{
+	double z = x * x;
+	double v = z * x;
+	return x + v * (51.5 + z * (52.5 + z * 53.5));
+}

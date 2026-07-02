@@ -182,9 +182,9 @@ impl Generator {
                     .skip(index + 1)
                     .map(|later| uses(index, later))
                     .sum();
-                if root_only && later_local_uses == 0 && uses(index, &tree) > 0 && return_arith >= 3 {
-                    return Ok(false);
-                }
+                let _ = return_arith;
+                let _ = root_only;
+                let _ = later_local_uses;
             }
         }
         // Order the arith nodes by (tree level DESC, factor-side first) and
