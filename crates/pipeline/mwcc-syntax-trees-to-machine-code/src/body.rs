@@ -4460,6 +4460,27 @@ impl Generator {
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        // A BARE void early return (`if (a) return; g();`) has no then-body at all:
+        // mwcc folds it to a single INVERTED conditional branch straight to the shared
+        // epilogue — `bne EPILOGUE; bl g; EPILOGUE:` — rather than a skip over an
+        // unconditional branch.
+        if leading.is_empty() && early_value.is_none() {
+            let epilogue_branch = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward {
+                options: options ^ 8,
+                condition_bit,
+                target: 0,
+            });
+            for statement in rest {
+                self.emit_statement(statement)?;
+            }
+            let epilogue_label = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[epilogue_branch] {
+                *target = epilogue_label;
+            }
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
         // False path skips the then-body to the continuation.
         let continuation_branch = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
