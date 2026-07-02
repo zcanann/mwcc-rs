@@ -160,28 +160,6 @@ fn remove_dead_locals(function: &Function) -> Option<Function> {
 /// Only a call-making body whose locals are pure return aliases qualifies; a local
 /// initialized by a call (preserved as a call result), reassigned, read by a statement,
 /// or feeding control flow leaves the function unchanged (`None`).
-/// Whether an expression OBSERVES MEMORY — an array element, a dereference, a member,
-/// or a global variable read (any name outside `register_names`, the parameters and
-/// locals). Such a value is a load: moving it across a call or a store changes what it
-/// observes, so the inlining folds must not carry it past either.
-fn expression_reads_memory(expression: &Expression, register_names: &std::collections::HashSet<&str>) -> bool {
-    match expression {
-        Expression::Variable(name) => !register_names.contains(name.as_str()),
-        Expression::Index { .. } | Expression::Dereference { .. } | Expression::Member { .. } => true,
-        Expression::Binary { left, right, .. } => {
-            expression_reads_memory(left, register_names) || expression_reads_memory(right, register_names)
-        }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => expression_reads_memory(operand, register_names),
-        Expression::Conditional { condition, when_true, when_false } => {
-            expression_reads_memory(condition, register_names)
-                || expression_reads_memory(when_true, register_names)
-                || expression_reads_memory(when_false, register_names)
-        }
-        Expression::Call { arguments, .. } => arguments.iter().any(|argument| expression_reads_memory(argument, register_names)),
-        _ => false,
-    }
-}
-
 fn inline_return_only_locals(function: &Function) -> Option<Function> {
     if function.locals.is_empty() || !function_makes_call(function) || !function.guards.is_empty() {
         return None;
@@ -1801,6 +1779,10 @@ impl Generator {
             // Runs before the general callee-saved path, which would otherwise emit the stores
             // through the raw (clobbered) argument registers and defer/miscompile.
             if self.try_stores_through_pointers(function)? {
+                return Ok(());
+            }
+            // `int t = gi; g(); return t;` — a memory-loaded local carried across calls in r31.
+            if self.try_callee_saved_memory_local(function)? {
                 return Ok(());
             }
             // Parameters live across the call go in callee-saved registers (r31
@@ -3503,6 +3485,122 @@ impl Generator {
             self.evaluate_tail(return_expression, function.return_type, mwcc_target::Eabi::general_result().number)?;
         }
         self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// A MEMORY-loaded local carried across calls in r31: `int t = gi; g(); return t;`
+    /// loads the global into r31 in the prologue, runs the calls, and returns it —
+    /// `stwu; mflr; stw r0; stw r31; lwz r31,gi; bl; lwz r0; mr r3,r31; lwz r31; mtlr;
+    /// addi; blr` (the `mr` rides between the LR and r31 reloads). A computed-index
+    /// global-array element (`int t = arr[i]; g(); return t;` — the signal.c handler
+    /// fetch) interleaves the address build into the prologue: `stwu; mflr; lis r4;
+    /// stw r0; slwi r0,i; addi r3,r4; stw r31; lwzx r31,r3,r0; bl; …`. Call arguments
+    /// must be constants (a register argument after a call reads clobbered state).
+    fn try_callee_saved_memory_local(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty()
+            || function.locals.len() != 1
+            || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            || function.statements.is_empty()
+        {
+            return Ok(false);
+        }
+        let local = &function.locals[0];
+        if local.is_static || (local.declared_type.width() as u32) < 32 {
+            return Ok(false);
+        }
+        let Some(initializer) = &local.initializer else {
+            return Ok(false);
+        };
+        let Some(Expression::Variable(returned)) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if returned != &local.name {
+            return Ok(false);
+        }
+        for statement in &function.statements {
+            let Statement::Expression(Expression::Call { arguments, .. }) = statement else {
+                return Ok(false);
+            };
+            // An ARGUMENT call reshapes the whole sequence: mwcc keeps the array base
+            // out of r3 and hoists the argument materialization into the address-build
+            // latency (`addi r4,r4; li r3,0; stw r31; lwzx r31,r4,r0`) — a scheduling
+            // composition not yet modeled. Zero-argument calls only.
+            if !arguments.is_empty() {
+                return Ok(false);
+            }
+        }
+        // The two captured load forms: a scalar global, or a plain-index element of a
+        // word-sized global array.
+        enum MemoryLoad<'e> {
+            Scalar,
+            Array { name: &'e str, index: &'e Expression },
+        }
+        let load = match initializer {
+            Expression::Variable(name)
+                if self.globals.contains_key(name.as_str()) && !self.global_array_sizes.contains_key(name.as_str()) =>
+            {
+                if pointee_of_type(self.globals[name.as_str()]) != Some(Pointee::Int)
+                    && pointee_of_type(self.globals[name.as_str()]) != Some(Pointee::UnsignedInt)
+                {
+                    return Ok(false);
+                }
+                MemoryLoad::Scalar
+            }
+            Expression::Index { base, index } => {
+                let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
+                if !self.global_array_sizes.contains_key(name.as_str()) || constant_value(index).is_some() {
+                    return Ok(false);
+                }
+                if !matches!(index.as_ref(), Expression::Variable(_)) {
+                    return Ok(false);
+                }
+                if !matches!(pointee_of_type(self.globals[name.as_str()]), Some(Pointee::Int | Pointee::UnsignedInt)) {
+                    return Ok(false);
+                }
+                MemoryLoad::Array { name, index }
+            }
+            _ => return Ok(false),
+        };
+
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved = vec![31];
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        match load {
+            MemoryLoad::Scalar => {
+                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+                self.evaluate_general(initializer, 31)?;
+            }
+            MemoryLoad::Array { name, index } => {
+                let index_register = self.general_register_of_leaf(index)?;
+                let high = self.free_register_avoiding(&[index])?;
+                self.emit_address_high(high, name);
+                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: 2 });
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+                self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+                self.output.instructions.push(Instruction::LoadWordIndexed { d: 31, a: index_register, b: GENERAL_SCRATCH });
+            }
+        }
+        let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            local.name.clone(),
+            Location { class: ValueClass::General, register: 31, signed, width: 32, pointee: None, stride: None },
+        );
+        for statement in &function.statements {
+            self.emit_statement(statement)?;
+        }
+        // The epilogue interleaves the result move between the LR and r31 reloads.
+        let result = mwcc_target::Eabi::general_result().number;
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::Or { a: result, s: 31, b: 31 });
+        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 

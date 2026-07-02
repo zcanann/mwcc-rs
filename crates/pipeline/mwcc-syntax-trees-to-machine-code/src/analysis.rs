@@ -1039,3 +1039,25 @@ mod tests {
         assert!(register_need(&product) > register_need(&var("c")));
     }
 }
+
+/// Whether an expression OBSERVES MEMORY — an array element, a dereference, a member,
+/// or a global variable read (any name outside `register_names`, the parameters and
+/// locals). Such a value is a load: moving it across a call or a store changes what it
+/// observes, so the inlining folds must not carry it past either.
+pub(crate) fn expression_reads_memory(expression: &Expression, register_names: &std::collections::HashSet<&str>) -> bool {
+    match expression {
+        Expression::Variable(name) => !register_names.contains(name.as_str()),
+        Expression::Index { .. } | Expression::Dereference { .. } | Expression::Member { .. } => true,
+        Expression::Binary { left, right, .. } => {
+            expression_reads_memory(left, register_names) || expression_reads_memory(right, register_names)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => expression_reads_memory(operand, register_names),
+        Expression::Conditional { condition, when_true, when_false } => {
+            expression_reads_memory(condition, register_names)
+                || expression_reads_memory(when_true, register_names)
+                || expression_reads_memory(when_false, register_names)
+        }
+        Expression::Call { arguments, .. } => arguments.iter().any(|argument| expression_reads_memory(argument, register_names)),
+        _ => false,
+    }
+}
