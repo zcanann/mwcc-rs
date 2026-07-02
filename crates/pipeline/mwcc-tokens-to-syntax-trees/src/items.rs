@@ -2042,6 +2042,30 @@ impl Parser {
                         guards.push(GuardedReturn { condition, value });
                         continue;
                     }
+                    // A NON-RETURN else body (`if (c1) return v1; else if (c2) return v2;
+                    // else { n = …; … }` — the fdlibm trig-dispatch shape): every prior
+                    // branch returns, so the else block is simply the CONTINUING body.
+                    // Migrate the pending guards and this one into the ordered statement
+                    // list, splice the else body's statements, and resume the statement
+                    // loop for whatever follows the block.
+                    let else_returns = *self.peek() == Token::KeywordReturn
+                        || (*self.peek() == Token::BraceOpen && *self.peek_at(1) == Token::KeywordReturn);
+                    if !else_returns {
+                        for guard in guards.drain(..) {
+                            statements.push(Statement::If {
+                                condition: guard.condition,
+                                then_body: vec![Statement::Return(Some(guard.value))],
+                                else_body: Vec::new(),
+                            });
+                        }
+                        statements.push(Statement::If {
+                            condition,
+                            then_body: vec![Statement::Return(Some(value))],
+                            else_body: Vec::new(),
+                        });
+                        statements.extend(self.parse_block_or_statement(&local_names)?);
+                        continue 'body;
+                    }
                     // `if (c) return v; else return d;` is the guard `if (c) return v;`
                     // with fall-through `d` — routed through the guard codegen (which
                     // normalizes a negated `!c` to keep `v` as the in-place default, as
