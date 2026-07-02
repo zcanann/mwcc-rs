@@ -3395,23 +3395,19 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = frame_size;
         // Phase D: the promoted parameters' homes are virtuals, created highest-rank
-        // first — id order reproduces r31, r30, … through the callee-saved pool.
+        // first — id order reproduces r31, r30, … through the callee-saved pool. The
+        // interleaved save+move prologue comes from the FRAME BUILDER.
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
         // A store sink reloads the saved LR before the GPR reloads in the epilogue.
         self.epilogue_lr_first = has_store;
-        // Save and move each, highest register first (r31 ← last parameter), with the
-        // save interleaved before its move, as mwcc emits them.
-        for (rank, (_, name, incoming)) in promoted.iter().rev().enumerate() {
-            let register = homes[rank];
-            let offset = frame_size - 4 * (rank as i16 + 1);
-            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
-            self.output.instructions.push(Instruction::Or { a: register, s: *incoming, b: *incoming });
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        debug_assert_eq!(plan.frame_size, frame_size);
+        let incoming_ordered: Vec<u8> = promoted.iter().rev().map(|(_, _, incoming)| *incoming).collect();
+        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+        for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
             if let Some(location) = self.locations.get_mut(name) {
-                location.register = register;
+                location.register = homes[rank];
             }
         }
 
@@ -3514,11 +3510,8 @@ impl Generator {
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
         self.epilogue_lr_first = true;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: frame_size - 4 });
-        self.output.instructions.push(Instruction::Or { a: saved, s: incoming, b: incoming });
+        // The interleaved save+move prologue, from the FRAME BUILDER.
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue_interleaved(&[incoming]));
         if let Some(location) = self.locations.get_mut(pointer_name) {
             location.register = saved;
         }
@@ -4164,20 +4157,14 @@ impl Generator {
         let frame_size = ((8 + 4 * count as i32 + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        // Phase D: virtual homes, highest-rank first.
+        // Phase D: virtual homes, highest-rank first; the interleaved save+move
+        // prologue comes from the FRAME BUILDER.
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        // Save each parameter to a callee-saved register — highest (r31) to the last
-        // parameter, descending — interleaving the store with the move, as mwcc emits.
-        for (rank, (_, incoming_register)) in incoming.iter().rev().enumerate() {
-            let register = homes[rank];
-            let offset = frame_size - 4 * (rank as i16 + 1);
-            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
-            self.output.instructions.push(Instruction::Or { a: register, s: *incoming_register, b: *incoming_register });
-        }
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        debug_assert_eq!(plan.frame_size, frame_size);
+        let incoming_ordered: Vec<u8> = incoming.iter().rev().map(|(_, register)| *register).collect();
+        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
         // The first call finds the parameters still in their incoming registers (no
         // moves); afterward they live only in their callee-saved registers.
         self.emit_statement(&function.statements[0])?;
@@ -4433,20 +4420,14 @@ impl Generator {
         let frame_size = 16i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
-        // Phase D: virtual homes, highest-rank first (id order -> r31, r30).
+        // Phase D: virtual homes, highest-rank first (id order -> r31, r30); the
+        // interleaved save+move prologue comes from the FRAME BUILDER.
         let homes: Vec<u8> = (0..incoming.len()).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: frame_size + 4 });
-        // Save each parameter — the LAST to r31 (top of the frame), the first to r30 — interleaving
-        // the store with the move, as mwcc emits.
-        for (rank, (_, incoming_register)) in incoming.iter().rev().enumerate() {
-            let register = homes[rank];
-            let offset = frame_size - 4 * (rank as i16 + 1);
-            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset });
-            self.output.instructions.push(Instruction::Or { a: register, s: *incoming_register, b: *incoming_register });
-        }
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        debug_assert_eq!(plan.frame_size, frame_size);
+        let incoming_ordered: Vec<u8> = incoming.iter().rev().map(|(_, register)| *register).collect();
+        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
         // The second parameter is now read from its callee-saved home (its incoming register
         // is dead), so a call passing it materializes `mr r3,r31`. The first parameter stays in its
         // incoming register for the call (no move) and moves to its home only afterward.
