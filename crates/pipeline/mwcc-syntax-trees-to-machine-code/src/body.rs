@@ -1,7 +1,7 @@
 //! Function-level emission: parameters, body, guards, and the return tail.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GuardedReturn, LocalDeclaration, LoopKind, Pointee, Statement, Type, UnaryOperator};
 use mwcc_versions::GlobalAddressing;
 use crate::expressions::{displacement_store, pointee_of_type};
@@ -883,6 +883,139 @@ impl Generator {
     /// name joins through r0 instead — not modeled). The continuation is delegated to value
     /// tracking; a continuation it cannot compile defers the whole body (the guard block is
     /// already emitted, so a bare `Ok(false)` would leave partial output).
+    /// A guarded computed-index GLOBAL-ARRAY store with a constant return:
+    /// `if (i < 1) return -1; arr[i - 1] = 0; return 0;` (the signal.c shape). The
+    /// address build interleaves with the live return value, in three captured forms:
+    /// - constant value, offset 0:  `lis r4; slwi r0,i; addi r3,r4; li r4,C; stwx r4,r3,r0; li r3,R`
+    /// - constant value, offset ±k: `lis r4; slwi; addi r3,r4; li r5,C; add r4,r3,r0; li r3,R; stw r5,k(r4)`
+    /// - register value, offset 0:  `lis r5; slwi; addi r5,r5; li r3,R; stwx v,r5,r0`
+    /// A register value with a folded offset is uncaptured; small (SDA21) arrays,
+    /// float/byte elements, and non-constant returns fall to the scheduler defer.
+    #[allow(clippy::too_many_arguments)]
+    fn try_guarded_global_array_store(
+        &mut self,
+        function: &Function,
+        condition: &Expression,
+        guard_value: &Expression,
+        array: &str,
+        total_size: u32,
+        index: &Expression,
+        stored: &Expression,
+    ) -> Compilation<bool> {
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(return_constant) = function
+            .return_expression
+            .as_ref()
+            .and_then(|expression| constant_value(expression))
+            .and_then(|constant| i16::try_from(constant).ok())
+        else {
+            return Ok(false);
+        };
+        if self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8 {
+            return Ok(false);
+        }
+        let Some(pointee) = pointee_of_type(self.globals[array]) else {
+            return Ok(false);
+        };
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            return Ok(false);
+        }
+        let size = pointee.size();
+        if size == 1 {
+            return Ok(false);
+        }
+        // `arr[i ± k]` folds the scaled element offset onto the store displacement.
+        let mut index_leaf = index;
+        let mut element_offset: i64 = 0;
+        if let Expression::Binary { operator, left, right } = index {
+            if let Some(k) = constant_value(right) {
+                match operator {
+                    BinaryOperator::Add => {
+                        index_leaf = left.as_ref();
+                        element_offset = k * size as i64;
+                    }
+                    BinaryOperator::Subtract => {
+                        index_leaf = left.as_ref();
+                        element_offset = -k * size as i64;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !matches!(index_leaf, Expression::Variable(_)) {
+            return Ok(false);
+        }
+        let Ok(offset) = i16::try_from(element_offset) else {
+            return Ok(false);
+        };
+        let stored_constant = constant_value(stored).and_then(|constant| i16::try_from(constant).ok());
+        let stored_register = if stored_constant.is_none() {
+            let Expression::Variable(name) = stored else { return Ok(false) };
+            let Some(register) = self.lookup_general(name) else { return Ok(false) };
+            if offset != 0 {
+                return Ok(false);
+            }
+            Some(register)
+        } else {
+            None
+        };
+
+        let result = mwcc_target::Eabi::general_result().number;
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.evaluate_tail(guard_value, function.return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        let continuation = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = continuation;
+        }
+
+        let index_register = self.general_register_of_leaf(index_leaf)?;
+        let shift = size.trailing_zeros() as u8;
+        if let Some(register) = stored_register {
+            // Register value: the base stays OUT of the index register (the return needs
+            // r3 live before the store) — `lis B; slwi; addi B,B; li r3,R; stwx v,B,r0`.
+            let base = self.free_register_avoiding(&[index_leaf, stored])?;
+            self.emit_address_high(base, array);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::Addr16Lo, array);
+            self.output.instructions.push(Instruction::AddImmediate { d: base, a: base, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
+            self.output.instructions.push(crate::expressions::indexed_store(pointee, register, base, GENERAL_SCRATCH));
+        } else {
+            let constant = stored_constant.expect("checked above");
+            let high = self.free_register_avoiding(&[index_leaf])?;
+            self.emit_address_high(high, array);
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.record_relocation(RelocationKind::Addr16Lo, array);
+            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+            if offset == 0 {
+                // The standalone sequence, the return materialized after the store.
+                self.output.instructions.push(Instruction::AddImmediate { d: high, a: 0, immediate: constant });
+                self.output.instructions.push(crate::expressions::indexed_store(pointee, high, index_register, GENERAL_SCRATCH));
+                self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
+            } else {
+                // The value takes the next free register past the (reserved) high, the
+                // effective address lands in the freed high, and the return interleaves
+                // before the displacement store.
+                let reserved = self.reserved.insert(high);
+                let value_register = self.free_register_avoiding(&[index_leaf])?;
+                if reserved {
+                    self.reserved.remove(&high);
+                }
+                self.output.instructions.push(Instruction::AddImmediate { d: value_register, a: 0, immediate: constant });
+                self.output.instructions.push(Instruction::Add { d: high, a: index_register, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
+                self.output.instructions.push(displacement_store(pointee, value_register, high, offset));
+            }
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     fn try_ordered_early_return_branch(&mut self, function: &Function) -> Compilation<bool> {
         // A VOID early return over a single-store continuation: `if (a) return; *p = 5;`
         // is a conditional RETURN (the void exit needs no value), then the plain store
@@ -931,6 +1064,17 @@ impl Generator {
         // through the batch scheduler and defer.
         if let [Statement::Store { target, value: stored }] = rest {
             if function.guards.is_empty() && function.locals.is_empty() {
+                // A computed-index GLOBAL-ARRAY target has its own captured schedules
+                // (the address build interleaves with the return) — a dedicated arm.
+                if let Expression::Index { base, index } = target {
+                    if let Expression::Variable(array) = base.as_ref() {
+                        if let Some(&total_size) = self.global_array_sizes.get(array.as_str()) {
+                            if constant_value(index).is_none() {
+                                return self.try_guarded_global_array_store(function, condition, value, array, total_size, index, stored);
+                            }
+                        }
+                    }
+                }
                 let stored_is_constant = constant_value(stored).and_then(|constant| i16::try_from(constant).ok()).is_some();
                 let stored_is_two_leaf = matches!(stored, Expression::Binary { left, right, .. }
                     if matches!(left.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
@@ -1708,7 +1852,18 @@ impl Generator {
                     matches!(statement, Statement::Store { value, .. }
                         if !matches!(value, Expression::Variable(name) if self.locations.contains_key(name.as_str())))
                 });
-                if store_count >= 2 || materializing_store {
+                // A computed-index GLOBAL-ARRAY target materializes its ADDRESS
+                // (lis/slwi/addi) even for a register value — with a live return, mwcc
+                // keeps the base out of the index register and interleaves the return
+                // (`addi r5,r5; li r3,0; stwx r4,r5,r0`), which the sequential emission
+                // below does not model. (A pointer-parameter target needs no address
+                // build and stays — verified.)
+                let address_materializing_store = continuation.iter().any(|statement| {
+                    matches!(statement, Statement::Store { target: Expression::Index { base, index }, .. }
+                        if matches!(base.as_ref(), Expression::Variable(name) if self.globals.contains_key(name.as_str()))
+                            && constant_value(index).is_none())
+                });
+                if store_count >= 2 || materializing_store || address_materializing_store {
                     return Err(Diagnostic::error(
                         "an early-return continuation that materializes store values needs the store/return scheduler (roadmap)",
                     ));

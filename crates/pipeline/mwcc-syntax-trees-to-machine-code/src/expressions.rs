@@ -121,7 +121,7 @@ fn const_address_of(pointer: &Expression) -> Option<u32> {
 }
 
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
-fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
+pub(crate) fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
     match pointee {
         Pointee::Int | Pointee::UnsignedInt => Instruction::StoreWordIndexed { s, a, b },
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByteIndexed { s, a, b },
@@ -3032,7 +3032,7 @@ impl Generator {
     /// Emit `lis base, name@ha` — the high-adjusted half of an absolute address,
     /// with its `R_PPC_ADDR16_HA` relocation. `base` must never be r0: an `addi`
     /// or load based on r0 reads literal zero, not the register (the `li` trap).
-    fn emit_address_high(&mut self, base: u8, name: &str) {
+    pub(crate) fn emit_address_high(&mut self, base: u8, name: &str) {
         self.record_relocation(RelocationKind::Addr16Ha, name);
         self.output.instructions.push(Instruction::load_immediate_shifted(base, 0));
     }
