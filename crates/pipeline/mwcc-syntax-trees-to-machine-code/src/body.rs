@@ -2488,9 +2488,25 @@ impl Generator {
                     }
                 }
                 let select = guard_select(&guard.condition, &guard.value, return_expression);
-                self.evaluate_tail(&select, function.return_type, result)?;
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
-                return Ok(());
+                // ATTEMPT the select; a fall-through outside its vocabulary (a
+                // table load, a cast) uses mwcc's early-return BRANCH instead
+                // (measured) — roll back and take the guard-sequence path.
+                let instructions_before = self.output.instructions.len();
+                let relocations_before = self.output.relocations.len();
+                let virtuals_before = self.next_virtual;
+                let bump_before = self.output.anonymous_label_bump;
+                match self.evaluate_tail(&select, function.return_type, result) {
+                    Ok(()) => {
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        self.output.instructions.truncate(instructions_before);
+                        self.output.relocations.truncate(relocations_before);
+                        self.next_virtual = virtuals_before;
+                        self.output.anonymous_label_bump = bump_before;
+                    }
+                }
             }
             return self.emit_guard_sequence(&function.guards, return_expression, function.return_type, result);
         }
@@ -5991,9 +6007,28 @@ impl Generator {
             // the in-result `bnelr` path below cannot — it needs a register value).
             if is_last && (!final_in_result || constant_value(&guard.value).is_some()) {
                 let select = guard_select(&guard.condition, &guard.value, final_return);
-                self.evaluate_tail(&select, return_type, result)?;
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
-                return Ok(());
+                // ATTEMPT the select; when its lowering has no vocabulary for
+                // the fall-through (a table load, a cast) mwcc uses a real
+                // early-return BRANCH instead (measured: `cmpwi;bne;li;blr;
+                // <table>;blr` for the ctype shape) — roll back and continue
+                // the loop, which emits the guard as an early return and the
+                // final via the fall-through below.
+                let instructions_before = self.output.instructions.len();
+                let relocations_before = self.output.relocations.len();
+                let virtuals_before = self.next_virtual;
+                let bump_before = self.output.anonymous_label_bump;
+                match self.evaluate_tail(&select, return_type, result) {
+                    Ok(()) => {
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        self.output.instructions.truncate(instructions_before);
+                        self.output.relocations.truncate(relocations_before);
+                        self.next_virtual = virtuals_before;
+                        self.output.anonymous_label_bump = bump_before;
+                    }
+                }
             }
 
             let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
@@ -6053,7 +6088,42 @@ impl Generator {
         match expression {
             Expression::Conditional { condition, when_true, when_false } => match value_type {
                 Type::Float | Type::Double => self.emit_float_conditional(condition, when_true, when_false, result, true),
-                _ => self.emit_conditional(condition, when_true, when_false, result, true),
+                _ => {
+                    // ATTEMPT the select; a false-arm outside its vocabulary
+                    // (a table load) uses mwcc's early-return BRANCH — the
+                    // ternary is the guard form `if (cond) return T; return F`
+                    // (measured on the ctype tolower shape).
+                    let instructions_before = self.output.instructions.len();
+                    let relocations_before = self.output.relocations.len();
+                    let virtuals_before = self.next_virtual;
+                    let bump_before = self.output.anonymous_label_bump;
+                    match self.emit_conditional(condition, when_true, when_false, result, true) {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            self.output.instructions.truncate(instructions_before);
+                            self.output.relocations.truncate(relocations_before);
+                            self.next_virtual = virtuals_before;
+                            self.output.anonymous_label_bump = bump_before;
+                            // Emit the branch form DIRECTLY (a nested-ternary
+                            // fall-through would recurse through the same
+                            // fallback forever — defer that).
+                            let Some(constant) = constant_value(when_true) else { return Err(error) };
+                            if matches!(when_false.as_ref(), Expression::Conditional { .. }) {
+                                return Err(error);
+                            }
+                            let (options, condition_bit) = self.emit_condition_test(condition)?;
+                            let branch_index = self.output.instructions.len();
+                            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                            self.load_integer_constant(result, constant);
+                            self.output.instructions.push(Instruction::BranchToLinkRegister);
+                            let next = self.output.instructions.len();
+                            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                                *target = next;
+                            }
+                            self.evaluate_tail(when_false, value_type, result)
+                        }
+                    }
+                }
             },
             Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), left, right } => {
                 self.emit_short_circuit(*operator, left, right, result)
@@ -6197,6 +6267,37 @@ impl Generator {
     }
 
     pub(crate) fn evaluate(&mut self, expression: &Expression, value_type: Type, destination: u8) -> Compilation<()> {
+        // An `(int)` cast of an UNSIGNED-narrow or int-typed operand is a no-op
+        // (the lbz/lhz load already zero-extends): unwrap it. A signed-narrow
+        // operand keeps the cast (its widening is the extsb/extsh the inner
+        // paths model).
+        if let (Type::Int | Type::UnsignedInt, Expression::Cast { target_type: Type::Int | Type::UnsignedInt, operand }) =
+            (value_type, expression)
+        {
+            let element = match operand.as_ref() {
+                Expression::Index { base, .. } => match base.as_ref() {
+                    Expression::Variable(name) => self.globals.get(name.as_str()).copied(),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match element {
+                // An UNSIGNED narrow (or int) element zero-extends in its own
+                // load (lbzx/lhzx): the cast is a no-op.
+                Some(Type::UnsignedChar | Type::UnsignedShort | Type::Int | Type::UnsignedInt) => {
+                    return self.evaluate(operand, value_type, destination);
+                }
+                // A SIGNED narrow element's widening (lbzx then extsb) is the
+                // Index path's own job — the cast is a no-op wrapper here too.
+                Some(Type::Char | Type::Short) => {
+                    return self.evaluate(operand, value_type, destination);
+                }
+                _ => {}
+            }
+            if matches!(operand.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::Binary { .. }) {
+                return self.evaluate(operand, value_type, destination);
+            }
+        }
         match value_type {
             // A `double` shares the FPR file with `float`; the float path picks the
             // double-precision instructions via is_double_value. An integer leaf in
@@ -6295,3 +6396,4 @@ impl Generator {
                 .is_some_and(|location| location.class == ValueClass::General && location.width == 32 && location.pointee.is_none()))
     }
 }
+
