@@ -1784,9 +1784,11 @@ impl Parser {
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
         let mut saw_inline = false;
+        let mut saw_static = false;
         while let Some(token) = self.tokens.get(index) {
             match token {
                 Token::Identifier(word) if word == "typedef" => return false,
+                Token::Identifier(word) if word == "static" => saw_static = true,
                 Token::Identifier(word) if word == "inline" || word == "__inline" => saw_inline = true,
                 Token::ParenOpen => paren_depth += 1,
                 Token::ParenClose => {
@@ -1796,7 +1798,10 @@ impl Parser {
                     }
                 }
                 Token::Semicolon if paren_depth == 0 => return false,
-                Token::BraceOpen if paren_depth == 0 => return saw_inline && saw_parameter_list,
+                // Only a STATIC inline definition advances mwcc's @N counter
+                // (+3); a plain `inline` one does not (measured: baseline @5,
+                // static inline @8, plain inline @5).
+                Token::BraceOpen if paren_depth == 0 => return saw_inline && saw_static && saw_parameter_list,
                 Token::EndOfFile => return false,
                 _ => {}
             }

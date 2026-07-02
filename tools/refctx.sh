@@ -59,6 +59,12 @@ elif [[ -f "$project/compile_flags.txt" ]]; then
   [[ ${#include_dirs[@]} -gt 0 ]] || include_dirs=(include)
 else
   include_dirs=(include)
+  # MSL system headers may live in a SUBROOT (pikmin: include/stl) — add any
+  # directory holding stddef.h so `#include <stddef.h>` resolves.
+  while IFS= read -r sysroot; do
+    rel="${sysroot#"$project"/}"
+    [[ "$rel" == include ]] || include_dirs+=("$rel")
+  done < <(find "$project/include" -maxdepth 3 -name stddef.h 2>/dev/null | xargs -n1 dirname | sort -u)
 fi
 include_flags=()
 # NB: not `dir` — that variable holds the mktemp scratch dir the EXIT trap removes.
