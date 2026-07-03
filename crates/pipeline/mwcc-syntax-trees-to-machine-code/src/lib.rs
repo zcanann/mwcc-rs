@@ -14,6 +14,7 @@ mod analysis;
 mod generator;
 mod operands;
 mod body;
+mod captures;
 mod expressions;
 mod arithmetic;
 mod division;
