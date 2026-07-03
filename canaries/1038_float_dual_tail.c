@@ -87,3 +87,8 @@ double dual_shared_z_deep(double x, int c)
 		return z * (84.5 + z * 85.5);
 	}
 }
+
+double ksin_else_tail(double x, double y, double v, double r, double z)
+{
+	return x - ((z * (91.5 * y - v * r) - y) - v * 92.5);
+}

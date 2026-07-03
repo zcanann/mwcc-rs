@@ -487,12 +487,16 @@ impl Generator {
                     let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     let b = resolve(right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     let reads: Vec<u32> = [a, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
-                    nodes.push(
-                        DagNode::new("fsub", FLOAT_ARITH_LATENCY)
-                            .hazard(HAZARD_FPU)
-                            .reads(&reads)
-                            .writes(&[10 + index as u32]),
-                    );
+                    let mut node = DagNode::new("fsub", FLOAT_ARITH_LATENCY)
+                        .hazard(HAZARD_FPU)
+                        .reads(&reads)
+                        .writes(&[10 + index as u32]);
+                    // The FSUB-rooted accumulator shape switches the register
+                    // machine to the emission-order regime.
+                    if std::ptr::eq(arith as *const Tree, &tree as *const Tree) {
+                        node = node.emission_ordered();
+                    }
+                    nodes.push(node);
                     ops.push(FloatOp::Sub { a, b });
                 }
                 _ => unreachable!(),
@@ -683,14 +687,9 @@ fn build_tree(
             }
             let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = right.as_ref() else {
                 // Neither side a product: the plain unfused FSUB in source
-                // slots. The DEEP form (the k_sin else-tail: >= 2 arith in
-                // the subtrahend) still misses one register rule
-                // (reg_ksin_else) — defer it.
+                // slots (the deep form runs the emission-order regime).
                 let minuend = build_tree(left, params, locals, seen_literals)?;
                 let subtrahend = build_tree(right, params, locals, seen_literals)?;
-                if count_arith(&subtrahend) >= 2 {
-                    return None;
-                }
                 return Some(Tree::Fsub { left: Box::new(minuend), right: Box::new(subtrahend) });
             };
             let both_const = matches!(x.as_ref(), Expression::FloatLiteral(_)) && matches!(y.as_ref(), Expression::FloatLiteral(_));

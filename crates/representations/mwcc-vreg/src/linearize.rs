@@ -64,6 +64,11 @@ pub struct DagNode {
     /// machine (measured: k_sin-class locals z/v take f4/f3 descending while
     /// the chains churn the low registers).
     pub local_home: bool,
+    /// The FSUB-rooted accumulator shape (the k_sin else-tail): the reverse
+    /// machine processes in EMISSION order — the f0 chain flows forward
+    /// through the dying-operand doors (fmul -> fmsub1 -> fmsub2 -> fnmsub)
+    /// and the loads ascend past the busy params.
+    pub emission_ordered: bool,
     /// This STORE's chain is rooted at the r3 parameter: when its analytic
     /// earliest-ready is <= the return final's, the chain holds r3 (the
     /// allocator reuses the dying param) and the final's r3 write must EMIT
@@ -88,10 +93,14 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false, local_home: false, r3_chain_store: false }
+        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false, local_home: false, emission_ordered: false, r3_chain_store: false }
     }
     pub fn local_home(mut self) -> DagNode {
         self.local_home = true;
+        self
+    }
+    pub fn emission_ordered(mut self) -> DagNode {
+        self.emission_ordered = true;
         self
     }
     pub fn r3_chain_store(mut self) -> DagNode {
@@ -1420,7 +1429,12 @@ pub fn assign_float_registers(
             occupied.push((1, position[ret], value_end(ret), ret));
         }
         let mut sequence: Vec<usize> = (0..count).filter(|&node| is_value(node)).collect();
-        if model.order_by_death {
+        let emission_regime = (0..count).any(|node| nodes[node].emission_ordered);
+        if emission_regime {
+            // The FSUB-rooted accumulator shape: EMISSION order — the f0
+            // chain flows forward through the dying-operand doors.
+            sequence.sort_by_key(|&node| position[node]);
+        } else if model.order_by_death {
             let return_reads: Vec<u32> = return_node.map(|ret| nodes[ret].reads.clone()).unwrap_or_default();
             sequence.sort_by_key(|&node| {
                 let root_slot = if model.root_slot_order {
@@ -2816,7 +2830,7 @@ mod tests {
                     DagNode::new("fmsub1", FARITH).hazard(HAZARD_FPU).reads(&[10, 2, 20]).writes(&[21]),
                     DagNode::new("fmsub2", FARITH).hazard(HAZARD_FPU).reads(&[5, 21, 2]).writes(&[22]),
                     DagNode::new("fnmsub", FARITH).hazard(HAZARD_FPU).reads(&[11, 3, 22]).writes(&[23]),
-                    DagNode::new("fsub", FARITH).hazard(HAZARD_FPU).reads(&[1, 23]).writes(&[24]),
+                    DagNode::new("fsub", FARITH).emission_ordered().hazard(HAZARD_FPU).reads(&[1, 23]).writes(&[24]),
                 ],
                 vec![(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)],
                 vec![Some(0), Some(4), Some(6), Some(0), Some(0), Some(0), Some(1)],
@@ -2929,20 +2943,10 @@ mod tests {
                 frozen_passed += 1;
             } else {
                 println!("  frozen reg MISS {name}: got {got:?} want {expected:?}");
-                // FIRE-351 OPEN: the k_sin else-tail's fmsub1 needs the f0
-                // chain to flow FORWARD (its dying fmul-operand's register,
-                // unallocated under death-desc when fmsub1 processes) — a
-                // lookahead the reverse machine lacks. The B-slot share and
-                // the allowed-share promotion (both landed) fixed the chain
-                // tail; the front pair remains.
-                assert!(
-                    matches!(*name, "reg_ksin_else"),
-                    "float register fixture {name} regressed under FROZEN_FLOAT_REG"
-                );
             }
         }
         println!("float registers FROZEN: {frozen_passed}/{}", shapes.len());
-        assert!(frozen_passed + 1 >= shapes.len(), "FROZEN_FLOAT_REG regressed");
+        assert_eq!(frozen_passed, shapes.len(), "FROZEN_FLOAT_REG regressed");
     }
 
     /// RETURN-TAIL ORDER fixtures (fire 306 captures): expected EMISSION order
