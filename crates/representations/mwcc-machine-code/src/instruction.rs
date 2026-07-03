@@ -21,6 +21,9 @@ pub enum Instruction {
     Add { d: u8, a: u8, b: u8 },
     /// `subf rD, rA, rB` => rD = rB - rA.
     SubtractFrom { d: u8, a: u8, b: u8 },
+    /// `subf. rD, rA, rB` => rD = rB - rA, recording in CR0 (the CTR-loop
+    /// register-subtract head fusing its `< 0` test).
+    SubtractFromRecord { d: u8, a: u8, b: u8 },
     /// `neg rD, rA`
     Negate { d: u8, a: u8 },
     /// `nor rA, rS, rB` — spells `not rA, rS` when `s == b`.

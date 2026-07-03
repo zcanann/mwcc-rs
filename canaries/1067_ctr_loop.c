@@ -31,3 +31,34 @@ int ctr_walk_post(int hx, int n)
 	}
 	return hx + 7;
 }
+/* Fire 420: two leaves toward e_fmod's real walk. The register head
+   `hz = hx - hy` fuses into `subf. r0,hy,hx`; the PAIR CARRY STEP
+   `hx = hx+hx+(lx>>31); lx = lx+lx` (the 2-word left shift) emits
+   srwi r0 first, schedules the LOW doubling between, then adds as
+   hx + (hx + carry) — the unsigned low is required (signed would
+   srawi). @N still +0. */
+int ctr_sub_reg(int hx, int hy, int n)
+{
+	int hz;
+	while (n--) {
+		hz = hx - hy;
+		if (hz < 0)
+			hx = hx + hx;
+		else
+			hx = hz + hz;
+	}
+	return hx;
+}
+int ctr_pair_step(int hx, unsigned lx, int hy, int n)
+{
+	int hz;
+	while (n--) {
+		hz = hx - hy;
+		if (hz < 0) {
+			hx = hx + hx + (lx >> 31);
+			lx = lx + lx;
+		} else
+			hx = hz + hz;
+	}
+	return hx;
+}

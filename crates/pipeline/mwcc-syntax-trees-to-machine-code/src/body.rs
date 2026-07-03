@@ -7831,12 +7831,33 @@ impl Generator {
         let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = hz_value else {
             return Ok(false);
         };
-        let (Expression::Variable(hx), Expression::IntegerLiteral(k)) = (left.as_ref(), right.as_ref())
-        else {
+        let Expression::Variable(hx) = left.as_ref() else {
             return Ok(false);
         };
-        let Ok(negated_k) = i16::try_from(-*k) else {
-            return Ok(false);
+        // The head: `hx - K` folds into `addic. r0` (fire 419); `hx - hy`
+        // (hy an int parameter) into `subf. r0, hy, hx` (fire 420).
+        enum Head {
+            Immediate(i16),
+            Register(String),
+        }
+        let head = match right.as_ref() {
+            Expression::IntegerLiteral(k) => {
+                let Ok(negated_k) = i16::try_from(-*k) else {
+                    return Ok(false);
+                };
+                Head::Immediate(negated_k)
+            }
+            Expression::Variable(hy) if hy != hx && hy != hz && hy != count => {
+                if !function
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == *hy && parameter.parameter_type == Type::Int)
+                {
+                    return Ok(false);
+                }
+                Head::Register(hy.clone())
+            }
+            _ => return Ok(false),
         };
         if hx == hz || hx == count || hz == count {
             return Ok(false);
@@ -7871,11 +7892,11 @@ impl Generator {
         {
             return Ok(false);
         }
-        let arm_doubles = |statements: &[Statement], doubled: &str| -> bool {
-            let [Statement::Assign { name, value }] = statements else {
+        let doubles_into = |statement: &Statement, target: &str, doubled: &str| -> bool {
+            let Statement::Assign { name, value } = statement else {
                 return false;
             };
-            if name != hx {
+            if name != target {
                 return false;
             }
             let Expression::Binary { operator: BinaryOperator::Add, left, right } = value else {
@@ -7884,7 +7905,66 @@ impl Generator {
             matches!(left.as_ref(), Expression::Variable(v) if v == doubled)
                 && matches!(right.as_ref(), Expression::Variable(v) if v == doubled)
         };
-        if !arm_doubles(then_body, hx) || !arm_doubles(else_body, hz) {
+        // The then arm: `hx = hx + hx;` (double, fire 419) or the PAIR
+        // CARRY STEP `hx = hx + hx + (lx >> 31); lx = lx + lx;` (fire
+        // 420, e_fmod's 2-word left shift — the srwi leads, the LOW
+        // doubling schedules between it and the two adds, which
+        // associate hx + (hx + carry)). The low word must be UNSIGNED
+        // (a signed one would srawi).
+        enum ThenArm {
+            Double,
+            PairStep(String),
+        }
+        let then_arm = match then_body.as_slice() {
+            [single] if doubles_into(single, hx, hx) => ThenArm::Double,
+            [Statement::Assign { name: high_name, value: high_value }, low_step] => {
+                if high_name != hx {
+                    return Ok(false);
+                }
+                let Expression::Binary { operator: BinaryOperator::Add, left: sum, right: carry } =
+                    high_value
+                else {
+                    return Ok(false);
+                };
+                let Expression::Binary { operator: BinaryOperator::Add, left: first, right: second } =
+                    sum.as_ref()
+                else {
+                    return Ok(false);
+                };
+                if !matches!(first.as_ref(), Expression::Variable(v) if v == hx)
+                    || !matches!(second.as_ref(), Expression::Variable(v) if v == hx)
+                {
+                    return Ok(false);
+                }
+                let Expression::Binary { operator: BinaryOperator::ShiftRight, left: low, right: amount } =
+                    carry.as_ref()
+                else {
+                    return Ok(false);
+                };
+                let Expression::Variable(lx) = low.as_ref() else {
+                    return Ok(false);
+                };
+                if !matches!(amount.as_ref(), Expression::IntegerLiteral(31))
+                    || lx == hx
+                    || lx == hz
+                    || lx == count
+                    || matches!(&head, Head::Register(hy) if lx == hy)
+                    || !doubles_into(low_step, lx, lx)
+                    || !function
+                        .parameters
+                        .iter()
+                        .any(|parameter| parameter.name == *lx && parameter.parameter_type == Type::UnsignedInt)
+                {
+                    return Ok(false);
+                }
+                ThenArm::PairStep(lx.clone())
+            }
+            _ => return Ok(false),
+        };
+        let [else_single] = else_body.as_slice() else {
+            return Ok(false);
+        };
+        if !doubles_into(else_single, hx, hz) {
             return Ok(false);
         }
         // The tail: `return hx` (skip = beqlr) or `return hx + K2` (skip =
@@ -7917,6 +7997,20 @@ impl Generator {
         let Some(count_register) = self.lookup_general(count) else {
             return Ok(false);
         };
+        let head_register = match &head {
+            Head::Immediate(_) => None,
+            Head::Register(hy) => match self.lookup_general(hy) {
+                Some(register) => Some(register),
+                None => return Ok(false),
+            },
+        };
+        let pair_low_register = match &then_arm {
+            ThenArm::Double => None,
+            ThenArm::PairStep(lx) => match self.lookup_general(lx) {
+                Some(register) => Some(register),
+                None => return Ok(false),
+            },
+        };
         // -- emit --
         self.output.instructions.push(Instruction::MoveToCountRegister { s: count_register });
         self.output.instructions.push(Instruction::CompareWordImmediate { a: count_register, immediate: 0 });
@@ -7930,14 +8024,32 @@ impl Generator {
         }
         let body_label = self.fresh_label();
         self.bind_label(body_label);
-        self.output.instructions.push(Instruction::AddImmediateCarryingRecord {
-            d: 0,
-            a: hx_register,
-            immediate: negated_k,
-        });
+        match &head {
+            Head::Immediate(negated_k) => self.output.instructions.push(Instruction::AddImmediateCarryingRecord {
+                d: 0,
+                a: hx_register,
+                immediate: *negated_k,
+            }),
+            Head::Register(_) => self.output.instructions.push(Instruction::SubtractFromRecord {
+                d: 0,
+                a: head_register.unwrap(),
+                b: hx_register,
+            }),
+        }
         let else_label = self.fresh_label();
         self.emit_branch_conditional_to(4, 0, else_label); // bge
-        self.output.instructions.push(Instruction::Add { d: hx_register, a: hx_register, b: hx_register });
+        match &then_arm {
+            ThenArm::Double => {
+                self.output.instructions.push(Instruction::Add { d: hx_register, a: hx_register, b: hx_register });
+            }
+            ThenArm::PairStep(_) => {
+                let low = pair_low_register.unwrap();
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: low, shift: 31 });
+                self.output.instructions.push(Instruction::Add { d: low, a: low, b: low });
+                self.output.instructions.push(Instruction::Add { d: 0, a: hx_register, b: 0 });
+                self.output.instructions.push(Instruction::Add { d: hx_register, a: hx_register, b: 0 });
+            }
+        }
         let join_label = self.fresh_label();
         self.emit_branch_to(join_label);
         self.bind_label(else_label);
