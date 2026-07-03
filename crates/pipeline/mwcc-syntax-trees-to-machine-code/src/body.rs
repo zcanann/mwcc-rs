@@ -939,6 +939,16 @@ enum SelectArm {
     Computed { source: u8, immediate: i16 },
 }
 
+/// The computed guard local `j0 = ((punned >> S) [& M]) - K` shared by the
+/// punned-writeback branch path and the zero-select path.
+struct GuardLocal<'a> {
+    name: &'a str,
+    source: &'a str,
+    shift: u8,
+    mask: Option<i64>,
+    offset_k: i64,
+}
+
 impl Generator {
 
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
@@ -3399,6 +3409,227 @@ impl Generator {
     /// stwu; cmpwi (HOISTED — the second local reuses the freed condition
     /// register); stfd f1,8; lwz r0[, lwz r3]; beq JOIN; li...; JOIN:
     /// stw...; lfd f1,8; addi; blr.
+    /// The BRANCHLESS ZERO-SELECT: `if (j0 cmp K) p = A; else p = B;` with
+    /// one arm 0 if-converts to mask algebra — no branches (measured
+    /// L3/L4/S2/S3/R1/R2/R3 on 2.6). The mask is -(cond); zero-in-then
+    /// selects with andc (else & ~mask), zero-in-else with and. Recipes:
+    ///   <  : li rK; srwi sign(K); subfc K,g; srwi sign(g); subfe
+    ///   >  : the swapped form (rK/sign registers trade places)
+    ///   == : addi g-K; subfic K-g; nor; srawi 31
+    ///   != : the same with or
+    ///   <= : xoris 0x8000; subfic; addc; subfe rM,rM,rM
+    /// Registers: the select home is r0; </> put K,sign in r3/r4 and the
+    /// load in r5; ==/!=/<= compute in place on the r3 load. The L4
+    /// self-mask arm (`p &= M`) keeps the load in r0 and weaves rlwinm
+    /// between the guard extract and its -K addi.
+    fn try_punned_zero_select(
+        &mut self,
+        locals: &[(&str, i16)],
+        guard: &GuardLocal,
+        condition: &Expression,
+        then_body: &[Statement],
+        else_body: &[Statement],
+    ) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        let punned = locals[0].0;
+        let offset = locals[0].1;
+        let Expression::Binary { operator, left, right } = condition else {
+            return Ok(false);
+        };
+        let operator = *operator;
+        if !matches!(
+            operator,
+            BinaryOperator::Less
+                | BinaryOperator::Greater
+                | BinaryOperator::Equal
+                | BinaryOperator::NotEqual
+                | BinaryOperator::LessEqual
+        ) {
+            return Ok(false);
+        }
+        if !matches!(left.as_ref(), Expression::Variable(name) if name == guard.name) {
+            return Ok(false);
+        }
+        let Some(bound) = crate::analysis::constant_value(right) else {
+            return Ok(false);
+        };
+        let Ok(bound) = i16::try_from(bound) else {
+            return Ok(false);
+        };
+        let ([Statement::Assign { name: then_name, value: then_value }], [Statement::Assign { name: else_name, value: else_value }]) =
+            (then_body, else_body)
+        else {
+            return Ok(false);
+        };
+        if then_name != punned || else_name != punned {
+            return Ok(false);
+        }
+        let then_zero = crate::analysis::constant_value(then_value) == Some(0);
+        let else_zero = crate::analysis::constant_value(else_value) == Some(0);
+        let (live_value, select_complement) = match (then_zero, else_zero) {
+            (true, false) => (else_value, true),  // else & ~mask
+            (false, true) => (then_value, false), // then & mask
+            _ => return Ok(false),
+        };
+        // The live arm: a small constant, or the measured L4 self-mask
+        // (`p & M`, only captured under `<` with the zero in the then).
+        enum LiveArm {
+            Constant(i16),
+            SelfMask { begin: u8, end: u8 },
+        }
+        let live_arm = if let Some(constant) = crate::analysis::constant_value(live_value) {
+            let Ok(small) = i16::try_from(constant) else {
+                return Ok(false);
+            };
+            LiveArm::Constant(small)
+        } else if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = live_value {
+            if !(operator == BinaryOperator::Less && select_complement) {
+                return Ok(false);
+            }
+            if !matches!(left.as_ref(), Expression::Variable(name) if name == punned) {
+                return Ok(false);
+            }
+            let Some((begin, end)) =
+                crate::analysis::constant_value(right).and_then(crate::analysis::rlwinm_mask)
+            else {
+                return Ok(false);
+            };
+            LiveArm::SelfMask { begin, end }
+        } else {
+            return Ok(false);
+        };
+        // The guard is read by the condition alone; the arms touch only p.
+        if count_name_occurrences(condition, guard.name) != 1
+            || count_name_occurrences(then_value, guard.name) != 0
+            || count_name_occurrences(else_value, guard.name) != 0
+        {
+            return Ok(false);
+        }
+        let offset_negative = if guard.offset_k != 0 {
+            let Ok(negative) = i16::try_from(-guard.offset_k) else {
+                return Ok(false);
+            };
+            Some(negative)
+        } else {
+            None
+        };
+        // -- commit --
+        let self_mask_arm = matches!(live_arm, LiveArm::SelfMask { .. });
+        let carry_form = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater);
+        // Homes: the select value in r0; </> claim r3/r4 for K and its
+        // sign; the load lands beyond them (r5) or shares r0 (self-mask).
+        let load_register: u8 = if self_mask_arm {
+            0
+        } else if carry_form {
+            5
+        } else {
+            3
+        };
+        let guard_register: u8 = if carry_form { 5 } else { 3 };
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        match operator {
+            BinaryOperator::Less => {
+                self.output.instructions.push(Instruction::load_immediate(3, bound));
+                self.output.instructions.push(Instruction::RotateAndMask { a: 4, s: 3, shift: 1, begin: 31, end: 31 });
+            }
+            BinaryOperator::Greater => {
+                self.output.instructions.push(Instruction::load_immediate(4, bound));
+                self.output.instructions.push(Instruction::RotateAndMask { a: 3, s: 4, shift: 1, begin: 31, end: 31 });
+            }
+            _ => {}
+        }
+        if let LiveArm::Constant(constant) = live_arm {
+            self.output.instructions.push(Instruction::load_immediate(0, constant));
+        }
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: load_register, a: 1, offset: 8 + offset });
+        match guard.mask {
+            Some(mask) => {
+                let rotated = ((32 - guard.shift as u32) % 32) as u8;
+                let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
+                    return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::RotateAndMask {
+                    a: guard_register,
+                    s: load_register,
+                    shift: rotated,
+                    begin,
+                    end,
+                });
+            }
+            None => {
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: guard_register,
+                    s: load_register,
+                    shift: guard.shift,
+                });
+            }
+        }
+        if let LiveArm::SelfMask { begin, end } = live_arm {
+            // The arm rlwinm weaves between the guard extract and its addi
+            // (measured L4).
+            self.output.instructions.push(Instruction::RotateAndMask { a: 0, s: 0, shift: 0, begin, end });
+        }
+        if let Some(negative) = offset_negative {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: guard_register,
+                a: guard_register,
+                immediate: negative,
+            });
+        }
+        let g = guard_register;
+        match operator {
+            BinaryOperator::Less => {
+                self.output.instructions.push(Instruction::SubtractFromCarrying { d: 3, a: 3, b: g });
+                self.output.instructions.push(Instruction::RotateAndMask { a: 3, s: g, shift: 1, begin: 31, end: 31 });
+                self.output.instructions.push(Instruction::SubtractFromExtended { d: 3, a: 3, b: 4 });
+            }
+            BinaryOperator::Greater => {
+                self.output.instructions.push(Instruction::SubtractFromCarrying { d: 4, a: g, b: 4 });
+                self.output.instructions.push(Instruction::RotateAndMask { a: 4, s: g, shift: 1, begin: 31, end: 31 });
+                self.output.instructions.push(Instruction::SubtractFromExtended { d: 3, a: 3, b: 4 });
+            }
+            BinaryOperator::Equal | BinaryOperator::NotEqual => {
+                let Ok(negated) = i16::try_from(-(bound as i32)) else {
+                    return Err(Diagnostic::error("select bound beyond i16 (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::AddImmediate { d: 4, a: g, immediate: negated });
+                self.output.instructions.push(Instruction::SubtractFromImmediate { d: 3, a: g, immediate: bound });
+                if operator == BinaryOperator::Equal {
+                    self.output.instructions.push(Instruction::Nor { a: 3, s: 4, b: 3 });
+                } else {
+                    self.output.instructions.push(Instruction::Or { a: 3, s: 4, b: 3 });
+                }
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: 3, shift: 31 });
+            }
+            BinaryOperator::LessEqual => {
+                self.output.instructions.push(Instruction::XorImmediateShifted { a: 4, s: g, immediate: 0x8000 });
+                self.output.instructions.push(Instruction::SubtractFromImmediate { d: 3, a: g, immediate: bound });
+                self.output.instructions.push(Instruction::AddCarrying { d: 3, a: 3, b: 4 });
+                self.output.instructions.push(Instruction::SubtractFromExtended { d: 3, a: 3, b: 3 });
+            }
+            _ => unreachable!("gated above"),
+        }
+        if select_complement {
+            self.output.instructions.push(Instruction::AndComplement { a: 0, s: 0, b: 3 });
+        } else {
+            self.output.instructions.push(Instruction::And { a: 0, s: 0, b: 3 });
+        }
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 + offset });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The if-converted diamond still costs its labels (measured +3:
+        // real @8/@9 vs the +0 base's @5/@6 on the L3 object); the
+        // compound self-mask arm adds one more (L4's @9/@10).
+        self.output.anonymous_label_bump += if self_mask_arm { 4 } else { 3 };
+        Ok(true)
+    }
+
+    /// The computed GUARD local `j0 = ((punned >> S) [& M]) - K` shared by
+    /// the punned-writeback family (parsed once, consumed by the branch
+    /// and select paths).
     pub(crate) fn try_punned_guard_writeback(&mut self, function: &Function) -> Compilation<bool> {
         use mwcc_syntax_trees::Statement;
         if function.return_type != Type::Double
@@ -3421,13 +3652,6 @@ impl Generator {
         // Every local: an int punned read of x at a distinct word offset —
         // or ONE computed GUARD local `j0 = ((punned >> S) [& M]) - K`
         // read only by the outer condition (s_floor's exponent extract).
-        struct GuardLocal<'a> {
-            name: &'a str,
-            source: &'a str,
-            shift: u8,
-            mask: Option<i64>,
-            offset_k: i64,
-        }
         let mut locals: Vec<(&str, i16)> = Vec::new();
         let mut guard_local: Option<GuardLocal> = None;
         for local in &function.locals {
@@ -3667,6 +3891,16 @@ impl Generator {
         };
         if float_guard.is_some() && guard_local.is_some() {
             return Ok(false);
+        }
+        // The BRANCHLESS ZERO-SELECT: `if (j0 cmp K) p = A; else p = B;`
+        // where one arm is 0 — 2.6 if-converts to mask algebra with no
+        // branches at all (measured L3/L4/S2/S3/R1/R2/R3).
+        if let Some(guard) = &guard_local {
+            if locals.len() == 1
+                && self.try_punned_zero_select(&locals, guard, condition, block, else_body)?
+            {
+                return Ok(true);
+            }
         }
         // The guard-local condition: `j0 < C` only (measured), with j0
         // read nowhere else in the function.
