@@ -962,10 +962,25 @@ impl Generator {
         if small_compare.is_none() && lis_high.is_none() {
             return Ok(false);
         }
+        // The k_cos family: the trailing dual may split on the PRESERVED ix
+        // (`if (ix < C) ... else ...`) — one leaf comparison against an i16
+        // literal. ix then stays live in the prefix's target register.
+        let ix_in_dual_condition = nested
+            && dual_tail
+            && matches!(&function.guards[0].condition,
+                Expression::Binary { operator, left, right }
+                    if matches!(operator, BinaryOperator::Less | BinaryOperator::LessEqual
+                        | BinaryOperator::Greater | BinaryOperator::GreaterEqual
+                        | BinaryOperator::Equal | BinaryOperator::NotEqual)
+                        && matches!(left.as_ref(), Expression::Variable(name) if name == ix)
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok()));
         // ix appears nowhere else.
         let ix_uses_elsewhere = function
             .guards
             .iter()
+            .enumerate()
+            .filter(|&(index, _)| !(nested && index == 0 && ix_in_dual_condition))
+            .map(|(_, guard)| guard)
             .skip(if nested { 0 } else { 1 })
             .map(|guard| {
                 crate::analysis::count_name_occurrences(&guard.condition, ix)
@@ -1003,6 +1018,11 @@ impl Generator {
             if !ok {
                 return Ok(false);
             }
+        }
+        if ix_in_dual_condition && lis_high.is_none() {
+            // The preserved-ix dual is measured only in the lis/cmpw form
+            // (target r3/r4); the r0 small-compare form would be clobbered.
+            return Ok(false);
         }
         // The synthetic tail: the double locals + return, no guards; the
         // nested form's trailing assigns become initializers in ASSIGNMENT
@@ -1128,11 +1148,38 @@ impl Generator {
         if nested {
             self.float_reload_x = Some(8);
         }
+        // The preserved ix resolves in the dual's condition test through a
+        // temporary location at the prefix's compare register.
+        let saved_ix_location = if ix_in_dual_condition {
+            self.locations.insert(
+                ix.to_string(),
+                crate::generator::Location {
+                    class: ValueClass::General,
+                    register: target_register,
+                    signed: true,
+                    width: 32,
+                    pointee: None,
+                    stride: None,
+                },
+            )
+        } else {
+            None
+        };
         let claimed = if synthetic.guards.is_empty() {
             self.try_float_dag_return(&synthetic)
         } else {
             self.try_dual_tail_float_return(&synthetic)
         };
+        if ix_in_dual_condition {
+            match saved_ix_location {
+                Some(previous) => {
+                    self.locations.insert(ix.to_string(), previous);
+                }
+                None => {
+                    self.locations.remove(ix);
+                }
+            }
+        }
         self.float_reload_x = None;
         self.frame_slots = saved_frame_slots;
         match claimed {
