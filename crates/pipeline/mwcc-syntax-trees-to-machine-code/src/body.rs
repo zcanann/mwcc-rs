@@ -3813,8 +3813,22 @@ impl Generator {
         // read only by the outer condition (s_floor's exponent extract).
         let mut locals: Vec<(&str, i16)> = Vec::new();
         let mut guard_local: Option<GuardLocal> = None;
+        // ONE uninitialized unsigned local may hold a variable-shift mask
+        // `i = C >> j0` (s_floor's arm2/arm3 — measured V1); it computes
+        // in the r0 scratch off the guard fold.
+        let mut shift_local: Option<&str> = None;
         for local in &function.locals {
-            if local.declared_type != Type::Int || local.array_length.is_some() {
+            if local.array_length.is_some() {
+                return Ok(false);
+            }
+            if local.declared_type == Type::UnsignedInt {
+                if shift_local.is_some() || local.initializer.is_some() {
+                    return Ok(false);
+                }
+                shift_local = Some(local.name.as_str());
+                continue;
+            }
+            if local.declared_type != Type::Int {
                 return Ok(false);
             }
             let Some(init) = &local.initializer else {
@@ -3880,11 +3894,48 @@ impl Generator {
                 return Ok(false);
             }
         }
-        // statements = [If{cond, [early-return-x if]? [mutations]}] + one
-        // punned store per local writing it back to ITS offset.
-        let (Some(Statement::If { condition, then_body, else_body }), stores) =
-            (function.statements.first(), &function.statements[1..])
-        else {
+        // statements = [shift assign]? [If{cond, [early-return-x if]?
+        // [mutations]}] + one punned store per local writing it back to
+        // ITS offset.
+        let mut shift_constant: Option<i64> = None;
+        let statement_offset = if let Some(shift) = shift_local {
+            // `i = C >> j0` leads the body; j0 is consumed by the shift
+            // alone (measured V1 — j0 in conditions alongside a shift is
+            // unfitted).
+            let Some(guard) = &guard_local else {
+                return Ok(false);
+            };
+            let Some(Statement::Assign { name, value }) = function.statements.first() else {
+                return Ok(false);
+            };
+            if name != shift {
+                return Ok(false);
+            }
+            let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = value else {
+                return Ok(false);
+            };
+            let Some(constant) = crate::analysis::constant_value(left) else {
+                return Ok(false);
+            };
+            if i16::try_from(constant).is_ok() {
+                // A small mask constant's schedule is unmeasured.
+                return Ok(false);
+            }
+            if !matches!(right.as_ref(), Expression::Variable(name) if name == guard.name) {
+                return Ok(false);
+            }
+            if guard.offset_k == 0 || i16::try_from(-guard.offset_k).is_err() {
+                return Ok(false);
+            }
+            shift_constant = Some(constant);
+            1
+        } else {
+            0
+        };
+        let (Some(Statement::If { condition, then_body, else_body }), stores) = (
+            function.statements.get(statement_offset),
+            &function.statements[statement_offset + 1..],
+        ) else {
             return Ok(false);
         };
         if stores.len() != locals.len() {
@@ -3992,7 +4043,9 @@ impl Generator {
                 return Ok(false);
             }
         }
-        if mutated.is_empty() {
+        if mutated.is_empty() && shift_constant.is_none() {
+            // The shift form's early-return body mutates nothing — the
+            // writebacks store the originals (measured V1).
             return Ok(false);
         }
         fn block_reads(block: &[Statement], name: &str) -> usize {
@@ -4095,9 +4148,27 @@ impl Generator {
             }
         }
         // The guard-local condition: `j0 < C` only (measured), with j0
-        // read nowhere else in the function.
+        // read nowhere else in the function. Under the SHIFT form the
+        // guard is consumed by the shift alone — no condition reads it.
         let mut guard_compare: Option<(i16, i64)> = None;
-        if let Some(guard) = &guard_local {
+        if let (Some(guard), true) = (&guard_local, shift_constant.is_some()) {
+            let reads = count_name_occurrences(condition, guard.name)
+                + block_reads(block, guard.name)
+                + block_reads(else_body, guard.name)
+                + stores
+                    .iter()
+                    .map(|statement| match statement {
+                        Statement::Store { target, value } => {
+                            count_name_occurrences(target, guard.name)
+                                + count_name_occurrences(value, guard.name)
+                        }
+                        _ => 0,
+                    })
+                    .sum::<usize>();
+            if reads != 0 {
+                return Ok(false);
+            }
+        } else if let Some(guard) = &guard_local {
             let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition else {
                 return Ok(false);
             };
@@ -4187,9 +4258,20 @@ impl Generator {
             block_reads(block, name) + block_reads(else_body, name) > 0
                 || !(covered(block, name) && !else_body.is_empty() && covered(else_body, name))
         });
-        let scratch_taken = scratch_written && any_original_survives;
+        // The shift form writes r0 twice (the guard fold, then the shifted
+        // mask lives there) and its big constant claims the first general
+        // slot ahead of the punned locals (measured V1: mask r4, locals
+        // r5/r6).
+        let scratch_taken = (scratch_written && any_original_survives) || shift_constant.is_some();
         let mut next_general = if guard_local.is_some() { 4u8 } else { 3u8 };
         let guard_register = 3u8;
+        let mask_register = if shift_constant.is_some() {
+            let register = next_general;
+            next_general += 1;
+            Some(register)
+        } else {
+            None
+        };
         let mut registers: Vec<u8> = Vec::new();
         let mut r0_used = scratch_taken;
         for _ in &locals {
@@ -4218,6 +4300,19 @@ impl Generator {
         // -- commit --
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        if let (Some(constant), Some(mask_register)) = (shift_constant, mask_register) {
+            // The mask constant synthesizes ahead of the spill through the
+            // guard's (still-free) home: lis rG,high'; addi rMask,rG,low
+            // (measured V1: lis r3,16; addi r4,r3,-1 for 0xfffff).
+            let high = ((constant + 0x8000) >> 16) as i16;
+            let low = constant as i16;
+            self.output.instructions.push(Instruction::load_immediate_shifted(guard_register, high));
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: mask_register,
+                a: guard_register,
+                immediate: low,
+            });
+        }
         let hoisted = if guard_local.is_none() && float_guard.is_none() {
             Some(self.emit_condition_test(condition)?)
         } else {
@@ -4274,7 +4369,24 @@ impl Generator {
                     });
                 }
             }
-            if guard_compare.is_none() && guard.offset_k != 0 {
+            if shift_constant.is_some() {
+                // The shift form: the -K folds to r0 as the shift amount,
+                // then the mask shifts into r0 itself (measured V1:
+                // addi r0,r3,-1023; sraw r0,r4,r0).
+                let Ok(negative) = i16::try_from(-guard.offset_k) else {
+                    return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 0,
+                    a: guard_register,
+                    immediate: negative,
+                });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
+                    a: 0,
+                    s: mask_register.expect("shift form"),
+                    b: 0,
+                });
+            } else if guard_compare.is_none() && guard.offset_k != 0 {
                 let Ok(negative) = i16::try_from(-guard.offset_k) else {
                     return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
                 };
@@ -4287,7 +4399,9 @@ impl Generator {
         }
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
-        let outer_laddered = !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
+        let outer_laddered = shift_constant.is_some()
+            || !else_body.is_empty()
+            || (guard_local.is_some() && guard_compare.is_none());
         if outer_laddered && !(guard_local.is_some() && guard_compare.is_none()) {
             // Laddered forms are BYTE-verified only for the multi-read
             // guard (L1: the addi lands in the home and every condition
@@ -4375,7 +4489,25 @@ impl Generator {
                 ),
             ));
         }
-        let outer_statement = [function.statements[0].clone()];
+        if let Some(shift) = shift_local {
+            // The shifted mask lives in the r0 scratch for the conditions.
+            bindings.push((shift.to_string(), 0));
+            saved.push((
+                shift.to_string(),
+                self.locations.insert(
+                    shift.to_string(),
+                    crate::generator::Location {
+                        class: ValueClass::General,
+                        register: 0,
+                        signed: false,
+                        width: 32,
+                        pointee: None,
+                        stride: None,
+                    },
+                ),
+            ));
+        }
+        let outer_statement = [function.statements[statement_offset].clone()];
         let walked = if outer_laddered {
             self.emit_writeback_block(&outer_statement, &bindings, join, epilogue)
         } else {

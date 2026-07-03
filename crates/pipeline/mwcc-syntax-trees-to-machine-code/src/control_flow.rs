@@ -1219,6 +1219,39 @@ impl Generator {
                     }
                 }
             }
+            // `((a & i) | b) == 0` with a VARIABLE mask — and into the
+            // scratch, then the record OR with b FIRST (measured V1:
+            // and r0,r5,r0; or. r0,r6,r0; bne — the opposite operand
+            // order from the constant-mask form).
+            if matches!(operator, BinaryOperator::Equal) && constant_value(right) == Some(0) {
+                if let Expression::Binary { operator: BinaryOperator::BitOr, left: or_left, right: or_right } =
+                    left.as_ref()
+                {
+                    if let Expression::Binary { operator: BinaryOperator::BitAnd, left: and_left, right: and_right } =
+                        or_left.as_ref()
+                    {
+                        if constant_value(and_right).is_none() {
+                            if let (Some(a), Some(mask), Some(b)) = (
+                                leaf_name(and_left).and_then(|name| self.lookup_general(name)),
+                                leaf_name(and_right).and_then(|name| self.lookup_general(name)),
+                                leaf_name(or_right).and_then(|name| self.lookup_general(name)),
+                            ) {
+                                self.output.instructions.push(Instruction::And {
+                                    a: GENERAL_SCRATCH,
+                                    s: a,
+                                    b: mask,
+                                });
+                                self.output.instructions.push(Instruction::OrRecord {
+                                    a: GENERAL_SCRATCH,
+                                    s: b,
+                                    b: GENERAL_SCRATCH,
+                                });
+                                return Ok((4, 2)); // bne — skip when non-zero
+                            }
+                        }
+                    }
+                }
+            }
             // `(a | b) == 0` — the record-form OR sets cr0 in one op
             // (measured: or. r0,r3,r4; bne — the s_floor integral test).
             if matches!(operator, BinaryOperator::Equal) && constant_value(right) == Some(0) {
