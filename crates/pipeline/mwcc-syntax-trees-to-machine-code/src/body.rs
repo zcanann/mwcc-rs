@@ -1794,6 +1794,9 @@ impl Generator {
         if self.try_ctr_loop(function)? {
             return Ok(());
         }
+        if self.try_ctr_pair_loop(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -8062,6 +8065,224 @@ impl Generator {
         }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         // @N: measured via objprobe after implementation.
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The CTR PAIR LOOP (fire 421): e_fmod's core `while(n--)` captured
+    /// whole — the 2-word compare-subtract-and-shift walk:
+    ///   hz = hx - hy; lz = lx - ly; if (lx < ly) hz -= 1;
+    ///   if (hz < 0) { hx = hx+hx+(lx>>31); lx = lx+lx; }
+    ///   else        { hx = hz+hz+(lz>>31); lx = lz+lz; }
+    /// Emission facts (all measured): the borrow `cmplw lx,ly` hoists
+    /// ABOVE both subtracts (they fill its latency); hz/lz take the
+    /// FREED COUNT HOME and the next register up, via plain `subf` (no
+    /// record — the `hz -= 1` borrow decrement sits between def and
+    /// test, so the diamond re-tests with an explicit cmpwi); the then
+    /// arm is the fire-420 pair step verbatim; the else arm's
+    /// intermediates land DIRECTLY in r3 (hx is not a source there) and
+    /// `lx = lz + lz` writes lx's home from lz. @N +0.
+    fn try_ctr_pair_loop(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::{LoopKind, Statement};
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Expression::PostStep { target, operator: BinaryOperator::Subtract } = condition else {
+            return Ok(false);
+        };
+        let Expression::Variable(count) = target.as_ref() else {
+            return Ok(false);
+        };
+        // The exact captured signature: (int hx, unsigned lx, int hy,
+        // unsigned ly, int n) with n LAST — the freed-count-home rule for
+        // hz/lz is only measured in that layout.
+        let [p_hx, p_lx, p_hy, p_ly, p_n] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if p_hx.parameter_type != Type::Int
+            || p_lx.parameter_type != Type::UnsignedInt
+            || p_hy.parameter_type != Type::Int
+            || p_ly.parameter_type != Type::UnsignedInt
+            || p_n.parameter_type != Type::Int
+            || p_n.name != *count
+        {
+            return Ok(false);
+        }
+        let (hx, lx, hy, ly) = (p_hx.name.as_str(), p_lx.name.as_str(), p_hy.name.as_str(), p_ly.name.as_str());
+        // Body: [hz = hx - hy][lz = lx - ly][if (lx < ly) hz -= 1][diamond].
+        let [Statement::Assign { name: hz, value: hz_value }, Statement::Assign { name: lz, value: lz_value }, Statement::If { condition: borrow_test, then_body: borrow_then, else_body: borrow_else }, Statement::If { condition: test, then_body, else_body }] =
+            body.as_slice()
+        else {
+            return Ok(false);
+        };
+        let subtracts = |value: &Expression, from: &str, taken: &str| -> bool {
+            let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = value else {
+                return false;
+            };
+            matches!(left.as_ref(), Expression::Variable(v) if v == from)
+                && matches!(right.as_ref(), Expression::Variable(v) if v == taken)
+        };
+        if !subtracts(hz_value, hx, hy) || !subtracts(lz_value, lx, ly) {
+            return Ok(false);
+        }
+        let names_distinct = {
+            let mut names = [hx, lx, hy, ly, count.as_str(), hz.as_str(), lz.as_str()];
+            names.sort_unstable();
+            names.windows(2).all(|pair| pair[0] != pair[1])
+        };
+        if !names_distinct {
+            return Ok(false);
+        }
+        let is_free_local = |name: &str, declared: Type| {
+            function
+                .locals
+                .iter()
+                .any(|local| local.name == name && local.declared_type == declared && local.initializer.is_none())
+        };
+        if !is_free_local(hz, Type::Int) || !is_free_local(lz, Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // The borrow: if (lx < ly) hz -= 1; (unsigned compare, no else).
+        let Expression::Binary { operator: BinaryOperator::Less, left: borrow_left, right: borrow_right } =
+            borrow_test
+        else {
+            return Ok(false);
+        };
+        if !matches!(borrow_left.as_ref(), Expression::Variable(v) if v == lx)
+            || !matches!(borrow_right.as_ref(), Expression::Variable(v) if v == ly)
+            || !borrow_else.is_empty()
+        {
+            return Ok(false);
+        }
+        let [Statement::Assign { name: decremented, value: decrement }] = borrow_then.as_slice() else {
+            return Ok(false);
+        };
+        if decremented != hz {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Subtract, left: dec_left, right: dec_right } =
+            decrement
+        else {
+            return Ok(false);
+        };
+        if !matches!(dec_left.as_ref(), Expression::Variable(v) if v == hz)
+            || !matches!(dec_right.as_ref(), Expression::IntegerLiteral(1))
+        {
+            return Ok(false);
+        }
+        // The diamond: if (hz < 0) {pair step from lx} else {pair step from hz/lz into hx/lx}.
+        let Expression::Binary { operator: BinaryOperator::Less, left: test_left, right: test_right } = test
+        else {
+            return Ok(false);
+        };
+        if !matches!(test_left.as_ref(), Expression::Variable(v) if v == hz)
+            || !matches!(test_right.as_ref(), Expression::IntegerLiteral(0))
+        {
+            return Ok(false);
+        }
+        // An arm: high_target = high+high+(low>>31); lx = low+low;
+        let pair_step = |statements: &[Statement], high: &str, low: &str| -> bool {
+            let [Statement::Assign { name: high_name, value: high_value }, Statement::Assign { name: low_name, value: low_value }] =
+                statements
+            else {
+                return false;
+            };
+            if high_name != hx || low_name != lx {
+                return false;
+            }
+            let Expression::Binary { operator: BinaryOperator::Add, left: sum, right: carry } = high_value
+            else {
+                return false;
+            };
+            let Expression::Binary { operator: BinaryOperator::Add, left: first, right: second } = sum.as_ref()
+            else {
+                return false;
+            };
+            if !matches!(first.as_ref(), Expression::Variable(v) if v == high)
+                || !matches!(second.as_ref(), Expression::Variable(v) if v == high)
+            {
+                return false;
+            }
+            let Expression::Binary { operator: BinaryOperator::ShiftRight, left: shifted, right: amount } =
+                carry.as_ref()
+            else {
+                return false;
+            };
+            if !matches!(shifted.as_ref(), Expression::Variable(v) if v == low)
+                || !matches!(amount.as_ref(), Expression::IntegerLiteral(31))
+            {
+                return false;
+            }
+            let Expression::Binary { operator: BinaryOperator::Add, left: low_first, right: low_second } =
+                low_value
+            else {
+                return false;
+            };
+            matches!(low_first.as_ref(), Expression::Variable(v) if v == low)
+                && matches!(low_second.as_ref(), Expression::Variable(v) if v == low)
+        };
+        if !pair_step(then_body, hx, lx) || !pair_step(else_body, hz, lz) {
+            return Ok(false);
+        }
+        if !matches!(&function.return_expression, Some(Expression::Variable(v)) if v == hx) {
+            return Ok(false);
+        }
+        let (Some(hx_register), Some(lx_register), Some(hy_register), Some(ly_register), Some(count_register)) = (
+            self.lookup_general(hx),
+            self.lookup_general(lx),
+            self.lookup_general(hy),
+            self.lookup_general(ly),
+            self.lookup_general(count),
+        ) else {
+            return Ok(false);
+        };
+        if hx_register != 3 || count_register > 9 {
+            return Ok(false);
+        }
+        // hz takes the freed count home; lz the next register up.
+        let hz_register = count_register;
+        let lz_register = count_register + 1;
+        // -- emit --
+        self.output.instructions.push(Instruction::MoveToCountRegister { s: count_register });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: count_register, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 });
+        let body_label = self.fresh_label();
+        self.bind_label(body_label);
+        self.output.instructions.push(Instruction::CompareLogicalWord { a: lx_register, b: ly_register });
+        self.output.instructions.push(Instruction::SubtractFrom { d: hz_register, a: hy_register, b: hx_register });
+        self.output.instructions.push(Instruction::SubtractFrom { d: lz_register, a: ly_register, b: lx_register });
+        let no_borrow_label = self.fresh_label();
+        self.emit_branch_conditional_to(4, 0, no_borrow_label); // bge
+        self.output.instructions.push(Instruction::AddImmediate { d: hz_register, a: hz_register, immediate: -1 });
+        self.bind_label(no_borrow_label);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: hz_register, immediate: 0 });
+        let else_label = self.fresh_label();
+        self.emit_branch_conditional_to(4, 0, else_label); // bge
+        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: lx_register, shift: 31 });
+        self.output.instructions.push(Instruction::Add { d: lx_register, a: lx_register, b: lx_register });
+        self.output.instructions.push(Instruction::Add { d: 0, a: hx_register, b: 0 });
+        self.output.instructions.push(Instruction::Add { d: hx_register, a: hx_register, b: 0 });
+        let join_label = self.fresh_label();
+        self.emit_branch_to(join_label);
+        self.bind_label(else_label);
+        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: lz_register, shift: 31 });
+        self.output.instructions.push(Instruction::Add { d: lx_register, a: lz_register, b: lz_register });
+        self.output.instructions.push(Instruction::Add { d: hx_register, a: hz_register, b: 0 });
+        self.output.instructions.push(Instruction::Add { d: hx_register, a: hz_register, b: hx_register });
+        self.bind_label(join_label);
+        self.emit_branch_conditional_to(16, 0, body_label); // bdnz
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }

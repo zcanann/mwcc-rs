@@ -62,3 +62,27 @@ int ctr_pair_step(int hx, unsigned lx, int hy, int n)
 	}
 	return hx;
 }
+/* Fire 421: e_fmod's core loop captured WHOLE — the 2-word walk with
+   borrow. cmplw hoists above both subf (latency fill); hz/lz take the
+   freed count home + next-up, plain subf (the borrow decrement forces
+   an explicit cmpwi re-test); else-arm intermediates land directly in
+   r3 (hx is not a source); lx's home takes lz+lz. @N +0. */
+int ctr_fmod_core(int hx, unsigned lx, int hy, unsigned ly, int n)
+{
+	int hz;
+	unsigned lz;
+	while (n--) {
+		hz = hx - hy;
+		lz = lx - ly;
+		if (lx < ly)
+			hz -= 1;
+		if (hz < 0) {
+			hx = hx + hx + (lx >> 31);
+			lx = lx + lx;
+		} else {
+			hx = hz + hz + (lz >> 31);
+			lx = lz + lz;
+		}
+	}
+	return hx;
+}
