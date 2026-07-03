@@ -1768,6 +1768,12 @@ impl Generator {
         if let Some(cleaned) = normalize_leading_local_assigns(function) {
             return self.evaluate_body(&cleaned);
         }
+        // The TRIG DISPATCHER template claims before the general statement
+        // walkers (its leading Assigns would otherwise hit the value-tracking
+        // defer).
+        if self.try_trig_dispatcher(function)? {
+            return Ok(());
+        }
         // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
         // folds to the direct `gf();` (identical bytes: the pointer loads at the call).
         if let Some(folded) = inline_first_call_target_alias(function) {
@@ -7666,6 +7672,274 @@ impl Generator {
     /// order — the LAST live parameter gets r31, the next r30, and so on — and the
     /// body/return then read the values from those registers. Returns whether it
     /// applied. (Locals, floats, and values passed to a call still defer.)
+    /// The TRIG DISPATCHER (fire 408, s_sin/s_cos): the fdlibm range
+    /// dispatch — a small-|x| kernel call, the inf/NaN x-x rung, then
+    /// __ieee754_rem_pio2 into a frame array and a four-way switch of
+    /// kernel calls (negated for quadrants 2/3). Measured: frame 32
+    /// (x spill 8, y[2] at 16), the K1 synthesis in the mflr latency
+    /// slot, cmpw REGISTER compares against lis-built bounds, the
+    /// binary switch tree [cmpwi 1: beq C1 | bge -> cmpwi 3: bge DEF,
+    /// b C2 | cmpwi 0: bge C0, b DEF], per-arm lfd/li/lfd argument
+    /// loads, and fneg on the negated results.
+    fn try_trig_dispatcher(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double || !function.guards.is_empty() {
+            return Ok(false);
+        }
+        let [x_param] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if x_param.parameter_type != Type::Double {
+            return Ok(false);
+        }
+        let x = x_param.name.as_str();
+        // Locals: y[2] (double array), z = 0.0, and the two ints.
+        let mut array: Option<&str> = None;
+        let mut zero_local: Option<&str> = None;
+        let mut ints: Vec<&str> = Vec::new();
+        for local in &function.locals {
+            match (local.declared_type, local.array_length) {
+                (Type::Double, Some(2)) if array.is_none() => array = Some(local.name.as_str()),
+                (Type::Double, None)
+                    if matches!(&local.initializer, Some(Expression::FloatLiteral(z)) if *z == 0.0)
+                        && zero_local.is_none() =>
+                {
+                    zero_local = Some(local.name.as_str())
+                }
+                (Type::Int, None) if local.initializer.is_none() => ints.push(local.name.as_str()),
+                _ => return Ok(false),
+            }
+        }
+        let (Some(array), Some(zero_local)) = (array, zero_local) else {
+            return Ok(false);
+        };
+        if ints.len() != 2 {
+            return Ok(false);
+        }
+        // statements (the parser FLATTENS the else-if returns):
+        // ix = pun(x); ix &= 0x7fffffff; if (ix<=K1) return call;
+        // if (ix>=K2) return x-x; n = rem(x,y); switch (n&3) {...}.
+        let [Statement::Assign { name: ix1, value: pun }, Statement::Assign { name: ix2, value: mask }, Statement::If { condition: small, then_body: small_arm, else_body: small_else }, Statement::If { condition: huge_cond, then_body: huge_arm, else_body: huge_else }, Statement::Assign { name: n_name, value: rem_call }, Statement::Switch { scrutinee, arms, default }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !small_else.is_empty() || !huge_else.is_empty() {
+            return Ok(false);
+        }
+        let ix = ix1.as_str();
+        if ix2 != ix
+            || !ints.contains(&ix)
+            || crate::frame::pun_word_offset_pub(pun, x) != Some(0)
+            || !matches!(mask, Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
+                if matches!(left.as_ref(), Expression::Variable(v) if v == ix)
+                    && crate::analysis::constant_value(right) == Some(0x7fff_ffff))
+        {
+            return Ok(false);
+        }
+        // if (ix <= K1) return kernel(x, z, 0);
+        let Expression::Binary { operator: BinaryOperator::LessEqual, left, right } = small else {
+            return Ok(false);
+        };
+        if !matches!(left.as_ref(), Expression::Variable(v) if v == ix) {
+            return Ok(false);
+        }
+        let Some(k1) = crate::analysis::constant_value(right) else {
+            return Ok(false);
+        };
+        let [Statement::Return(Some(Expression::Call { name: small_callee, arguments: small_args }))] =
+            small_arm.as_slice()
+        else {
+            return Ok(false);
+        };
+        // kernel(x, z, 0) or kernel(x, z) — the int arg optional (cos).
+        let small_int = match small_args.as_slice() {
+            [Expression::Variable(a), Expression::Variable(z)] if a == x && z == zero_local => None,
+            [Expression::Variable(a), Expression::Variable(z), n]
+                if a == x && z == zero_local && crate::analysis::constant_value(n).is_some() =>
+            {
+                Some(crate::analysis::constant_value(n).expect("checked") as i16)
+            }
+            _ => return Ok(false),
+        };
+        // if (ix >= K2) return x - x;
+        let Expression::Binary { operator: BinaryOperator::GreaterEqual, left, right } = huge_cond
+        else {
+            return Ok(false);
+        };
+        if !matches!(left.as_ref(), Expression::Variable(v) if v == ix) {
+            return Ok(false);
+        }
+        let Some(k2) = crate::analysis::constant_value(right) else {
+            return Ok(false);
+        };
+        if k1 & 0xffff == 0 || k2 & 0xffff != 0 {
+            // K1 synthesizes lis+addi; K2 is lis-only (measured shapes).
+            return Ok(false);
+        }
+        if !matches!(huge_arm.as_slice(), [Statement::Return(Some(Expression::Binary { operator: BinaryOperator::Subtract, left, right }))]
+            if matches!(left.as_ref(), Expression::Variable(v) if v == x)
+                && matches!(right.as_ref(), Expression::Variable(v) if v == x))
+        {
+            return Ok(false);
+        }
+        // n = rem_pio2(x, y); switch (n & 3) { ... }
+        if !ints.contains(&n_name.as_str()) || n_name == ix {
+            return Ok(false);
+        }
+        let Expression::Call { name: rem_callee, arguments: rem_args } = rem_call else {
+            return Ok(false);
+        };
+        if !matches!(rem_args.as_slice(), [Expression::Variable(a), Expression::Variable(y)]
+            if a == x && y == array)
+        {
+            return Ok(false);
+        }
+        if !matches!(scrutinee, Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
+            if matches!(left.as_ref(), Expression::Variable(v) if v == n_name.as_str())
+                && crate::analysis::constant_value(right) == Some(3))
+        {
+            return Ok(false);
+        }
+        // The four arms: (callee, int arg, negated) per quadrant 0..3.
+        struct Quadrant {
+            callee: String,
+            int_argument: Option<i16>,
+            negated: bool,
+        }
+        let parse_quadrant = |result: &Expression| -> Option<Quadrant> {
+            let (call, negated) = match result {
+                Expression::Unary { operator: UnaryOperator::Negate, operand } => {
+                    (operand.as_ref(), true)
+                }
+                other => (other, false),
+            };
+            let Expression::Call { name, arguments } = call else { return None };
+            let int_argument = match arguments.as_slice() {
+                [Expression::Index { base, index: i0 }, Expression::Index { base: b1, index: i1 }]
+                    if matches!(base.as_ref(), Expression::Variable(v) if v == array)
+                        && matches!(b1.as_ref(), Expression::Variable(v) if v == array)
+                        && crate::analysis::constant_value(i0) == Some(0)
+                        && crate::analysis::constant_value(i1) == Some(1) =>
+                {
+                    None
+                }
+                [Expression::Index { base, index: i0 }, Expression::Index { base: b1, index: i1 }, n]
+                    if matches!(base.as_ref(), Expression::Variable(v) if v == array)
+                        && matches!(b1.as_ref(), Expression::Variable(v) if v == array)
+                        && crate::analysis::constant_value(i0) == Some(0)
+                        && crate::analysis::constant_value(i1) == Some(1)
+                        && crate::analysis::constant_value(n).is_some() =>
+                {
+                    Some(crate::analysis::constant_value(n).expect("checked") as i16)
+                }
+                _ => return None,
+            };
+            Some(Quadrant { callee: name.clone(), int_argument, negated })
+        };
+        let mut quadrants: Vec<Option<Quadrant>> = vec![None, None, None, None];
+        for arm in arms {
+            let index = arm.value;
+            if !(0..3).contains(&index) {
+                return Ok(false);
+            }
+            quadrants[index as usize] = parse_quadrant(&arm.result);
+        }
+        let Some(default_result) = default else {
+            return Ok(false);
+        };
+        quadrants[3] = parse_quadrant(default_result);
+        let [Some(q0), Some(q1), Some(q2), Some(q3)] = &quadrants[..] else {
+            return Ok(false);
+        };
+        // -- emit --
+        self.non_leaf = true;
+        self.frame_size = 32;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        // K1's lis fills the mflr latency slot.
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, ((k1 + 0x8000) >> 16) as i16));
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: k1 as i16 });
+        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::RotateAndMask { a: 3, s: 3, shift: 0, begin: 1, end: 31 });
+        self.output.instructions.push(Instruction::CompareWord { a: 3, b: 0 });
+        let epilogue = self.fresh_label();
+        let huge_at = self.fresh_label();
+        self.emit_branch_conditional_to(12, 1, huge_at); // bgt
+        // The small arm: kernel(x, z, 0).
+        self.load_double_constant(2, 0.0f64.to_bits());
+        if let Some(int_argument) = small_int {
+            self.output.instructions.push(Instruction::load_immediate(3, int_argument));
+        }
+        self.record_relocation(RelocationKind::Rel24, small_callee);
+        self.output.instructions.push(Instruction::BranchAndLink { target: small_callee.clone() });
+        self.emit_branch_to(epilogue);
+        // else if (ix >= K2) return x - x;
+        self.bind_label(huge_at);
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, (k2 >> 16) as i16));
+        self.output.instructions.push(Instruction::CompareWord { a: 3, b: 0 });
+        let rem_at = self.fresh_label();
+        self.emit_branch_conditional_to(12, 0, rem_at); // blt
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 1 });
+        self.emit_branch_to(epilogue);
+        // n = rem_pio2(x, &y); the switch tree.
+        self.bind_label(rem_at);
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 16 });
+        self.record_relocation(RelocationKind::Rel24, rem_callee);
+        self.output.instructions.push(Instruction::BranchAndLink { target: rem_callee.clone() });
+        self.output.instructions.push(Instruction::RotateAndMask { a: 0, s: 3, shift: 0, begin: 30, end: 31 });
+        let case0 = self.fresh_label();
+        let case1 = self.fresh_label();
+        let case2 = self.fresh_label();
+        let case3 = self.fresh_label();
+        let mid = self.fresh_label();
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 1 });
+        self.emit_branch_conditional_to(12, 2, case1); // beq
+        self.emit_branch_conditional_to(4, 0, mid); // bge -> the 2/3 side
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 0, case0); // bge
+        self.emit_branch_to(case3);
+        self.bind_label(mid);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 3 });
+        self.emit_branch_conditional_to(4, 0, case3); // bge
+        self.emit_branch_to(case2);
+        // The arms.
+        let mut emit_arm = |generator: &mut Self, quadrant: &Quadrant, label, falls: bool| {
+            generator.bind_label(label);
+            generator.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 16 });
+            if let Some(int_argument) = quadrant.int_argument {
+                generator.output.instructions.push(Instruction::load_immediate(3, int_argument));
+            }
+            generator.output.instructions.push(Instruction::LoadFloatDouble { d: 2, a: 1, offset: 24 });
+            generator.record_relocation(RelocationKind::Rel24, &quadrant.callee);
+            generator
+                .output
+                .instructions
+                .push(Instruction::BranchAndLink { target: quadrant.callee.clone() });
+            if quadrant.negated {
+                generator.output.instructions.push(Instruction::FloatNegate { d: 1, b: 1 });
+            }
+            if !falls {
+                generator.emit_branch_to(epilogue);
+            }
+        };
+        emit_arm(self, q0, case0, false);
+        emit_arm(self, q1, case1, false);
+        emit_arm(self, q2, case2, false);
+        emit_arm(self, q3, case3, true);
+        self.bind_label(epilogue);
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // Pre-pool labels (measured @18 on the s_sin object vs the +0
+        // base's @5).
+        self.output.anonymous_label_bump += 13;
+        Ok(true)
+    }
+
     /// The __frsqrte NEWTON SQRT (fire 407, the Dolphin math_inlines
     /// pattern): a LEAF float ladder around N reciprocal-sqrt refinement
     /// steps. Measured: lfd 0.0; fcmpo; ble; frsqrte f2,f1; lfd f4(.5);
