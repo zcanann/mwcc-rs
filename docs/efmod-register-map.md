@@ -109,3 +109,31 @@ PER SEGMENT with the inherited live-set); (c) pair affinities (lx/ly
 and hx_abs/hy_abs adjacent ascending in x,y order). The deep-fit
 enumerator should encode dimension (b) first — it matches how the
 synthetic captures were all derived.
+
+## Fitting pass 2 (fire 437) — class order + mechanical ranges
+
+Class-structured enumeration (class-order perms x def/death keys x
+asc/desc x r3-reserved) on the HAND ranges: best 7/21 misses with
+[LS death-desc, LD, RW, T, K, C, AT] + r3 reserved — lx/ly, the
+rewrites, purge, iy, and the ilogb temps all correct. The misses
+exposed HAND-RANGE ERRORS, so ranges are now extracted MECHANICALLY
+(scratchpad ranges.py — per-register def/use timeline from the
+objdump). Corrections: hy_raw r10 = [3,104] (align-y masks the RAW
+value's low 20 bits at 0x1a0 — value-equivalent to the abs, so the
+raw stays live); hy_abs r8 = [6,111] (align-y's subnormal slw reads
+it at 0x1bc); hx_abs r7 = [10,97]; ly r5 = [5,~148 with in-place
+align redefs]; sx r0 = [7,201] punctuated by in-place index rlwinms.
+
+**Structural finding: align-arm values are PATH-EXCLUSIVE.** hx_post's
+normal-arm def (0x160 oris r9) and alignx_n (0x168-0x184, also r9)
+coexist in r9 because they live on different paths of the diamond —
+a linear-interval conflict model reports a phantom overlap. The
+pass-3 enumerator must either (a) encode arm-exclusive interval SETS,
+or (b) allocate per-segment with the inherited live-set (arms
+allocated independently, join = the output web's home).
+
+Pass-3 plan: rebuild the fixture from ranges.py output as WEBS
+(source-variable chains: raw -> abs -> post), mark diamond arms
+exclusive, rerun the class-order sweep. The 14/21 already-correct
+values under [LS, LD, RW, T, K, C, AT] suggest the class model is
+right and the remaining misses are range/path artifacts.
