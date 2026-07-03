@@ -8230,7 +8230,43 @@ impl Generator {
             matches!(low_first.as_ref(), Expression::Variable(v) if v == low)
                 && matches!(low_second.as_ref(), Expression::Variable(v) if v == low)
         };
-        if !pair_step(then_body, hx, lx) || !pair_step(else_body, hz, lz) {
+        if !pair_step(then_body, hx, lx) {
+            return Ok(false);
+        }
+        // The else arm may LEAD with the zero exit `if ((hz | lz) == 0)
+        // return K;` — emitted INLINE as `or. r0,hz,lz; bne CONT; li r3,K;
+        // blr` (a bare mid-loop return, no exit label; fire 422).
+        let (early_return, else_step) = match else_body.as_slice() {
+            [Statement::If { condition: exit_test, then_body: exit_then, else_body: exit_else }, rest @ ..] => {
+                let Expression::Binary { operator: BinaryOperator::Equal, left: or_side, right: zero_side } =
+                    exit_test
+                else {
+                    return Ok(false);
+                };
+                let Expression::Binary { operator: BinaryOperator::BitOr, left: or_left, right: or_right } =
+                    or_side.as_ref()
+                else {
+                    return Ok(false);
+                };
+                if !matches!(or_left.as_ref(), Expression::Variable(v) if v == hz)
+                    || !matches!(or_right.as_ref(), Expression::Variable(v) if v == lz)
+                    || !matches!(zero_side.as_ref(), Expression::IntegerLiteral(0))
+                    || !exit_else.is_empty()
+                {
+                    return Ok(false);
+                }
+                let [Statement::Return(Some(Expression::IntegerLiteral(returned)))] = exit_then.as_slice()
+                else {
+                    return Ok(false);
+                };
+                let Ok(returned) = i16::try_from(*returned) else {
+                    return Ok(false);
+                };
+                (Some(returned), rest)
+            }
+            _ => (None, else_body.as_slice()),
+        };
+        if !pair_step(else_step, hz, lz) {
             return Ok(false);
         }
         if !matches!(&function.return_expression, Some(Expression::Variable(v)) if v == hx) {
@@ -8276,6 +8312,14 @@ impl Generator {
         let join_label = self.fresh_label();
         self.emit_branch_to(join_label);
         self.bind_label(else_label);
+        if let Some(returned) = early_return {
+            self.output.instructions.push(Instruction::OrRecord { a: 0, s: hz_register, b: lz_register });
+            let continue_label = self.fresh_label();
+            self.emit_branch_conditional_to(4, 2, continue_label); // bne
+            self.output.instructions.push(Instruction::load_immediate(3, returned));
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.bind_label(continue_label);
+        }
         self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: lz_register, shift: 31 });
         self.output.instructions.push(Instruction::Add { d: lx_register, a: lz_register, b: lz_register });
         self.output.instructions.push(Instruction::Add { d: hx_register, a: hz_register, b: 0 });

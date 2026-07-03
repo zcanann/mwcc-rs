@@ -86,3 +86,27 @@ int ctr_fmod_core(int hx, unsigned lx, int hy, unsigned ly, int n)
 	}
 	return hx;
 }
+/* Fire 422: the ZERO EXIT — the else arm may lead with
+   if ((hz|lz)==0) return K; emitted INLINE: or. r0,hz,lz; bne CONT;
+   li r3,K; blr — a bare mid-loop return, no exit label. @N +0. */
+int ctr_fmod_exit(int hx, unsigned lx, int hy, unsigned ly, int n)
+{
+	int hz;
+	unsigned lz;
+	while (n--) {
+		hz = hx - hy;
+		lz = lx - ly;
+		if (lx < ly)
+			hz -= 1;
+		if (hz < 0) {
+			hx = hx + hx + (lx >> 31);
+			lx = lx + lx;
+		} else {
+			if ((hz | lz) == 0)
+				return 0;
+			hx = hz + hz + (lz >> 31);
+			lx = lz + lz;
+		}
+	}
+	return hx;
+}
