@@ -34,7 +34,7 @@ for idx, mn, ops in instrs:
         out.append(f"        self.emit_branch_conditional_to({o}, {b_}, labels[&{t}]); // {mn}")
     if   mn=="stwu": push(f"StoreWordWithUpdate {{ s: {R(ops[0])}, a: 1, offset: {ops[1].split('(')[0]} }}")
     elif mn=="stfd": push(f"StoreFloatDouble {{ s: {ops[0][1:]}, a: 1, offset: {ops[1].split('(')[0]} }}")
-    elif mn=="lfd":  push(f"LoadFloatDouble {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1][1:-1][1:]}, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="lfd":  push(f"LoadFloatDouble {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="lfdx": push(f"LoadFloatDoubleIndexed {{ d: {ops[0][1:]}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="lwz":  push(f"LoadWord {{ d: {R(ops[0])}, a: 1, offset: {ops[1].split('(')[0]} }}")
     elif mn=="stw":  push(f"StoreWord {{ s: {R(ops[0])}, a: 1, offset: {ops[1].split('(')[0]} }}")
