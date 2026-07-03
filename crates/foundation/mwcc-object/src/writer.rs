@@ -717,6 +717,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // (prototyped) external precedes it. Partition preserving order within each group.
         let implicit: std::collections::HashSet<&str> = function.implicit_external_callees.iter().map(|name| name.as_str()).collect();
         let (implicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = ordered.into_iter().partition(|name| implicit.contains(name));
+        // The register save/restore HELPERS (_savegpr_N/_restgpr_N) are created
+        // while mwcc compiles the PROLOGUE/EPILOGUE — before the function's
+        // symbol — even though they are unprototyped (measured: strtoul).
+        let (helper_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) = implicit_ordered
+            .into_iter()
+            .partition(|name| name.starts_with("_savegpr_") || name.starts_with("_restgpr_"));
         // Emit one external/global symbol (skipping a name that already resolves to an
         // existing global or LOCAL `static` symbol). A `macro_rules!` keeps the shared body
         // in one place while avoiding a closure over the many `&mut` writer collections.
@@ -738,8 +744,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             };
         }
-        // Prototyped externals first, then the function's own symbol, then implicit callees.
+        // Prototyped externals first, then the save/restore helpers, then the
+        // function's own symbol, then the remaining implicit callees.
         emit_referenced!(explicit_ordered);
+        emit_referenced!(helper_ordered);
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
         if !function.is_static {

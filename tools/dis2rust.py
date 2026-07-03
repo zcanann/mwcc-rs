@@ -69,7 +69,11 @@ for idx, mn, ops in instrs:
         pass  # handled by the bl case itself
     elif rl:
         kind = {"R_PPC_ADDR16_HA":"Addr16Ha","R_PPC_ADDR16_LO":"Addr16Lo"}[rl[0]]
-        out.append(f'        self.record_relocation(RelocationKind::{kind}, "{rl[1]}");')
+        if rl[1].startswith("@"):
+            # a jump-table base (@N .data object) — the writer resolves it.
+            out.append(f"        self.record_target(RelocationKind::{kind}, mwcc_machine_code::RelocationTarget::JumpTable);")
+        else:
+            out.append(f'        self.record_relocation(RelocationKind::{kind}, "{rl[1]}");')
     def push(s): out.append(f"        self.output.instructions.push(Instruction::{s});")
     def bc(o,b_):
         t = int(ops[-1],16)//4
@@ -154,6 +158,25 @@ for idx, mn, ops in instrs:
     elif mn=="fmr": push(f"FloatMove {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="rlwimi": push(f"RotateAndMaskInsert {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
     elif mn=="clrrwi.": push(f"AndMaskRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, begin: 0, end: {31-int(ops[2])} }}")
+    elif mn=="andi.": push(f"AndImmediateRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")
+    elif mn=="divwu": push(f"DivideWordUnsigned {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="divw": push(f"DivideWord {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="mullw": push(f"MultiplyLow {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="mulhwu": push(f"MultiplyHighWordUnsigned {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="mulhw": push(f"MultiplyHighWord {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="addc": push(f"AddCarrying {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="adde": push(f"AddExtended {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="addze": push(f"AddToZeroExtended {{ d: {R(ops[0])}, a: {R(ops[1])} }}")
+    elif mn=="subfc": push(f"SubtractFromCarrying {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="subfe": push(f"SubtractFromExtended {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="lbzx": push(f"LoadByteZeroIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="lwzx": push(f"LoadWordIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="stwx": push(f"StoreWordIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="stbx": push(f"StoreByteIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="ori": push(f"OrImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")
+    elif mn=="xori": push(f"XorImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")
+    elif mn=="mr.": push(f"OrRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[1])} }}")
+    elif mn=="neg.": push(f"NegateRecord {{ d: {R(ops[0])}, a: {R(ops[1])} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4

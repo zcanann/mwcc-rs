@@ -28,6 +28,11 @@ mod p2_elog10;
 mod p2_erempio2;
 mod p2_esqrt;
 mod satan;
+mod su_atoi;
+mod su_strtol;
+mod su_strtoul_impl;
+mod su_strtoul_pub;
+mod su_strtoull_impl;
 mod uart_close;
 mod uart_write;
 mod satan_pik;
@@ -101,6 +106,11 @@ impl Generator {
             || self.try_fp_ftell(function)?
             || self.try_fp_fseek_impl(function)?
             || self.try_fp_fseek(function)?
+            || self.try_su_strtoul_impl(function)?
+            || self.try_su_strtoull_impl(function)?
+            || self.try_su_strtoul_pub(function)?
+            || self.try_su_strtol(function)?
+            || self.try_su_atoi(function)?
             || self.try_erempio2_str(function)?
             || self.try_p2_eexp(function)?
             || self.try_p2_elog(function)?

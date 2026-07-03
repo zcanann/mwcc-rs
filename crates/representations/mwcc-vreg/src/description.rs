@@ -71,7 +71,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(D, G, d);
             visit(U, G, a);
         }
-        Negate { d, a } => {
+        Negate { d, a } | NegateRecord { d, a } => {
             visit(D, G, d);
             visit(U, G, a);
         }
@@ -86,7 +86,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         CountLeadingZeros { a, s } | ExtendSignByte { a, s } | ExtendSignByteRecord { a, s } | ExtendSignHalfword { a, s }
         | ExtendSignHalfwordRecord { a, s }
         | OrImmediate { a, s, .. } | OrImmediateShifted { a, s, .. } | ShiftLeftImmediate { a, s, .. } | ShiftRightAlgebraicImmediate { a, s, .. } | ShiftRightAlgebraicImmediateRecord { a, s, .. }
-        | ShiftRightLogicalImmediate { a, s, .. } | XorImmediate { a, s, .. } | XorImmediateShifted { a, s, .. }
+        | ShiftRightLogicalImmediate { a, s, .. } | XorImmediate { a, s, .. } | AndImmediateRecord { a, s, .. } | XorImmediateShifted { a, s, .. }
         | ClearLeftImmediate { a, s, .. } | ClearLeftImmediateRecord { a, s, .. } | AndContiguousMask { a, s, .. } | RotateAndMask { a, s, .. } | RotateAndMaskRecord { a, s, .. }
         | AndMaskRecord { a, s, .. } => {
             visit(D, G, a);

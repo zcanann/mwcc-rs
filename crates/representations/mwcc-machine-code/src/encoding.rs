@@ -17,6 +17,8 @@ impl Instruction {
             Instruction::SubtractFrom { d, a, b } => xo_form(d, a, b, 40),
             Instruction::SubtractFromRecord { d, a, b } => xo_form(d, a, b, 40) | 1,
             Instruction::Negate { d, a } => xo_form(d, a, 0, 104),
+            Instruction::NegateRecord { d, a } => (xo_form(d, a, 0, 104)) | 1,
+            Instruction::AndImmediateRecord { a, s, immediate } => (28 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (immediate as u32),
             Instruction::Nor { a, s, b } => logical_form(s, a, b, 124),
             Instruction::Nand { a, s, b } => logical_form(s, a, b, 476),
             Instruction::Eqv { a, s, b } => logical_form(s, a, b, 284),

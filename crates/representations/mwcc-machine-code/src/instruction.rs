@@ -26,6 +26,10 @@ pub enum Instruction {
     SubtractFromRecord { d: u8, a: u8, b: u8 },
     /// `neg rD, rA`
     Negate { d: u8, a: u8 },
+    /// `neg. rD, rA` — record form (sets CR0).
+    NegateRecord { d: u8, a: u8 },
+    /// `andi. rA, rS, UIMM` — AND immediate, ALWAYS record (no plain andi).
+    AndImmediateRecord { a: u8, s: u8, immediate: u16 },
     /// `nor rA, rS, rB` — spells `not rA, rS` when `s == b`.
     Nor { a: u8, s: u8, b: u8 },
     /// `nand rA, rS, rB` — `~(rS & rB)`.
