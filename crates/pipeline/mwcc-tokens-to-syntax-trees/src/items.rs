@@ -30,6 +30,8 @@ fn store_or_assign(target: Expression, value: Expression, local_names: &std::col
 fn pointee_of(base: Type) -> Compilation<Pointee> {
     match base {
         Type::Int => Ok(Pointee::Int),
+        Type::LongLong => Ok(Pointee::LongLong),
+        Type::UnsignedLongLong => Ok(Pointee::UnsignedLongLong),
         Type::UnsignedInt => Ok(Pointee::UnsignedInt),
         Type::Char => Ok(Pointee::Char),
         Type::UnsignedChar => Ok(Pointee::UnsignedChar),
@@ -173,6 +175,27 @@ impl Parser {
                 self.expect(Token::Colon)?;
                 let (body, _falls_through) = self.parse_switch_arm_body(local_names, block_locals)?;
                 default = Some(body);
+            } else if matches!(self.peek(), Token::Identifier(_)) && *self.peek_at(1) == Token::Colon {
+                // A goto LABEL between arms (scanf's `signed_int:`) — control
+                // reaches it by falling through the previous arm or by goto, so
+                // the label and its statements continue that arm's body.
+                let name = self.parse_identifier()?;
+                self.advance(); // the colon
+                let (continuation, falls_through) = self.parse_switch_arm_body(local_names, block_locals)?;
+                let Some(last) = arms.last_mut() else {
+                    return Err(Diagnostic::error("a goto label before the first switch arm is not supported yet (roadmap)"));
+                };
+                let mut statements = match std::mem::replace(&mut last.body, mwcc_syntax_trees::ArmBody::Statements(Vec::new())) {
+                    mwcc_syntax_trees::ArmBody::Return(expression) => vec![Statement::Return(Some(expression))],
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => statements,
+                };
+                statements.push(Statement::Label(name));
+                match continuation {
+                    mwcc_syntax_trees::ArmBody::Return(expression) => statements.push(Statement::Return(Some(expression))),
+                    mwcc_syntax_trees::ArmBody::Statements(inner) => statements.extend(inner),
+                }
+                last.body = mwcc_syntax_trees::ArmBody::Statements(statements);
+                last.falls_through = falls_through;
             } else {
                 return Err(Diagnostic::error("a switch arm must be `case <int>: return …;` or `default: return …;` (roadmap)"));
             }
@@ -248,9 +271,14 @@ impl Parser {
                 statements.append(&mut inner);
                 continue;
             }
+            if let Some(statement) = self.parse_jump_statement()? {
+                statements.push(statement);
+                continue;
+            }
             statements.push(self.parse_simple_statement(local_names, block_locals)?);
         }
-        let falls_through = !saw_break && !matches!(statements.last(), Some(Statement::Return(_)));
+        let falls_through =
+            !saw_break && !matches!(statements.last(), Some(Statement::Return(_) | Statement::Goto(_)));
         Ok((ArmBody::Statements(statements), falls_through))
     }
 
@@ -2710,7 +2738,19 @@ impl Parser {
         let mut guards: Vec<GuardedReturn> = Vec::new();
         let mut conditional_return = None;
         'body: loop {
-            while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
+            while *self.peek() != Token::BraceClose {
+                // A `return` mid-body: TERMINAL (the function's trailing return —
+                // its `;` is directly followed by `}`) exits to the guard/return
+                // machinery below; a NON-terminal one (a goto label or further
+                // statements follow, the string.c shape) is a positioned
+                // Statement::Return in the ordered list.
+                if *self.peek() == Token::KeywordReturn {
+                    if self.return_is_terminal() {
+                        break;
+                    }
+                    statements.push(self.parse_return_statement()?);
+                    continue;
+                }
                 // A bare `{ ... }` scoping block is TRANSPARENT: its statements
                 // flatten into the enclosing list and its declarations hoist
                 // like other block-scoped locals (strtold's exponent block).
@@ -2736,6 +2776,10 @@ impl Parser {
                 }
                 if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
                     statements.push(self.parse_loop_statement(&mut local_names, &mut block_locals)?);
+                    continue;
+                }
+                if let Some(statement) = self.parse_jump_statement()? {
+                    statements.push(statement);
                     continue;
                 }
                 let statement = self.parse_simple_statement(&mut local_names, &mut block_locals)?;
@@ -2820,7 +2864,13 @@ impl Parser {
             }
 
             // Trailing guards end the body at the final return or the closing brace.
-            if matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) || conditional_return.is_some() {
+            // A NON-terminal return (a goto label follows) instead migrates the
+            // guards below and resumes the statement loop, which records it as a
+            // positioned Statement::Return.
+            if *self.peek() == Token::BraceClose
+                || conditional_return.is_some()
+                || (*self.peek() == Token::KeywordReturn && self.return_is_terminal())
+            {
                 break;
             }
             // The body CONTINUES past the guards (`if (c) return -1; x = …;`): the flat
@@ -2933,6 +2983,61 @@ impl Parser {
 impl Parser {
     /// Parse one simple (non-control-flow) statement: a `switch`, an increment,
     /// an assignment / compound assignment / memory store, or a bare expression.
+    /// Whether the `return` at the cursor is the function's TRAILING return:
+    /// its statement-ending `;` is directly followed by the closing `}`. A
+    /// return expression never contains a semicolon, so the first `;` ahead
+    /// ends the statement.
+    fn return_is_terminal(&self) -> bool {
+        let mut offset = 1;
+        loop {
+            match self.peek_at(offset) {
+                Token::Semicolon => break,
+                Token::EndOfFile => return true,
+                _ => offset += 1,
+            }
+        }
+        // Stray `;;` after the return still ends the body — skip empties.
+        let mut offset = offset + 1;
+        while *self.peek_at(offset) == Token::Semicolon {
+            offset += 1;
+        }
+        *self.peek_at(offset) == Token::BraceClose
+    }
+
+    /// A jump statement or label in statement position: `break;`, `continue;`,
+    /// `goto name;`, or `name:` (an identifier directly followed by a colon —
+    /// never a valid expression statement, so the lookahead is unambiguous).
+    /// Returns None when the next tokens are none of these.
+    fn parse_jump_statement(&mut self) -> Compilation<Option<Statement>> {
+        let Token::Identifier(word) = self.peek() else {
+            return Ok(None);
+        };
+        match word.as_str() {
+            "break" => {
+                self.advance();
+                self.expect(Token::Semicolon)?;
+                Ok(Some(Statement::Break))
+            }
+            "continue" => {
+                self.advance();
+                self.expect(Token::Semicolon)?;
+                Ok(Some(Statement::Continue))
+            }
+            "goto" => {
+                self.advance();
+                let name = self.parse_identifier()?;
+                self.expect(Token::Semicolon)?;
+                Ok(Some(Statement::Goto(name)))
+            }
+            _ if *self.peek_at(1) == Token::Colon => {
+                let name = self.parse_identifier()?;
+                self.advance(); // the colon
+                Ok(Some(Statement::Label(name)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn parse_simple_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
         if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
             return self.parse_switch(local_names, block_locals);
@@ -3130,6 +3235,9 @@ impl Parser {
         if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
             return Ok(vec![self.parse_loop_statement(local_names, block_locals)?]);
         }
+        if let Some(statement) = self.parse_jump_statement()? {
+            return Ok(vec![statement]);
+        }
         Ok(vec![self.parse_simple_statement(local_names, block_locals)?])
     }
 
@@ -3157,6 +3265,17 @@ impl Parser {
             }
             if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
                 statements.push(self.parse_loop_statement(local_names, block_locals)?);
+                continue;
+            }
+            if let Some(statement) = self.parse_jump_statement()? {
+                statements.push(statement);
+                continue;
+            }
+            // A nested bare `{ ... }` scoping block flattens recursively (its
+            // declarations hoist through the shared block_locals).
+            if *self.peek() == Token::BraceOpen {
+                let mut inner = self.parse_block(local_names, block_locals)?;
+                statements.append(&mut inner);
                 continue;
             }
             // A BLOCK-SCOPED declaration (`f32 guess = ...;` inside an if):

@@ -17,6 +17,10 @@ pub enum Pointee {
     /// Word-sized loads/stores; the inner pointee's identity is not tracked
     /// (a double deref defers at codegen).
     Pointer,
+    /// `long long*` — a register-pair element (va_arg expansions).
+    LongLong,
+    /// `unsigned long long*` — same pair representation.
+    UnsignedLongLong,
 }
 
 impl Pointee {
@@ -35,6 +39,8 @@ impl Pointee {
             // sized, integer-classed. Reported as an unsigned-int-shaped word
             // (loads lwz, stores stw) — the inner pointee is not tracked.
             Pointee::Pointer => Type::Pointer(Pointee::UnsignedInt),
+            Pointee::LongLong => Type::LongLong,
+            Pointee::UnsignedLongLong => Type::UnsignedLongLong,
         }
     }
     /// Size in bytes of one element (for indexing).

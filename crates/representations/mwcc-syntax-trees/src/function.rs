@@ -100,6 +100,17 @@ pub enum Statement {
     /// `switch (scrutinee) { case V: return E; ... default: return D; }` — a
     /// terminal multi-way return (each arm and the default return a value).
     Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<ArmBody> },
+    /// `break;` — exit the innermost enclosing loop or switch. (A switch ARM's
+    /// own terminating `break` is represented by `SwitchArm.falls_through`,
+    /// not a trailing `Break`; this variant is a break in a NESTED position,
+    /// e.g. inside an if-body within a loop.)
+    Break,
+    /// `continue;` — jump to the innermost enclosing loop's next iteration.
+    Continue,
+    /// `goto label;` — an unconditional jump to a named label.
+    Goto(String),
+    /// `label:` — a goto target, kept at its statement position.
+    Label(String),
     /// A loop: `while (c) { body }`, `do { body } while (c);`, or
     /// `for (init; c; step) { body }`. `initializer`/`step` are the for-clause
     /// expressions (evaluated for effect); a `None` `condition` is an always-true

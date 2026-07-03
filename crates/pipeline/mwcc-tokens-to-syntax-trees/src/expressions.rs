@@ -309,6 +309,23 @@ impl Parser {
             return Ok(increment_assignment(operand, operator));
         }
 
+        // `_var_arg_typeof(type)` is an mwcc intrinsic: the EABI vararg class
+        // code fed to `__va_arg` (measured GC/2.6: aggregate -> 0, gpr scalar/
+        // pointer -> 1, long long pair -> 2, float/double -> 3).
+        if matches!(self.peek(), Token::Identifier(name) if name == "_var_arg_typeof") {
+            self.advance();
+            self.expect(Token::ParenOpen)?;
+            let target_type = self.parse_type()?;
+            self.expect(Token::ParenClose)?;
+            let code = match target_type {
+                Type::Struct { .. } => 0,
+                Type::LongLong | Type::UnsignedLongLong => 2,
+                Type::Float | Type::Double => 3,
+                _ => 1,
+            };
+            return Ok(Expression::IntegerLiteral(code));
+        }
+
         // `sizeof(type)` is a compile-time constant — the type's byte size as a `size_t`
         // literal, which lowers to `li r3, N`. `struct S` uses its laid-out size, a pointer is
         // 4, scalars are their width in bytes. The expression forms (`sizeof x`, `sizeof(expr)`)

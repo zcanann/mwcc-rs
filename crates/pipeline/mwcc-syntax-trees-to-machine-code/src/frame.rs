@@ -1182,6 +1182,7 @@ pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {
 /// Record `&variable` occurrences within a statement (recursing into if-blocks).
 fn walk_statement(statement: &Statement, names: &mut HashSet<String>) {
     match statement {
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {}
         Statement::Store { target, value } => {
             walk(target, names);
             walk(value, names);

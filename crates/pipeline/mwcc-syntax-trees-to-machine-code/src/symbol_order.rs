@@ -74,6 +74,7 @@ fn collect_assignment(target: &Expression, value: &Expression, names: &mut Names
 
 fn collect_statement(statement: &Statement, names: &mut Names) {
     match statement {
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {}
         Statement::Store { target, value } => collect_assignment(target, value, names),
         Statement::Assign { value, .. } => collect(value, names),
         Statement::Expression(expression) => collect(expression, names),

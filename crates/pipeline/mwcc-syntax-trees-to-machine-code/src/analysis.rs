@@ -86,6 +86,7 @@ pub(crate) fn values_live_across_call(function: &Function) -> Option<Vec<String>
     }
     for statement in &function.statements {
         let expressions: Vec<&Expression> = match statement {
+            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => vec![],
             Statement::Store { target, value } => vec![target, value],
             Statement::Assign { value, .. } => vec![value],
             Statement::Expression(expression) => vec![expression],
@@ -294,6 +295,7 @@ fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, co
 
 fn statement_reads_across_call(statement: &Statement, prior_call: bool, registers: &HashSet<&str>) -> bool {
     match statement {
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
         Statement::Store { target, value } => {
             expression_reads_across_call(target, prior_call, registers)
                 || expression_reads_across_call(value, prior_call, registers)
@@ -486,6 +488,7 @@ pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
 /// Whether a function makes a call (and so needs the non-leaf prologue).
 pub(crate) fn statement_has_call(statement: &Statement) -> bool {
     match statement {
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
         Statement::Store { target, value } => expression_has_call(target) || expression_has_call(value),
         Statement::Assign { value, .. } => expression_has_call(value),
         Statement::Expression(expression) => expression_has_call(expression),

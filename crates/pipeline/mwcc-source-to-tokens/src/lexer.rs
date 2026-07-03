@@ -82,6 +82,14 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             tokens.push(Token::StringLiteral(content));
             continue;
         }
+        // A wide literal's `L` prefix (`L'\0'`, `L"..."`) is transparent to the
+        // VALUE for a char literal (wchar_t is an integer type); a wide STRING
+        // changes the data layout (u16 elements) and defers at codegen, so the
+        // `L` before `"` simply drops here and the string lexes normally.
+        if character == 'L' && matches!(peek(bytes, position + 1), Some(b'\'') | Some(b'"')) {
+            position += 1;
+            continue;
+        }
         // character literal: `'c'` or an escape like `'\n'`, yielding the
         // character's integer value (an `int`-typed constant in C).
         if character == '\'' {

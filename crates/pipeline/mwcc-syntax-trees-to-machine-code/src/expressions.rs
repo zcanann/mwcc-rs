@@ -20,27 +20,34 @@ pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
 }
 
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
-fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction {
-    match pointee {
+fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Compilation<Instruction> {
+    Ok(match pointee {
         Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::LoadWord { d, a, offset },
         Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZero { d, a, offset },
         Pointee::Short => Instruction::LoadHalfwordAlgebraic { d, a, offset },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZero { d, a, offset },
         Pointee::Float => Instruction::LoadFloatSingle { d, a, offset },
         Pointee::Double => Instruction::LoadFloatDouble { d, a, offset },
-    }
+        // An 8-byte register pair has no single load — the pair path is not built yet.
+        Pointee::LongLong | Pointee::UnsignedLongLong => {
+            return Err(Diagnostic::error("a long long load through a pointer is not supported yet (roadmap)"))
+        }
+    })
 }
 
 /// The indexed load for a pointee type (`lwzx`/`lbzx`/`lhax`/`lhzx`/`lfsx`).
-fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Instruction {
-    match pointee {
+fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Compilation<Instruction> {
+    Ok(match pointee {
         Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::LoadWordIndexed { d, a, b },
         Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZeroIndexed { d, a, b },
         Pointee::Short => Instruction::LoadHalfwordAlgebraicIndexed { d, a, b },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZeroIndexed { d, a, b },
         Pointee::Float => Instruction::LoadFloatSingleIndexed { d, a, b },
         Pointee::Double => Instruction::LoadFloatDoubleIndexed { d, a, b },
-    }
+        Pointee::LongLong | Pointee::UnsignedLongLong => {
+            return Err(Diagnostic::error("a long long load through a pointer is not supported yet (roadmap)"))
+        }
+    })
 }
 
 /// A scalar type as the matching [`Pointee`] (for global loads/stores).
@@ -75,14 +82,17 @@ pub(crate) fn pointer_stride(value_type: Type) -> Option<u16> {
 }
 
 /// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
-pub(crate) fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instruction {
-    match pointee {
+pub(crate) fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Compilation<Instruction> {
+    Ok(match pointee {
         Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::StoreWord { s, a, offset },
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByte { s, a, offset },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfword { s, a, offset },
         Pointee::Float => Instruction::StoreFloatSingle { s, a, offset },
         Pointee::Double => Instruction::StoreFloatDouble { s, a, offset },
-    }
+        Pointee::LongLong | Pointee::UnsignedLongLong => {
+            return Err(Diagnostic::error("a long long store through a pointer is not supported yet (roadmap)"))
+        }
+    })
 }
 
 /// `*(T *)0xADDR` — a dereference through a constant-address pointer cast (memory-mapped
@@ -121,14 +131,17 @@ fn const_address_of(pointer: &Expression) -> Option<u32> {
 }
 
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
-pub(crate) fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
-    match pointee {
+pub(crate) fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Compilation<Instruction> {
+    Ok(match pointee {
         Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::StoreWordIndexed { s, a, b },
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByteIndexed { s, a, b },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfwordIndexed { s, a, b },
         Pointee::Float => Instruction::StoreFloatSingleIndexed { s, a, b },
         Pointee::Double => Instruction::StoreFloatDoubleIndexed { s, a, b },
-    }
+        Pointee::LongLong | Pointee::UnsignedLongLong => {
+            return Err(Diagnostic::error("a long long store through a pointer is not supported yet (roadmap)"))
+        }
+    })
 }
 
 impl Generator {
@@ -1003,7 +1016,7 @@ impl Generator {
         // A type-pun through a frame-resident address (`*(int*)&x`) is a plain
         // displacement load from r1.
         if let Some((pointee, offset)) = self.resolve_frame_pointer(pointer) {
-            self.output.instructions.push(displacement_load(pointee, destination, 1, offset));
+            self.output.instructions.push(displacement_load(pointee, destination, 1, offset)?);
             return Ok(());
         }
         // A global pointer: load the pointer value into the destination (an SDA21
@@ -1016,7 +1029,7 @@ impl Generator {
                     // address) is deferred rather than miscompiled.
                     if !matches!(pointee, Pointee::Float | Pointee::Double) {
                         self.emit_global_load(name, destination)?;
-                        self.output.instructions.push(displacement_load(pointee, destination, destination, 0));
+                        self.output.instructions.push(displacement_load(pointee, destination, destination, 0)?);
                         return Ok(());
                     }
                 }
@@ -1063,7 +1076,7 @@ impl Generator {
             return Err(Diagnostic::error("a constant-address load into r0 is not supported yet (roadmap)"));
         }
         let (pointee, address) = self.resolve_pointer(pointer)?;
-        self.output.instructions.push(displacement_load(pointee, destination, address, 0));
+        self.output.instructions.push(displacement_load(pointee, destination, address, 0)?);
         Ok(())
     }
 
@@ -1135,10 +1148,10 @@ impl Generator {
         }
         self.const_address_bases.insert(high);
         if high == 0 {
-            self.output.instructions.push(displacement_load(pointee, destination, 0, displacement));
+            self.output.instructions.push(displacement_load(pointee, destination, 0, displacement)?);
         } else {
             self.output.instructions.push(Instruction::load_immediate_shifted(destination, high));
-            self.output.instructions.push(displacement_load(pointee, destination, destination, displacement));
+            self.output.instructions.push(displacement_load(pointee, destination, destination, displacement)?);
         }
         Ok(true)
     }
@@ -1160,7 +1173,7 @@ impl Generator {
         self.const_address_bases.insert(high);
         if high == 0 {
             let source = self.place_store_value(value, pointee)?;
-            self.output.instructions.push(displacement_store(pointee, source, 0, displacement));
+            self.output.instructions.push(displacement_store(pointee, source, 0, displacement)?);
             return Ok(true);
         }
         // Phase D: the const-address base is a virtual. place_store_value between its
@@ -1172,7 +1185,7 @@ impl Generator {
         self.output.instructions.push(Instruction::load_immediate_shifted(base, high));
         let source = self.place_store_value(value, pointee)?;
         if restore { self.reserved.remove(&base); }
-        self.output.instructions.push(displacement_store(pointee, source, base, displacement));
+        self.output.instructions.push(displacement_store(pointee, source, base, displacement)?);
         Ok(true)
     }
 
@@ -1196,7 +1209,7 @@ impl Generator {
             if let Some(slot) = self.frame_slots.get(name) {
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
-                self.output.instructions.push(displacement_load(pointee, destination, 1, slot.offset + offset as i16));
+                self.output.instructions.push(displacement_load(pointee, destination, 1, slot.offset + offset as i16)?);
                 return Ok(());
             }
             // `gp->field` where `gp` is a global struct pointer: load the pointer
@@ -1210,7 +1223,7 @@ impl Generator {
                 self.emit_global_load_value(name, destination)?;
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
-                self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
+                self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16)?);
                 return Ok(());
             }
             // `g.field` where `g` is a global struct VALUE: materialize g's address
@@ -1230,11 +1243,11 @@ impl Generator {
                     // addend) — both fall through.
                     if offset == 0 && size <= 8 && matches!(self.behavior.global_addressing, GlobalAddressing::SmallData) {
                         self.record_relocation(RelocationKind::EmbSda21, name);
-                        self.output.instructions.push(displacement_load(pointee, destination, 0, 0));
+                        self.output.instructions.push(displacement_load(pointee, destination, 0, 0)?);
                         return Ok(());
                     }
                     self.emit_global_array_base(name, size as u32, destination)?;
-                    self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
+                    self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16)?);
                     return Ok(());
                 }
             }
@@ -1255,7 +1268,7 @@ impl Generator {
         let address = self.member_base_register(base)?;
         let pointee = pointee_of_type(member_type)
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
-        self.output.instructions.push(displacement_load(pointee, destination, address, offset as i16));
+        self.output.instructions.push(displacement_load(pointee, destination, address, offset as i16)?);
         Ok(())
     }
 
@@ -1280,10 +1293,10 @@ impl Generator {
         let pointee = pointee_of_type(member_type)
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
         if offset == 0 {
-            self.output.instructions.push(indexed_load(pointee, destination, array_register, GENERAL_SCRATCH));
+            self.output.instructions.push(indexed_load(pointee, destination, array_register, GENERAL_SCRATCH)?);
         } else {
             self.output.instructions.push(Instruction::Add { d: array_register, a: array_register, b: GENERAL_SCRATCH });
-            self.output.instructions.push(displacement_load(pointee, destination, array_register, offset as i16));
+            self.output.instructions.push(displacement_load(pointee, destination, array_register, offset as i16)?);
         }
         Ok(())
     }
@@ -1308,7 +1321,7 @@ impl Generator {
             let total = constant * stride as i64 + offset as i64;
             let total = i16::try_from(total).map_err(|_| Diagnostic::error("struct-array member offset out of range (roadmap)"))?;
             self.emit_global_array_base(name, total_size, destination)?;
-            self.output.instructions.push(displacement_load(pointee, destination, destination, total));
+            self.output.instructions.push(displacement_load(pointee, destination, destination, total)?);
             return Ok(());
         }
         if !stride.is_power_of_two() {
@@ -1329,10 +1342,10 @@ impl Generator {
             self.output.instructions.push(Instruction::AddImmediate { d: destination, a: high, immediate: 0 });
         }
         if offset == 0 {
-            self.output.instructions.push(indexed_load(pointee, destination, destination, GENERAL_SCRATCH));
+            self.output.instructions.push(indexed_load(pointee, destination, destination, GENERAL_SCRATCH)?);
         } else {
             self.output.instructions.push(Instruction::Add { d: destination, a: destination, b: GENERAL_SCRATCH });
-            self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16));
+            self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16)?);
         }
         Ok(())
     }
@@ -1364,7 +1377,7 @@ impl Generator {
             if restore {
                 self.reserved.remove(&base);
             }
-            self.output.instructions.push(displacement_store(pointee, source, base, total));
+            self.output.instructions.push(displacement_store(pointee, source, base, total)?);
             return Ok(());
         }
         if !stride.is_power_of_two() {
@@ -1393,10 +1406,10 @@ impl Generator {
             self.general_register_of_leaf(value)?
         };
         if offset == 0 {
-            self.output.instructions.push(indexed_store(pointee, source, index_register, GENERAL_SCRATCH));
+            self.output.instructions.push(indexed_store(pointee, source, index_register, GENERAL_SCRATCH)?);
         } else {
             self.output.instructions.push(Instruction::Add { d: index_register, a: index_register, b: GENERAL_SCRATCH });
-            self.output.instructions.push(displacement_store(pointee, source, index_register, offset as i16));
+            self.output.instructions.push(displacement_store(pointee, source, index_register, offset as i16)?);
         }
         Ok(())
     }
@@ -1583,7 +1596,7 @@ impl Generator {
             if let Some(constant) = constant_value(index) {
                 let total = *offset as i64 + constant * element.size() as i64;
                 let total = i16::try_from(total).map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
-                self.output.instructions.push(displacement_load(*element, destination, address, total));
+                self.output.instructions.push(displacement_load(*element, destination, address, total)?);
                 return Ok(());
             }
             let index_register = self.general_register_of_leaf(index)?;
@@ -1595,10 +1608,10 @@ impl Generator {
                 GENERAL_SCRATCH
             };
             if *offset == 0 {
-                self.output.instructions.push(indexed_load(*element, destination, address, scaled));
+                self.output.instructions.push(indexed_load(*element, destination, address, scaled)?);
             } else {
                 self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
-                self.output.instructions.push(displacement_load(*element, destination, address, *offset as i16));
+                self.output.instructions.push(displacement_load(*element, destination, address, *offset as i16)?);
             }
             return Ok(());
         }
@@ -1606,7 +1619,7 @@ impl Generator {
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
             let offset = i16::try_from(offset).map_err(|_| Diagnostic::error("subscript offset out of range (roadmap)"))?;
-            self.output.instructions.push(displacement_load(pointee, destination, address, offset));
+            self.output.instructions.push(displacement_load(pointee, destination, address, offset)?);
             return Ok(());
         }
         // `a[i + const]` / `a[i - const]`: scale the variable index, add it to the base, and fold the
@@ -1627,7 +1640,7 @@ impl Generator {
                         GENERAL_SCRATCH
                     };
                     self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
-                    self.output.instructions.push(displacement_load(pointee, destination, address, offset));
+                    self.output.instructions.push(displacement_load(pointee, destination, address, offset)?);
                     return Ok(());
                 }
             }
@@ -1655,7 +1668,7 @@ impl Generator {
                     self.output.instructions.push(Instruction::MultiplyImmediate { d: GENERAL_SCRATCH, a: index_register, immediate: total });
                     GENERAL_SCRATCH
                 };
-                self.output.instructions.push(indexed_load(pointee, destination, address, scaled));
+                self.output.instructions.push(indexed_load(pointee, destination, address, scaled)?);
                 return Ok(());
             }
         }
@@ -1671,7 +1684,7 @@ impl Generator {
             });
             GENERAL_SCRATCH
         };
-        self.output.instructions.push(indexed_load(pointee, destination, address, scaled));
+        self.output.instructions.push(indexed_load(pointee, destination, address, scaled)?);
         Ok(())
     }
 
@@ -1703,7 +1716,7 @@ impl Generator {
             let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
             if offset == 0 && small {
                 self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(displacement_load(pointee, destination, 0, 0));
+                self.output.instructions.push(displacement_load(pointee, destination, 0, 0)?);
                 return Ok(());
             }
             // A float/double element loads into the FPR `destination` from a GPR base, so the base
@@ -1717,15 +1730,15 @@ impl Generator {
                     // The small offset-0 case folded above, so this is the large ADDR16 element.
                     self.emit_address_high(base, name);
                     self.record_relocation(RelocationKind::Addr16Lo, name);
-                    self.output.instructions.push(displacement_load(pointee, destination, base, 0));
+                    self.output.instructions.push(displacement_load(pointee, destination, base, 0)?);
                 } else {
                     self.emit_global_array_base(name, total_size, base)?;
-                    self.output.instructions.push(displacement_load(pointee, destination, base, offset));
+                    self.output.instructions.push(displacement_load(pointee, destination, base, offset)?);
                 }
                 return Ok(());
             }
             self.emit_global_array_base(name, total_size, destination)?;
-            self.output.instructions.push(displacement_load(pointee, destination, destination, offset));
+            self.output.instructions.push(displacement_load(pointee, destination, destination, offset)?);
             return Ok(());
         }
         // A variable index: scale it, materialize the base, and `lwzx`/`lfsx`. mwcc orders these so
@@ -1779,7 +1792,7 @@ impl Generator {
                 let base = self.fresh_virtual_general();
                 self.record_relocation(RelocationKind::Addr16Lo, name);
                 self.output.instructions.push(Instruction::AddImmediate { d: base, a: high, immediate: 0 });
-                self.output.instructions.push(indexed_load(pointee, destination, base, GENERAL_SCRATCH));
+                self.output.instructions.push(indexed_load(pointee, destination, base, GENERAL_SCRATCH)?);
                 return Ok(());
             }
             let index_register = self.general_register_of_leaf(index)?;
@@ -1787,7 +1800,7 @@ impl Generator {
             self.emit_address_high(base, name);
             self.record_relocation(RelocationKind::Addr16Lo, name);
             self.output.instructions.push(Instruction::AddImmediate { d: base, a: base, immediate: 0 });
-            self.output.instructions.push(indexed_load(pointee, destination, base, index_register));
+            self.output.instructions.push(indexed_load(pointee, destination, base, index_register)?);
             return Ok(());
         }
         let index_register = self.general_register_of_leaf(index)?;
@@ -1807,7 +1820,7 @@ impl Generator {
             self.record_relocation(RelocationKind::Addr16Lo, name);
             self.output.instructions.push(Instruction::AddImmediate { d: base_gpr, a: high, immediate: 0 });
         }
-        self.output.instructions.push(indexed_load(pointee, destination, base_gpr, GENERAL_SCRATCH));
+        self.output.instructions.push(indexed_load(pointee, destination, base_gpr, GENERAL_SCRATCH)?);
         Ok(())
     }
 
@@ -1917,7 +1930,7 @@ impl Generator {
             if offset == 0 && small {
                 let source = self.place_store_value(value, pointee)?;
                 self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                self.output.instructions.push(displacement_store(pointee, source, 0, 0)?);
                 return Ok(());
             }
             let base = self.fresh_virtual_general();
@@ -1934,7 +1947,7 @@ impl Generator {
                     self.reserved.remove(&base);
                 }
                 self.record_relocation(RelocationKind::Addr16Lo, name);
-                self.output.instructions.push(displacement_store(pointee, source, base, 0));
+                self.output.instructions.push(displacement_store(pointee, source, base, 0)?);
                 return Ok(());
             }
             self.emit_global_array_base(name, total_size, base)?;
@@ -1942,7 +1955,7 @@ impl Generator {
             if restore {
                 self.reserved.remove(&base);
             }
-            self.output.instructions.push(displacement_store(pointee, source, base, offset));
+            self.output.instructions.push(displacement_store(pointee, source, base, offset)?);
             return Ok(());
         }
         // Variable index: the base reuses the (scaled-away) index register and the value stores
@@ -1993,10 +2006,10 @@ impl Generator {
             self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
             self.output.instructions.push(Instruction::AddImmediate { d: high, a: 0, immediate: constant });
             if offset == 0 {
-                self.output.instructions.push(indexed_store(pointee, high, index_register, GENERAL_SCRATCH));
+                self.output.instructions.push(indexed_store(pointee, high, index_register, GENERAL_SCRATCH)?);
             } else {
                 self.output.instructions.push(Instruction::Add { d: index_register, a: index_register, b: GENERAL_SCRATCH });
-                self.output.instructions.push(displacement_store(pointee, high, index_register, offset));
+                self.output.instructions.push(displacement_store(pointee, high, index_register, offset)?);
             }
             return Ok(());
         }
@@ -2024,7 +2037,7 @@ impl Generator {
             self.record_relocation(RelocationKind::Addr16Lo, name);
             self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
         }
-        self.output.instructions.push(indexed_store(pointee, value_register, index_register, GENERAL_SCRATCH));
+        self.output.instructions.push(indexed_store(pointee, value_register, index_register, GENERAL_SCRATCH)?);
         Ok(())
     }
 
@@ -2065,7 +2078,7 @@ impl Generator {
         if let Some(rhs_register) = self.plain_integer_leaf_register(right) {
             let scaled = self.fresh_virtual_general();
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: size_shift });
-            self.output.instructions.push(indexed_load(pointee, scratch, address, scaled));
+            self.output.instructions.push(indexed_load(pointee, scratch, address, scaled)?);
             let combined = match operator {
                 Add => Instruction::Add { d: scratch, a: scratch, b: rhs_register },
                 Subtract => Instruction::SubtractFrom { d: scratch, a: rhs_register, b: scratch },
@@ -2075,7 +2088,7 @@ impl Generator {
                 _ => Instruction::Xor { a: scratch, s: scratch, b: rhs_register },
             };
             self.output.instructions.push(combined);
-            self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
+            self.output.instructions.push(indexed_store(pointee, scratch, address, scaled)?);
             return Ok(true);
         }
 
@@ -2096,9 +2109,9 @@ impl Generator {
                 let scaled = self.fresh_virtual_general_avoiding(vec![index_register]);
                 self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: size_shift });
                 let loaded = self.fresh_virtual_general();
-                self.output.instructions.push(indexed_load(pointee, loaded, address, scaled));
+                self.output.instructions.push(indexed_load(pointee, loaded, address, scaled)?);
                 self.output.instructions.push(Instruction::AddImmediate { d: scratch, a: loaded, immediate });
-                self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
+                self.output.instructions.push(indexed_store(pointee, scratch, address, scaled)?);
                 return Ok(true);
             }
         }
@@ -2123,9 +2136,9 @@ impl Generator {
             };
             let scaled = self.fresh_virtual_general();
             self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: size_shift });
-            self.output.instructions.push(indexed_load(pointee, scratch, address, scaled));
+            self.output.instructions.push(indexed_load(pointee, scratch, address, scaled)?);
             self.output.instructions.push(immediate_op);
-            self.output.instructions.push(indexed_store(pointee, scratch, address, scaled));
+            self.output.instructions.push(indexed_store(pointee, scratch, address, scaled)?);
             return Ok(true);
         }
         Ok(false)
@@ -2134,9 +2147,10 @@ impl Generator {
     /// Emit an SDA-global store of a value already evaluated into `source`. The
     /// computed-store-fill path evaluates both values (into a virtual and the scratch)
     /// *before* the stores, so it places the store separately from the value.
-    pub(crate) fn emit_sda_global_store_from(&mut self, name: &str, pointee: Pointee, source: u8) {
+    pub(crate) fn emit_sda_global_store_from(&mut self, name: &str, pointee: Pointee, source: u8) -> Compilation<()> {
         self.record_relocation(RelocationKind::EmbSda21, name);
-        self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+        self.output.instructions.push(displacement_store(pointee, source, 0, 0)?);
+        Ok(())
     }
 
     pub(crate) fn emit_store(&mut self, target: &Expression, value: &Expression) -> Compilation<()> {
@@ -2202,7 +2216,7 @@ impl Generator {
         if let Expression::Dereference { pointer } = target {
             if let Some((pointee, offset)) = self.resolve_frame_pointer(pointer) {
                 let source = self.place_store_value(value, pointee)?;
-                self.output.instructions.push(displacement_store(pointee, source, 1, offset));
+                self.output.instructions.push(displacement_store(pointee, source, 1, offset)?);
                 self.written_slots.insert(offset);
                 return Ok(());
             }
@@ -2216,7 +2230,7 @@ impl Generator {
                     GlobalAddressing::SmallData => {
                         let source = self.place_store_value(value, pointee)?;
                         self.record_relocation(RelocationKind::EmbSda21, name);
-                        self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                        self.output.instructions.push(displacement_store(pointee, source, 0, 0)?);
                         // The stored value is still in `source`; a following read of
                         // this global reuses it (mwcc does not reload here).
                         self.stored_globals.insert(name.clone(), (source, self.output.instructions.len()));
@@ -2231,7 +2245,7 @@ impl Generator {
                         let source = self.place_store_value(value, pointee)?;
                         if restore { self.reserved.remove(&base); }
                         self.record_relocation(RelocationKind::Addr16Lo, name);
-                        self.output.instructions.push(displacement_store(pointee, source, base, 0));
+                        self.output.instructions.push(displacement_store(pointee, source, base, 0)?);
                     }
                 }
                 return Ok(());
@@ -2284,10 +2298,10 @@ impl Generator {
                     return Err(Diagnostic::error("indexed-member store of a computed value is not supported yet (roadmap)"));
                 };
                 if *offset == 0 {
-                    self.output.instructions.push(indexed_store(pointee, source, array_register, GENERAL_SCRATCH));
+                    self.output.instructions.push(indexed_store(pointee, source, array_register, GENERAL_SCRATCH)?);
                 } else {
                     self.output.instructions.push(Instruction::Add { d: array_register, a: array_register, b: GENERAL_SCRATCH });
-                    self.output.instructions.push(displacement_store(pointee, source, array_register, *offset as i16));
+                    self.output.instructions.push(displacement_store(pointee, source, array_register, *offset as i16)?);
                 }
                 return Ok(());
             }
@@ -2335,7 +2349,7 @@ impl Generator {
                                 let source = self.place_store_value(value, pointee)?;
                                 if *offset == 0 {
                                     self.record_relocation(RelocationKind::EmbSda21, name);
-                                    self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                                    self.output.instructions.push(displacement_store(pointee, source, 0, 0)?);
                                 } else {
                                     let restore = self.reserved.insert(source);
                                     let base_reg = self.fresh_virtual_general();
@@ -2343,7 +2357,7 @@ impl Generator {
                                     if restore {
                                         self.reserved.remove(&source);
                                     }
-                                    self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16));
+                                    self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16)?);
                                 }
                                 return Ok(());
                             }
@@ -2359,7 +2373,7 @@ impl Generator {
                             if restore {
                                 self.reserved.remove(&base_reg);
                             }
-                            self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16));
+                            self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16)?);
                             return Ok(());
                         }
                         // struct POINTER base: load the pointer, then the value, then store.
@@ -2370,7 +2384,7 @@ impl Generator {
                         if restore {
                             self.reserved.remove(&base_reg);
                         }
-                        self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16));
+                        self.output.instructions.push(displacement_store(pointee, source, base_reg, *offset as i16)?);
                         return Ok(());
                     }
                 }
@@ -2387,7 +2401,7 @@ impl Generator {
             let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
             let source = self.place_store_value(value, pointee)?;
             if restore { self.reserved.remove(&address); }
-            self.output.instructions.push(displacement_store(pointee, source, address, *offset as i16));
+            self.output.instructions.push(displacement_store(pointee, source, address, *offset as i16)?);
             return Ok(());
         }
         // `p->arr[index] = value` — store to an array member, folding the array
@@ -2399,7 +2413,7 @@ impl Generator {
                     let total = i16::try_from(*offset as i64 + constant * element.size() as i64)
                         .map_err(|_| Diagnostic::error("array store out of range (roadmap)"))?;
                     let source = self.place_store_value(value, *element)?;
-                    self.output.instructions.push(displacement_store(*element, source, address, total));
+                    self.output.instructions.push(displacement_store(*element, source, address, total)?);
                     return Ok(());
                 }
                 if !matches!(value, Expression::Variable(_)) {
@@ -2415,10 +2429,10 @@ impl Generator {
                     GENERAL_SCRATCH
                 };
                 if *offset == 0 {
-                    self.output.instructions.push(indexed_store(*element, source, address, scaled));
+                    self.output.instructions.push(indexed_store(*element, source, address, scaled)?);
                 } else {
                     self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
-                    self.output.instructions.push(displacement_store(*element, source, address, *offset as i16));
+                    self.output.instructions.push(displacement_store(*element, source, address, *offset as i16)?);
                 }
                 return Ok(());
             }
@@ -2447,14 +2461,14 @@ impl Generator {
             None => {
                 let source = self.place_store_value(value, pointee)?;
                 if restore { self.reserved.remove(&address); }
-                self.output.instructions.push(displacement_store(pointee, source, address, 0));
+                self.output.instructions.push(displacement_store(pointee, source, address, 0)?);
             }
             Some(index) if constant_value(index).is_some() => {
                 let offset = i16::try_from(constant_value(index).unwrap() * pointee.size() as i64)
                     .map_err(|_| Diagnostic::error("store offset out of range (roadmap)"))?;
                 let source = self.place_store_value(value, pointee)?;
                 if restore { self.reserved.remove(&address); }
-                self.output.instructions.push(displacement_store(pointee, source, address, offset));
+                self.output.instructions.push(displacement_store(pointee, source, address, offset)?);
             }
             Some(index) => {
                 // A variable index uses the scratch for scaling, so the value must
@@ -2481,7 +2495,7 @@ impl Generator {
                                 GENERAL_SCRATCH
                             };
                             self.output.instructions.push(Instruction::Add { d: address, a: address, b: scaled });
-                            self.output.instructions.push(displacement_store(pointee, source, address, offset));
+                            self.output.instructions.push(displacement_store(pointee, source, address, offset)?);
                             return Ok(());
                         }
                     }
@@ -2498,7 +2512,7 @@ impl Generator {
                     });
                     GENERAL_SCRATCH
                 };
-                self.output.instructions.push(indexed_store(pointee, source, address, scaled));
+                self.output.instructions.push(indexed_store(pointee, source, address, scaled)?);
             }
         }
         Ok(())
@@ -2933,8 +2947,8 @@ impl Generator {
                 {
                     if let (Some(pointee0), Some(pointee1)) = (pointee_of_type(*type0), pointee_of_type(*type1)) {
                         self.output.instructions.push(Instruction::move_register(copy_register, base_register));
-                        self.output.instructions.push(displacement_load(pointee0, base_register, base_register, *offset0 as i16));
-                        self.output.instructions.push(displacement_load(pointee1, copy_register, copy_register, *offset1 as i16));
+                        self.output.instructions.push(displacement_load(pointee0, base_register, base_register, *offset0 as i16)?);
+                        self.output.instructions.push(displacement_load(pointee1, copy_register, copy_register, *offset1 as i16)?);
                         return Ok(());
                     }
                 }
@@ -3157,13 +3171,13 @@ impl Generator {
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
                 self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(displacement_store(pointee, source, 0, 0));
+                self.output.instructions.push(displacement_store(pointee, source, 0, 0)?);
             }
             GlobalAddressing::Absolute => {
                 let base = self.free_general_excluding(source)?;
                 self.emit_address_high(base, name);
                 self.record_relocation(RelocationKind::Addr16Lo, name);
-                self.output.instructions.push(displacement_store(pointee, source, base, 0));
+                self.output.instructions.push(displacement_store(pointee, source, base, 0)?);
             }
         }
         Ok(())

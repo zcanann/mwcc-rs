@@ -118,6 +118,9 @@ use crate::generator::*;
 /// Control-flow statements are treated conservatively as referencing everything.
 fn statement_references_name(statement: &Statement, name: &str) -> bool {
     match statement {
+        // Jumps redirect control anywhere — conservative, like the other
+        // control-flow arms below.
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => true,
         Statement::Store { target, value } => expression_reads_name(target, name) || expression_reads_name(value, name),
         Statement::Assign { name: target, value } => target == name || expression_reads_name(value, name),
         Statement::Expression(expression) => expression_reads_name(expression, name),
@@ -1492,7 +1495,7 @@ impl Generator {
             self.record_relocation(RelocationKind::Addr16Lo, array);
             self.output.instructions.push(Instruction::AddImmediate { d: base, a: base, immediate: 0 });
             self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
-            self.output.instructions.push(crate::expressions::indexed_store(pointee, register, base, GENERAL_SCRATCH));
+            self.output.instructions.push(crate::expressions::indexed_store(pointee, register, base, GENERAL_SCRATCH)?);
         } else {
             let constant = stored_constant.expect("checked above");
             // Phase D: the base-high is a virtual in both forms — a redefined vreg keeps
@@ -1507,7 +1510,7 @@ impl Generator {
             if offset == 0 {
                 // The standalone sequence, the return materialized after the store.
                 self.output.instructions.push(Instruction::AddImmediate { d: high, a: 0, immediate: constant });
-                self.output.instructions.push(crate::expressions::indexed_store(pointee, high, index_register, GENERAL_SCRATCH));
+                self.output.instructions.push(crate::expressions::indexed_store(pointee, high, index_register, GENERAL_SCRATCH)?);
                 self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
             } else {
                 // The value's virtual overlaps the still-live high (which the `add`
@@ -1516,7 +1519,7 @@ impl Generator {
                 self.output.instructions.push(Instruction::AddImmediate { d: value_register, a: 0, immediate: constant });
                 self.output.instructions.push(Instruction::Add { d: high, a: index_register, b: GENERAL_SCRATCH });
                 self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
-                self.output.instructions.push(displacement_store(pointee, value_register, high, offset));
+                self.output.instructions.push(displacement_store(pointee, value_register, high, offset)?);
             }
         }
         self.emit_epilogue_and_return();
@@ -1662,7 +1665,7 @@ impl Generator {
                         self.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
                     }
                 }
-                self.output.instructions.push(displacement_store(pointee, GENERAL_SCRATCH, pointer_register, offset));
+                self.output.instructions.push(displacement_store(pointee, GENERAL_SCRATCH, pointer_register, offset)?);
                 self.emit_epilogue_and_return();
                 return Ok(true);
             }
@@ -7159,11 +7162,11 @@ impl Generator {
         }
         if high[0] && !high[1] {
             // The first value is the long op: store the quicker second value first.
-            self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH);
-            self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register);
+            self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH)?;
+            self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register)?;
         } else {
-            self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register);
-            self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH);
+            self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register)?;
+            self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH)?;
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -7234,8 +7237,8 @@ impl Generator {
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
         }
         self.evaluate_general(&stores[filler].2, GENERAL_SCRATCH)?;
-        self.emit_sda_global_store_from(&stores[leaf].0, stores[leaf].1, leaf_register);
-        self.emit_sda_global_store_from(&stores[filler].0, stores[filler].1, GENERAL_SCRATCH);
+        self.emit_sda_global_store_from(&stores[leaf].0, stores[leaf].1, leaf_register)?;
+        self.emit_sda_global_store_from(&stores[filler].0, stores[filler].1, GENERAL_SCRATCH)?;
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -7304,10 +7307,10 @@ impl Generator {
         }
         for &index in &order {
             if index == constant_index {
-                self.emit_sda_global_store_from(&stores[index].0, stores[index].1, GENERAL_SCRATCH);
+                self.emit_sda_global_store_from(&stores[index].0, stores[index].1, GENERAL_SCRATCH)?;
             } else {
                 let register = self.general_register_of_leaf(&stores[index].2)?;
-                self.emit_sda_global_store_from(&stores[index].0, stores[index].1, register);
+                self.emit_sda_global_store_from(&stores[index].0, stores[index].1, register)?;
             }
         }
         self.emit_epilogue_and_return();
@@ -11137,7 +11140,7 @@ impl Generator {
             self.emit_call(name, arguments, None, false)?;
             mwcc_target::Eabi::general_result().number
         };
-        self.output.instructions.push(displacement_store(pointee, result, saved, offset));
+        self.output.instructions.push(displacement_store(pointee, result, saved, offset)?);
         // A non-void function materializes its constant return value in r3 after the store.
         if let Some(return_expression) = function.return_expression.as_ref() {
             self.evaluate_tail(return_expression, function.return_type, mwcc_target::Eabi::general_result().number)?;
@@ -11713,7 +11716,7 @@ impl Generator {
         let result = mwcc_target::Eabi::general_result().number;
         for (index, (_, offset, pointee, call)) in decoded.iter().enumerate() {
             self.emit_call(call, &[], None, false)?;
-            self.output.instructions.push(displacement_store(*pointee, result, saved_reg[index], *offset));
+            self.output.instructions.push(displacement_store(*pointee, result, saved_reg[index], *offset)?);
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -12515,6 +12518,9 @@ impl Generator {
     /// Emit a body statement.
     pub(crate) fn emit_statement(&mut self, statement: &Statement) -> Compilation<()> {
         match statement {
+            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
+                Err(Diagnostic::error("a break/continue/goto/label statement is not lowered here yet (captures only)"))
+            }
             Statement::Store { target, value } => self.emit_store(target, value),
             Statement::Expression(Expression::Call { name, arguments }) => {
                 self.emit_call(name, arguments, None, false)
@@ -13751,6 +13757,7 @@ fn function_calls_any(function: &Function, names: &std::collections::HashSet<Str
     fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
         use mwcc_syntax_trees::Statement as S;
         match statement {
+            S::Break | S::Continue | S::Goto(_) | S::Label(_) => false,
             S::Store { target, value } => expression_calls(target, names) || expression_calls(value, names),
             S::Assign { value, .. } => expression_calls(value, names),
             S::Expression(expression) => expression_calls(expression, names),
