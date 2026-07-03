@@ -117,7 +117,12 @@ impl Generator {
         let mut body_start = vec![0usize; sorted.len()];
         for (index, arm) in sorted.iter().enumerate() {
             body_start[index] = self.output.instructions.len();
-            self.evaluate_tail(&arm.result, return_type, result)?;
+            let Some(arm_result) = arm.result() else {
+                return Err(Diagnostic::error(
+                    "a statement-bodied switch arm is not supported yet (roadmap)",
+                ));
+            };
+            self.evaluate_tail(arm_result, return_type, result)?;
             self.output.instructions.push(Instruction::BranchToLinkRegister);
         }
         let default_start = self.output.instructions.len();
@@ -197,7 +202,12 @@ impl Generator {
         let mut body_offset = std::collections::HashMap::new();
         for arm in sorted {
             body_offset.insert(arm.value, self.output.instructions.len() as u32 * 4);
-            self.evaluate_tail(&arm.result, return_type, result)?;
+            let Some(arm_result) = arm.result() else {
+                return Err(Diagnostic::error(
+                    "a statement-bodied switch arm is not supported yet (roadmap)",
+                ));
+            };
+            self.evaluate_tail(arm_result, return_type, result)?;
             self.output.instructions.push(Instruction::BranchToLinkRegister);
         }
         let default_offset = self.output.instructions.len() as u32 * 4;

@@ -167,21 +167,8 @@ impl Parser {
             if self.eat_word("case") {
                 let value = self.parse_integer_constant()?;
                 self.expect(Token::Colon)?;
-                // The arm body may be braced (`case V: { return E; }`) — with
-                // an optional trailing `break;` after the return, both dead
-                // syntax around the same single-return arm.
-                let braced = self.eat_keyword(Token::BraceOpen);
-                self.expect(Token::KeywordReturn)?;
-                let result = self.expression()?;
-                self.expect(Token::Semicolon)?;
-                if braced {
-                    while matches!(self.peek(), Token::Identifier(word) if word == "break") {
-                        self.advance();
-                        self.expect(Token::Semicolon)?;
-                    }
-                    self.expect(Token::BraceClose)?;
-                }
-                arms.push(SwitchArm { value, result });
+                let body = self.parse_switch_arm_body()?;
+                arms.push(SwitchArm { value, body });
             } else if self.eat_word("default") {
                 self.expect(Token::Colon)?;
                 let braced = self.eat_keyword(Token::BraceOpen);
@@ -201,6 +188,62 @@ impl Parser {
         }
         self.expect(Token::BraceClose)?;
         Ok(Statement::Switch { scrutinee, arms, default })
+    }
+
+    /// A switch arm's body: the common `return E;` (optionally braced, with
+    /// dead trailing `break;`s), or a braced STATEMENT body ending at its
+    /// `break;` — represented faithfully (mwcc branches these; a ternary
+    /// lowering is byte-different).
+    fn parse_switch_arm_body(&mut self) -> Compilation<mwcc_syntax_trees::ArmBody> {
+        use mwcc_syntax_trees::ArmBody;
+        let braced = self.eat_keyword(Token::BraceOpen);
+        if *self.peek() == Token::KeywordReturn {
+            self.advance();
+            let result = self.expression()?;
+            self.expect(Token::Semicolon)?;
+            if braced {
+                while matches!(self.peek(), Token::Identifier(word) if word == "break") {
+                    self.advance();
+                    self.expect(Token::Semicolon)?;
+                }
+                self.expect(Token::BraceClose)?;
+            }
+            return Ok(ArmBody::Return(result));
+        }
+        if !braced {
+            return Err(Diagnostic::error(
+                "a statement-bodied switch arm must be braced (roadmap)",
+            ));
+        }
+        // A braced statement body: if-statements and returns, ending at
+        // `break;` or the closing brace.
+        let mut statements: Vec<Statement> = Vec::new();
+        let mut local_names = std::collections::HashSet::new();
+        let mut block_locals = Vec::new();
+        loop {
+            if matches!(self.peek(), Token::Identifier(word) if word == "break") {
+                self.advance();
+                self.expect(Token::Semicolon)?;
+                continue; // dead after full-return diamonds; end-of-arm otherwise
+            }
+            if *self.peek() == Token::BraceClose {
+                self.advance();
+                break;
+            }
+            if *self.peek() == Token::KeywordIf {
+                statements.push(self.parse_if_statement(&mut local_names, &mut block_locals)?);
+                continue;
+            }
+            if *self.peek() == Token::KeywordReturn {
+                statements.push(self.parse_return_statement()?);
+                continue;
+            }
+            statements.push(self.parse_simple_statement(&local_names)?);
+        }
+        if !block_locals.is_empty() {
+            return Err(Diagnostic::error("a switch-arm local is not supported yet (roadmap)"));
+        }
+        Ok(ArmBody::Statements(statements))
     }
 
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
@@ -1261,7 +1304,12 @@ impl Parser {
                     }
                     Statement::Switch { scrutinee, arms, default } => {
                         expression_calls(scrutinee, names)
-                            || arms.iter().any(|arm| expression_calls(&arm.result, names))
+                            || arms.iter().any(|arm| match &arm.body {
+                        mwcc_syntax_trees::ArmBody::Return(result) => expression_calls(result, names),
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            statements.iter().any(|statement| statement_calls(statement, names))
+                        }
+                    })
                             || default.as_ref().is_some_and(|expression| expression_calls(expression, names))
                     }
                     Statement::Return(Some(expression)) => expression_calls(expression, names),

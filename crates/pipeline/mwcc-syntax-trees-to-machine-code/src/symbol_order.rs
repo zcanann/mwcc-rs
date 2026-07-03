@@ -80,7 +80,14 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
         Statement::Switch { scrutinee, arms, default } => {
             collect(scrutinee, names);
             for arm in arms {
-                collect(&arm.result, names);
+                match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(result) => collect(result, names),
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                        for statement in statements {
+                            collect_statement(statement, names);
+                        }
+                    }
+                }
             }
             if let Some(default) = default {
                 collect(default, names);

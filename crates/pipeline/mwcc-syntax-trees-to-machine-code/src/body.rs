@@ -595,7 +595,10 @@ fn inline_switch_scrutinee_locals(function: &Function) -> Option<Function> {
     for local in &function.locals {
         let mut occurrences = crate::analysis::count_name_occurrences(scrutinee, &local.name);
         for arm in arms {
-            occurrences += crate::analysis::count_name_occurrences(&arm.result, &local.name);
+            let Some(result) = arm.result() else {
+                return None; // statement-bodied arms skip this fold
+            };
+            occurrences += crate::analysis::count_name_occurrences(result, &local.name);
         }
         if let Some(expression) = default {
             occurrences += crate::analysis::count_name_occurrences(expression, &local.name);
@@ -609,7 +612,13 @@ fn inline_switch_scrutinee_locals(function: &Function) -> Option<Function> {
     }
     let arms = arms
         .iter()
-        .map(|arm| mwcc_syntax_trees::SwitchArm { value: arm.value, result: crate::value_tracking::substitute(&arm.result, &values) })
+        .map(|arm| mwcc_syntax_trees::SwitchArm {
+            value: arm.value,
+            body: mwcc_syntax_trees::ArmBody::Return(crate::value_tracking::substitute(
+                arm.result().expect("gated above"),
+                &values,
+            )),
+        })
         .collect();
     Some(Function {
         return_type: function.return_type,
@@ -7884,7 +7893,10 @@ impl Generator {
                 if !(0..3).contains(&index) {
                     return Ok(false);
                 }
-                quadrants[index as usize] = parse_quadrant(&arm.result);
+                let Some(result) = arm.result() else {
+                    return Ok(false);
+                };
+                quadrants[index as usize] = parse_quadrant(result);
             }
             let Some(default_result) = default else {
                 return Ok(false);

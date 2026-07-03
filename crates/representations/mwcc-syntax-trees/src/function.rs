@@ -46,7 +46,26 @@ pub struct GuardedReturn {
 #[derive(Debug, Clone)]
 pub struct SwitchArm {
     pub value: i64,
-    pub result: Expression,
+    pub body: ArmBody,
+}
+
+/// A switch arm's payload: the common `return <expr>;` form, or a general
+/// statement body ending at its `break`/return (the fminmaxdim/wchar_io
+/// class — mwcc BRANCHES these; lowering to a ternary is byte-different).
+#[derive(Debug, Clone)]
+pub enum ArmBody {
+    Return(Expression),
+    Statements(Vec<Statement>),
+}
+
+impl SwitchArm {
+    /// The return expression for a plain `case V: return E;` arm.
+    pub fn result(&self) -> Option<&Expression> {
+        match &self.body {
+            ArmBody::Return(expression) => Some(expression),
+            ArmBody::Statements(_) => None,
+        }
+    }
 }
 
 /// A body statement (beyond declarations, guards, and the return).

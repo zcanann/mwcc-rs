@@ -483,7 +483,12 @@ pub(crate) fn statement_has_call(statement: &Statement) -> bool {
         Statement::Expression(expression) => expression_has_call(expression),
         Statement::Switch { scrutinee, arms, default } => {
             expression_has_call(scrutinee)
-                || arms.iter().any(|arm| expression_has_call(&arm.result))
+                || arms.iter().any(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(result) => expression_has_call(result),
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                        statements.iter().any(statement_has_call)
+                    }
+                })
                 || default.as_ref().is_some_and(expression_has_call)
         }
         Statement::If { condition, then_body, else_body } => {
