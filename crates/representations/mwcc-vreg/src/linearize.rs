@@ -4297,42 +4297,30 @@ mod tests {
             ]},
         ];
 
-        /// THE FITTED MODEL (v2, 13/13): values assign lowest-free in
-        /// r3..r10 over their inclusive ranges, ordered
-        ///   Temp -> discarded loads (def-asc, ONLY when some r3+ value
-        ///   crosses the first branch) -> Computed -> Mask -> surviving
-        ///   loads (def-asc) -> Shift -> discarded loads (def-desc, when
-        ///   nothing crosses).
-        /// r0 separately takes branch-free values (folds, record temps,
-        /// store-only rewrites, single-use adjacent masks).
+        /// THE FITTED MODEL (v2, 13/13) — the public crate module; the
+        /// pinned test drives it through this adapter.
         pub fn model_order(fixture: &Fixture) -> Vec<usize> {
-            let crossers = fixture
+            let values: Vec<crate::int_alloc::Value> = fixture
                 .values
                 .iter()
-                .any(|value| matches!(value.class, Class::LoadSurviving | Class::Shift));
-            let mut order: Vec<usize> = Vec::new();
-            let mut push_class = |order: &mut Vec<usize>, class: Class, descending: bool| {
-                let mut members: Vec<usize> = (0..fixture.values.len())
-                    .filter(|&i| fixture.values[i].class == class)
-                    .collect();
-                members.sort_by_key(|&i| {
-                    let def = fixture.values[i].def as i64;
-                    if descending { -def } else { def }
-                });
-                order.extend(members);
-            };
-            push_class(&mut order, Class::Temp, false);
-            if crossers {
-                push_class(&mut order, Class::LoadDiscarded, false);
+                .map(|value| crate::int_alloc::Value {
+                    class: to_public(value.class),
+                    def: value.def,
+                    last: value.last,
+                })
+                .collect();
+            crate::int_alloc::model_order(&values)
+        }
+
+        fn to_public(class: Class) -> crate::int_alloc::Class {
+            match class {
+                Class::Temp => crate::int_alloc::Class::Temp,
+                Class::Mask => crate::int_alloc::Class::Mask,
+                Class::Computed => crate::int_alloc::Class::Computed,
+                Class::LoadDiscarded => crate::int_alloc::Class::LoadDiscarded,
+                Class::LoadSurviving => crate::int_alloc::Class::LoadSurviving,
+                Class::Shift => crate::int_alloc::Class::Shift,
             }
-            push_class(&mut order, Class::Computed, false);
-            push_class(&mut order, Class::Mask, false);
-            push_class(&mut order, Class::LoadSurviving, false);
-            push_class(&mut order, Class::Shift, false);
-            if !crossers {
-                push_class(&mut order, Class::LoadDiscarded, true);
-            }
-            order
         }
 
         /// Lowest register in r3..r10 free over [def,last] (inclusive

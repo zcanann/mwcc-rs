@@ -14,6 +14,7 @@
 //! keeping every build byte-exact — is described in `docs/register-allocator.md`.
 
 mod allocator;
+pub mod int_alloc;
 mod constraints;
 mod frame;
 mod description;

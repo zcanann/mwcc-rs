@@ -79,6 +79,8 @@ pub enum Instruction {
     OrRecord { a: u8, s: u8, b: u8 },
     /// `and rA, rS, rB`
     And { a: u8, s: u8, b: u8 },
+    /// `and. rA, rS, rB` — and, recording the result in CR0.
+    AndRecord { a: u8, s: u8, b: u8 },
     /// `xor rA, rS, rB`
     Xor { a: u8, s: u8, b: u8 },
     /// `slw rA, rS, rB` — shift left word by the low bits of rB.

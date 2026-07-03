@@ -975,6 +975,32 @@ struct GuardLocal<'a> {
     offset_k: i64,
 }
 
+/// Parse `((source >> S) [& M]) - K` as a guard-local initializer.
+fn parse_guard_init<'a>(name: &'a str, init: &'a Expression) -> Option<GuardLocal<'a>> {
+    let (core, offset_k) = match init {
+        Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+            let k = crate::analysis::constant_value(right)?;
+            (left.as_ref(), k)
+        }
+        other => (other, 0),
+    };
+    let (shifted, mask) = match core {
+        Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
+            let mask = crate::analysis::constant_value(right)?;
+            (left.as_ref(), Some(mask))
+        }
+        other => (other, None),
+    };
+    let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = shifted else {
+        return None;
+    };
+    let Expression::Variable(source) = left.as_ref() else {
+        return None;
+    };
+    let shift = u8::try_from(crate::analysis::constant_value(right)?).ok()?;
+    Some(GuardLocal { name, source, shift, mask, offset_k })
+}
+
 impl Generator {
 
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
@@ -1838,6 +1864,12 @@ impl Generator {
             return Ok(());
         }
         if self.try_frexp_family(function)? {
+            return Ok(());
+        }
+        // The SHIFT-WRITEBACK family (s_floor arm2's core) parses the
+        // un-normalized leading assigns itself — its mutations reassign
+        // punned locals, which the initializer normalizer refuses.
+        if self.try_punned_shift_writeback(function)? {
             return Ok(());
         }
         // The punned-guard WRITEBACK (the s_floor tail) binds its punned
@@ -3786,6 +3818,499 @@ impl Generator {
         Ok(true)
     }
 
+    /// The SHIFT-WRITEBACK family (s_floor arm2's core): statements =
+    /// `[i = C >> j0]  [if (test) return x]  [mutations...]  [stores...]`
+    /// with a multi-use shifted mask. Registers come from the fitted
+    /// int_alloc v2 model (13/13 captures — docs/int-allocator-frontier.md):
+    /// a synthetic position pass numbers the template, values classify as
+    /// Temp/Mask/Computed/Load{Discarded,Surviving}/Shift, and the model
+    /// orders lowest-free assignment. Measured forms:
+    ///   test: `((a & i) | b) == 0` (and + or., b FIRST) or `(a & i) == 0`
+    ///     (and. record); skip = bne CONT; b EPI; CONT:.
+    ///   mutations: `l &= ~i` (fused andc; TWO of them share one not r0),
+    ///     `l &= K` (clrlwi r0, store from r0 — the home is read only),
+    ///     `l = K` (li r0, store from r0 — the home is DISCARDED when it
+    ///     was read in the test, and never loaded when read nowhere).
+    fn try_punned_shift_writeback(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || self.non_leaf
+        {
+            return Ok(false);
+        }
+        let Some(Expression::Variable(returned)) = &function.return_expression else {
+            return Ok(false);
+        };
+        let Some(first) = function.parameters.first() else {
+            return Ok(false);
+        };
+        if first.parameter_type != Type::Double || returned != &first.name {
+            return Ok(false);
+        }
+        let x = first.name.as_str();
+        // Roles come from the LEADING assigns — the normalizer skips this
+        // family because the mutations reassign the punned locals.
+        let mut locals: Vec<(&str, i16)> = Vec::new();
+        let mut guard: Option<GuardLocal> = None;
+        let mut shift: Option<&str> = None;
+        let mut mask_constant: Option<i64> = None;
+        let mut cursor = 0usize;
+        while let Some(Statement::Assign { name, value }) = function.statements.get(cursor) {
+            let Some(declaration) = function.locals.iter().find(|local| &local.name == name) else {
+                return Ok(false);
+            };
+            if declaration.initializer.is_some() || declaration.array_length.is_some() {
+                return Ok(false);
+            }
+            if let Some(offset) = crate::frame::pun_word_offset_pub(value, x) {
+                if declaration.declared_type != Type::Int
+                    || locals.iter().any(|&(_, seen)| seen == offset)
+                {
+                    return Ok(false);
+                }
+                locals.push((name.as_str(), offset));
+                cursor += 1;
+                continue;
+            }
+            if guard.is_none() && declaration.declared_type == Type::Int {
+                if let Some(parsed) = parse_guard_init(name.as_str(), value) {
+                    if locals.iter().any(|&(local, _)| local == parsed.source) {
+                        guard = Some(parsed);
+                        cursor += 1;
+                        continue;
+                    }
+                }
+                return Ok(false);
+            }
+            if shift.is_none() && declaration.declared_type == Type::UnsignedInt {
+                if let (Some(parsed), Expression::Binary { operator: BinaryOperator::ShiftRight, left, right }) =
+                    (&guard, value)
+                {
+                    if let Some(constant) = crate::analysis::constant_value(left) {
+                        if matches!(right.as_ref(), Expression::Variable(v) if v == parsed.name) {
+                            mask_constant = Some(constant);
+                            shift = Some(name.as_str());
+                            cursor += 1;
+                            continue;
+                        }
+                    }
+                }
+                return Ok(false);
+            }
+            return Ok(false);
+        }
+        let (Some(guard), Some(shift), Some(mask_constant)) = (guard, shift, mask_constant) else {
+            return Ok(false);
+        };
+        if locals.is_empty() || locals.len() > 2 {
+            return Ok(false);
+        }
+        if guard.offset_k == 0 || i16::try_from(-guard.offset_k).is_err() {
+            return Ok(false);
+        }
+        // j0 is consumed by the shift alone; the shift local is written once.
+        let tail = &function.statements[cursor..];
+        fn reads_in(statement: &Statement, name: &str) -> usize {
+            match statement {
+                Statement::Assign { value, .. } => count_name_occurrences(value, name),
+                Statement::Store { target, value } => {
+                    count_name_occurrences(target, name) + count_name_occurrences(value, name)
+                }
+                Statement::If { condition, then_body, else_body } => {
+                    count_name_occurrences(condition, name)
+                        + then_body.iter().map(|inner| reads_in(inner, name)).sum::<usize>()
+                        + else_body.iter().map(|inner| reads_in(inner, name)).sum::<usize>()
+                }
+                Statement::Return(Some(value)) => count_name_occurrences(value, name),
+                _ => 1,
+            }
+        }
+        if tail.iter().map(|statement| reads_in(statement, guard.name)).sum::<usize>() != 0 {
+            return Ok(false);
+        }
+        // The early-return test.
+        let Some(Statement::If { condition, then_body, else_body }) = tail.first() else {
+            return Ok(false);
+        };
+        if !matches!(then_body.as_slice(), [Statement::Return(Some(Expression::Variable(v)))] if v == x)
+            || !else_body.is_empty()
+        {
+            return Ok(false);
+        }
+        // `((a & i) | b) == 0` or `(a & i) == 0`, a/b punned, i the shift.
+        let Expression::Binary { operator: BinaryOperator::Equal, left: test, right: zero } = condition
+        else {
+            return Ok(false);
+        };
+        if crate::analysis::constant_value(zero) != Some(0) {
+            return Ok(false);
+        }
+        let local_index = |name: &str| locals.iter().position(|&(local, _)| local == name);
+        let parse_and = |expr: &Expression| -> Option<usize> {
+            let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expr else {
+                return None;
+            };
+            let Expression::Variable(a) = left.as_ref() else { return None };
+            let Expression::Variable(i) = right.as_ref() else { return None };
+            if i != shift {
+                return None;
+            }
+            local_index(a)
+        };
+        let (test_and_local, test_or_local) = match test.as_ref() {
+            Expression::Binary { operator: BinaryOperator::BitOr, left, right } => {
+                let Some(a) = parse_and(left) else { return Ok(false) };
+                let Expression::Variable(b) = right.as_ref() else { return Ok(false) };
+                let Some(b) = local_index(b) else { return Ok(false) };
+                (a, Some(b))
+            }
+            other => {
+                let Some(a) = parse_and(other) else { return Ok(false) };
+                (a, None)
+            }
+        };
+        // Mutations, then stores.
+        enum Mutation {
+            Rewrite(i16),
+            AndcShift,
+            MaskViaScratch { begin: u8, end: u8 },
+        }
+        let mut mutations: Vec<(usize, Mutation)> = Vec::new();
+        let mut tail_cursor = 1usize;
+        while let Some(Statement::Assign { name, value }) = tail.get(tail_cursor) {
+            let Some(index) = local_index(name) else { return Ok(false) };
+            if mutations.iter().any(|&(seen, _)| seen == index) {
+                return Ok(false);
+            }
+            let mutation = if let Some(constant) = crate::analysis::constant_value(value) {
+                let Ok(small) = i16::try_from(constant) else { return Ok(false) };
+                Mutation::Rewrite(small)
+            } else if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = value {
+                if !matches!(left.as_ref(), Expression::Variable(v) if v == name.as_str()) {
+                    return Ok(false);
+                }
+                match right.as_ref() {
+                    Expression::Unary { operator: UnaryOperator::BitNot, operand }
+                        if matches!(operand.as_ref(), Expression::Variable(v) if v == shift) =>
+                    {
+                        Mutation::AndcShift
+                    }
+                    other => {
+                        let Some((begin, end)) = crate::analysis::constant_value(other)
+                            .and_then(crate::analysis::rlwinm_mask)
+                        else {
+                            return Ok(false);
+                        };
+                        Mutation::MaskViaScratch { begin, end }
+                    }
+                }
+            } else {
+                return Ok(false);
+            };
+            mutations.push((index, mutation));
+            tail_cursor += 1;
+        }
+        // At most one rewrite (the li r0 dedupe across two is unmeasured).
+        if mutations.iter().filter(|(_, m)| matches!(m, Mutation::Rewrite(_))).count() > 1 {
+            return Ok(false);
+        }
+        // The r0 materialization sinks below the home-writing mutations
+        // regardless of source order (measured D3: andc; li r0; stores) —
+        // r0's range stays minimal.
+        mutations.sort_by_key(|(_, mutation)| matches!(mutation, Mutation::Rewrite(_)));
+        // Stores: one per local, its own offset, in local order.
+        let stores = &tail[tail_cursor..];
+        if stores.len() != locals.len() {
+            return Ok(false);
+        }
+        for (statement, &(name, offset)) in stores.iter().zip(&locals) {
+            let Statement::Store { target, value } = statement else {
+                return Ok(false);
+            };
+            if crate::frame::pun_word_offset_pub(target, x) != Some(offset)
+                || !matches!(value, Expression::Variable(read) if read == name)
+            {
+                return Ok(false);
+            }
+        }
+        // -- the synthetic position pass --
+        use mwcc_vreg::int_alloc::{allocate, Class, Value};
+        let needs_temp = i16::try_from(mask_constant).is_err();
+        let mut position = 1u32; // 0 = stwu
+        let temp_range = needs_temp.then(|| {
+            let range = (position, position + 1);
+            position += 1;
+            range
+        });
+        let mask_position = position; // li or the addi completing the pair
+        position += 1;
+        position += 1; // stfd
+        // Which locals load: any with a read (test, extract source, andc/mask mutation).
+        let has_read = |index: usize| {
+            index == test_and_local
+                || test_or_local == Some(index)
+                || locals[index].0 == guard.source
+                || mutations.iter().any(|&(m, ref form)| {
+                    m == index && !matches!(form, Mutation::Rewrite(_))
+                })
+        };
+        let mut load_positions: Vec<Option<u32>> = Vec::new();
+        for index in 0..locals.len() {
+            if has_read(index) {
+                load_positions.push(Some(position));
+                position += 1;
+            } else {
+                load_positions.push(None);
+            }
+        }
+        let extract_position = position;
+        position += 1;
+        let fold_position = position;
+        position += 1;
+        let sraw_position = position;
+        position += 1;
+        let and_position = position;
+        position += 1;
+        let or_position = test_or_local.map(|_| {
+            let at = position;
+            position += 1;
+            at
+        });
+        let branch_position = position; // bne
+        position += 2; // bne + b
+        // Mutations occupy sequential slots (the shared `not` adds one).
+        let andc_count = mutations.iter().filter(|(_, m)| matches!(m, Mutation::AndcShift)).count();
+        let not_position = (andc_count >= 2).then(|| {
+            let at = position;
+            position += 1;
+            at
+        });
+        let mut mutation_positions: Vec<u32> = Vec::new();
+        for _ in &mutations {
+            mutation_positions.push(position);
+            position += 1;
+        }
+        let mut store_positions: Vec<u32> = Vec::new();
+        for _ in &locals {
+            store_positions.push(position);
+            position += 1;
+        }
+        // -- classify + model --
+        let mut values: Vec<Value> = Vec::new();
+        let mut tags: Vec<&str> = Vec::new(); // parallel debug tags
+        if let Some((lis, addi)) = temp_range {
+            values.push(Value { class: Class::Temp, def: lis, last: addi });
+            tags.push("temp");
+        }
+        values.push(Value { class: Class::Mask, def: mask_position, last: sraw_position });
+        tags.push("mask");
+        values.push(Value { class: Class::Computed, def: extract_position, last: fold_position });
+        tags.push("computed");
+        let mask_value_index = if needs_temp { 1 } else { 0 };
+        let computed_value_index = mask_value_index + 1;
+        // The shift local: last read = latest of the test and-op and any
+        // andc/not mutation.
+        let shift_last = if let Some(not_at) = not_position {
+            not_at
+        } else if let Some(at) = mutations
+            .iter()
+            .zip(&mutation_positions)
+            .filter(|((_, m), _)| matches!(m, Mutation::AndcShift))
+            .map(|(_, &at)| at)
+            .max()
+        {
+            at
+        } else {
+            and_position
+        };
+        let shift_crosses = shift_last > branch_position;
+        let shift_value_index = if shift_crosses {
+            values.push(Value { class: Class::Shift, def: sraw_position, last: shift_last });
+            tags.push("shift");
+            Some(values.len() - 1)
+        } else {
+            None // r0 (branch-free single use)
+        };
+        let mut local_value_indices: Vec<Option<usize>> = vec![None; locals.len()];
+        for index in 0..locals.len() {
+            let Some(load) = load_positions[index] else { continue };
+            // The home's last read.
+            let mut last = load;
+            if locals[index].0 == guard.source {
+                last = last.max(extract_position);
+            }
+            if index == test_and_local {
+                last = last.max(and_position);
+            }
+            if test_or_local == Some(index) {
+                last = last.max(or_position.unwrap_or(and_position));
+            }
+            let mutation = mutations
+                .iter()
+                .zip(&mutation_positions)
+                .find(|((m, _), _)| *m == index);
+            let class = match mutation {
+                Some(((_, Mutation::Rewrite(_)), _)) => {
+                    // The home dies at its last pre-branch read.
+                    Class::LoadDiscarded
+                }
+                Some(((_, Mutation::AndcShift), &at)) => {
+                    // andc writes the home; the store reads it.
+                    last = last.max(store_positions[index]);
+                    let _ = at;
+                    Class::LoadSurviving
+                }
+                Some(((_, Mutation::MaskViaScratch { .. }), &at)) => {
+                    // clrlwi reads the home; the store reads r0.
+                    last = last.max(at);
+                    Class::LoadSurviving
+                }
+                None => {
+                    last = last.max(store_positions[index]);
+                    Class::LoadSurviving
+                }
+            };
+            values.push(Value { class, def: load, last });
+            tags.push("local");
+            local_value_indices[index] = Some(values.len() - 1);
+        }
+        let registers = allocate(&values);
+        let _ = &tags;
+        let mask_register = registers[mask_value_index];
+        let guard_register = registers[computed_value_index];
+        let shift_register = shift_value_index.map(|i| registers[i]).unwrap_or(0);
+        let home = |index: usize| local_value_indices[index].map(|i| registers[i]);
+        // -- emit --
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        if needs_temp {
+            let temp_register = registers[0];
+            let high = ((mask_constant + 0x8000) >> 16) as i16;
+            let low = mask_constant as i16;
+            self.output.instructions.push(Instruction::load_immediate_shifted(temp_register, high));
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: mask_register,
+                a: temp_register,
+                immediate: low,
+            });
+        } else {
+            self.output.instructions.push(Instruction::load_immediate(mask_register, mask_constant as i16));
+        }
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        for (index, &(_, offset)) in locals.iter().enumerate() {
+            if load_positions[index].is_some() {
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: home(index).expect("loaded"),
+                    a: 1,
+                    offset: 8 + offset,
+                });
+            }
+        }
+        let source_home = home(local_index(guard.source).expect("validated")).expect("source loads");
+        match guard.mask {
+            Some(mask) => {
+                let rotated = ((32 - guard.shift as u32) % 32) as u8;
+                let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
+                    return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::RotateAndMask {
+                    a: guard_register,
+                    s: source_home,
+                    shift: rotated,
+                    begin,
+                    end,
+                });
+            }
+            None => {
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: guard_register,
+                    s: source_home,
+                    shift: guard.shift,
+                });
+            }
+        }
+        let negative = i16::try_from(-guard.offset_k).expect("validated");
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: guard_register, immediate: negative });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
+            a: shift_register,
+            s: mask_register,
+            b: 0,
+        });
+        // The test.
+        let and_home = home(test_and_local).expect("test local loads");
+        if let Some(or_local) = test_or_local {
+            self.output.instructions.push(Instruction::And { a: 0, s: and_home, b: shift_register });
+            self.output.instructions.push(Instruction::OrRecord {
+                a: 0,
+                s: home(or_local).expect("test local loads"),
+                b: 0,
+            });
+        } else {
+            self.output.instructions.push(Instruction::AndRecord { a: 0, s: and_home, b: shift_register });
+        }
+        let continuation = self.fresh_label();
+        let epilogue = self.fresh_label();
+        self.emit_branch_conditional_to(4, 2, continuation); // bne — skip the return
+        self.emit_branch_to(epilogue);
+        self.bind_label(continuation);
+        // Mutations (the shared `not` precedes the first andc pair).
+        if not_position.is_some() {
+            self.output.instructions.push(Instruction::Nor { a: 0, s: shift_register, b: shift_register });
+        }
+        for (index, mutation) in &mutations {
+            let index = *index;
+            match mutation {
+                Mutation::Rewrite(constant) => {
+                    self.output.instructions.push(Instruction::load_immediate(0, *constant));
+                }
+                Mutation::AndcShift => {
+                    let register = home(index).expect("loaded");
+                    if not_position.is_some() {
+                        self.output.instructions.push(Instruction::And { a: register, s: register, b: 0 });
+                    } else {
+                        self.output.instructions.push(Instruction::AndComplement {
+                            a: register,
+                            s: register,
+                            b: shift_register,
+                        });
+                    }
+                }
+                Mutation::MaskViaScratch { begin, end } => {
+                    self.output.instructions.push(Instruction::RotateAndMask {
+                        a: 0,
+                        s: home(index).expect("loaded"),
+                        shift: 0,
+                        begin: *begin,
+                        end: *end,
+                    });
+                }
+            }
+        }
+        // Stores: surviving homes store themselves; rewrites and
+        // mask-via-scratch store from r0.
+        for (index, &(_, offset)) in locals.iter().enumerate() {
+            let from_scratch = mutations.iter().any(|&(m, ref form)| {
+                m == index && !matches!(form, Mutation::AndcShift)
+            });
+            let register = if from_scratch { 0 } else { home(index).expect("loaded") };
+            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset: 8 + offset });
+        }
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.bind_label(epilogue);
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // Pre-pool labels: one plus one per LOADED local (measured V1c
+        // @7 and W11 @7 with one load, V1b @8 with two — the never-read
+        // store-only local costs nothing), plus one for the shared `not`
+        // temp (W10 @9).
+        self.output.anonymous_label_bump += 1
+            + load_positions.iter().filter(|p| p.is_some()).count() as u32
+            + not_position.is_some() as u32;
+        Ok(true)
+    }
+
     /// The computed GUARD local `j0 = ((punned >> S) [& M]) - K` shared by
     /// the punned-writeback family (parsed once, consumed by the branch
     /// and select paths).
@@ -3813,22 +4338,8 @@ impl Generator {
         // read only by the outer condition (s_floor's exponent extract).
         let mut locals: Vec<(&str, i16)> = Vec::new();
         let mut guard_local: Option<GuardLocal> = None;
-        // ONE uninitialized unsigned local may hold a variable-shift mask
-        // `i = C >> j0` (s_floor's arm2/arm3 — measured V1); it computes
-        // in the r0 scratch off the guard fold.
-        let mut shift_local: Option<&str> = None;
         for local in &function.locals {
-            if local.array_length.is_some() {
-                return Ok(false);
-            }
-            if local.declared_type == Type::UnsignedInt {
-                if shift_local.is_some() || local.initializer.is_some() {
-                    return Ok(false);
-                }
-                shift_local = Some(local.name.as_str());
-                continue;
-            }
-            if local.declared_type != Type::Int {
+            if local.declared_type != Type::Int || local.array_length.is_some() {
                 return Ok(false);
             }
             let Some(init) = &local.initializer else {
@@ -3894,48 +4405,11 @@ impl Generator {
                 return Ok(false);
             }
         }
-        // statements = [shift assign]? [If{cond, [early-return-x if]?
-        // [mutations]}] + one punned store per local writing it back to
-        // ITS offset.
-        let mut shift_constant: Option<i64> = None;
-        let statement_offset = if let Some(shift) = shift_local {
-            // `i = C >> j0` leads the body; j0 is consumed by the shift
-            // alone (measured V1 — j0 in conditions alongside a shift is
-            // unfitted).
-            let Some(guard) = &guard_local else {
-                return Ok(false);
-            };
-            let Some(Statement::Assign { name, value }) = function.statements.first() else {
-                return Ok(false);
-            };
-            if name != shift {
-                return Ok(false);
-            }
-            let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = value else {
-                return Ok(false);
-            };
-            let Some(constant) = crate::analysis::constant_value(left) else {
-                return Ok(false);
-            };
-            if i16::try_from(constant).is_ok() {
-                // A small mask constant's schedule is unmeasured.
-                return Ok(false);
-            }
-            if !matches!(right.as_ref(), Expression::Variable(name) if name == guard.name) {
-                return Ok(false);
-            }
-            if guard.offset_k == 0 || i16::try_from(-guard.offset_k).is_err() {
-                return Ok(false);
-            }
-            shift_constant = Some(constant);
-            1
-        } else {
-            0
-        };
-        let (Some(Statement::If { condition, then_body, else_body }), stores) = (
-            function.statements.get(statement_offset),
-            &function.statements[statement_offset + 1..],
-        ) else {
+        // statements = [If{cond, [early-return-x if]? [mutations]}] + one
+        // punned store per local writing it back to ITS offset.
+        let (Some(Statement::If { condition, then_body, else_body }), stores) =
+            (function.statements.first(), &function.statements[1..])
+        else {
             return Ok(false);
         };
         if stores.len() != locals.len() {
@@ -4043,9 +4517,7 @@ impl Generator {
                 return Ok(false);
             }
         }
-        if mutated.is_empty() && shift_constant.is_none() {
-            // The shift form's early-return body mutates nothing — the
-            // writebacks store the originals (measured V1).
+        if mutated.is_empty() {
             return Ok(false);
         }
         fn block_reads(block: &[Statement], name: &str) -> usize {
@@ -4148,27 +4620,10 @@ impl Generator {
             }
         }
         // The guard-local condition: `j0 < C` only (measured), with j0
-        // read nowhere else in the function. Under the SHIFT form the
-        // guard is consumed by the shift alone — no condition reads it.
+        // read nowhere else in the function.
         let mut guard_compare: Option<(i16, i64)> = None;
-        if let (Some(guard), true) = (&guard_local, shift_constant.is_some()) {
-            let reads = count_name_occurrences(condition, guard.name)
-                + block_reads(block, guard.name)
-                + block_reads(else_body, guard.name)
-                + stores
-                    .iter()
-                    .map(|statement| match statement {
-                        Statement::Store { target, value } => {
-                            count_name_occurrences(target, guard.name)
-                                + count_name_occurrences(value, guard.name)
-                        }
-                        _ => 0,
-                    })
-                    .sum::<usize>();
-            if reads != 0 {
-                return Ok(false);
-            }
-        } else if let Some(guard) = &guard_local {
+        if let Some(guard) = &guard_local {
+
             let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition else {
                 return Ok(false);
             };
@@ -4258,20 +4713,9 @@ impl Generator {
             block_reads(block, name) + block_reads(else_body, name) > 0
                 || !(covered(block, name) && !else_body.is_empty() && covered(else_body, name))
         });
-        // The shift form writes r0 twice (the guard fold, then the shifted
-        // mask lives there) and its big constant claims the first general
-        // slot ahead of the punned locals (measured V1: mask r4, locals
-        // r5/r6).
-        let scratch_taken = (scratch_written && any_original_survives) || shift_constant.is_some();
+        let scratch_taken = scratch_written && any_original_survives;
         let mut next_general = if guard_local.is_some() { 4u8 } else { 3u8 };
         let guard_register = 3u8;
-        let mask_register = if shift_constant.is_some() {
-            let register = next_general;
-            next_general += 1;
-            Some(register)
-        } else {
-            None
-        };
         let mut registers: Vec<u8> = Vec::new();
         let mut r0_used = scratch_taken;
         for _ in &locals {
@@ -4300,19 +4744,6 @@ impl Generator {
         // -- commit --
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        if let (Some(constant), Some(mask_register)) = (shift_constant, mask_register) {
-            // The mask constant synthesizes ahead of the spill through the
-            // guard's (still-free) home: lis rG,high'; addi rMask,rG,low
-            // (measured V1: lis r3,16; addi r4,r3,-1 for 0xfffff).
-            let high = ((constant + 0x8000) >> 16) as i16;
-            let low = constant as i16;
-            self.output.instructions.push(Instruction::load_immediate_shifted(guard_register, high));
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: mask_register,
-                a: guard_register,
-                immediate: low,
-            });
-        }
         let hoisted = if guard_local.is_none() && float_guard.is_none() {
             Some(self.emit_condition_test(condition)?)
         } else {
@@ -4369,24 +4800,7 @@ impl Generator {
                     });
                 }
             }
-            if shift_constant.is_some() {
-                // The shift form: the -K folds to r0 as the shift amount,
-                // then the mask shifts into r0 itself (measured V1:
-                // addi r0,r3,-1023; sraw r0,r4,r0).
-                let Ok(negative) = i16::try_from(-guard.offset_k) else {
-                    return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
-                };
-                self.output.instructions.push(Instruction::AddImmediate {
-                    d: 0,
-                    a: guard_register,
-                    immediate: negative,
-                });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
-                    a: 0,
-                    s: mask_register.expect("shift form"),
-                    b: 0,
-                });
-            } else if guard_compare.is_none() && guard.offset_k != 0 {
+            if guard_compare.is_none() && guard.offset_k != 0 {
                 let Ok(negative) = i16::try_from(-guard.offset_k) else {
                     return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
                 };
@@ -4399,9 +4813,7 @@ impl Generator {
         }
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
-        let outer_laddered = shift_constant.is_some()
-            || !else_body.is_empty()
-            || (guard_local.is_some() && guard_compare.is_none());
+        let outer_laddered = !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
         if outer_laddered && !(guard_local.is_some() && guard_compare.is_none()) {
             // Laddered forms are BYTE-verified only for the multi-read
             // guard (L1: the addi lands in the home and every condition
@@ -4489,25 +4901,7 @@ impl Generator {
                 ),
             ));
         }
-        if let Some(shift) = shift_local {
-            // The shifted mask lives in the r0 scratch for the conditions.
-            bindings.push((shift.to_string(), 0));
-            saved.push((
-                shift.to_string(),
-                self.locations.insert(
-                    shift.to_string(),
-                    crate::generator::Location {
-                        class: ValueClass::General,
-                        register: 0,
-                        signed: false,
-                        width: 32,
-                        pointee: None,
-                        stride: None,
-                    },
-                ),
-            ));
-        }
-        let outer_statement = [function.statements[statement_offset].clone()];
+        let outer_statement = [function.statements[0].clone()];
         let walked = if outer_laddered {
             self.emit_writeback_block(&outer_statement, &bindings, join, epilogue)
         } else {

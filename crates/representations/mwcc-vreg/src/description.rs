@@ -76,7 +76,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, a);
         }
         // rA = rS op rB — PowerPC's logical/shift form: rA destination, rS/rB sources.
-        Nor { a, s, b } | Nand { a, s, b } | Eqv { a, s, b } | AndComplement { a, s, b } | OrComplement { a, s, b } | Or { a, s, b } | OrRecord { a, s, b } | And { a, s, b }
+        Nor { a, s, b } | Nand { a, s, b } | Eqv { a, s, b } | AndComplement { a, s, b } | OrComplement { a, s, b } | Or { a, s, b } | OrRecord { a, s, b } | And { a, s, b } | AndRecord { a, s, b }
         | Xor { a, s, b } | ShiftLeftWord { a, s, b } | ShiftRightAlgebraicWord { a, s, b } | ShiftRightWord { a, s, b } => {
             visit(D, G, a);
             visit(U, G, s);
