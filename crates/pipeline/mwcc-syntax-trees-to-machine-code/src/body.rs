@@ -939,6 +939,30 @@ enum SelectArm {
     Computed { source: u8, immediate: i16 },
 }
 
+/// `*(int*)p` / `*(1+(int*)p)` for a POINTER variable (no AddressOf —
+/// the s_modf iptr stores).
+fn pointer_word_offset(target: &Expression, pointer: &str) -> Option<i16> {
+    let Expression::Dereference { pointer: inner } = target else {
+        return None;
+    };
+    let is_cast = |expression: &Expression| {
+        matches!(expression, Expression::Cast { target_type: Type::Pointer(Pointee::Int), operand }
+            if matches!(operand.as_ref(), Expression::Variable(name) if name == pointer))
+    };
+    if is_cast(inner.as_ref()) {
+        return Some(0);
+    }
+    if let Expression::Binary { operator: BinaryOperator::Add, left, right } = inner.as_ref() {
+        if crate::analysis::constant_value(left) == Some(1) && is_cast(right) {
+            return Some(4);
+        }
+        if crate::analysis::constant_value(right) == Some(1) && is_cast(left) {
+            return Some(4);
+        }
+    }
+    None
+}
+
 /// `HUGE + x > 0.0` (the statics folded upstream to literals) — the fdlibm
 /// inexact-raising guard, matched at the outer arm level and inside the
 /// writeback walker.
@@ -1893,6 +1917,10 @@ impl Generator {
         }
         // THE COMPOSER: the full three-arm s_floor ladder.
         if self.try_punned_ladder_writeback(function)? {
+            return Ok(());
+        }
+        // THE MODF LADDER: pointer stores + integral/fraction returns.
+        if self.try_punned_modf_ladder(function)? {
             return Ok(());
         }
         // The SHIFT-WRITEBACK family (s_floor arm2's core) parses the
@@ -3844,6 +3872,388 @@ impl Generator {
         // vs the +0 base's @5/@6 — the same count as the if-converted
         // select, so the label cost predates the conversion decision).
         self.output.anonymous_label_bump += 3;
+        Ok(true)
+    }
+
+    /// THE MODF LADDER (fire 405): s_modf's three-arm shape — pointer
+    /// stores through the second param, the INTEGRAL block (sign-only pun
+    /// store into x's spill + f1 reload), and `x - *iptr` (lfd + fsub).
+    /// Registers per the capture with r3 = the live pointer param: temp
+    /// r4, loads r5/r6, the scrutinee j0 r7; the integral block reuses
+    /// the (path-dead) param register r3 as its scratch.
+    fn try_punned_modf_ladder(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || self.non_leaf
+            || function.return_expression.is_some()
+        {
+            return Ok(false);
+        }
+        let [x_param, pointer_param] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if x_param.parameter_type != Type::Double
+            || pointer_param.parameter_type != Type::Pointer(Pointee::Double)
+        {
+            return Ok(false);
+        }
+        let x = x_param.name.as_str();
+        let iptr = pointer_param.name.as_str();
+        // Locals: initialized punned pair + guard; the uninitialized shift.
+        let mut locals: Vec<(&str, i16)> = Vec::new();
+        let mut guard: Option<GuardLocal> = None;
+        let mut shift: Option<&str> = None;
+        for local in &function.locals {
+            if local.array_length.is_some() {
+                return Ok(false);
+            }
+            match (&local.initializer, local.declared_type) {
+                (Some(init), Type::Int) => {
+                    if let Some(offset) = crate::frame::pun_word_offset_pub(init, x) {
+                        if locals.iter().any(|&(_, seen)| seen == offset) {
+                            return Ok(false);
+                        }
+                        locals.push((local.name.as_str(), offset));
+                    } else if guard.is_none() {
+                        let Some(parsed) = parse_guard_init(local.name.as_str(), init) else {
+                            return Ok(false);
+                        };
+                        guard = Some(parsed);
+                    } else {
+                        return Ok(false);
+                    }
+                }
+                (None, Type::UnsignedInt) if shift.is_none() => shift = Some(local.name.as_str()),
+                _ => return Ok(false),
+            }
+        }
+        let (Some(guard), Some(shift)) = (guard, shift) else {
+            return Ok(false);
+        };
+        if locals.len() != 2
+            || locals[0].1 != 0
+            || locals[1].1 != 4
+            || !locals.iter().any(|&(name, _)| name == guard.source)
+            || guard.offset_k == 0
+            || i16::try_from(-guard.offset_k).is_err()
+        {
+            return Ok(false);
+        }
+        let local_index = |name: &str| locals.iter().position(|&(local, _)| local == name);
+        let i0 = local_index(guard.source).expect("checked");
+        if i0 != 0 {
+            return Ok(false); // the high word drives everything
+        }
+        // The single statement: the outer ladder (every leaf returns).
+        let [Statement::If { condition: ladder1, then_body: low_arm, else_body: high_arm }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let parse_guard_compare = |condition: &Expression, operator: BinaryOperator| -> Option<i16> {
+            let Expression::Binary { operator: op, left, right } = condition else { return None };
+            if *op != operator || !matches!(left.as_ref(), Expression::Variable(v) if v == guard.name) {
+                return None;
+            }
+            crate::analysis::constant_value(right).and_then(|k| i16::try_from(k).ok())
+        };
+        let Some(k1) = parse_guard_compare(ladder1, BinaryOperator::Less) else {
+            return Ok(false);
+        };
+        let [Statement::If { condition: split, then_body: arm1, else_body: arm2 }] = low_arm.as_slice()
+        else {
+            return Ok(false);
+        };
+        if parse_guard_compare(split, BinaryOperator::Less) != Some(0) {
+            return Ok(false);
+        }
+        let [Statement::If { condition: ladder2, then_body: mid, else_body: arm3 }] = high_arm.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Some(k2) = parse_guard_compare(ladder2, BinaryOperator::Greater) else {
+            return Ok(false);
+        };
+        // The INTEGRAL block: [*iptr = x[*one], *(int*)&x &= SIGN,
+        // *(1+(int*)&x) = 0, Return(x)] — the x*one fold makes the first
+        // store a plain stfd (measured: no fmul).
+        let is_integral = |body: &[Statement]| -> bool {
+            let [Statement::Store { target: tp, value: vp }, Statement::Store { target: t0, value: v0 }, Statement::Store { target: t1, value: v1 }, Statement::Return(Some(Expression::Variable(rx)))] =
+                body
+            else {
+                return false;
+            };
+            let pointer_store_ok =
+                matches!(tp, Expression::Dereference { pointer }
+                    if matches!(pointer.as_ref(), Expression::Variable(v) if v == iptr));
+            let value_is_x = matches!(vp, Expression::Variable(v) if v == x)
+                || matches!(vp, Expression::Binary { operator: BinaryOperator::Multiply, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(v) if v == x)
+                        && matches!(right.as_ref(), Expression::FloatLiteral(one) if *one == 1.0));
+            rx == x
+                && pointer_store_ok
+                && value_is_x
+                && crate::frame::pun_word_offset_pub(t0, x) == Some(0)
+                && crate::frame::pun_word_offset_pub(t1, x) == Some(4)
+                && crate::analysis::constant_value(v1) == Some(0)
+                && matches!(v0, Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
+                    if crate::analysis::constant_value(right).map(|c| c as u32) == Some(0x8000_0000)
+                        && (crate::frame::pun_word_offset_pub(left, x) == Some(0)
+                            || matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(0))))
+        };
+        // A pointer-store pair + fraction return:
+        //   [*(int*)iptr = HIGH, *(1+(int*)iptr) = LOW, Return(x - *iptr)]
+        // HIGH: i0 & SIGN (arm1) / i0 & ~i (arm2) / i0 (arm3);
+        // LOW: 0 (arm1/arm2) / i1 & ~i (arm3); arm1 returns plain x.
+        enum HighForm {
+            SignOnly,
+            AndcShift,
+            Plain,
+        }
+        enum LowForm {
+            Zero,
+            AndcShift,
+        }
+        let parse_pointer_arm = |body: &[Statement], fraction: bool| -> Option<(HighForm, LowForm)> {
+            let [Statement::Store { target: t0, value: v0 }, Statement::Store { target: t1, value: v1 }, Statement::Return(Some(ret))] =
+                body
+            else {
+                return None;
+            };
+            if pointer_word_offset(t0, iptr) != Some(0) || pointer_word_offset(t1, iptr) != Some(4) {
+                return None;
+            }
+            if fraction {
+                let ok = matches!(ret, Expression::Binary { operator: BinaryOperator::Subtract, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(v) if v == x)
+                        && matches!(right.as_ref(), Expression::Dereference { pointer }
+                            if matches!(pointer.as_ref(), Expression::Variable(v) if v == iptr)));
+                if !ok {
+                    return None;
+                }
+            } else if !matches!(ret, Expression::Variable(v) if v == x) {
+                return None;
+            }
+            let high = if matches!(v0, Expression::Variable(v) if local_index(v) == Some(0)) {
+                HighForm::Plain
+            } else if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = v0 {
+                if !matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(0)) {
+                    return None;
+                }
+                match right.as_ref() {
+                    Expression::Unary { operator: UnaryOperator::BitNot, operand }
+                        if matches!(operand.as_ref(), Expression::Variable(v) if v == shift) =>
+                    {
+                        HighForm::AndcShift
+                    }
+                    other if crate::analysis::constant_value(other).map(|c| c as u32)
+                        == Some(0x8000_0000) =>
+                    {
+                        HighForm::SignOnly
+                    }
+                    _ => return None,
+                }
+            } else {
+                return None;
+            };
+            let low = if crate::analysis::constant_value(v1) == Some(0) {
+                LowForm::Zero
+            } else if matches!(v1, Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
+                if matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(1))
+                    && matches!(right.as_ref(), Expression::Unary { operator: UnaryOperator::BitNot, operand }
+                        if matches!(operand.as_ref(), Expression::Variable(v) if v == shift)))
+            {
+                LowForm::AndcShift
+            } else {
+                return None;
+            };
+            Some((high, low))
+        };
+        // arm1: the sign-only pointer pair, plain return.
+        if !matches!(parse_pointer_arm(arm1, false), Some((HighForm::SignOnly, LowForm::Zero))) {
+            return Ok(false);
+        }
+        // arm2: [i = C >> j0, If{((i0&i)|i1)==0, integral, pointer-frac}].
+        let [Statement::Assign { name: a2_shift, value: a2_value }, Statement::If { condition: a2_test, then_body: a2_int, else_body: a2_frac }] =
+            arm2.as_slice()
+        else {
+            return Ok(false);
+        };
+        if a2_shift != shift {
+            return Ok(false);
+        }
+        let Some((a2_mask, a2_logical, a2_off)) = parse_shift_init(a2_value, guard.name) else {
+            return Ok(false);
+        };
+        if a2_logical || a2_off != 0 || i16::try_from(a2_mask).is_ok() {
+            return Ok(false);
+        }
+        let a2_test_ok = matches!(a2_test, Expression::Binary { operator: BinaryOperator::Equal, left, right }
+            if crate::analysis::constant_value(right) == Some(0)
+                && matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::BitOr, left: ol, right: or }
+                    if matches!(or.as_ref(), Expression::Variable(v) if local_index(v) == Some(1))
+                        && matches!(ol.as_ref(), Expression::Binary { operator: BinaryOperator::BitAnd, left: al, right: ar }
+                            if matches!(al.as_ref(), Expression::Variable(v) if local_index(v) == Some(0))
+                                && matches!(ar.as_ref(), Expression::Variable(v) if v == shift))));
+        if !a2_test_ok
+            || !is_integral(a2_int)
+            || !matches!(parse_pointer_arm(a2_frac, true), Some((HighForm::AndcShift, LowForm::Zero)))
+        {
+            return Ok(false);
+        }
+        // mid: the integral block.
+        if !is_integral(mid) {
+            return Ok(false);
+        }
+        // arm3: [i = (unsigned)C >> (j0-K), If{(i1&i)==0, integral, pointer-frac}].
+        let [Statement::Assign { name: a3_shift, value: a3_value }, Statement::If { condition: a3_test, then_body: a3_int, else_body: a3_frac }] =
+            arm3.as_slice()
+        else {
+            return Ok(false);
+        };
+        if a3_shift != shift {
+            return Ok(false);
+        }
+        let Some((a3_mask, a3_logical, a3_off)) = parse_shift_init(a3_value, guard.name) else {
+            return Ok(false);
+        };
+        let a3_mask = a3_mask as u32 as i32 as i64;
+        let (Ok(a3_mask_small), Ok(a3_off_neg)) = (i16::try_from(a3_mask), i16::try_from(-a3_off))
+        else {
+            return Ok(false);
+        };
+        if !a3_logical || a3_off == 0 {
+            return Ok(false);
+        }
+        let a3_test_ok = matches!(a3_test, Expression::Binary { operator: BinaryOperator::Equal, left, right }
+            if crate::analysis::constant_value(right) == Some(0)
+                && matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::BitAnd, left: al, right: ar }
+                    if matches!(al.as_ref(), Expression::Variable(v) if local_index(v) == Some(1))
+                        && matches!(ar.as_ref(), Expression::Variable(v) if v == shift)));
+        if !a3_test_ok
+            || !is_integral(a3_int)
+            || !matches!(parse_pointer_arm(a3_frac, true), Some((HighForm::Plain, LowForm::AndcShift)))
+        {
+            return Ok(false);
+        }
+        // -- emit (registers per the capture; r3 = the live pointer param) --
+        let (i0_reg, i1_reg, j0_reg, temp) = (5u8, 6u8, 7u8, 4u8);
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: i0_reg, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: i1_reg, a: 1, offset: 12 });
+        match guard.mask {
+            Some(mask) => {
+                let rotated = ((32 - guard.shift as u32) % 32) as u8;
+                let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
+                    return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::RotateAndMask {
+                    a: temp,
+                    s: i0_reg,
+                    shift: rotated,
+                    begin,
+                    end,
+                });
+            }
+            None => {
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: temp,
+                    s: i0_reg,
+                    shift: guard.shift,
+                });
+            }
+        }
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: j0_reg,
+            a: temp,
+            immediate: i16::try_from(-guard.offset_k).expect("validated"),
+        });
+        let epilogue = self.fresh_label();
+        let ladder2_at = self.fresh_label();
+        let arm2_at = self.fresh_label();
+        let arm3_at = self.fresh_label();
+        // The integral block: `*iptr = x` + the sign-only pun store + the
+        // f1 reload — the stfd through the pointer schedules AFTER the pun
+        // stores (measured), and the scratch is the temp r4 (the pointer
+        // stays live here).
+        let integral = |generator: &mut Self| {
+            generator.output.instructions.push(Instruction::RotateAndMask {
+                a: temp,
+                s: i0_reg,
+                shift: 0,
+                begin: 0,
+                end: 0,
+            });
+            generator.output.instructions.push(Instruction::load_immediate(0, 0));
+            generator.output.instructions.push(Instruction::StoreWord { s: temp, a: 1, offset: 8 });
+            generator.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 12 });
+            generator.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 3, offset: 0 });
+            generator.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        };
+        let fraction = |generator: &mut Self| {
+            generator.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 3, offset: 0 });
+            generator.output.instructions.push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 0 });
+        };
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: k1 });
+        self.emit_branch_conditional_to(4, 0, ladder2_at); // bge
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: 0 });
+        self.emit_branch_conditional_to(4, 0, arm2_at); // bge
+        // arm1: the sign pair through the pointer.
+        self.output.instructions.push(Instruction::RotateAndMask { a: temp, s: i0_reg, shift: 0, begin: 0, end: 0 });
+        self.output.instructions.push(Instruction::load_immediate(0, 0));
+        self.output.instructions.push(Instruction::StoreWord { s: temp, a: 3, offset: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 4 });
+        self.emit_branch_to(epilogue);
+        // arm2.
+        self.bind_label(arm2_at);
+        let a2_lis = ((a2_mask + 0x8000) >> 16) << 16;
+        self.output.instructions.push(Instruction::load_immediate_shifted(temp, (a2_lis >> 16) as i16));
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: temp, immediate: a2_mask as i16 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: temp, s: 0, b: j0_reg });
+        self.output.instructions.push(Instruction::And { a: 0, s: i0_reg, b: temp });
+        self.output.instructions.push(Instruction::OrRecord { a: 0, s: i1_reg, b: 0 });
+        let a2_frac_at = self.fresh_label();
+        self.emit_branch_conditional_to(4, 2, a2_frac_at); // bne
+        integral(self);
+        self.emit_branch_to(epilogue);
+        self.bind_label(a2_frac_at);
+        self.output.instructions.push(Instruction::AndComplement { a: temp, s: i0_reg, b: temp });
+        self.output.instructions.push(Instruction::load_immediate(0, 0));
+        self.output.instructions.push(Instruction::StoreWord { s: temp, a: 3, offset: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 4 });
+        fraction(self);
+        self.emit_branch_to(epilogue);
+        // ladder 2 + mid.
+        self.bind_label(ladder2_at);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: k2 });
+        self.emit_branch_conditional_to(4, 1, arm3_at); // ble
+        integral(self);
+        self.emit_branch_to(epilogue);
+        // arm3.
+        self.bind_label(arm3_at);
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: j0_reg, immediate: a3_off_neg });
+        self.output.instructions.push(Instruction::load_immediate(temp, a3_mask_small));
+        self.output.instructions.push(Instruction::ShiftRightWord { a: temp, s: temp, b: 0 });
+        self.output.instructions.push(Instruction::AndRecord { a: 0, s: i1_reg, b: temp });
+        let a3_frac_at = self.fresh_label();
+        self.emit_branch_conditional_to(4, 2, a3_frac_at); // bne
+        integral(self);
+        self.emit_branch_to(epilogue);
+        self.bind_label(a3_frac_at);
+        self.output.instructions.push(Instruction::StoreWord { s: i0_reg, a: 3, offset: 0 });
+        self.output.instructions.push(Instruction::AndComplement { a: 0, s: i1_reg, b: temp });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 4 });
+        fraction(self);
+        self.bind_label(epilogue);
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // Pre-pool labels (measured @24 on the s_modf object vs the +0
+        // base's @5).
+        self.output.anonymous_label_bump += 19;
         Ok(true)
     }
 
