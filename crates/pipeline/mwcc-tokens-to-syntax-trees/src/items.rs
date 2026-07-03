@@ -2968,17 +2968,32 @@ impl Parser {
             Token::KeywordFor => {
                 self.advance();
                 self.expect(Token::ParenOpen)?;
-                let initializer = (*self.peek() != Token::Semicolon).then(|| self.expression()).transpose()?;
+                let initializer =
+                    (*self.peek() != Token::Semicolon).then(|| self.comma_expression()).transpose()?;
                 self.expect(Token::Semicolon)?;
                 let condition = (*self.peek() != Token::Semicolon).then(|| self.expression()).transpose()?;
                 self.expect(Token::Semicolon)?;
-                let step = (*self.peek() != Token::ParenClose).then(|| self.expression()).transpose()?;
+                let step =
+                    (*self.peek() != Token::ParenClose).then(|| self.comma_expression()).transpose()?;
                 self.expect(Token::ParenClose)?;
                 let body = self.parse_block_or_statement(local_names, block_locals)?;
                 Ok(Statement::Loop { kind: LoopKind::For, initializer, condition, step, body })
             }
             other => Err(Diagnostic::error(format!("expected a loop keyword, found {other}"))),
         }
+    }
+
+    /// A for-clause expression list: `a = 1, b = 2` folds left into the
+    /// comma operator (`for (ix = -1043, i = lx; ...)` — e_fmod, mem).
+    /// Elements route through `assignment_expression` so compound forms
+    /// (`i <<= 1`) parse in expression position.
+    fn comma_expression(&mut self) -> Compilation<Expression> {
+        let mut expression = self.assignment_expression()?;
+        while self.eat_keyword(Token::Comma) {
+            let right = self.assignment_expression()?;
+            expression = Expression::Comma { left: Box::new(expression), right: Box::new(right) };
+        }
+        Ok(expression)
     }
 
     /// A `{ ... }` block, or a single (non-`return`) statement, as a conditional

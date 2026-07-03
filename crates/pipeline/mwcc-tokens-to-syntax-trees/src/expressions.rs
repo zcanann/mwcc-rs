@@ -139,10 +139,41 @@ impl Parser {
         Ok(condition)
     }
 
+    /// A for-clause element: a compound assignment (`i <<= 1` — statement-only
+    /// elsewhere), a plain assignment, or any expression. Mirrors
+    /// `parse_simple_statement`'s routing in expression position.
+    pub(crate) fn assignment_expression(&mut self) -> Compilation<Expression> {
+        let first = self.factor()?;
+        if let Some(operator) = self.peek_compound_assignment() {
+            self.advance();
+            self.advance();
+            let rhs = self.expression()?;
+            return Ok(Expression::Assign {
+                target: Box::new(first.clone()),
+                value: Box::new(Expression::Binary {
+                    operator,
+                    left: Box::new(first),
+                    right: Box::new(rhs),
+                }),
+            });
+        }
+        if *self.peek() == Token::Equals {
+            self.advance();
+            let value = self.expression()?;
+            return Ok(Expression::Assign { target: Box::new(first), value: Box::new(value) });
+        }
+        self.binary_expression_from(first, 1)
+    }
+
     /// Precedence-climbing parse of left-associative binary operators with
     /// precedence at least `minimum`.
     pub(crate) fn binary_expression(&mut self, minimum: u8) -> Compilation<Expression> {
-        let mut left = self.factor()?;
+        let left = self.factor()?;
+        self.binary_expression_from(left, minimum)
+    }
+
+    /// The climb continued from an already-parsed left operand.
+    pub(crate) fn binary_expression_from(&mut self, mut left: Expression, minimum: u8) -> Compilation<Expression> {
         while let Some(operator) = self.peek_binary_operator() {
             if operator.precedence() < minimum {
                 break;
