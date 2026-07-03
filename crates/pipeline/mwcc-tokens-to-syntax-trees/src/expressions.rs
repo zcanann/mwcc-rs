@@ -588,10 +588,11 @@ impl Parser {
         // Record the resolved struct tag so a wrapping `(...)` can recover it (the
         // base of `((struct S *)x)->field` is parsed in a nested `factor`).
         self.expression_struct_tag = struct_tag.clone();
-        // postfix increment/decrement: `x++` / `x--`. Desugared to `x = x ± 1` like
-        // the prefix form — the post-value (old value) is not modeled, so a use of
-        // the result is approximate; the common loop-step / statement positions
-        // discard it, where the two forms coincide.
+        // postfix increment/decrement: `x++` / `x--`. Represented FAITHFULLY
+        // as PostStep (the old value) — statement/step positions discard the
+        // value and lower to the Assign desugar at consumption; value
+        // positions match the marker or defer (pre/post were previously
+        // conflated, a latent wrong-bytes source).
         let postfix_step = match self.peek() {
             Token::PlusPlus => Some(BinaryOperator::Add),
             Token::MinusMinus => Some(BinaryOperator::Subtract),
@@ -599,7 +600,7 @@ impl Parser {
         };
         if let Some(operator) = postfix_step {
             self.advance();
-            return Ok(increment_assignment(expression, operator));
+            return Ok(Expression::PostStep { target: Box::new(expression), operator });
         }
         Ok(expression)
     }

@@ -7988,6 +7988,25 @@ impl Generator {
         if loop_ops.is_empty() {
             return Ok(false);
         }
+        // COUNTED loops (the condition variable stepped by a constant in a
+        // For/While) take mwcc's unroll machinery — claiming them rotated
+        // would be WRONG BYTES. Only the do-while keeps constant steps
+        // (measured D1: no unroll).
+        if !matches!(kind, LoopKind::DoWhile) {
+            let condition_variable_register = match &loop_test {
+                LoopTest::Constant { register, .. } => Some(*register),
+                LoopTest::Register { left, .. } => Some(*left),
+                LoopTest::CharLoad { .. } => None,
+            };
+            if let Some(register) = condition_variable_register {
+                let stepped_by_constant = loop_ops.iter().any(|op| {
+                    matches!(op, LoopOp::AddImmediate { register: stepped, .. } if *stepped == register)
+                });
+                if stepped_by_constant {
+                    return Ok(false);
+                }
+            }
+        }
         let has_carried_store = loop_ops.iter().any(|op| matches!(op, LoopOp::CarriedStore { .. }));
         // The carried char takes the next free register (S2: r5).
         let carry_register = if has_carried_store {
@@ -11539,6 +11558,7 @@ impl Generator {
         fn feeds_an_addition(name: &str, expression: &Expression) -> bool {
             let is_local = |operand: &Expression| matches!(operand, Expression::Variable(variable) if variable == name);
             match expression {
+                Expression::PostStep { target, .. } => feeds_an_addition(name, target),
                 Expression::Binary { operator, left, right } => {
                     (*operator == BinaryOperator::Add && (is_local(left) || is_local(right)))
                         || feeds_an_addition(name, left)

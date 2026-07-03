@@ -117,6 +117,7 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
 
 fn collect(expression: &Expression, names: &mut Names) {
     match expression {
+        Expression::PostStep { target, .. } => collect(target, names),
         Expression::Variable(name) => names.data.push(name.clone()),
         Expression::Comma { left, right } => {
             collect(left, names);

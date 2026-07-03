@@ -2885,8 +2885,10 @@ impl Parser {
             return self.parse_switch();
         }
         let first = self.factor()?;
-        // `factor` lowers an `++`/`--` (prefix or postfix) to `target = target ± 1`;
-        // as a value-free statement that routes to a store or local assignment.
+        // Prefix `++`/`--` desugars to `target = target ± 1` in factor; the
+        // POSTFIX form arrives as PostStep and lowers here, where the value
+        // is discarded (the two forms coincide only in that case).
+        let first = lower_discarded_post_step(first);
         if let Expression::Assign { target, value } = first {
             self.expect(Token::Semicolon)?;
             return Ok(store_or_assign(*target, *value, local_names));
@@ -3023,13 +3025,17 @@ impl Parser {
             Token::KeywordFor => {
                 self.advance();
                 self.expect(Token::ParenOpen)?;
-                let initializer =
-                    (*self.peek() != Token::Semicolon).then(|| self.comma_expression()).transpose()?;
+                let initializer = (*self.peek() != Token::Semicolon)
+                    .then(|| self.comma_expression())
+                    .transpose()?
+                    .map(lower_discarded_post_step);
                 self.expect(Token::Semicolon)?;
                 let condition = (*self.peek() != Token::Semicolon).then(|| self.expression()).transpose()?;
                 self.expect(Token::Semicolon)?;
-                let step =
-                    (*self.peek() != Token::ParenClose).then(|| self.comma_expression()).transpose()?;
+                let step = (*self.peek() != Token::ParenClose)
+                    .then(|| self.comma_expression())
+                    .transpose()?
+                    .map(lower_discarded_post_step);
                 self.expect(Token::ParenClose)?;
                 let body = self.parse_block_or_statement(local_names, block_locals)?;
                 Ok(Statement::Loop { kind: LoopKind::For, initializer, condition, step, body })
@@ -3167,3 +3173,25 @@ fn collapse_if_return_chain(statements: &mut Vec<Statement>) {
         })));
     }
 }
+
+/// Lower a value-DISCARDED postfix step (`x++` as a statement or a
+/// for-clause element) to its `x = x ± 1` desugar — exact when the value
+/// is unused. Comma lists lower each element.
+fn lower_discarded_post_step(expression: Expression) -> Expression {
+    match expression {
+        Expression::PostStep { target, operator } => Expression::Assign {
+            target: target.clone(),
+            value: Box::new(Expression::Binary {
+                operator,
+                left: target,
+                right: Box::new(Expression::IntegerLiteral(1)),
+            }),
+        },
+        Expression::Comma { left, right } => Expression::Comma {
+            left: Box::new(lower_discarded_post_step(*left)),
+            right: Box::new(lower_discarded_post_step(*right)),
+        },
+        other => other,
+    }
+}
+

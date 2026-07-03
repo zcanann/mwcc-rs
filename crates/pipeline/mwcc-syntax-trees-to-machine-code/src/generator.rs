@@ -397,6 +397,7 @@ impl Generator {
     /// operand is unsigned.
     pub(crate) fn signedness_of(&self, expression: &Expression) -> Compilation<bool> {
         match expression {
+            Expression::PostStep { target, .. } => self.signedness_of(target),
             Expression::IntegerLiteral(_) => Ok(true),
             Expression::FloatLiteral(_) => Ok(true),
             // A string literal is an address — an unsigned pointer value.

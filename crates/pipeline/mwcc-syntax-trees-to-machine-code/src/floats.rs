@@ -12,6 +12,9 @@ impl Generator {
     /// Evaluate a float expression into float register `destination`.
     pub(crate) fn evaluate_float(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         match expression {
+            Expression::PostStep { .. } => Err(Diagnostic::error(
+                "a postfix step used as a float value is not supported yet (roadmap)",
+            )),
             Expression::StringLiteral(_) => Err(Diagnostic::error("a string literal is not a float value")),
             Expression::Variable(name) => {
                 // A frame-resident float is reloaded from its stack slot — but a

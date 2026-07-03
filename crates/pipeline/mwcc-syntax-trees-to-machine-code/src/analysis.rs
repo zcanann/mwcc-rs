@@ -124,6 +124,7 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => 0,
         Expression::Binary { left, right, .. } => count_name_occurrences(left, name) + count_name_occurrences(right, name),
         Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => count_name_occurrences(operand, name),
+        Expression::PostStep { target, .. } => 2 * count_name_occurrences(target, name),
         Expression::Dereference { pointer } => count_name_occurrences(pointer, name),
         Expression::AddressOf { operand } => count_name_occurrences(operand, name),
         Expression::Index { base, index } => count_name_occurrences(base, name) + count_name_occurrences(index, name),
@@ -249,6 +250,7 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
 /// within `expression`.
 fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, collected: &mut Vec<String>) {
     match expression {
+        Expression::PostStep { target, .. } => collect_register_reads(target, registers, collected),
         Expression::Variable(name) => {
             if registers.contains(name.as_str()) && !collected.iter().any(|seen| seen == name) {
                 collected.push(name.clone());
@@ -365,6 +367,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
             || (expression_has_call(right) && reads_register(left, registers))
     };
     match expression {
+        Expression::PostStep { target, .. } => matches!(target.as_ref(), Expression::Call { .. }) || expression_has_call(target),
         Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
         Expression::Binary { left, right, .. } => pair(left, right),
         Expression::Index { base, index } => pair(base, index),
@@ -404,6 +407,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
 /// Whether `expression` reads any register-resident name.
 pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
     match expression {
+        Expression::PostStep { target, .. } => reads_register(target, registers),
         Expression::Variable(name) => registers.contains(name.as_str()),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
         Expression::Binary { left, right, .. } => {
@@ -683,6 +687,7 @@ pub(crate) fn has_repeated_nonleaf_subexpression(expression: &Expression) -> boo
 /// etc. to find nested computations, but not counting those non-arithmetic nodes themselves).
 fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Vec<&'a Expression>) {
     match expression {
+        Expression::PostStep { target, .. } => collect_computed_subexpressions(target, into),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) | Expression::Variable(_) => {}
         Expression::Binary { left, right, .. } => {
             into.push(expression);

@@ -224,6 +224,9 @@ impl Generator {
             return Err(Diagnostic::error("a commutative op with a constant-shift left operand orders operands differently (roadmap)"));
         }
         match expression {
+            Expression::PostStep { .. } => Err(Diagnostic::error(
+                "a postfix step used as a value is not supported yet (roadmap)",
+            )),
             Expression::IntegerLiteral(value) => {
                 self.load_integer_constant(destination, *value);
                 Ok(())

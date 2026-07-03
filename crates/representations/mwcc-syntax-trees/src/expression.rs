@@ -69,6 +69,14 @@ pub enum Expression {
         name: String,
         arguments: Vec<Expression>,
     },
+    /// `target++` / `target--` — the POSTFIX step. Yields the OLD value,
+    /// then increments. Kept distinct from the `Assign` desugar (which
+    /// yields the NEW value) so value-position uses stay faithful;
+    /// statement positions discard the value and lower to the Assign.
+    PostStep {
+        target: Box<Expression>,
+        operator: BinaryOperator,
+    },
     /// `target = value` used as an expression — stores `value` into `target` and
     /// yields the stored value (e.g. `(g = g + 1)`).
     Assign {
