@@ -33,6 +33,30 @@ pub(crate) struct Location {
     pub(crate) stride: Option<u16>,
 }
 
+/// The k_cos else-branch composition payload (set by the punned arm,
+/// consumed by the dual arm's else phase).
+#[derive(Clone)]
+pub(crate) struct FloatElseComposition {
+    /// The inner compare's lis half (`lis r0, high; cmpw ix, r0`).
+    pub(crate) compare_high: i16,
+    /// The skip branch to the diamond's else arm (ble for Greater).
+    pub(crate) skip_options: u8,
+    pub(crate) skip_bit: u8,
+    /// The preserved ix register (the compare's A side, the addis source).
+    pub(crate) ix_register: u8,
+    /// The freed raw-word register the addis result lands in (r3).
+    pub(crate) addis_target: u8,
+    /// The diamond's then-arm literal (qx = 0.28125).
+    pub(crate) then_bits: u64,
+    /// The addis immediate (ix - C, C a lis-able constant; shift = -C>>16).
+    pub(crate) addis_shift: i16,
+    /// The diamond local's name + frame offset (qx @ 16).
+    pub(crate) qx_name: String,
+    pub(crate) qx_offset: i16,
+    /// The else-only fold-away locals (hz, a) with their initializers.
+    pub(crate) else_locals: Vec<mwcc_syntax_trees::LocalDeclaration>,
+}
+
 /// A variable whose address is taken: it lives in a stack-frame slot rather than
 /// a register. `&v` is `addi d, r1, offset`, and a type-punned access `*(t*)&v`
 /// is a displacement load/store from `r1`.
@@ -92,6 +116,11 @@ pub(crate) struct Generator {
     /// A double local resident in a FRAME slot (the punned qx diamond): the
     /// tail's DAG reads it as a FrameLoad node (value id 7).
     pub(crate) float_frame_local: Option<(String, i16)>,
+    /// The k_cos ELSE composition: the dual's else branch opens with a
+    /// frame-punned diamond (an inner lis/cmpw against the preserved ix)
+    /// and its tail reads x RE-reloaded plus the diamond local from the
+    /// frame, with fold-away else-only locals.
+    pub(crate) float_else_composition: Option<FloatElseComposition>,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in

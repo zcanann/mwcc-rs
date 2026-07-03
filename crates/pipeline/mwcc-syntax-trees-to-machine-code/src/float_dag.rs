@@ -987,6 +987,9 @@ impl Generator {
         let dual_tail = function.guards.len() == 1
             && function.return_expression.is_some()
             && !matches!(&function.guards[0].value, Expression::Variable(_));
+        // The nested prefix accepts: no trailing control (plain), a
+        // normalized guard dual, or the k_cos IF-FORM (guards empty, no
+        // return expression, the last statement an if/else with bodies).
         let nested = matches!(
             function.statements.first(),
             Some(Statement::If { .. }) if function.guards.is_empty() || dual_tail
@@ -995,8 +998,32 @@ impl Generator {
         // initializers (each target a declared, uninitialized local,
         // assigned once).
         let mut trailing_inits: Vec<(String, Expression)> = Vec::new();
+        // The k_cos IF-FORM, as the parser FLATTENS it (the else of a
+        // returning-then becomes fall-through):
+        //   If(prefix), assigns..., If{cond, then:[Return T], else:[]},
+        //   If(diamond), assigns..., Return(E)
+        let if_form_start: Option<usize> = if nested && function.guards.is_empty() && function.return_expression.is_none() {
+            let statements = &function.statements;
+            (1..statements.len().saturating_sub(2))
+                .find(|&index| {
+                    matches!(
+                        &statements[index],
+                        Statement::If { then_body, else_body, .. }
+                            if matches!(then_body.as_slice(), [Statement::Return(Some(_))])
+                                && else_body.is_empty()
+                    ) && matches!(&statements[index + 1], Statement::If { .. })
+                        && matches!(statements.last(), Some(Statement::Return(Some(_))))
+                        && statements[1..index].iter().all(|s| matches!(s, Statement::Assign { .. }))
+                        && statements[index + 2..statements.len() - 1]
+                            .iter()
+                            .all(|s| matches!(s, Statement::Assign { .. }))
+                })
+        } else {
+            None
+        };
         if nested {
-            for statement in &function.statements[1..] {
+            let trailing_end = if_form_start.unwrap_or(function.statements.len());
+            for statement in &function.statements[1..trailing_end] {
                 let Statement::Assign { name, value } = statement else {
                     return Ok(false);
                 };
@@ -1016,6 +1043,39 @@ impl Generator {
         {
             return Ok(false);
         }
+        // Decompose the if-form: the dual condition + then value, the inner
+        // diamond, the else-only fold locals, and the else return.
+        struct IfForm<'a> {
+            condition: &'a Expression,
+            then_value: &'a Expression,
+            diamond: &'a Statement,
+            else_assigns: Vec<(&'a String, &'a Expression)>,
+            else_return: &'a Expression,
+        }
+        let if_form: Option<IfForm> = match if_form_start {
+            None => None,
+            Some(start) => {
+                let statements = &function.statements;
+                let Statement::If { condition, then_body, .. } = &statements[start] else {
+                    unreachable!("matched above");
+                };
+                let [Statement::Return(Some(then_value))] = then_body.as_slice() else {
+                    return Ok(false);
+                };
+                let diamond = &statements[start + 1];
+                let Some(Statement::Return(Some(else_return))) = statements.last() else {
+                    return Ok(false);
+                };
+                let mut else_assigns: Vec<(&String, &Expression)> = Vec::new();
+                for statement in &statements[start + 2..statements.len() - 1] {
+                    let Statement::Assign { name, value } = statement else {
+                        return Ok(false);
+                    };
+                    else_assigns.push((name, value));
+                }
+                Some(IfForm { condition, then_value, diamond, else_assigns, else_return })
+            }
+        };
         let _ = &trailing_inits;
         let Some(first_param) = function.parameters.first() else {
             return Ok(false);
@@ -1120,9 +1180,16 @@ impl Generator {
         // The k_cos family: the trailing dual may split on the PRESERVED ix
         // (`if (ix < C) ... else ...`) — one leaf comparison against an i16
         // literal. ix then stays live in the prefix's target register.
+        let effective_dual_condition: Option<&Expression> = if let Some(form) = &if_form {
+            Some(form.condition)
+        } else if nested && dual_tail {
+            Some(&function.guards[0].condition)
+        } else {
+            None
+        };
         let ix_in_dual_condition = nested
-            && dual_tail
-            && matches!(&function.guards[0].condition,
+            && effective_dual_condition.is_some()
+            && matches!(effective_dual_condition.expect("checked"),
                 Expression::Binary { operator, left, right }
                     if matches!(operator, BinaryOperator::Less | BinaryOperator::LessEqual
                         | BinaryOperator::Greater | BinaryOperator::GreaterEqual
@@ -1134,8 +1201,8 @@ impl Generator {
         // prefix must keep ix out of r3 — the SPLIT form (lwz r3 raw,
         // clrlwi r4). Measured for Less with a positive addi low half and
         // no int params.
-        let ix_dual_big: Option<(i16, i16)> = if nested && dual_tail && !ix_in_dual_condition {
-            match &function.guards[0].condition {
+        let ix_dual_big: Option<(i16, i16)> = if nested && effective_dual_condition.is_some() && !ix_in_dual_condition {
+            match effective_dual_condition.expect("checked") {
                 Expression::Binary { operator: BinaryOperator::Less, left, right }
                     if matches!(left.as_ref(), Expression::Variable(name) if name == ix) =>
                 {
@@ -1208,6 +1275,108 @@ impl Generator {
         if ix_dual_big.is_some() && (lis_high.is_none() || int_params_early != 0 || !masked) {
             return Ok(false);
         }
+        // NOT YET SHIPPABLE: the composed ELSE TAIL (x re-reload + the
+        // diamond frame local + folded hz/a) claims but its register/order
+        // model is unfitted (probed fire 367: qx load f3 vs ours f5; the
+        // x*y fmul keeps SOURCE order with a reload operand where ours
+        // swaps register-DESC; r lands f4 vs f8) — the if-form defers until
+        // the two-frame-load tail class is captured and fitted.
+        if if_form.is_some() {
+            return Ok(false);
+        }
+        // The k_cos ELSE COMPOSITION payload: the inner diamond + fold
+        // locals, valid only in the big-const split mode (ix alive in r4,
+        // the raw r3 free for the addis).
+        let composition: Option<crate::generator::FloatElseComposition> = match &if_form {
+            None => None,
+            Some(form) => {
+                if ix_dual_big.is_none() {
+                    return Ok(false);
+                }
+                let Statement::If { condition: inner, then_body, else_body } = form.diamond else {
+                    return Ok(false);
+                };
+                // `ix > BIG2` with a lis-able constant: lis r0 + cmpw + ble.
+                let Expression::Binary { operator: BinaryOperator::Greater, left, right } = inner else {
+                    return Ok(false);
+                };
+                if !matches!(left.as_ref(), Expression::Variable(name) if name == ix) {
+                    return Ok(false);
+                }
+                let Some(inner_constant) = crate::analysis::constant_value(right) else {
+                    return Ok(false);
+                };
+                if inner_constant & 0xffff != 0 || u32::try_from(inner_constant).is_err() {
+                    return Ok(false);
+                }
+                // The diamond arms: qx = literal / punned ix-minus-C stores.
+                let [Statement::Assign { name: qx_name, value: Expression::FloatLiteral(then_value) }] =
+                    then_body.as_slice()
+                else {
+                    return Ok(false);
+                };
+                let qx_ok = function.locals.iter().any(|local| {
+                    &local.name == qx_name
+                        && local.declared_type == Type::Double
+                        && local.initializer.is_none()
+                        && local.array_length.is_none()
+                });
+                if !qx_ok {
+                    return Ok(false);
+                }
+                let [Statement::Store { target: hi_target, value: hi_value }, Statement::Store { target: lo_target, value: lo_value }] =
+                    else_body.as_slice()
+                else {
+                    return Ok(false);
+                };
+                if crate::frame::pun_word_offset_pub(hi_target, qx_name) != Some(0)
+                    || crate::frame::pun_word_offset_pub(lo_target, qx_name) != Some(4)
+                    || crate::analysis::constant_value(lo_value) != Some(0)
+                {
+                    return Ok(false);
+                }
+                let Expression::Binary { operator: BinaryOperator::Subtract, left: hi_left, right: hi_right } = hi_value
+                else {
+                    return Ok(false);
+                };
+                if !matches!(hi_left.as_ref(), Expression::Variable(name) if name == ix) {
+                    return Ok(false);
+                }
+                let Some(subtracted) = crate::analysis::constant_value(hi_right) else {
+                    return Ok(false);
+                };
+                if subtracted & 0xffff != 0 {
+                    return Ok(false);
+                }
+                // The else-only fold locals (hz, a): declared, uninitialized.
+                let mut else_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = Vec::new();
+                for (name, value) in &form.else_assigns {
+                    let Some(declared) = function.locals.iter().find(|local| {
+                        &&local.name == name
+                            && local.declared_type == Type::Double
+                            && local.initializer.is_none()
+                            && local.array_length.is_none()
+                    }) else {
+                        return Ok(false);
+                    };
+                    let mut normalized = declared.clone();
+                    normalized.initializer = Some((*value).clone());
+                    else_locals.push(normalized);
+                }
+                Some(crate::generator::FloatElseComposition {
+                    compare_high: (inner_constant >> 16) as i16,
+                    skip_options: 4,
+                    skip_bit: 1,
+                    ix_register: 0, // filled at emission (target_register)
+                    addis_target: 0,
+                    then_bits: then_value.to_bits(),
+                    addis_shift: ((-subtracted) >> 16) as i16,
+                    qx_name: qx_name.clone(),
+                    qx_offset: 16,
+                    else_locals,
+                })
+            }
+        };
         // The synthetic tail: the double locals + return, no guards; the
         // nested form's trailing assigns become initializers in ASSIGNMENT
         // order (the tier's definition order).
@@ -1223,10 +1392,33 @@ impl Generator {
             synthetic_locals.push(normalized);
         }
         for local in &function.locals[1..] {
-            if !trailing_inits.iter().any(|(name, _)| name == &local.name) {
-                synthetic_locals.push(local.clone());
+            if trailing_inits.iter().any(|(name, _)| name == &local.name) {
+                continue;
             }
+            // Composition: the diamond local and the else-only fold locals
+            // stay OUT of the shared synthetic (the else tail owns them).
+            if let Some(payload) = &composition {
+                if local.name == payload.qx_name
+                    || payload.else_locals.iter().any(|owned| owned.name == local.name)
+                {
+                    continue;
+                }
+            }
+            synthetic_locals.push(local.clone());
         }
+        let (synthetic_guards, synthetic_return) = if let Some(form) = &if_form {
+            (
+                vec![mwcc_syntax_trees::GuardedReturn {
+                    condition: form.condition.clone(),
+                    value: form.then_value.clone(),
+                }],
+                Some(form.else_return.clone()),
+            )
+        } else if nested {
+            (function.guards.clone(), function.return_expression.clone())
+        } else {
+            (Vec::new(), function.return_expression.clone())
+        };
         let synthetic = Function {
             return_type: function.return_type,
             name: function.name.clone(),
@@ -1235,8 +1427,8 @@ impl Generator {
             parameters: function.parameters.clone(),
             locals: synthetic_locals,
             statements: Vec::new(),
-            guards: if nested { function.guards.clone() } else { Vec::new() },
-            return_expression: function.return_expression.clone(),
+            guards: synthetic_guards,
+            return_expression: synthetic_return,
         };
         let _ = Statement::Return(None); // keep the use import stable
 
@@ -1283,8 +1475,9 @@ impl Generator {
             tail_branches.push(self.output.instructions.len());
             self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 });
             self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: 0, b: 1 });
-            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 16 });
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+            let conversion_slot: i16 = if composition.is_some() { 24 } else { 16 };
+            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: conversion_slot });
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: conversion_slot + 4 });
             self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
             tail_branches.push(self.output.instructions.len());
             self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 0 });
@@ -1340,6 +1533,11 @@ impl Generator {
         if let Some((high, low)) = ix_dual_big {
             self.float_dual_compare = Some((high, low, target_register));
         }
+        if let Some(mut payload) = composition {
+            payload.ix_register = target_register;
+            payload.addis_target = load_register;
+            self.float_else_composition = Some(payload);
+        }
         let saved_ix_location = if ix_in_dual_condition {
             self.locations.insert(
                 ix.to_string(),
@@ -1372,6 +1570,7 @@ impl Generator {
         }
         self.float_reload_x = None;
         self.float_dual_compare = None;
+        self.float_else_composition = None;
         self.frame_slots = saved_frame_slots;
         match claimed {
             Ok(true) => {}
@@ -1793,6 +1992,21 @@ impl Generator {
             let chain_locals: Vec<usize> = (0..local_trees.len())
                 .filter(|&index| !local_is_product[index] && escaping_locals.contains(&index))
                 .collect();
+            let composition = self.float_else_composition.clone();
+            let else_synthetic = || -> Function {
+                let payload = composition.as_ref().expect("checked at use");
+                Function {
+                    return_type: function.return_type,
+                    name: function.name.clone(),
+                    is_static: function.is_static,
+                    is_weak: function.is_weak,
+                    parameters: function.parameters.clone(),
+                    locals: payload.else_locals.clone(),
+                    statements: Vec::new(),
+                    guards: Vec::new(),
+                    return_expression: Some(else_value.clone()),
+                }
+            };
             if let [chain_index] = chain_locals.as_slice() {
                 let Operand::Node(root_node) = local_operands[*chain_index] else {
                     return Ok(false);
@@ -1808,20 +2022,41 @@ impl Generator {
                         dry_pseudos.push((local_names[index].0.clone(), register));
                     }
                 }
+                let mut x_pseudo_name: Option<String> = None;
                 if in_frame {
                     if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
+                        x_pseudo_name = Some(name.clone());
                         dry_pseudos.push((name.clone(), registers[0].expect("checked above")));
                     }
                 }
                 let saved_pseudo = std::mem::take(&mut self.float_pseudo_params);
                 let saved_reload = self.float_reload_x.take();
                 let mut exclusions: Vec<u8> = Vec::new();
-                for tail in [then_value, else_value] {
+                for (tail, is_else) in [(then_value, false), (else_value, true)] {
+                    // The COMPOSED else tail re-reads x and the diamond local
+                    // from the FRAME (no x pseudo) and owns the fold locals.
+                    let composed = is_else && composition.is_some();
                     self.float_pseudo_params = dry_pseudos.clone();
+                    if composed {
+                        if let Some(name) = &x_pseudo_name {
+                            self.float_pseudo_params.retain(|(pseudo, _)| pseudo != name);
+                        }
+                        let payload = composition.as_ref().expect("checked");
+                        self.float_reload_x = Some(8);
+                        self.float_frame_local = Some((payload.qx_name.clone(), payload.qx_offset));
+                    }
                     let mark = self.output.instructions.len();
                     let relocation_mark = self.output.relocations.len();
                     let bump_mark = self.output.anonymous_label_bump;
-                    let claimed = self.try_float_dag_return(&synthetic(tail));
+                    let claimed = if composed {
+                        self.try_float_dag_return(&else_synthetic())
+                    } else {
+                        self.try_float_dag_return(&synthetic(tail))
+                    };
+                    if composed {
+                        self.float_reload_x = None;
+                        self.float_frame_local = None;
+                    }
                     let claimed_ok = matches!(claimed, Ok(true));
                     let mut last_read: Option<usize> = None;
                     for (offset, instruction) in self.output.instructions[mark..].iter().enumerate() {
@@ -2019,11 +2254,74 @@ impl Generator {
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
             *target = else_start;
         }
-        match self.try_float_dag_return(&synthetic(else_value)) {
-            Ok(true) => {}
-            other => {
-                rollback(self);
-                return other.map(|_| false);
+        let composition_real = self.float_else_composition.clone();
+        if let Some(payload) = &composition_real {
+            // The inner diamond opens the else branch: lis r0 + cmpw against
+            // the preserved ix, ble to the punned arm, the literal arm
+            // through the f0 scratch, the addis/li/stw/stw arm, join.
+            self.output.instructions.push(Instruction::load_immediate_shifted(0, payload.compare_high));
+            self.output.instructions.push(Instruction::CompareWord { a: payload.ix_register, b: 0 });
+            let skip_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward {
+                options: payload.skip_options,
+                condition_bit: payload.skip_bit,
+                target: 0,
+            });
+            self.load_double_constant(0, payload.then_bits);
+            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: payload.qx_offset });
+            let join_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            let diamond_else = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_index] {
+                *target = diamond_else;
+            }
+            self.output.instructions.push(Instruction::AddImmediateShifted {
+                d: payload.addis_target,
+                a: payload.ix_register,
+                immediate: payload.addis_shift,
+            });
+            self.output.instructions.push(Instruction::load_immediate(0, 0));
+            self.output.instructions.push(Instruction::StoreWord { s: payload.addis_target, a: 1, offset: payload.qx_offset });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: payload.qx_offset + 4 });
+            let join = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[join_index] {
+                *target = join;
+            }
+            self.output.anonymous_label_bump += 3;
+            // The composed tail: x re-reloads, the diamond local frame-reads.
+            if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
+                self.float_pseudo_params.retain(|(pseudo, _)| pseudo != name);
+            }
+            self.float_reload_x = Some(8);
+            self.float_frame_local = Some((payload.qx_name.clone(), payload.qx_offset));
+            let composed_synthetic = Function {
+                return_type: function.return_type,
+                name: function.name.clone(),
+                is_static: function.is_static,
+                is_weak: function.is_weak,
+                parameters: function.parameters.clone(),
+                locals: payload.else_locals.clone(),
+                statements: Vec::new(),
+                guards: Vec::new(),
+                return_expression: Some(else_value.clone()),
+            };
+            let claimed = self.try_float_dag_return(&composed_synthetic);
+            self.float_reload_x = None;
+            self.float_frame_local = None;
+            match claimed {
+                Ok(true) => {}
+                other => {
+                    rollback(self);
+                    return other.map(|_| false);
+                }
+            }
+        } else {
+            match self.try_float_dag_return(&synthetic(else_value)) {
+                Ok(true) => {}
+                other => {
+                    rollback(self);
+                    return other.map(|_| false);
+                }
             }
         }
         if in_frame {

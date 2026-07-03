@@ -97,19 +97,24 @@ fn main() -> std::process::ExitCode {
                         reloc_exact += 1;
                     }
                     let whole_object_matches = std::fs::read(&reference_object).ok() == std::fs::read(&our_object).ok();
-                    let marker = if whole_object_matches {
+                    if whole_object_matches {
                         object_exact += 1;
-                        "PASS"
-                    } else if relocs_match {
-                        "PASS*" // .text + relocations match; the full object (e.g. .comment) does not yet
+                        println!("  PASS {name}");
+                        passed += 1;
                     } else {
-                        "PASS!" // .text matches but relocations differ — objdiff would flag this
-                    };
-                    println!("  {marker} {name}");
-                    if !relocs_match {
-                        print_difference(&our_relocs, &reference_relocs);
+                        // BYTE-EXACT OR DEFER: a .text match with any other
+                        // section drifting (pool order, symbols, .comment)
+                        // is a FAILURE, not a softer pass (the fire-366 pool
+                        // reorder hid behind the old PASS* marker).
+                        println!(
+                            "  FAIL {name} — .text matches but the WHOLE OBJECT differs{}",
+                            if relocs_match { " (sections/symbols)" } else { " (relocations!)" }
+                        );
+                        if !relocs_match {
+                            print_difference(&our_relocs, &reference_relocs);
+                        }
+                        failed += 1;
                     }
-                    passed += 1;
                 } else {
                     println!("  FAIL {name} — .text differs (ours | oracle):");
                     print_difference(&our_text, &reference_text);
