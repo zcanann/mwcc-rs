@@ -3418,8 +3418,18 @@ impl Generator {
             return Ok(false);
         }
         let x = first.name.as_str();
-        // Every local: an int punned read of x at a distinct word offset.
+        // Every local: an int punned read of x at a distinct word offset —
+        // or ONE computed GUARD local `j0 = ((punned >> S) [& M]) - K`
+        // read only by the outer condition (s_floor's exponent extract).
+        struct GuardLocal<'a> {
+            name: &'a str,
+            source: &'a str,
+            shift: u8,
+            mask: Option<i64>,
+            offset_k: i64,
+        }
         let mut locals: Vec<(&str, i16)> = Vec::new();
+        let mut guard_local: Option<GuardLocal> = None;
         for local in &function.locals {
             if local.declared_type != Type::Int || local.array_length.is_some() {
                 return Ok(false);
@@ -3427,16 +3437,65 @@ impl Generator {
             let Some(init) = &local.initializer else {
                 return Ok(false);
             };
-            let Some(offset) = crate::frame::pun_word_offset_pub(init, x) else {
-                return Ok(false);
-            };
-            if locals.iter().any(|&(_, seen)| seen == offset) {
+            if let Some(offset) = crate::frame::pun_word_offset_pub(init, x) {
+                if locals.iter().any(|&(_, seen)| seen == offset) {
+                    return Ok(false);
+                }
+                locals.push((local.name.as_str(), offset));
+                continue;
+            }
+            // The computed guard local: strip a trailing `- K`.
+            if guard_local.is_some() {
                 return Ok(false);
             }
-            locals.push((local.name.as_str(), offset));
+            let (core, offset_k) = match init {
+                Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+                    let Some(k) = crate::analysis::constant_value(right) else {
+                        return Ok(false);
+                    };
+                    (left.as_ref(), k)
+                }
+                other => (other, 0),
+            };
+            // `(punned >> S) & M` or bare `punned >> S`.
+            let (shifted, mask) = match core {
+                Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
+                    let Some(mask) = crate::analysis::constant_value(right) else {
+                        return Ok(false);
+                    };
+                    (left.as_ref(), Some(mask))
+                }
+                other => (other, None),
+            };
+            let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = shifted else {
+                return Ok(false);
+            };
+            let Expression::Variable(source) = left.as_ref() else {
+                return Ok(false);
+            };
+            let Some(shift) = crate::analysis::constant_value(right) else {
+                return Ok(false);
+            };
+            let Ok(shift) = u8::try_from(shift) else {
+                return Ok(false);
+            };
+            guard_local = Some(GuardLocal {
+                name: local.name.as_str(),
+                source,
+                shift,
+                mask,
+                offset_k,
+            });
         }
         if locals.is_empty() || locals.len() > 2 {
             return Ok(false);
+        }
+        if let Some(guard) = &guard_local {
+            // The source must be a punned local; the guard local reads
+            // nowhere else (its home holds only the pre-offset value).
+            if !locals.iter().any(|&(name, _)| name == guard.source) {
+                return Ok(false);
+            }
         }
         // statements = [If{cond, [early-return-x if]? [mutations]}] + one
         // punned store per local writing it back to ITS offset.
@@ -3514,6 +3573,41 @@ impl Generator {
                 return Ok(false);
             }
         }
+        // The guard-local condition: `j0 < C` only (measured), with j0
+        // read nowhere else in the function.
+        let mut guard_compare: Option<(i16, i64)> = None;
+        if let Some(guard) = &guard_local {
+            let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition else {
+                return Ok(false);
+            };
+            if !matches!(left.as_ref(), Expression::Variable(name) if name == guard.name) {
+                return Ok(false);
+            }
+            let Some(bound) = crate::analysis::constant_value(right) else {
+                return Ok(false);
+            };
+            let Ok(bound) = i16::try_from(bound) else {
+                return Ok(false);
+            };
+            let elsewhere = block
+                .iter()
+                .chain(stores.iter())
+                .map(|statement| match statement {
+                    Statement::Assign { value, .. } => count_name_occurrences(value, guard.name),
+                    Statement::Store { target, value } => {
+                        count_name_occurrences(target, guard.name) + count_name_occurrences(value, guard.name)
+                    }
+                    _ => 0,
+                })
+                .sum::<usize>()
+                + early_return
+                    .map(|inner| count_name_occurrences(inner, guard.name))
+                    .unwrap_or(0);
+            if elsewhere != 0 {
+                return Ok(false);
+            }
+            guard_compare = Some((bound, guard.offset_k));
+        }
         // Registers: a punned local whose loaded value only feeds its own
         // writeback takes the r0 scratch; one that feeds COMPUTATION (the
         // early-return test, a self-mask) takes the freed condition
@@ -3527,9 +3621,14 @@ impl Generator {
                 }) || early_return
                     .map(|condition| crate::analysis::count_name_occurrences(condition, name) > 0)
                     .unwrap_or(false)
+                    || guard_local
+                        .as_ref()
+                        .map(|guard| guard.source == name)
+                        .unwrap_or(false)
             })
             .collect();
-        let mut next_general = 3u8;
+        let guard_register = 3u8;
+        let mut next_general = if guard_local.is_some() { 4u8 } else { 3u8 };
         let mut registers: Vec<u8> = Vec::new();
         for &computed in &computes {
             if computed {
@@ -3563,11 +3662,69 @@ impl Generator {
         // -- commit --
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let hoisted = if guard_local.is_none() {
+            Some(self.emit_condition_test(condition)?)
+        } else {
+            None
+        };
         self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
         for (index, &(_, offset)) in locals.iter().enumerate() {
             self.output.instructions.push(Instruction::LoadWord { d: registers[index], a: 1, offset: 8 + offset });
         }
+        let (options, condition_bit) = match hoisted {
+            Some(encoding) => encoding,
+            None => {
+                // The guard local computes AFTER the loads: the fused
+                // shift+mask (rlwinm) or plain srawi into its home, the
+                // trailing -K folded into a scratch compare (measured).
+                let guard = guard_local.as_ref().expect("gated above");
+                let source_register = locals
+                    .iter()
+                    .position(|&(name, _)| name == guard.source)
+                    .map(|index| registers[index])
+                    .expect("source is punned");
+                match guard.mask {
+                    Some(mask) => {
+                        let rotated = (32 - guard.shift as u32) % 32;
+                        let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
+                            return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
+                        };
+                        self.output.instructions.push(Instruction::RotateAndMask {
+                            a: guard_register,
+                            s: source_register,
+                            shift: rotated as u8,
+                            begin,
+                            end,
+                        });
+                    }
+                    None => {
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
+                            a: guard_register,
+                            s: source_register,
+                            shift: guard.shift,
+                        });
+                    }
+                }
+                let (bound, offset_k) = guard_compare.expect("gated above");
+                if offset_k != 0 {
+                    let Ok(negative) = i16::try_from(-offset_k) else {
+                        return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
+                    };
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: 0,
+                        a: guard_register,
+                        immediate: negative,
+                    });
+                    self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: bound });
+                } else {
+                    self.output.instructions.push(Instruction::CompareWordImmediate {
+                        a: guard_register,
+                        immediate: bound,
+                    });
+                }
+                (4, 0) // bge — the Less guard's skip sense
+            }
+        };
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
         self.emit_branch_conditional_to(options, condition_bit, join);

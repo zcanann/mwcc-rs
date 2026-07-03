@@ -44,3 +44,29 @@ double writeback_early_return(double x, int j0)
 	*(int *)&x = i0;
 	return x;
 }
+
+double writeback_computed_guard(double x)
+{
+	int i0, j0;
+
+	i0 = *(int *)&x;
+	j0 = ((i0 >> 20) & 0x7ff) - 0x3ff;
+	if (j0 < 20) {
+		i0 = 0;
+	}
+	*(int *)&x = i0;
+	return x;
+}
+
+double writeback_shift_guard(double x)
+{
+	int i0, j0;
+
+	i0 = *(int *)&x;
+	j0 = (i0 >> 20) - 5;
+	if (j0 < 20) {
+		i0 = 0;
+	}
+	*(int *)&x = i0;
+	return x;
+}
