@@ -4218,6 +4218,9 @@ mod tests {
             LoadDiscarded,
             LoadSurviving,
             Shift,
+            /// The ladder scrutinee: read by multiple top-level branch
+            /// conditions (the composed s_floor's j0).
+            Scrutinee,
         }
         pub struct Value {
             pub class: Class,
@@ -4295,6 +4298,20 @@ mod tests {
                 v(Temp, 1, 2, 3), v(Mask, 2, 8, 4), v(Computed, 6, 7, 3),
                 v(LoadDiscarded, 4, 10, 6), v(LoadDiscarded, 5, 9, 5),
             ]},
+            // Standalone s_floor arm3 (fire 400): j0=r4, i=r7.
+            Fixture { name: "ARM3", values: &[
+                v(Mask, 1, 8, 3), v(Mask, 19, 20, 3), v(Computed, 5, 18, 4),
+                v(LoadSurviving, 3, 27, 5), v(LoadSurviving, 4, 28, 6),
+                v(Shift, 8, 26, 7),
+            ]},
+            // The COMPOSED full s_floor (fire 401): the same arm's j0/i
+            // SWAP (i=r4, j0=r7) — j0 is the ladder SCRUTINEE here.
+            Fixture { name: "SFLOOR", values: &[
+                v(Temp, 4, 5, 3), v(Temp, 26, 40, 3), v(Mask, 52, 53, 3),
+                v(Mask, 69, 70, 3), v(Scrutinee, 5, 68, 7),
+                v(LoadSurviving, 2, 77, 5), v(LoadSurviving, 3, 78, 6),
+                v(Shift, 28, 42, 4), v(Shift, 53, 76, 4),
+            ]},
         ];
 
         /// THE FITTED MODEL (v2, 13/13) — the public crate module; the
@@ -4316,7 +4333,7 @@ mod tests {
             match class {
                 Class::Temp => crate::int_alloc::Class::Temp,
                 Class::Mask => crate::int_alloc::Class::Mask,
-                Class::Computed => crate::int_alloc::Class::Computed,
+                Class::Computed | Class::Scrutinee => crate::int_alloc::Class::Computed,
                 Class::LoadDiscarded => crate::int_alloc::Class::LoadDiscarded,
                 Class::LoadSurviving => crate::int_alloc::Class::LoadSurviving,
                 Class::Shift => crate::int_alloc::Class::Shift,
@@ -4355,7 +4372,8 @@ mod tests {
     fn int_allocator_deep_fit() {
         use int_alloc_fit::*;
         use Class::*;
-        const CLASSES: [Class; 6] = [Temp, Mask, Computed, LoadDiscarded, LoadSurviving, Shift];
+        const CLASSES: [Class; 7] =
+            [Temp, Mask, Computed, LoadDiscarded, LoadSurviving, Shift, Scrutinee];
         // Intra-class ordering keys.
         #[derive(Clone, Copy, Debug)]
         enum Key {
