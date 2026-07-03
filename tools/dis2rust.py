@@ -1,6 +1,13 @@
 # Transcribe the e_fmod objdump into Instruction:: pushes (fire 438).
 import re, sys
 lines = open(sys.argv[1]).read().splitlines()
+POOL = {}
+if len(sys.argv) > 2:
+    for pl in open(sys.argv[2]).read().split():
+        pass
+    for pl in open(sys.argv[2]).read().splitlines():
+        parts = pl.split()
+        if len(parts)==2: POOL[parts[0]] = parts[1]
 instrs = []   # (idx, mnemonic, ops, reloc_or_None)
 reloc = {}
 for ln in lines:
@@ -25,6 +32,13 @@ for idx, mn, ops in instrs:
     if idx in targets:
         out.append(f"        self.bind_label(labels[&{idx}]);")
     rl = reloc.get(idx)
+    if rl and rl[0] == "R_PPC_EMB_SDA21":
+        # a pooled constant load: lfd fD,0(0) + SDA21 @N -> load_double_constant
+        if mn == "lfd" and rl[1] in POOL:
+            out.append(f"        self.load_double_constant({ops[0][1:]}, 0x{POOL[rl[1]]});")
+            continue
+        out.append(f"        // UNHANDLED SDA21: {mn} {ops} -> {rl[1]}")
+        continue
     if rl:
         kind = {"R_PPC_ADDR16_HA":"Addr16Ha","R_PPC_ADDR16_LO":"Addr16Lo"}[rl[0]]
         out.append(f'        self.record_relocation(RelocationKind::{kind}, "{rl[1]}");')
@@ -67,6 +81,15 @@ for idx, mn, ops in instrs:
     elif mn=="mtctr": push(f"MoveToCountRegister {{ s: {R(ops[0])} }}")
     elif mn=="fmul": push(f"FloatMultiplyDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]} }}")
     elif mn=="fdiv": push(f"FloatDivideDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
+    elif mn=="fadd": push(f"FloatAddDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
+    elif mn=="fsub": push(f"FloatSubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
+    elif mn=="fmadd": push(f"FloatMultiplyAddDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
+    elif mn=="fmsub": push(f"FloatMultiplySubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
+    elif mn=="fnmsub": push(f"FloatNegativeMultiplySubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
+    elif mn=="fneg": push(f"FloatNegate {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
+    elif mn=="fabs": push(f"FloatAbsolute {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
+    elif mn=="fcmpo": push(f"FloatCompareOrdered {{ a: {ops[-2][1:]}, b: {ops[-1][1:]} }}")
+    elif mn=="cmplwi": push(f"CompareLogicalWordImmediate {{ a: {R(ops[0])}, immediate: {ops[1]} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4
