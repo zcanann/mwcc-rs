@@ -210,3 +210,25 @@ int early_ladder(int hx, unsigned lx, int hy, unsigned ly)
 	}
 	return 3;
 }
+/* Fire 431: the ALIGN DIAMOND (e_fmod's subnormal shift-to-normal).
+   The new hx CONVERGES IN r0 from all three arms (a join register);
+   the HI_BIT or folds to oris; n takes ix's home via subfic; 32-n is
+   subfic r0, n-32 is addi r0,-32; lx's in-place slw schedules into
+   the srw->or latency; the join adds r0+r4. @N +0. */
+int align_x(int hx, unsigned lx, int ix)
+{
+	int n;
+	if (ix >= -1022)
+		hx = 0x00100000 | (0x000fffff & hx);
+	else {
+		n = -1022 - ix;
+		if (n <= 31) {
+			hx = (hx << n) | (lx >> (32 - n));
+			lx <<= n;
+		} else {
+			hx = lx << (n - 32);
+			lx = 0;
+		}
+	}
+	return hx + (int)lx;
+}
