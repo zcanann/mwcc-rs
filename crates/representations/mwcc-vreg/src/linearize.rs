@@ -4198,4 +4198,304 @@ mod tests {
         ];
         assert_eq!(labels(&nodes), ["lwz_p", "stw_g", "lwz_q", "stw_h"]);
     }
+
+    /// The INT LOCAL-ALLOCATOR fitter (fires 391-397): twelve captured
+    /// register maps from the punned/shift-local family (see
+    /// docs/int-allocator-frontier.md; regenerate via tools/probe.sh).
+    /// Values are (class, def, last-read, expected register); r0-assigned
+    /// values (branch-free folds/rewrites/single-use masks) are excluded —
+    /// the r0 policy is fitted separately and holds on all captures.
+    mod int_alloc_fit {
+        /// Value classes: the constant-synthesis temp, the mask constant,
+        /// the computed guard local (j0), a loaded home dead before the
+        /// first branch (discarded), a loaded home that survives it, and
+        /// the multi-use shifted mask.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Class {
+            Temp,
+            Mask,
+            Computed,
+            LoadDiscarded,
+            LoadSurviving,
+            Shift,
+        }
+        pub struct Value {
+            pub class: Class,
+            pub def: u32,
+            pub last: u32,
+            pub expected: u8,
+        }
+        pub struct Fixture {
+            pub name: &'static str,
+            pub values: &'static [Value],
+        }
+        const fn v(class: Class, def: u32, last: u32, expected: u8) -> Value {
+            Value { class, def, last, expected }
+        }
+        use Class::*;
+        pub const FIXTURES: &[Fixture] = &[
+            Fixture { name: "V1", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 8, 4), v(Computed, 6, 7, 3),
+                v(LoadSurviving, 4, 13, 5), v(LoadSurviving, 5, 14, 6),
+            ]},
+            Fixture { name: "V1b", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 8, 5), v(Computed, 6, 7, 4),
+                v(LoadSurviving, 4, 15, 6), v(LoadDiscarded, 5, 10, 3),
+                v(Shift, 8, 13, 4),
+            ]},
+            Fixture { name: "V1c", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 7, 4), v(Computed, 5, 6, 3),
+                v(LoadSurviving, 4, 12, 5), v(Shift, 7, 11, 3),
+            ]},
+            Fixture { name: "V1d", values: &[
+                v(Temp, 1, 4, 3), v(Mask, 4, 9, 4), v(Computed, 7, 8, 3),
+                v(LoadSurviving, 5, 11, 5),
+            ]},
+            Fixture { name: "W4", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 7, 4), v(Computed, 5, 6, 3),
+                v(LoadSurviving, 4, 14, 5), v(Shift, 7, 11, 3),
+            ]},
+            Fixture { name: "W7", values: &[
+                v(Mask, 1, 6, 4), v(Computed, 4, 5, 3),
+                v(LoadSurviving, 3, 11, 5), v(Shift, 6, 10, 3),
+            ]},
+            Fixture { name: "W8", values: &[
+                v(Computed, 3, 4, 3), v(LoadSurviving, 2, 10, 4),
+                v(Shift, 5, 9, 3),
+            ]},
+            Fixture { name: "W10", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 8, 4), v(Computed, 6, 7, 3),
+                v(LoadSurviving, 4, 16, 5), v(LoadSurviving, 5, 17, 6),
+                v(Shift, 8, 13, 3),
+            ]},
+            Fixture { name: "W11", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 7, 4), v(Computed, 5, 6, 3),
+                v(LoadSurviving, 4, 13, 5), v(Shift, 7, 11, 3),
+            ]},
+            Fixture { name: "D1", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 8, 4), v(Computed, 6, 7, 3),
+                v(LoadSurviving, 4, 15, 5), v(LoadSurviving, 5, 14, 6),
+                v(Shift, 8, 13, 3),
+            ]},
+            // D2/D3 reproduce V1b exactly (value and mutation order are
+            // irrelevant) — encoded once as V1b.
+            Fixture { name: "D4", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 8, 4), v(Computed, 6, 7, 3),
+                v(LoadDiscarded, 4, 9, 6), v(LoadDiscarded, 5, 10, 5),
+            ]},
+            Fixture { name: "D5", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 8, 4), v(Computed, 6, 7, 3),
+                v(LoadSurviving, 4, 17, 5), v(LoadSurviving, 5, 12, 6),
+                v(Shift, 8, 15, 3),
+            ]},
+            // D4 with the test operands swapped — the discarded pair's
+            // DEATHS flip but the registers do not: the crosserless
+            // intra-key is def-desc (structural), not death-based.
+            Fixture { name: "D4c", values: &[
+                v(Temp, 1, 2, 3), v(Mask, 2, 8, 4), v(Computed, 6, 7, 3),
+                v(LoadDiscarded, 4, 10, 6), v(LoadDiscarded, 5, 9, 5),
+            ]},
+        ];
+
+        /// THE FITTED MODEL (v2, 13/13): values assign lowest-free in
+        /// r3..r10 over their inclusive ranges, ordered
+        ///   Temp -> discarded loads (def-asc, ONLY when some r3+ value
+        ///   crosses the first branch) -> Computed -> Mask -> surviving
+        ///   loads (def-asc) -> Shift -> discarded loads (def-desc, when
+        ///   nothing crosses).
+        /// r0 separately takes branch-free values (folds, record temps,
+        /// store-only rewrites, single-use adjacent masks).
+        pub fn model_order(fixture: &Fixture) -> Vec<usize> {
+            let crossers = fixture
+                .values
+                .iter()
+                .any(|value| matches!(value.class, Class::LoadSurviving | Class::Shift));
+            let mut order: Vec<usize> = Vec::new();
+            let mut push_class = |order: &mut Vec<usize>, class: Class, descending: bool| {
+                let mut members: Vec<usize> = (0..fixture.values.len())
+                    .filter(|&i| fixture.values[i].class == class)
+                    .collect();
+                members.sort_by_key(|&i| {
+                    let def = fixture.values[i].def as i64;
+                    if descending { -def } else { def }
+                });
+                order.extend(members);
+            };
+            push_class(&mut order, Class::Temp, false);
+            if crossers {
+                push_class(&mut order, Class::LoadDiscarded, false);
+            }
+            push_class(&mut order, Class::Computed, false);
+            push_class(&mut order, Class::Mask, false);
+            push_class(&mut order, Class::LoadSurviving, false);
+            push_class(&mut order, Class::Shift, false);
+            if !crossers {
+                push_class(&mut order, Class::LoadDiscarded, true);
+            }
+            order
+        }
+
+        /// Lowest register in r3..r10 free over [def,last] (inclusive
+        /// overlap), given prior assignments.
+        pub fn assign(order: &[usize], values: &[Value]) -> Vec<u8> {
+            let mut chosen = vec![0u8; values.len()];
+            for &index in order {
+                let value = &values[index];
+                'reg: for register in 3u8..=10 {
+                    for &previous in order.iter().take_while(|&&p| p != index) {
+                        if chosen[previous] == register {
+                            let other = &values[previous];
+                            if value.def <= other.last && other.def <= value.last {
+                                continue 'reg;
+                            }
+                        }
+                    }
+                    chosen[index] = register;
+                    break;
+                }
+            }
+            chosen
+        }
+    }
+
+    /// Exploratory: enumerate (class permutation x intra-class key x
+    /// conditional split) against all twelve register maps. Run with
+    /// `cargo test -p mwcc-vreg int_allocator_deep_fit -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn int_allocator_deep_fit() {
+        use int_alloc_fit::*;
+        use Class::*;
+        const CLASSES: [Class; 6] = [Temp, Mask, Computed, LoadDiscarded, LoadSurviving, Shift];
+        // Intra-class ordering keys.
+        #[derive(Clone, Copy, Debug)]
+        enum Key {
+            DefAsc,
+            DefDesc,
+            DeathAsc,
+            DeathDesc,
+        }
+        const KEYS: [Key; 4] = [Key::DefAsc, Key::DefDesc, Key::DeathAsc, Key::DeathDesc];
+        fn ordered(fixture: &Fixture, permutation: &[Class], load_key: Key) -> Vec<usize> {
+            let mut order: Vec<usize> = Vec::new();
+            for &class in permutation {
+                let mut members: Vec<usize> = (0..fixture.values.len())
+                    .filter(|&i| fixture.values[i].class == class)
+                    .collect();
+                members.sort_by_key(|&i| {
+                    let value = &fixture.values[i];
+                    match load_key {
+                        Key::DefAsc => value.def as i64,
+                        Key::DefDesc => -(value.def as i64),
+                        Key::DeathAsc => value.last as i64,
+                        Key::DeathDesc => -(value.last as i64),
+                    }
+                });
+                order.extend(members);
+            }
+            order
+        }
+        fn matches(fixture: &Fixture, permutation: &[Class], load_key: Key) -> bool {
+            let order = ordered(fixture, permutation, load_key);
+            let chosen = assign(&order, fixture.values);
+            (0..fixture.values.len()).all(|i| chosen[i] == fixture.values[i].expected)
+        }
+        // All permutations of the six classes.
+        fn permutations(classes: &[Class]) -> Vec<Vec<Class>> {
+            if classes.len() <= 1 {
+                return vec![classes.to_vec()];
+            }
+            let mut result = Vec::new();
+            for (index, &head) in classes.iter().enumerate() {
+                let mut rest = classes.to_vec();
+                rest.remove(index);
+                for mut tail in permutations(&rest) {
+                    tail.insert(0, head);
+                    result.push(tail);
+                }
+            }
+            result
+        }
+        let all = permutations(&CLASSES);
+        // Pass 1: a single unconditional (permutation, key).
+        let mut best: (usize, String) = (0, String::new());
+        for permutation in &all {
+            for &key in &KEYS {
+                let score = FIXTURES.iter().filter(|f| matches(f, permutation, key)).count();
+                if score > best.0 {
+                    best = (score, format!("{permutation:?} {key:?}"));
+                }
+            }
+        }
+        println!("UNCONDITIONAL best: {}/{} via {}", best.0, FIXTURES.len(), best.1);
+        // Pass 2: conditional on "any r3+ value crosses the first branch"
+        // — approximated as: the fixture contains a Shift or LoadSurviving
+        // value (D4/V1d are the two without... V1d has LoadSurviving; use
+        // the discarded-only test: every load discarded AND no shift).
+        let crosserless: Vec<bool> = FIXTURES
+            .iter()
+            .map(|f| {
+                f.values.iter().all(|v| {
+                    !matches!(v.class, Class::LoadSurviving | Class::Shift)
+                        || v.class == Class::LoadSurviving && false
+                }) || f
+                    .values
+                    .iter()
+                    .filter(|v| matches!(v.class, Class::LoadSurviving | Class::Shift))
+                    .count()
+                    == 0
+            })
+            .collect();
+        let mut winners: Vec<String> = Vec::new();
+        for with in &all {
+            for &key_with in &KEYS {
+                // The with-crossers rule must fit all crosser fixtures.
+                if !FIXTURES
+                    .iter()
+                    .zip(&crosserless)
+                    .filter(|(_, &less)| !less)
+                    .all(|(f, _)| matches(f, with, key_with))
+                {
+                    continue;
+                }
+                for without in &all {
+                    for &key_without in &KEYS {
+                        if FIXTURES
+                            .iter()
+                            .zip(&crosserless)
+                            .filter(|(_, &less)| less)
+                            .all(|(f, _)| matches(f, without, key_without))
+                        {
+                            winners.push(format!(
+                                "crossers: {with:?} {key_with:?} | none: {without:?} {key_without:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        println!("CONDITIONAL winners: {}", winners.len());
+        for winner in winners.iter().take(20) {
+            println!("  {winner}");
+        }
+    }
+
+    /// PINNED: the v2 int-allocator model reproduces all thirteen captured
+    /// register maps (docs/int-allocator-frontier.md).
+    #[test]
+    fn int_allocator_model_v2() {
+        use int_alloc_fit::*;
+        for fixture in FIXTURES {
+            let order = model_order(fixture);
+            let chosen = assign(&order, fixture.values);
+            for (index, value) in fixture.values.iter().enumerate() {
+                assert_eq!(
+                    chosen[index], value.expected,
+                    "{}: value {} got r{}, expected r{}",
+                    fixture.name, index, chosen[index], value.expected
+                );
+            }
+        }
+    }
 }
