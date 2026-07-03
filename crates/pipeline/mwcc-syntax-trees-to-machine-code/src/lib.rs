@@ -211,7 +211,9 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     }
     generator.output.is_static = function.is_static;
     generator.output.is_weak = function.is_weak;
-    generator.output.static_locals = static_local_data;
+    if generator.output.static_locals.is_empty() {
+        generator.output.static_locals = static_local_data;
+    }
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled

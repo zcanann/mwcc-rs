@@ -20,6 +20,8 @@ mod erempio2_str;
 mod ktan;
 mod ktan_ww;
 mod satan;
+mod uart_close;
+mod uart_write;
 mod satan_pik;
 mod satan_sun;
 mod sldexp;
@@ -86,6 +88,8 @@ impl Generator {
             || self.try_sldexp(function)?
             || self.try_sldexp_str(function)?
             || self.try_erempio2(function)?
+            || self.try_uart_write(function)?
+            || self.try_uart_close(function)?
             || self.try_erempio2_str(function)?)
     }
 }
