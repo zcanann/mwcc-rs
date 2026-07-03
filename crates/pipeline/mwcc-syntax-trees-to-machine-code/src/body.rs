@@ -975,6 +975,31 @@ struct GuardLocal<'a> {
     offset_k: i64,
 }
 
+/// Parse the shift-local initializer `(unsigned)? C >> (guard [- K2])` —
+/// the cast selects the LOGICAL shift (srw), the offset folds into the
+/// r0 scratch before the shift (arm3's `0xffffffff >> (j0 - 20)`).
+fn parse_shift_init(init: &Expression, guard_name: &str) -> Option<(i64, bool, i64)> {
+    let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = init else {
+        return None;
+    };
+    let (constant_expr, logical) = match left.as_ref() {
+        Expression::Cast { target_type: Type::UnsignedInt, operand } => (operand.as_ref(), true),
+        other => (other, false),
+    };
+    let constant = crate::analysis::constant_value(constant_expr)?;
+    let (amount, offset) = match right.as_ref() {
+        Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+            let offset = crate::analysis::constant_value(right)?;
+            (left.as_ref(), offset)
+        }
+        other => (other, 0),
+    };
+    if !matches!(amount, Expression::Variable(v) if v == guard_name) {
+        return None;
+    }
+    Some((constant, logical, offset))
+}
+
 /// Parse `((source >> S) [& M]) - K` as a guard-local initializer.
 fn parse_guard_init<'a>(name: &'a str, init: &'a Expression) -> Option<GuardLocal<'a>> {
     let (core, offset_k) = match init {
@@ -3857,32 +3882,35 @@ impl Generator {
         let mut locals: Vec<(&str, i16)> = Vec::new();
         let mut guard: Option<GuardLocal> = None;
         let mut shift: Option<&str> = None;
-        let mut mask_constant: Option<i64> = None;
+        let mut mask_constant: Option<(i64, bool, i64)> = None; // (C, logical, amount offset)
         let mut cursor = 0usize;
+        // The carry local (arm3's `j`) is assigned only inside the guard,
+        // so the normalizer leaves it uninitialized while folding the rest.
+        let mut carry_local: Option<&str> = None;
         let normalized = !function.locals.is_empty()
-            && function.locals.iter().all(|local| local.initializer.is_some());
+            && function.locals.iter().any(|local| local.initializer.is_some());
         if normalized {
             for local in &function.locals {
                 if local.array_length.is_some() {
                     return Ok(false);
                 }
-                let init = local.initializer.as_ref().expect("checked");
+                let Some(init) = local.initializer.as_ref() else {
+                    if local.declared_type == Type::UnsignedInt && carry_local.is_none() {
+                        carry_local = Some(local.name.as_str());
+                        continue;
+                    }
+                    return Ok(false);
+                };
                 if local.declared_type == Type::UnsignedInt {
                     if shift.is_some() {
                         return Ok(false);
                     }
-                    let (Some(parsed), Expression::Binary { operator: BinaryOperator::ShiftRight, left, right }) =
-                        (&guard, init)
+                    let Some(parsed) = &guard else { return Ok(false) };
+                    let Some((constant, logical, offset)) = parse_shift_init(init, parsed.name)
                     else {
                         return Ok(false);
                     };
-                    let Some(constant) = crate::analysis::constant_value(left) else {
-                        return Ok(false);
-                    };
-                    if !matches!(right.as_ref(), Expression::Variable(v) if v == parsed.name) {
-                        return Ok(false);
-                    }
-                    mask_constant = Some(constant);
+                    mask_constant = Some((constant, logical, offset));
                     shift = Some(local.name.as_str());
                     continue;
                 }
@@ -3936,16 +3964,12 @@ impl Generator {
                     return Ok(false);
                 }
                 if shift.is_none() && declaration.declared_type == Type::UnsignedInt {
-                    if let (Some(parsed), Expression::Binary { operator: BinaryOperator::ShiftRight, left, right }) =
-                        (&guard, value)
-                    {
-                        if let Some(constant) = crate::analysis::constant_value(left) {
-                            if matches!(right.as_ref(), Expression::Variable(v) if v == parsed.name) {
-                                mask_constant = Some(constant);
-                                shift = Some(name.as_str());
-                                cursor += 1;
-                                continue;
-                            }
+                    if let Some(parsed) = &guard {
+                        if let Some((constant, logical, offset)) = parse_shift_init(value, parsed.name) {
+                            mask_constant = Some((constant, logical, offset));
+                            shift = Some(name.as_str());
+                            cursor += 1;
+                            continue;
                         }
                     }
                     return Ok(false);
@@ -3953,9 +3977,14 @@ impl Generator {
                 return Ok(false);
             }
         }
-        let (Some(guard), Some(shift), Some(mask_constant)) = (guard, shift, mask_constant) else {
+        let (Some(guard), Some(shift), Some((mask_constant, logical_shift, amount_offset))) =
+            (guard, shift, mask_constant)
+        else {
             return Ok(false);
         };
+        if i16::try_from(-amount_offset).is_err() {
+            return Ok(false);
+        }
         if locals.is_empty() || locals.len() > 2 {
             return Ok(false);
         }
@@ -3981,8 +4010,10 @@ impl Generator {
         }
         let guard_tail_reads: usize =
             tail.iter().map(|statement| reads_in(statement, guard.name)).sum();
-        if guard_tail_reads > 1 {
-            // Beyond the self-add's single extra read (validated below).
+        if guard_tail_reads > 2 {
+            // Beyond the sign block's reads (the self-add's shift, or the
+            // carry diamond's ==K4 + K3-j0 pair — validated structurally
+            // below; unknown j0 uses fail the exact-form parses).
             return Ok(false);
         }
         // The early-return test.
@@ -4031,7 +4062,16 @@ impl Generator {
         // it a rewrite is CONDITIONAL — the original must survive the
         // guard-false path, so it lands in the home, not r0.
         let mut float_guard: Option<(u64, u64)> = None;
-        let mut sign_add: Option<(usize, i64)> = None; // (local, C2)
+        enum SignBlock {
+            Add { local: usize, constant: i64 },
+            CarryDiamond {
+                local: usize,          // i0 — takes +1
+                other: usize,          // i1 — the carry source, receives j
+                equal_bound: i16,      // j0 == K4
+                shift_base: i16,       // K3 in `1 << (K3 - j0)`
+            },
+        }
+        let mut sign_block: Option<SignBlock> = None;
         let mut mutation_statements: &[Statement] = &tail[1..];
         if let Some(Statement::If { condition, then_body, else_body }) = tail.get(1) {
             let Some(guard_bits) = float_guard_condition(condition) else {
@@ -4042,8 +4082,8 @@ impl Generator {
             }
             float_guard = Some(guard_bits);
             let mut body: &[Statement] = then_body;
-            if let Some(Statement::If { condition, then_body: add_body, else_body }) = body.first() {
-                // `if (l < 0) l += C2 >> j0;`
+            if let Some(Statement::If { condition, then_body: sign_body, else_body }) = body.first() {
+                // `if (l < 0) ...`
                 let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition
                 else {
                     return Ok(false);
@@ -4056,31 +4096,138 @@ impl Generator {
                 if !else_body.is_empty() {
                     return Ok(false);
                 }
-                let [Statement::Assign { name: add_name, value: add_value }] = add_body.as_slice()
-                else {
-                    return Ok(false);
-                };
-                if local_index(add_name) != Some(sign_local) {
-                    return Ok(false);
+                match sign_body.as_slice() {
+                    // arm2: `l += C2 >> j0;`
+                    [Statement::Assign { name: add_name, value: add_value }] => {
+                        if local_index(add_name) != Some(sign_local) {
+                            return Ok(false);
+                        }
+                        let Expression::Binary { operator: BinaryOperator::Add, left: base, right: shifted } =
+                            add_value
+                        else {
+                            return Ok(false);
+                        };
+                        if !matches!(base.as_ref(), Expression::Variable(v) if v == add_name.as_str()) {
+                            return Ok(false);
+                        }
+                        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: c2, right: by } =
+                            shifted.as_ref()
+                        else {
+                            return Ok(false);
+                        };
+                        let Some(c2) = crate::analysis::constant_value(c2) else { return Ok(false) };
+                        if !matches!(by.as_ref(), Expression::Variable(v) if v == guard.name) {
+                            return Ok(false);
+                        }
+                        sign_block = Some(SignBlock::Add { local: sign_local, constant: c2 });
+                    }
+                    // arm3: `if (j0 == K4) l += 1; else { j = other + (1 << (K3 - j0));
+                    //        if (j < other) l += 1; other = j; }`
+                    [Statement::If { condition, then_body, else_body }] => {
+                        let Some(carry) = carry_local else { return Ok(false) };
+                        let Expression::Binary { operator: BinaryOperator::Equal, left, right } = condition
+                        else {
+                            return Ok(false);
+                        };
+                        if !matches!(left.as_ref(), Expression::Variable(v) if v == guard.name) {
+                            return Ok(false);
+                        }
+                        let Some(equal_bound) =
+                            crate::analysis::constant_value(right).and_then(|k| i16::try_from(k).ok())
+                        else {
+                            return Ok(false);
+                        };
+                        // then: l += 1
+                        let [Statement::Assign { name: inc, value: inc_value }] = then_body.as_slice()
+                        else {
+                            return Ok(false);
+                        };
+                        if local_index(inc) != Some(sign_local)
+                            || !matches!(inc_value,
+                                Expression::Binary { operator: BinaryOperator::Add, left, right }
+                                    if matches!(left.as_ref(), Expression::Variable(v) if v == inc.as_str())
+                                        && crate::analysis::constant_value(right) == Some(1))
+                        {
+                            return Ok(false);
+                        }
+                        // else: the carry sequence
+                        let [Statement::Assign { name: j_name, value: j_value }, Statement::If { condition: carry_cond, then_body: carry_then, else_body: carry_else }, Statement::Assign { name: copy_name, value: copy_value }] =
+                            else_body.as_slice()
+                        else {
+                            return Ok(false);
+                        };
+                        if j_name != carry {
+                            return Ok(false);
+                        }
+                        let Expression::Binary { operator: BinaryOperator::Add, left: base, right: one_shift } =
+                            j_value
+                        else {
+                            return Ok(false);
+                        };
+                        let Expression::Variable(other_name) = base.as_ref() else { return Ok(false) };
+                        let Some(other) = local_index(other_name) else { return Ok(false) };
+                        let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: one, right: amount } =
+                            one_shift.as_ref()
+                        else {
+                            return Ok(false);
+                        };
+                        if crate::analysis::constant_value(one) != Some(1) {
+                            return Ok(false);
+                        }
+                        let Expression::Binary { operator: BinaryOperator::Subtract, left: k3, right: by } =
+                            amount.as_ref()
+                        else {
+                            return Ok(false);
+                        };
+                        let Some(shift_base) =
+                            crate::analysis::constant_value(k3).and_then(|k| i16::try_from(k).ok())
+                        else {
+                            return Ok(false);
+                        };
+                        if !matches!(by.as_ref(), Expression::Variable(v) if v == guard.name) {
+                            return Ok(false);
+                        }
+                        // if (j < other) l += 1;
+                        if !carry_else.is_empty() {
+                            return Ok(false);
+                        }
+                        let Expression::Binary { operator: BinaryOperator::Less, left: jl, right: jr } =
+                            carry_cond
+                        else {
+                            return Ok(false);
+                        };
+                        if !matches!(jl.as_ref(), Expression::Variable(v) if v == carry)
+                            || !matches!(jr.as_ref(), Expression::Variable(v) if local_index(v) == Some(other))
+                        {
+                            return Ok(false);
+                        }
+                        let [Statement::Assign { name: inc2, value: inc2_value }] = carry_then.as_slice()
+                        else {
+                            return Ok(false);
+                        };
+                        if local_index(inc2) != Some(sign_local)
+                            || !matches!(inc2_value,
+                                Expression::Binary { operator: BinaryOperator::Add, left, right }
+                                    if matches!(left.as_ref(), Expression::Variable(v) if v == inc2.as_str())
+                                        && crate::analysis::constant_value(right) == Some(1))
+                        {
+                            return Ok(false);
+                        }
+                        // other = j
+                        if local_index(copy_name) != Some(other)
+                            || !matches!(copy_value, Expression::Variable(v) if v == carry)
+                        {
+                            return Ok(false);
+                        }
+                        sign_block = Some(SignBlock::CarryDiamond {
+                            local: sign_local,
+                            other,
+                            equal_bound,
+                            shift_base,
+                        });
+                    }
+                    _ => return Ok(false),
                 }
-                let Expression::Binary { operator: BinaryOperator::Add, left: base, right: shifted } =
-                    add_value
-                else {
-                    return Ok(false);
-                };
-                if !matches!(base.as_ref(), Expression::Variable(v) if v == add_name.as_str()) {
-                    return Ok(false);
-                }
-                let Expression::Binary { operator: BinaryOperator::ShiftRight, left: c2, right: by } =
-                    shifted.as_ref()
-                else {
-                    return Ok(false);
-                };
-                let Some(c2) = crate::analysis::constant_value(c2) else { return Ok(false) };
-                if !matches!(by.as_ref(), Expression::Variable(v) if v == guard.name) {
-                    return Ok(false);
-                }
-                sign_add = Some((sign_local, c2));
                 body = &body[1..];
             }
             mutation_statements = body;
@@ -4088,15 +4235,25 @@ impl Generator {
         // The self-add's constant must equal the mask synthesis' lis
         // intermediate — mwcc reuses the materialized register (measured:
         // 0x00100000 for the 0xfffff mask). Anything else is unprobed.
+        // The constant wraps to its 32-bit value (0xffffffff = li -1).
+        let mask_constant = mask_constant as u32 as i32 as i64;
         let needs_temp_early = i16::try_from(mask_constant).is_err();
         let lis_intermediate = ((mask_constant + 0x8000) >> 16) << 16;
-        if let Some((_, c2)) = sign_add {
-            if !needs_temp_early || c2 != lis_intermediate || float_guard.is_none() {
+        if let Some(SignBlock::Add { constant, .. }) = sign_block {
+            // The self-add's constant must CSE the lis intermediate.
+            if !needs_temp_early || constant != lis_intermediate || float_guard.is_none() {
                 return Ok(false);
             }
         }
-        // j0's reads: the mask shift, plus the self-add's shift.
-        let guard_multi_read = sign_add.is_some();
+        if matches!(sign_block, Some(SignBlock::CarryDiamond { .. })) && float_guard.is_none() {
+            return Ok(false);
+        }
+        if carry_local.is_some() && !matches!(sign_block, Some(SignBlock::CarryDiamond { .. })) {
+            return Ok(false);
+        }
+        // j0's reads beyond the mask shift: the self-add's shift, or the
+        // carry diamond's ==K4 and K3-j0.
+        let guard_multi_read = sign_block.is_some() || amount_offset != 0;
         // Mutations, then stores.
         enum Mutation {
             Rewrite(i16),
@@ -4195,7 +4352,8 @@ impl Generator {
             index == test_and_local
                 || test_or_local == Some(index)
                 || locals[index].0 == guard.source
-                || sign_add.map(|(local, _)| local) == Some(index)
+                || matches!(sign_block, Some(SignBlock::Add { local, .. }) if local == index)
+                || matches!(sign_block, Some(SignBlock::CarryDiamond { local, other, .. }) if local == index || other == index)
                 || mutations.iter().any(|&(m, ref form)| {
                     m == index
                         && (!matches!(form, Mutation::Rewrite(_)) || float_guard.is_some())
@@ -4230,12 +4388,29 @@ impl Generator {
         if float_guard.is_some() {
             position += 5;
         }
-        let sraw2_position = sign_add.map(|_| {
-            position += 2; // cmpwi + bge
-            let at = position;
-            position += 2; // sraw2 + add
-            at
-        });
+        // The sign block: Add = cmpwi, bge, sraw2, add; CarryDiamond =
+        // cmpwi, bge, cmpwi, bne, addi, b, subfic, li, slw, add, cmplw,
+        // bge, addi, mr.
+        let mut carry_one_range: Option<(u32, u32)> = None;
+        let sraw2_position = match &sign_block {
+            Some(SignBlock::Add { .. }) => {
+                position += 2; // cmpwi + bge
+                let at = position;
+                position += 2; // sraw2 + add
+                Some(at)
+            }
+            Some(SignBlock::CarryDiamond { .. }) => {
+                position += 6; // cmpwi, bge, cmpwi(==K4), bne, addi, b
+                let subfic_at = position;
+                position += 1;
+                let one_at = position;
+                position += 1; // li 1
+                carry_one_range = Some((one_at, position)); // li..slw
+                position += 6; // slw, add, cmplw, bge, addi, mr
+                Some(subfic_at) // j0's last read = the subfic
+            }
+            None => None,
+        };
         // Mutations occupy sequential slots (the shared `not` adds one).
         let andc_count = mutations.iter().filter(|(_, m)| matches!(m, Mutation::AndcShift)).count();
         let not_position = (andc_count >= 2).then(|| {
@@ -4266,7 +4441,9 @@ impl Generator {
         // With a MULTI-READ guard the fold lands in the home, freeing the
         // r0 timeline — the branch-free mask takes r0 itself (measured
         // arm2: addi r0,r3,-1).
-        let mask_in_scratch = guard_multi_read;
+        // ...unless an amount offset (arm3's j0-20) writes r0 inside the
+        // mask's live range.
+        let mask_in_scratch = guard_multi_read && amount_offset == 0;
         let mask_value_index = if mask_in_scratch {
             None
         } else {
@@ -4278,6 +4455,11 @@ impl Generator {
         values.push(Value { class: Class::Computed, def: extract_position, last: computed_last });
         tags.push("computed");
         let computed_value_index = values.len() - 1;
+        let carry_one_value_index = carry_one_range.map(|(def, last)| {
+            values.push(Value { class: Class::Mask, def, last });
+            tags.push("carry-one");
+            values.len() - 1
+        });
         // The shift local: last read = latest of the test and-op and any
         // andc/not mutation.
         let shift_last = if let Some(not_at) = not_position {
@@ -4315,9 +4497,19 @@ impl Generator {
             if test_or_local == Some(index) {
                 last = last.max(or_position.unwrap_or(and_position));
             }
-            if sign_add.map(|(local, _)| local) == Some(index) {
-                // cmpwi + the add read/write the home inside the guard.
-                last = last.max(sraw2_position.expect("sign add") + 1);
+            match &sign_block {
+                Some(SignBlock::Add { local, .. }) if *local == index => {
+                    // cmpwi + the add read/write the home inside the guard.
+                    last = last.max(sraw2_position.expect("sign add") + 1);
+                }
+                Some(SignBlock::CarryDiamond { local, other, .. })
+                    if *local == index || *other == index =>
+                {
+                    // The homes live through the whole diamond (the mr /
+                    // the final addi).
+                    last = last.max(sraw2_position.expect("carry") + 7);
+                }
+                _ => {}
             }
             let mutation = mutations
                 .iter()
@@ -4410,24 +4602,39 @@ impl Generator {
             }
         }
         let negative = i16::try_from(-guard.offset_k).expect("validated");
-        if guard_multi_read {
-            // Two shift reads: the -K lands in the home; the sraws read it.
+        let shift_amount = if guard_multi_read {
+            // Multiple j0 reads: the -K lands in the home; an amount
+            // offset (arm3's j0-20) folds separately into r0.
             self.output.instructions.push(Instruction::AddImmediate {
                 d: guard_register,
                 a: guard_register,
                 immediate: negative,
             });
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
-                a: shift_register,
-                s: mask_register,
-                b: guard_register,
-            });
+            if amount_offset != 0 {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 0,
+                    a: guard_register,
+                    immediate: i16::try_from(-amount_offset).expect("validated"),
+                });
+                0
+            } else {
+                guard_register
+            }
         } else {
             self.output.instructions.push(Instruction::AddImmediate { d: 0, a: guard_register, immediate: negative });
+            0
+        };
+        if logical_shift {
+            self.output.instructions.push(Instruction::ShiftRightWord {
+                a: shift_register,
+                s: mask_register,
+                b: shift_amount,
+            });
+        } else {
             self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
                 a: shift_register,
                 s: mask_register,
-                b: 0,
+                b: shift_amount,
             });
         }
         // The test.
@@ -4458,20 +4665,61 @@ impl Generator {
             self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
             self.emit_branch_conditional_to(4, 1, join);
         }
-        if let Some((sign_local, _)) = sign_add {
-            // `if (l < 0) l += C2 >> j0` — C2 reuses the lis intermediate.
-            let register = home(sign_local).expect("sign local loads");
-            let temp_register = registers[0];
-            let skip = self.fresh_label();
-            self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
-            self.emit_branch_conditional_to(4, 0, skip); // bge
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
-                a: 0,
-                s: temp_register,
-                b: guard_register,
-            });
-            self.output.instructions.push(Instruction::Add { d: register, a: register, b: 0 });
-            self.bind_label(skip);
+        match &sign_block {
+            Some(SignBlock::Add { local, .. }) => {
+                // `if (l < 0) l += C2 >> j0` — C2 reuses the lis intermediate.
+                let register = home(*local).expect("sign local loads");
+                let temp_register = registers[0];
+                let skip = self.fresh_label();
+                self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                self.emit_branch_conditional_to(4, 0, skip); // bge
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
+                    a: 0,
+                    s: temp_register,
+                    b: guard_register,
+                });
+                self.output.instructions.push(Instruction::Add { d: register, a: register, b: 0 });
+                self.bind_label(skip);
+            }
+            Some(SignBlock::CarryDiamond { local, other, equal_bound, shift_base }) => {
+                // `if (l < 0) { if (j0 == K4) l += 1; else { j = other +
+                // (1 << (K3 - j0)); if (j < other) l += 1; other = j; } }`
+                // — j lives in r0; the ONE constant takes a model register
+                // (arm3: the dead mask's r3).
+                let register = home(*local).expect("sign local loads");
+                let other_register = home(*other).expect("carry source loads");
+                let one_register = carry_one_value_index
+                    .map(|i| registers[i])
+                    .expect("carry one allocated");
+                let continue_at = self.fresh_label(); // the trailing mutations
+                let else_at = self.fresh_label();
+                let no_carry = self.fresh_label();
+                self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                self.emit_branch_conditional_to(4, 0, continue_at); // bge — skip the diamond
+                self.output.instructions.push(Instruction::CompareWordImmediate {
+                    a: guard_register,
+                    immediate: *equal_bound,
+                });
+                self.emit_branch_conditional_to(4, 2, else_at); // bne
+                self.output.instructions.push(Instruction::AddImmediate { d: register, a: register, immediate: 1 });
+                self.emit_branch_to(continue_at);
+                self.bind_label(else_at);
+                self.output.instructions.push(Instruction::SubtractFromImmediate {
+                    d: 0,
+                    a: guard_register,
+                    immediate: *shift_base,
+                });
+                self.output.instructions.push(Instruction::load_immediate(one_register, 1));
+                self.output.instructions.push(Instruction::ShiftLeftWord { a: 0, s: one_register, b: 0 });
+                self.output.instructions.push(Instruction::Add { d: 0, a: other_register, b: 0 });
+                self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: other_register });
+                self.emit_branch_conditional_to(4, 0, no_carry); // bge — unsigned no-carry
+                self.output.instructions.push(Instruction::AddImmediate { d: register, a: register, immediate: 1 });
+                self.bind_label(no_carry);
+                self.output.instructions.push(Instruction::move_register(other_register, 0));
+                self.bind_label(continue_at);
+            }
+            None => {}
         }
         // Mutations (the shared `not` precedes the first andc pair).
         if not_position.is_some() {
@@ -4537,7 +4785,14 @@ impl Generator {
             + load_positions.iter().filter(|p| p.is_some()).count() as u32
             + not_position.is_some() as u32
             + 2 * float_guard.is_some() as u32
-            + 2 * sign_add.is_some() as u32;
+            + match &sign_block {
+                Some(SignBlock::Add { .. }) => 2,
+                // Three inner conditions (sign, ==K4, the carry compare)
+                // at two each, one else arm, one for the ONE temp
+                // (measured @18 on the arm3 object).
+                Some(SignBlock::CarryDiamond { .. }) => 8,
+                None => 0,
+            };
         Ok(true)
     }
 

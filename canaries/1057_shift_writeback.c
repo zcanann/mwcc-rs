@@ -176,3 +176,40 @@ double shiftwb_floor_arm2(double x)
 	*((int *)&x + 1) = i1;
 	return x;
 }
+/* Fire 400: s_floor ARM3 COMPLETE — the carry idiom. The mask is
+   (unsigned)0xffffffff (li -1, srw LOGICAL shift) by (j0-20) (the
+   amount offset folds into r0 — which also EVICTS the mask from the
+   scratch back to the model, r3 by death order past the multi-read
+   guard). The carry: j = i1 + (1 << (52-j0)) lives in r0 (subfic;
+   li 1 into the dead mask's register; slw; add), the unsigned
+   compare cmplw + bge skips the carry increment, mr copies j into
+   i1's home. @N: +8 (three inner conditions, one else arm, the ONE
+   temp). */
+static const double huge_arm3 = 1.0e300;
+double shiftwb_floor_arm3(double x)
+{
+	int i0, i1, j0;
+	unsigned i, j;
+	i0 = *(int *)&x;
+	i1 = *((int *)&x + 1);
+	j0 = ((i0 >> 20) & 0x7ff) - 0x3ff;
+	i = ((unsigned)(0xffffffff)) >> (j0 - 20);
+	if ((i1 & i) == 0)
+		return x;
+	if (huge_arm3 + x > 0.0) {
+		if (i0 < 0) {
+			if (j0 == 20)
+				i0 += 1;
+			else {
+				j = i1 + (1 << (52 - j0));
+				if (j < i1)
+					i0 += 1;
+				i1 = j;
+			}
+		}
+		i1 &= (~i);
+	}
+	*(int *)&x = i0;
+	*((int *)&x + 1) = i1;
+	return x;
+}

@@ -57,8 +57,17 @@ pub fn model_order(values: &[Value]) -> Vec<usize> {
     if crossers {
         push_class(&mut order, Class::LoadDiscarded, false);
     }
-    push_class(&mut order, Class::Computed, false);
-    push_class(&mut order, Class::Mask, false);
+    // Computed and Mask order by DEATH between themselves: every early
+    // fixture had the single-read guard dying before the mask (fold <
+    // sraw), but arm3's multi-read guard outlives its li-form mask
+    // (mask r3, j0 r4 — measured fire 400).
+    {
+        let mut members: Vec<usize> = (0..values.len())
+            .filter(|&i| matches!(values[i].class, Class::Computed | Class::Mask))
+            .collect();
+        members.sort_by_key(|&i| values[i].last);
+        order.extend(members);
+    }
     push_class(&mut order, Class::LoadSurviving, false);
     push_class(&mut order, Class::Shift, false);
     if !crossers {
