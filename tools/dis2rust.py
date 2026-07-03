@@ -48,8 +48,13 @@ for idx, mn, ops in instrs:
         if mn == "lfd" and rl[1] in POOL:
             out.append(f"        self.load_double_constant({ops[0][1:]}, 0x{POOL[rl[1]]});")
             continue
-        # an SDA21 access to a NAMED small-data global (errno): the reloc
-        # carries the symbol; the instruction encodes base 0, offset 0.
+        # an SDA21 access to a NAMED small-data global (errno, a kept const
+        # scalar): the reloc carries the symbol; base 0, offset 0.
+        if mn == "lfd" and not rl[1].startswith("@"):
+            target = re.sub(r'\$\d+$', '', rl[1])
+            out.append(f'        self.record_relocation(RelocationKind::EmbSda21, "{target}");')
+            out.append(f"        self.output.instructions.push(Instruction::LoadFloatDouble {{ d: {ops[0][1:]}, a: 0, offset: 0 }});")
+            continue
         if mn in ("stw","lwz") and not rl[1].startswith("@"):
             # a function-scoped static displays as name$K — the writer keys the
             # local object on the RAW name and assigns K itself.
@@ -148,6 +153,7 @@ for idx, mn, ops in instrs:
     elif mn=="rlwinm.": push(f"RotateAndMaskRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
     elif mn=="fmr": push(f"FloatMove {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="rlwimi": push(f"RotateAndMaskInsert {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
+    elif mn=="clrrwi.": push(f"AndMaskRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, begin: 0, end: {31-int(ops[2])} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4

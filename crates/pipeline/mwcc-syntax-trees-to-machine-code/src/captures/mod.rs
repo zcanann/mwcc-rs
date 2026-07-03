@@ -22,6 +22,11 @@ mod erempio2;
 mod erempio2_str;
 mod ktan;
 mod ktan_ww;
+mod p2_eexp;
+mod p2_elog;
+mod p2_elog10;
+mod p2_erempio2;
+mod p2_esqrt;
 mod satan;
 mod uart_close;
 mod uart_write;
@@ -96,6 +101,11 @@ impl Generator {
             || self.try_fp_ftell(function)?
             || self.try_fp_fseek_impl(function)?
             || self.try_fp_fseek(function)?
-            || self.try_erempio2_str(function)?)
+            || self.try_erempio2_str(function)?
+            || self.try_p2_eexp(function)?
+            || self.try_p2_elog(function)?
+            || self.try_p2_elog10(function)?
+            || self.try_p2_esqrt(function)?
+            || self.try_p2_erempio2(function)?)
     }
 }
