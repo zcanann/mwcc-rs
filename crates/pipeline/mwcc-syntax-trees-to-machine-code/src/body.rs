@@ -3850,56 +3850,108 @@ impl Generator {
             return Ok(false);
         }
         let x = first.name.as_str();
-        // Roles come from the LEADING assigns — the normalizer skips this
-        // family because the mutations reassign the punned locals.
+        // Roles come either from local INITIALIZERS (the normalizer folds
+        // the leading assigns when nothing reassigns at top level — the
+        // guarded-mutation forms) or from the LEADING assigns themselves
+        // (top-level mutations make the normalizer refuse).
         let mut locals: Vec<(&str, i16)> = Vec::new();
         let mut guard: Option<GuardLocal> = None;
         let mut shift: Option<&str> = None;
         let mut mask_constant: Option<i64> = None;
         let mut cursor = 0usize;
-        while let Some(Statement::Assign { name, value }) = function.statements.get(cursor) {
-            let Some(declaration) = function.locals.iter().find(|local| &local.name == name) else {
-                return Ok(false);
-            };
-            if declaration.initializer.is_some() || declaration.array_length.is_some() {
-                return Ok(false);
-            }
-            if let Some(offset) = crate::frame::pun_word_offset_pub(value, x) {
-                if declaration.declared_type != Type::Int
-                    || locals.iter().any(|&(_, seen)| seen == offset)
-                {
+        let normalized = !function.locals.is_empty()
+            && function.locals.iter().all(|local| local.initializer.is_some());
+        if normalized {
+            for local in &function.locals {
+                if local.array_length.is_some() {
                     return Ok(false);
                 }
-                locals.push((name.as_str(), offset));
-                cursor += 1;
-                continue;
-            }
-            if guard.is_none() && declaration.declared_type == Type::Int {
-                if let Some(parsed) = parse_guard_init(name.as_str(), value) {
-                    if locals.iter().any(|&(local, _)| local == parsed.source) {
-                        guard = Some(parsed);
-                        cursor += 1;
-                        continue;
+                let init = local.initializer.as_ref().expect("checked");
+                if local.declared_type == Type::UnsignedInt {
+                    if shift.is_some() {
+                        return Ok(false);
                     }
+                    let (Some(parsed), Expression::Binary { operator: BinaryOperator::ShiftRight, left, right }) =
+                        (&guard, init)
+                    else {
+                        return Ok(false);
+                    };
+                    let Some(constant) = crate::analysis::constant_value(left) else {
+                        return Ok(false);
+                    };
+                    if !matches!(right.as_ref(), Expression::Variable(v) if v == parsed.name) {
+                        return Ok(false);
+                    }
+                    mask_constant = Some(constant);
+                    shift = Some(local.name.as_str());
+                    continue;
                 }
-                return Ok(false);
+                if local.declared_type != Type::Int {
+                    return Ok(false);
+                }
+                if let Some(offset) = crate::frame::pun_word_offset_pub(init, x) {
+                    if locals.iter().any(|&(_, seen)| seen == offset) {
+                        return Ok(false);
+                    }
+                    locals.push((local.name.as_str(), offset));
+                    continue;
+                }
+                if guard.is_some() {
+                    return Ok(false);
+                }
+                let Some(parsed) = parse_guard_init(local.name.as_str(), init) else {
+                    return Ok(false);
+                };
+                if !locals.iter().any(|&(name, _)| name == parsed.source) {
+                    return Ok(false);
+                }
+                guard = Some(parsed);
             }
-            if shift.is_none() && declaration.declared_type == Type::UnsignedInt {
-                if let (Some(parsed), Expression::Binary { operator: BinaryOperator::ShiftRight, left, right }) =
-                    (&guard, value)
-                {
-                    if let Some(constant) = crate::analysis::constant_value(left) {
-                        if matches!(right.as_ref(), Expression::Variable(v) if v == parsed.name) {
-                            mask_constant = Some(constant);
-                            shift = Some(name.as_str());
+        } else {
+            while let Some(Statement::Assign { name, value }) = function.statements.get(cursor) {
+                let Some(declaration) = function.locals.iter().find(|local| &local.name == name) else {
+                    return Ok(false);
+                };
+                if declaration.initializer.is_some() || declaration.array_length.is_some() {
+                    return Ok(false);
+                }
+                if let Some(offset) = crate::frame::pun_word_offset_pub(value, x) {
+                    if declaration.declared_type != Type::Int
+                        || locals.iter().any(|&(_, seen)| seen == offset)
+                    {
+                        return Ok(false);
+                    }
+                    locals.push((name.as_str(), offset));
+                    cursor += 1;
+                    continue;
+                }
+                if guard.is_none() && declaration.declared_type == Type::Int {
+                    if let Some(parsed) = parse_guard_init(name.as_str(), value) {
+                        if locals.iter().any(|&(local, _)| local == parsed.source) {
+                            guard = Some(parsed);
                             cursor += 1;
                             continue;
                         }
                     }
+                    return Ok(false);
+                }
+                if shift.is_none() && declaration.declared_type == Type::UnsignedInt {
+                    if let (Some(parsed), Expression::Binary { operator: BinaryOperator::ShiftRight, left, right }) =
+                        (&guard, value)
+                    {
+                        if let Some(constant) = crate::analysis::constant_value(left) {
+                            if matches!(right.as_ref(), Expression::Variable(v) if v == parsed.name) {
+                                mask_constant = Some(constant);
+                                shift = Some(name.as_str());
+                                cursor += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    return Ok(false);
                 }
                 return Ok(false);
             }
-            return Ok(false);
         }
         let (Some(guard), Some(shift), Some(mask_constant)) = (guard, shift, mask_constant) else {
             return Ok(false);
@@ -3927,7 +3979,10 @@ impl Generator {
                 _ => 1,
             }
         }
-        if tail.iter().map(|statement| reads_in(statement, guard.name)).sum::<usize>() != 0 {
+        let guard_tail_reads: usize =
+            tail.iter().map(|statement| reads_in(statement, guard.name)).sum();
+        if guard_tail_reads > 1 {
+            // Beyond the self-add's single extra read (validated below).
             return Ok(false);
         }
         // The early-return test.
@@ -3971,6 +4026,77 @@ impl Generator {
                 (a, None)
             }
         };
+        // An optional inexact guard wraps the mutations: `if (huge+x>0.0)
+        // { [if (l<0) l += C2>>j0;] mutations }` (s_floor arm2). Inside
+        // it a rewrite is CONDITIONAL — the original must survive the
+        // guard-false path, so it lands in the home, not r0.
+        let mut float_guard: Option<(u64, u64)> = None;
+        let mut sign_add: Option<(usize, i64)> = None; // (local, C2)
+        let mut mutation_statements: &[Statement] = &tail[1..];
+        if let Some(Statement::If { condition, then_body, else_body }) = tail.get(1) {
+            let Some(guard_bits) = float_guard_condition(condition) else {
+                return Ok(false);
+            };
+            if !else_body.is_empty() {
+                return Ok(false);
+            }
+            float_guard = Some(guard_bits);
+            let mut body: &[Statement] = then_body;
+            if let Some(Statement::If { condition, then_body: add_body, else_body }) = body.first() {
+                // `if (l < 0) l += C2 >> j0;`
+                let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition
+                else {
+                    return Ok(false);
+                };
+                if crate::analysis::constant_value(right) != Some(0) {
+                    return Ok(false);
+                }
+                let Expression::Variable(signed) = left.as_ref() else { return Ok(false) };
+                let Some(sign_local) = local_index(signed) else { return Ok(false) };
+                if !else_body.is_empty() {
+                    return Ok(false);
+                }
+                let [Statement::Assign { name: add_name, value: add_value }] = add_body.as_slice()
+                else {
+                    return Ok(false);
+                };
+                if local_index(add_name) != Some(sign_local) {
+                    return Ok(false);
+                }
+                let Expression::Binary { operator: BinaryOperator::Add, left: base, right: shifted } =
+                    add_value
+                else {
+                    return Ok(false);
+                };
+                if !matches!(base.as_ref(), Expression::Variable(v) if v == add_name.as_str()) {
+                    return Ok(false);
+                }
+                let Expression::Binary { operator: BinaryOperator::ShiftRight, left: c2, right: by } =
+                    shifted.as_ref()
+                else {
+                    return Ok(false);
+                };
+                let Some(c2) = crate::analysis::constant_value(c2) else { return Ok(false) };
+                if !matches!(by.as_ref(), Expression::Variable(v) if v == guard.name) {
+                    return Ok(false);
+                }
+                sign_add = Some((sign_local, c2));
+                body = &body[1..];
+            }
+            mutation_statements = body;
+        }
+        // The self-add's constant must equal the mask synthesis' lis
+        // intermediate — mwcc reuses the materialized register (measured:
+        // 0x00100000 for the 0xfffff mask). Anything else is unprobed.
+        let needs_temp_early = i16::try_from(mask_constant).is_err();
+        let lis_intermediate = ((mask_constant + 0x8000) >> 16) << 16;
+        if let Some((_, c2)) = sign_add {
+            if !needs_temp_early || c2 != lis_intermediate || float_guard.is_none() {
+                return Ok(false);
+            }
+        }
+        // j0's reads: the mask shift, plus the self-add's shift.
+        let guard_multi_read = sign_add.is_some();
         // Mutations, then stores.
         enum Mutation {
             Rewrite(i16),
@@ -3978,8 +4104,8 @@ impl Generator {
             MaskViaScratch { begin: u8, end: u8 },
         }
         let mut mutations: Vec<(usize, Mutation)> = Vec::new();
-        let mut tail_cursor = 1usize;
-        while let Some(Statement::Assign { name, value }) = tail.get(tail_cursor) {
+        let mut tail_cursor = 0usize;
+        while let Some(Statement::Assign { name, value }) = mutation_statements.get(tail_cursor) {
             let Some(index) = local_index(name) else { return Ok(false) };
             if mutations.iter().any(|&(seen, _)| seen == index) {
                 return Ok(false);
@@ -4003,6 +4129,11 @@ impl Generator {
                         else {
                             return Ok(false);
                         };
+                        if float_guard.is_some() {
+                            // Unprobed inside a guard (the r0 handoff to the
+                            // store would cross the guard bounds).
+                            return Ok(false);
+                        }
                         Mutation::MaskViaScratch { begin, end }
                     }
                 }
@@ -4018,10 +4149,22 @@ impl Generator {
         }
         // The r0 materialization sinks below the home-writing mutations
         // regardless of source order (measured D3: andc; li r0; stores) —
-        // r0's range stays minimal.
-        mutations.sort_by_key(|(_, mutation)| matches!(mutation, Mutation::Rewrite(_)));
-        // Stores: one per local, its own offset, in local order.
-        let stores = &tail[tail_cursor..];
+        // r0's range stays minimal. A CONDITIONAL rewrite (inside the
+        // guard) stays in source position: it writes the home.
+        if float_guard.is_none() {
+            mutations.sort_by_key(|(_, mutation)| matches!(mutation, Mutation::Rewrite(_)));
+        }
+        // Stores: one per local, its own offset, in local order. With a
+        // guard the mutations exhaust its body and the stores follow the
+        // guard-If in the outer tail.
+        let stores = if float_guard.is_some() {
+            if tail_cursor != mutation_statements.len() {
+                return Ok(false);
+            }
+            &tail[2..]
+        } else {
+            &mutation_statements[tail_cursor..]
+        };
         if stores.len() != locals.len() {
             return Ok(false);
         }
@@ -4052,8 +4195,10 @@ impl Generator {
             index == test_and_local
                 || test_or_local == Some(index)
                 || locals[index].0 == guard.source
+                || sign_add.map(|(local, _)| local) == Some(index)
                 || mutations.iter().any(|&(m, ref form)| {
-                    m == index && !matches!(form, Mutation::Rewrite(_))
+                    m == index
+                        && (!matches!(form, Mutation::Rewrite(_)) || float_guard.is_some())
                 })
         };
         let mut load_positions: Vec<Option<u32>> = Vec::new();
@@ -4080,6 +4225,17 @@ impl Generator {
         });
         let branch_position = position; // bne
         position += 2; // bne + b
+        // The inexact-guard block (lfd, lfd, fadd, fcmpo, ble) and the
+        // sign-add (cmpwi, bge, sraw2, add).
+        if float_guard.is_some() {
+            position += 5;
+        }
+        let sraw2_position = sign_add.map(|_| {
+            position += 2; // cmpwi + bge
+            let at = position;
+            position += 2; // sraw2 + add
+            at
+        });
         // Mutations occupy sequential slots (the shared `not` adds one).
         let andc_count = mutations.iter().filter(|(_, m)| matches!(m, Mutation::AndcShift)).count();
         let not_position = (andc_count >= 2).then(|| {
@@ -4101,15 +4257,27 @@ impl Generator {
         let mut values: Vec<Value> = Vec::new();
         let mut tags: Vec<&str> = Vec::new(); // parallel debug tags
         if let Some((lis, addi)) = temp_range {
-            values.push(Value { class: Class::Temp, def: lis, last: addi });
+            // The self-add's constant CSEs the lis intermediate — the
+            // temp then lives to the second sraw (measured arm2).
+            let last = sraw2_position.unwrap_or(addi);
+            values.push(Value { class: Class::Temp, def: lis, last });
             tags.push("temp");
         }
-        values.push(Value { class: Class::Mask, def: mask_position, last: sraw_position });
-        tags.push("mask");
-        values.push(Value { class: Class::Computed, def: extract_position, last: fold_position });
+        // With a MULTI-READ guard the fold lands in the home, freeing the
+        // r0 timeline — the branch-free mask takes r0 itself (measured
+        // arm2: addi r0,r3,-1).
+        let mask_in_scratch = guard_multi_read;
+        let mask_value_index = if mask_in_scratch {
+            None
+        } else {
+            values.push(Value { class: Class::Mask, def: mask_position, last: sraw_position });
+            tags.push("mask");
+            Some(values.len() - 1)
+        };
+        let computed_last = sraw2_position.unwrap_or(fold_position);
+        values.push(Value { class: Class::Computed, def: extract_position, last: computed_last });
         tags.push("computed");
-        let mask_value_index = if needs_temp { 1 } else { 0 };
-        let computed_value_index = mask_value_index + 1;
+        let computed_value_index = values.len() - 1;
         // The shift local: last read = latest of the test and-op and any
         // andc/not mutation.
         let shift_last = if let Some(not_at) = not_position {
@@ -4147,14 +4315,24 @@ impl Generator {
             if test_or_local == Some(index) {
                 last = last.max(or_position.unwrap_or(and_position));
             }
+            if sign_add.map(|(local, _)| local) == Some(index) {
+                // cmpwi + the add read/write the home inside the guard.
+                last = last.max(sraw2_position.expect("sign add") + 1);
+            }
             let mutation = mutations
                 .iter()
                 .zip(&mutation_positions)
                 .find(|((m, _), _)| *m == index);
             let class = match mutation {
-                Some(((_, Mutation::Rewrite(_)), _)) => {
+                Some(((_, Mutation::Rewrite(_)), _)) if float_guard.is_none() => {
                     // The home dies at its last pre-branch read.
                     Class::LoadDiscarded
+                }
+                Some(((_, Mutation::Rewrite(_)), _)) => {
+                    // A rewrite INSIDE the guard is conditional: the
+                    // original flows to the store on the guard-false path.
+                    last = last.max(store_positions[index]);
+                    Class::LoadSurviving
                 }
                 Some(((_, Mutation::AndcShift), &at)) => {
                     // andc writes the home; the store reads it.
@@ -4178,7 +4356,7 @@ impl Generator {
         }
         let registers = allocate(&values);
         let _ = &tags;
-        let mask_register = registers[mask_value_index];
+        let mask_register = mask_value_index.map(|i| registers[i]).unwrap_or(0);
         let guard_register = registers[computed_value_index];
         let shift_register = shift_value_index.map(|i| registers[i]).unwrap_or(0);
         let home = |index: usize| local_value_indices[index].map(|i| registers[i]);
@@ -4232,12 +4410,26 @@ impl Generator {
             }
         }
         let negative = i16::try_from(-guard.offset_k).expect("validated");
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: guard_register, immediate: negative });
-        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
-            a: shift_register,
-            s: mask_register,
-            b: 0,
-        });
+        if guard_multi_read {
+            // Two shift reads: the -K lands in the home; the sraws read it.
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: guard_register,
+                a: guard_register,
+                immediate: negative,
+            });
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
+                a: shift_register,
+                s: mask_register,
+                b: guard_register,
+            });
+        } else {
+            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: guard_register, immediate: negative });
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
+                a: shift_register,
+                s: mask_register,
+                b: 0,
+            });
+        }
         // The test.
         let and_home = home(test_and_local).expect("test local loads");
         if let Some(or_local) = test_or_local {
@@ -4252,9 +4444,35 @@ impl Generator {
         }
         let continuation = self.fresh_label();
         let epilogue = self.fresh_label();
+        let join = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, continuation); // bne — skip the return
         self.emit_branch_to(epilogue);
         self.bind_label(continuation);
+        if let Some((huge, zero)) = float_guard {
+            // The nested inexact guard (the G2 recipe): huge/0.0 pool-load
+            // back-to-back into f2/f0, fadd clobbers the spilled f1, ble
+            // chains to the join.
+            self.load_double_constant(2, huge);
+            self.load_double_constant(0, zero);
+            self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
+            self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+            self.emit_branch_conditional_to(4, 1, join);
+        }
+        if let Some((sign_local, _)) = sign_add {
+            // `if (l < 0) l += C2 >> j0` — C2 reuses the lis intermediate.
+            let register = home(sign_local).expect("sign local loads");
+            let temp_register = registers[0];
+            let skip = self.fresh_label();
+            self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+            self.emit_branch_conditional_to(4, 0, skip); // bge
+            self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
+                a: 0,
+                s: temp_register,
+                b: guard_register,
+            });
+            self.output.instructions.push(Instruction::Add { d: register, a: register, b: 0 });
+            self.bind_label(skip);
+        }
         // Mutations (the shared `not` precedes the first andc pair).
         if not_position.is_some() {
             self.output.instructions.push(Instruction::Nor { a: 0, s: shift_register, b: shift_register });
@@ -4263,7 +4481,14 @@ impl Generator {
             let index = *index;
             match mutation {
                 Mutation::Rewrite(constant) => {
-                    self.output.instructions.push(Instruction::load_immediate(0, *constant));
+                    // Conditional (guarded) rewrites write the HOME — the
+                    // original flows to the store on the guard-false path.
+                    let target = if float_guard.is_some() {
+                        home(index).expect("conditional rewrite loads")
+                    } else {
+                        0
+                    };
+                    self.output.instructions.push(Instruction::load_immediate(target, *constant));
                 }
                 Mutation::AndcShift => {
                     let register = home(index).expect("loaded");
@@ -4288,13 +4513,16 @@ impl Generator {
                 }
             }
         }
-        // Stores: surviving homes store themselves; rewrites and
-        // mask-via-scratch store from r0.
+        // Stores (the guard's ble lands here): surviving homes store
+        // themselves; UNCONDITIONAL rewrites and mask-via-scratch store
+        // from r0.
+        self.bind_label(join);
         for (index, &(_, offset)) in locals.iter().enumerate() {
-            let from_scratch = mutations.iter().any(|&(m, ref form)| {
-                m == index && !matches!(form, Mutation::AndcShift)
-            });
-            let register = if from_scratch { 0 } else { home(index).expect("loaded") };
+            let from_scratch = float_guard.is_none()
+                && mutations.iter().any(|&(m, ref form)| {
+                    m == index && !matches!(form, Mutation::AndcShift)
+                });
+            let register = if from_scratch { 0 } else { home(index).map(|r| r).unwrap_or(0) };
             self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset: 8 + offset });
         }
         self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
@@ -4307,7 +4535,9 @@ impl Generator {
         // temp (W10 @9).
         self.output.anonymous_label_bump += 1
             + load_positions.iter().filter(|p| p.is_some()).count() as u32
-            + not_position.is_some() as u32;
+            + not_position.is_some() as u32
+            + 2 * float_guard.is_some() as u32
+            + 2 * sign_add.is_some() as u32;
         Ok(true)
     }
 
