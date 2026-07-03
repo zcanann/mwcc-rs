@@ -1806,6 +1806,9 @@ impl Generator {
         if self.try_early_ladder(function)? {
             return Ok(());
         }
+        if self.try_indexed_double_return(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -8480,6 +8483,72 @@ impl Generator {
         self.output.instructions.push(Instruction::Add { d: hx_register, a: hz_register, b: hx_register });
         self.bind_label(join_label);
         self.emit_branch_conditional_to(16, 0, body_label); // bdnz
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The SIGN-INDEXED DOUBLE RETURN (fire 428, e_fmod's Zero[] exit):
+    /// `return Zero[(unsigned)sx >> 31];` for a `static double Zero[]`.
+    /// Measured: the index `(sx>>31)<<3` FUSES into one rotate-mask
+    /// (`rlwinm r0,sx,4,28,28`); the base is a lis/addi ADDR16_HA/LO
+    /// pair on the (local) array symbol — .data, NOT sdata, despite the
+    /// 16-byte size; the load is `lfdx f1,lo,index`. Register slots per
+    /// the capture: ha -> r4, lo -> r3 (sx's home, dead after the
+    /// rlwinm), index -> r0.
+    fn try_indexed_double_return(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Double
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+            || !function.locals.is_empty()
+            || !function.statements.is_empty()
+        {
+            return Ok(false);
+        }
+        let [p_sx] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if p_sx.parameter_type != Type::Int {
+            return Ok(false);
+        }
+        let sx = p_sx.name.as_str();
+        let Some(Expression::Index { base, index }) = &function.return_expression else {
+            return Ok(false);
+        };
+        let Expression::Variable(array) = base.as_ref() else {
+            return Ok(false);
+        };
+        if array == sx {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: shifted, right: amount } =
+            index.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Cast { target_type: Type::UnsignedInt, operand } = shifted.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(operand.as_ref(), Expression::Variable(v) if v == sx)
+            || !matches!(amount.as_ref(), Expression::IntegerLiteral(31))
+        {
+            return Ok(false);
+        }
+        let Some(sx_register) = self.lookup_general(sx) else {
+            return Ok(false);
+        };
+        if sx_register != 3 {
+            return Ok(false);
+        }
+        let array = array.clone();
+        // -- emit --
+        self.emit_address_high(4, &array);
+        // (sx >> 31) << 3 in one rotate-mask: rotate left 4, keep bit 28.
+        self.output.instructions.push(Instruction::RotateAndMask { a: 0, s: sx_register, shift: 4, begin: 28, end: 28 });
+        self.record_relocation(RelocationKind::Addr16Lo, &array);
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDoubleIndexed { d: 1, a: 3, b: 0 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 0;
         Ok(true)
