@@ -28,3 +28,24 @@ int rotloop_while(int hz, int hx)
 	}
 	return hx;
 }
+/* Fire 414: the char WALK (lbz + extsb. record truthiness test, bne
+   back) and the DO-WHILE (no rotation — the body falls into the test;
+   cmpw register compares against a param bound). Initialized locals
+   (int n = 0) join the init plan at the next free register. */
+int rotloop_strlen(char *p)
+{
+	int n = 0;
+	while (*p) {
+		p++;
+		n++;
+	}
+	return n;
+}
+int rotloop_do_while(int n)
+{
+	int i = 0;
+	do {
+		i++;
+	} while (i < n);
+	return i;
+}

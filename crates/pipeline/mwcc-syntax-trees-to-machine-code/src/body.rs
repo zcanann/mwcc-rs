@@ -1783,10 +1783,12 @@ impl Generator {
         if self.try_trig_dispatcher(function)? {
             return Ok(());
         }
-        if self.try_fpclassify_switch(function)? {
+        // The ROTATED LOOP likewise (initialized locals route into value
+        // tracking otherwise).
+        if self.try_rotated_loop(function)? {
             return Ok(());
         }
-        if self.try_rotated_loop(function)? {
+        if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
         // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
@@ -7711,11 +7713,30 @@ impl Generator {
         let Some(Expression::Variable(returned)) = &function.return_expression else {
             return Ok(false);
         };
+        // Locals: uninitialized (bound via the comma init), or initialized
+        // with a small constant (an init-plan entry).
+        let mut local_constant_inits: Vec<(&str, i16)> = Vec::new();
+        for local in &function.locals {
+            if local.declared_type != Type::Int || local.array_length.is_some() {
+                return Ok(false);
+            }
+            if let Some(init) = &local.initializer {
+                let Some(constant) =
+                    crate::analysis::constant_value(init).and_then(|k| i16::try_from(k).ok())
+                else {
+                    return Ok(false);
+                };
+                local_constant_inits.push((local.name.as_str(), constant));
+            }
+        }
         // Homes: params in their registers.
         let mut homes: Vec<(String, u8)> = Vec::new();
+        let mut char_pointers: Vec<String> = Vec::new();
         for parameter in &function.parameters {
-            if parameter.parameter_type != Type::Int {
-                return Ok(false);
+            match parameter.parameter_type {
+                Type::Int => {}
+                Type::Pointer(Pointee::Char) => char_pointers.push(parameter.name.clone()),
+                _ => return Ok(false),
             }
             let Some(register) = self.lookup_general(&parameter.name) else {
                 return Ok(false);
@@ -7732,6 +7753,12 @@ impl Generator {
             ShiftOfParam { register: u8, source: u8, amount: u8 },
         }
         let mut init_plan: Vec<Init> = Vec::new();
+        for (name, constant) in &local_constant_inits {
+            let top = homes.iter().map(|&(_, r)| r).filter(|&r| r != 0).max().unwrap_or(2);
+            let register = top + 1;
+            init_plan.push(Init::Constant { register, value: *constant });
+            homes.push((name.to_string(), register));
+        }
         if let Some(init) = initializer {
             // Flatten the comma list.
             let mut elements: Vec<&Expression> = Vec::new();
@@ -7812,30 +7839,56 @@ impl Generator {
                 homes.push((name.to_string(), register));
             }
         }
-        // The condition: var OP const.
-        let Expression::Binary { operator: cond_op, left: cond_left, right: cond_right } = condition
-        else {
-            return Ok(false);
-        };
-        let Expression::Variable(cond_var) = cond_left.as_ref() else {
-            return Ok(false);
-        };
-        let Some(cond_register) = home_of(&homes, cond_var) else {
-            return Ok(false);
-        };
-        let Some(cond_constant) = crate::analysis::constant_value(cond_right) else {
-            return Ok(false);
-        };
-        // bgt for `> K`, blt for `< K` (the POSITIVE sense branches back).
-        let back_branch = match cond_op {
-            BinaryOperator::Greater => (12u8, 1u8),
-            BinaryOperator::Less => (12u8, 0u8),
+        // The condition: var OP const, var OP var, or the char-walk
+        // truthiness `*p` (lbz + extsb. record test).
+        enum LoopTest {
+            Constant { register: u8, constant: i64, big: bool },
+            Register { left: u8, right: u8 },
+            CharLoad { pointer: u8 },
+        }
+        let (loop_test, back_branch) = match condition {
+            Expression::Binary { operator: cond_op, left: cond_left, right: cond_right } => {
+                let Expression::Variable(cond_var) = cond_left.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(cond_register) = home_of(&homes, cond_var) else {
+                    return Ok(false);
+                };
+                let back = match cond_op {
+                    BinaryOperator::Greater => (12u8, 1u8), // bgt
+                    BinaryOperator::Less => (12u8, 0u8),    // blt
+                    _ => return Ok(false),
+                };
+                if let Some(constant) = crate::analysis::constant_value(cond_right) {
+                    let big = i16::try_from(constant).is_err();
+                    if big && constant & 0xffff != 0 {
+                        return Ok(false); // lis-only bounds measured
+                    }
+                    (LoopTest::Constant { register: cond_register, constant, big }, back)
+                } else if let Expression::Variable(right_var) = cond_right.as_ref() {
+                    let Some(right_register) = home_of(&homes, right_var) else {
+                        return Ok(false);
+                    };
+                    (LoopTest::Register { left: cond_register, right: right_register }, back)
+                } else {
+                    return Ok(false);
+                }
+            }
+            Expression::Dereference { pointer } => {
+                let Expression::Variable(name) = pointer.as_ref() else {
+                    return Ok(false);
+                };
+                if !char_pointers.iter().any(|p| p == name) {
+                    return Ok(false);
+                }
+                let Some(register) = home_of(&homes, name) else {
+                    return Ok(false);
+                };
+                (LoopTest::CharLoad { pointer: register }, (4u8, 2u8)) // bne
+            }
             _ => return Ok(false),
         };
-        let big_bound = i16::try_from(cond_constant).is_err();
-        if big_bound && cond_constant & 0xffff != 0 {
-            return Ok(false); // lis-only bounds measured
-        }
+        let hoists_big_bound = matches!(&loop_test, LoopTest::Constant { big: true, .. });
         // Body + step ops: compound self-ops on homed locals.
         enum LoopOp {
             AddImmediate { register: u8, value: i16 },
@@ -7897,7 +7950,11 @@ impl Generator {
                     return Ok(false);
                 }
             }
-            LoopKind::DoWhile => return Ok(false), // unmeasured
+            LoopKind::DoWhile => {
+                if step.is_some() {
+                    return Ok(false);
+                }
+            }
         }
         for statement in body {
             let Some(op) = parse_op(&homes, statement) else {
@@ -7928,14 +7985,18 @@ impl Generator {
                 }
             }
         }
-        if big_bound {
+        if let LoopTest::Constant { constant, big: true, .. } = &loop_test {
             self.output
                 .instructions
-                .push(Instruction::load_immediate_shifted(0, (cond_constant >> 16) as i16));
+                .push(Instruction::load_immediate_shifted(0, (constant >> 16) as i16));
         }
+        let _ = hoists_big_bound;
         let body_at = self.fresh_label();
         let test_at = self.fresh_label();
-        self.emit_branch_to(test_at);
+        if !matches!(kind, LoopKind::DoWhile) {
+            // The rotated entry; a do-while falls straight into its body.
+            self.emit_branch_to(test_at);
+        }
         self.bind_label(body_at);
         for op in &loop_ops {
             match op {
@@ -7963,13 +8024,24 @@ impl Generator {
             }
         }
         self.bind_label(test_at);
-        if big_bound {
-            self.output.instructions.push(Instruction::CompareWord { a: cond_register, b: 0 });
-        } else {
-            self.output.instructions.push(Instruction::CompareWordImmediate {
-                a: cond_register,
-                immediate: cond_constant as i16,
-            });
+        match &loop_test {
+            LoopTest::Constant { register, constant, big: true } => {
+                let _ = constant;
+                self.output.instructions.push(Instruction::CompareWord { a: *register, b: 0 });
+            }
+            LoopTest::Constant { register, constant, big: false } => {
+                self.output.instructions.push(Instruction::CompareWordImmediate {
+                    a: *register,
+                    immediate: *constant as i16,
+                });
+            }
+            LoopTest::Register { left, right } => {
+                self.output.instructions.push(Instruction::CompareWord { a: *left, b: *right });
+            }
+            LoopTest::CharLoad { pointer } => {
+                self.output.instructions.push(Instruction::LoadByteZero { d: 0, a: *pointer, offset: 0 });
+                self.output.instructions.push(Instruction::ExtendSignByteRecord { a: 0, s: 0 });
+            }
         }
         self.emit_branch_conditional_to(back_branch.0, back_branch.1, body_at);
         if return_register != 3 {
