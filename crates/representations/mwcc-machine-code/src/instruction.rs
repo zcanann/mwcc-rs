@@ -188,6 +188,11 @@ pub enum Instruction {
     FloatAbsolute { d: u8, b: u8 },
     /// `fctiwz frD, frB` — convert float to integer, round toward zero.
     ConvertToIntegerWordZero { d: u8, b: u8 },
+    /// `psq_l frD, offset(rA), W, I` — Gekko paired-single quantized load
+    /// (the callee-saved FPR restore's second half under -proc gekko).
+    PairedSingleQuantizedLoad { d: u8, a: u8, offset: i16, w: u8, i: u8 },
+    /// `psq_st frS, offset(rA), W, I` — Gekko paired-single quantized store.
+    PairedSingleQuantizedStore { s: u8, a: u8, offset: i16, w: u8, i: u8 },
     /// `stwu rS, offset(rA)` — store word with base update (stack frame push).
     StoreWordWithUpdate { s: u8, a: u8, offset: i16 },
     /// `lwz rD, offset(rA)` — load word.

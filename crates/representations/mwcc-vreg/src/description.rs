@@ -126,7 +126,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, b);
         }
         // Float loads: float destination, general base (+ index).
-        LoadFloatSingle { d, a, .. } | LoadFloatDouble { d, a, .. } => {
+        LoadFloatSingle { d, a, .. } | LoadFloatDouble { d, a, .. } | PairedSingleQuantizedLoad { d, a, .. } => {
             visit(D, F, d);
             if *a != 0 { visit(U, G, a); }
         }
@@ -147,7 +147,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             if *a != 0 { visit(U, G, a); }
             visit(U, G, b);
         }
-        StoreFloatSingle { s, a, .. } | StoreFloatDouble { s, a, .. } => {
+        StoreFloatSingle { s, a, .. } | StoreFloatDouble { s, a, .. } | PairedSingleQuantizedStore { s, a, .. } => {
             visit(U, F, s);
             if *a != 0 { visit(U, G, a); }
         }

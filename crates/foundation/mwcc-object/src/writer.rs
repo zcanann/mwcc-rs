@@ -321,7 +321,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // This function's own strings sit at the front of its `@N` block, before its constants.
         number += function.string_count;
         let mut numbers = Vec::new();
-        for constant in &function.constants {
+        for (constant_index, constant) in function.constants.iter().enumerate() {
+            for (gap_index, gap) in &function.constant_number_gaps {
+                if *gap_index == constant_index {
+                    number += gap;
+                }
+            }
             match numbered_constant.get(&(constant.bits, constant.byte_width)) {
                 Some(&existing) => numbers.push(existing),
                 None => {

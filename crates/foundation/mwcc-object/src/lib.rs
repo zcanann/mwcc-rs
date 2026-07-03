@@ -104,6 +104,9 @@ pub struct FunctionObject<'a> {
     /// conditional branch. mwcceppc consumes these counter slots for the
     /// function's internal labels.
     pub anonymous_bump: u32,
+    /// Mid-pool `@N` gaps applied while numbering constants: (constant index,
+    /// extra numbers consumed before it).
+    pub constant_number_gaps: Vec<(usize, u32)>,
     /// `@N` numbers consumed after the constants, before the extab pair.
     pub post_constant_bump: u32,
     /// The count of NEW (non-reused) strings this function contributes to the unit's

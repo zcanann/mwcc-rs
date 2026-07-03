@@ -14,8 +14,19 @@ for ln in lines:
     m = re.match(r'^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2} ){4})\s*(\S+)\s*(.*)$', ln)
     if m:
         idx = int(m.group(1),16)//4
+        word = int(m.group(2).replace(' ',''),16)
+        mn = m.group(3)
+        # objdump misreads Gekko psq_st under some dialects (xxsel etc.) —
+        # decode psq_l/psq_st from the raw word instead.
+        if (word >> 26) in (56, 60):
+            mn = 'psq_l' if (word >> 26) == 56 else 'psq_st'
+            fr, ra = (word >> 21) & 31, (word >> 16) & 31
+            w_, i_ = (word >> 15) & 1, (word >> 12) & 7
+            off = word & 0xfff
+            instrs.append([idx, mn, [f'f{fr}', f'{off}(r{ra})', str(w_), str(i_)]])
+            continue
         ops = m.group(4).split('<')[0].strip()
-        instrs.append([idx, m.group(3), [o.strip() for o in ops.split(',')] if ops else []])
+        instrs.append([idx, mn, [o.strip() for o in ops.split(',')] if ops else []])
         continue
     r = re.match(r'^\s*([0-9a-f]+):\s+(R_PPC_\S+)\s+(\S+)', ln)
     if r:
@@ -47,11 +58,13 @@ for idx, mn, ops in instrs:
         t = int(ops[-1],16)//4
         out.append(f"        self.emit_branch_conditional_to({o}, {b_}, labels[&{t}]); // {mn}")
     if   mn=="stwu": push(f"StoreWordWithUpdate {{ s: {R(ops[0])}, a: 1, offset: {ops[1].split('(')[0]} }}")
-    elif mn=="stfd": push(f"StoreFloatDouble {{ s: {ops[0][1:]}, a: 1, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="stfd": push(f"StoreFloatDouble {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="lfd":  push(f"LoadFloatDouble {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="fctiwz": push(f"ConvertToIntegerWordZero {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
+    elif mn=="xoris": push(f"XorImmediateShifted {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")
     elif mn=="lfdx": push(f"LoadFloatDoubleIndexed {{ d: {ops[0][1:]}, a: {R(ops[1])}, b: {R(ops[2])} }}")
-    elif mn=="lwz":  push(f"LoadWord {{ d: {R(ops[0])}, a: 1, offset: {ops[1].split('(')[0]} }}")
-    elif mn=="stw":  push(f"StoreWord {{ s: {R(ops[0])}, a: 1, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="lwz":  push(f"LoadWord {{ d: {R(ops[0])}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="stw":  push(f"StoreWord {{ s: {R(ops[0])}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="clrlwi": push(f"ClearLeftImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, clear: {ops[2]} }}")
     elif mn=="clrrwi": push(f"AndContiguousMask {{ a: {R(ops[0])}, s: {R(ops[1])}, begin: 0, end: {31-int(ops[2])} }}")
     elif mn=="rlwinm": push(f"RotateAndMask {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
@@ -90,6 +103,8 @@ for idx, mn, ops in instrs:
     elif mn=="fabs": push(f"FloatAbsolute {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="fcmpo": push(f"FloatCompareOrdered {{ a: {ops[-2][1:]}, b: {ops[-1][1:]} }}")
     elif mn=="cmplwi": push(f"CompareLogicalWordImmediate {{ a: {R(ops[0])}, immediate: {ops[1]} }}")
+    elif mn=="psq_l": push(f"PairedSingleQuantizedLoad {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]}, w: {ops[2]}, i: {ops[3]} }}")
+    elif mn=="psq_st": push(f"PairedSingleQuantizedStore {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]}, w: {ops[2]}, i: {ops[3]} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4
