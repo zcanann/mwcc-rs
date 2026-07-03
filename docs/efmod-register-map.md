@@ -87,3 +87,25 @@ first-claim r0 ownership (sx-style values), the fresh-home rewrite
 rule (anomaly 1), and back-edge-aware ranges (loop values live over
 the whole body). Then assert model_order+assign reproduce THIS map
 before writing the knit emitter.
+
+## Fitting pass 1 (fire 436) — NEGATIVE result
+
+Single-key ordered assignment (def/death/span, asc/desc, lowest/
+highest-free, r0 first-claim) over the 22-value prefix fixture misses
+17+ of 22 on every policy — the whole-function allocation is NOT a
+one-pass ordered scan over live ranges. Fixture: scratchpad
+efmod_fit.py (VALUES has the encoded ranges; ranges for lx/hx_post
+are approximate — re-verify before deeper fitting).
+
+Suggestive structure for pass 2: the final homes read as an ordered
+sequence r3=short temps, r4=lx, r5=ly, r6=hx_raw, r7=hx_abs,
+r8=hy_abs, r9=align-join, r10=hy_raw, r11=ix — i.e. SOMETHING assigns
+these in that sequence with lowest-free. Candidate hypotheses to
+enumerate: (a) mwcc's internal value-creation order (loads may be
+CREATED at first-use position pre-scheduling, then hoisted — allocate
+on the unscheduled stream); (b) segment-local allocation in program
+order with per-segment class ordering (the int_alloc model applied
+PER SEGMENT with the inherited live-set); (c) pair affinities (lx/ly
+and hx_abs/hy_abs adjacent ascending in x,y order). The deep-fit
+enumerator should encode dimension (b) first — it matches how the
+synthetic captures were all derived.
