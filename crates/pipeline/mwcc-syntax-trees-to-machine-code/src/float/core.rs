@@ -2,7 +2,7 @@
 //! order + register models over one return tree.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Type};
 use mwcc_vreg::{assign_float_registers, linearize, DagNode, FROZEN_FLOAT_REG, HAZARD_FPU};
 use crate::generator::*;
@@ -155,7 +155,12 @@ impl Generator {
             // FrameLoad node in the tail's DAG.
             param_ids.push((name.clone(), 7));
         }
-        // Lower the expression to the contracted tree (or bail).
+        // Lower the expression to the contracted tree (or bail). ONE
+        // coefficient table may feed the claim (constant indices only).
+        let mut table_context = super::TableContext {
+            name: None,
+            tables: self.double_tables.clone(),
+        };
         let mut seen_literals: Vec<u64> = Vec::new();
         let local_names: Vec<(String, usize)> = kept_locals
             .iter()
@@ -168,7 +173,7 @@ impl Generator {
         let mut local_trees: Vec<Tree> = Vec::new();
         for (index, (_, initializer)) in kept_locals.iter().enumerate() {
             let prior = &local_names[..index];
-            let Some(local_tree) = build_tree(initializer, &param_ids, prior, &mut seen_literals) else {
+            let Some(local_tree) = super::build_tree_with_tables(initializer, &param_ids, prior, &mut seen_literals, &mut table_context) else {
                 return Ok(false);
             };
             if count_arith(&local_tree) != 1 || !seen_literals.is_empty() {
@@ -176,9 +181,68 @@ impl Generator {
             }
             local_trees.push(local_tree);
         }
-        let Some(tree) = build_tree(return_expression, &param_ids, &local_names, &mut seen_literals) else {
+        let Some(tree) = super::build_tree_with_tables(return_expression, &param_ids, &local_names, &mut seen_literals, &mut table_context) else {
             return Ok(false);
         };
+        if table_context.name.is_some() {
+            // An arith mixing a POOL constant and a TABLE constant ties
+            // their deaths — the register tiebreak is unfitted (probed:
+            // 0.5->f0/T->f2 against descending) — and multi-local table
+            // shapes (the s_atan z/w split) are uncaptured. Defer both.
+            let mut refs: Vec<(&Tree, u32)> = Vec::new();
+            collect_arith(&tree, 0, &mut refs);
+            for (arith, _) in &refs {
+                let sides: Vec<&Tree> = match arith {
+                    Tree::Madd { factor_left, factor_right, addend }
+                    | Tree::Fnmsub { factor_left, factor_right, base: addend }
+                    | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                        vec![factor_left, factor_right, addend]
+                    }
+                    Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                        vec![left, right]
+                    }
+                    _ => Vec::new(),
+                };
+                let pools = sides.iter().filter(|side| matches!(side, Tree::Const(_))).count();
+                let tables = sides.iter().filter(|side| matches!(side, Tree::TableConst(_))).count();
+                if pools > 0 && tables > 0 {
+                    return Ok(false);
+                }
+            }
+            if kept_locals.len() > 1 {
+                return Ok(false);
+            }
+        }
+        if table_context.name.is_some()
+            && (!function.guards.is_empty()
+                || self.float.reload_x.is_some()
+                || self.float.frame_local.is_some()
+                || self.float.phantom_local.is_some()
+                || !self.float.pseudo_params.is_empty())
+        {
+            // Tables are measured in the plain return claim only — the
+            // composed/guarded environments defer until probed.
+            return Ok(false);
+        }
+        if table_context.name.is_some() {
+            // The base takes r3 — measured only with every int param DEAD
+            // in the claimed body.
+            for parameter in &function.parameters {
+                if parameter.parameter_type == Type::Double {
+                    continue;
+                }
+                let reads = crate::analysis::count_name_occurrences(return_expression, &parameter.name)
+                    + function
+                        .locals
+                        .iter()
+                        .filter_map(|local| local.initializer.as_ref())
+                        .map(|init| crate::analysis::count_name_occurrences(init, &parameter.name))
+                        .sum::<usize>();
+                if reads != 0 {
+                    return Ok(false);
+                }
+            }
+        }
         // A FRAME-resident diamond local as a ROOT-multiply factor blocks the
         // root contraction (measured: fmadd in register form, fmul+fadd/fsub
         // in frame form; the INNER contractions keep fusing, and qx as the
@@ -323,7 +387,8 @@ impl Generator {
             || (arith_refs.len() < 2
                 && seen_literals.is_empty()
                 && self.float.phantom_local.is_none()
-                && self.float.pseudo_params.is_empty())
+                && self.float.pseudo_params.is_empty()
+                && table_context.name.is_none())
         {
             // A bare constant return and const-free single ops stay on the
             // existing verified paths; a pooled-constant single op is ours —
@@ -415,6 +480,12 @@ impl Generator {
         }
         // Pass 1: pooled constant loads, grouped per consumer (factor first).
         for &(arith, _) in &arith_refs {
+            let push_table = |offset: i16, nodes: &mut Vec<DagNode>, ops: &mut Vec<FloatOp>, built: &mut Vec<(*const Tree, Operand)>, key: *const Tree| {
+                let index = nodes.len();
+                nodes.push(DagNode::new("lfd_t", LOAD_LATENCY).writes(&[10 + index as u32]));
+                ops.push(FloatOp::TableLoad(offset));
+                built.push((key, Operand::Node(index)));
+            };
             let push_const = |bits: u64, nodes: &mut Vec<DagNode>, ops: &mut Vec<FloatOp>, built: &mut Vec<(*const Tree, Operand)>, key: *const Tree| {
                 let index = nodes.len();
                 nodes.push(DagNode::new("lfd", LOAD_LATENCY).writes(&[10 + index as u32]));
@@ -433,11 +504,26 @@ impl Generator {
                     if let Tree::Const(bits) = addend.as_ref() {
                         push_const(*bits, &mut nodes, &mut ops, &mut built, addend.as_ref() as *const Tree);
                     }
+                    // Table reads load AFTER the arith's pool constants
+                    // (measured: 0.5 then T[2] in the mixed probe).
+                    for factor in [factor_left, factor_right] {
+                        if let Tree::TableConst(offset) = factor.as_ref() {
+                            push_table(*offset, &mut nodes, &mut ops, &mut built, factor.as_ref() as *const Tree);
+                        }
+                    }
+                    if let Tree::TableConst(offset) = addend.as_ref() {
+                        push_table(*offset, &mut nodes, &mut ops, &mut built, addend.as_ref() as *const Tree);
+                    }
                 }
                 Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
                     for side in [left, right] {
                         if let Tree::Const(bits) = side.as_ref() {
                             push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree);
+                        }
+                    }
+                    for side in [left, right] {
+                        if let Tree::TableConst(offset) = side.as_ref() {
+                            push_table(*offset, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree);
                         }
                     }
                 }
@@ -608,6 +694,25 @@ impl Generator {
         if !function.guards.is_empty() && order[..split].iter().any(|&node| !nodes[node].local_home) {
             return Ok(false);
         }
+        // The TABLE BASE weave (measured: lis at slot 0 before the first
+        // float op, addi at slot 2): lis+@ha up front; the low half lands
+        // right after the first emitted float instruction.
+        let mut table_addi_pending = false;
+        if let Some(name) = &table_context.name {
+            self.emit_address_high(3, name);
+            table_addi_pending = true;
+            // Nothing schedulable before the first table read: the low half
+            // follows the lis directly (measured: the single-op claim).
+            if order
+                .first()
+                .is_some_and(|&node| matches!(ops[node], FloatOp::TableLoad(_)))
+            {
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                table_addi_pending = false;
+            }
+        }
+        let table_name = table_context.name.clone();
         let mut emitted = 0usize;
         for &node in &order {
             if emitted == split {
@@ -630,6 +735,9 @@ impl Generator {
                 FloatOp::Const(bits) => self.load_double_constant(d, *bits),
                 FloatOp::FrameLoad(offset) => {
                     self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 1, offset: *offset })
+                }
+                FloatOp::TableLoad(offset) => {
+                    self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 3, offset: *offset })
                 }
                 FloatOp::Phantom => {}
                 FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
@@ -682,7 +790,18 @@ impl Generator {
                 }),
                 FloatOp::Sink => {}
             }
+            if table_addi_pending && emitted == 1 {
+                // The base's low half: addi rB,rB,T@l right after the first
+                // float instruction (measured: slot 2 in every table probe).
+                self.record_relocation(
+                    RelocationKind::Addr16Lo,
+                    table_name.as_deref().expect("pending implies a table"),
+                );
+                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                table_addi_pending = false;
+            }
         }
+        let _ = table_addi_pending;
         Ok(true)
     }
 }

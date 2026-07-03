@@ -24,6 +24,9 @@ enum Tree {
     /// A named double local's shared node (by locals-list index).
     LocalRef(usize),
     Const(u64),
+    /// A constant-index read of a static const double TABLE: one shared
+    /// lis/addi ADDR16 base, reads as lfd's at fixed offsets.
+    TableConst(i16),
     /// factor_left * factor_right + addend (fp_contract).
     Madd { factor_left: Box<Tree>, factor_right: Box<Tree>, addend: Box<Tree> },
     /// base - factor_left * factor_right (fp_contract: fnmsub d,a,c,b = b - a*c).
@@ -45,6 +48,8 @@ enum FloatOp {
     Const(u64),
     /// x reloaded from its frame slot (no relocation).
     FrameLoad(i16),
+    /// A coefficient-table read: lfd at the fixed offset off the table base.
+    TableLoad(i16),
     /// A conditionally-defined local (the diamond's qx): allocates like a
     /// window-top tier local but emits NOTHING — the diamond arms already
     /// loaded it.
@@ -99,6 +104,41 @@ fn build_tree(
     locals: &[(String, usize)],
     seen_literals: &mut Vec<u64>,
 ) -> Option<Tree> {
+    build_tree_with_tables(expression, params, locals, seen_literals, &mut TableContext::default())
+}
+
+/// The one coefficient table a claim may read (a second table defers), with
+/// the offsets seen — the arm materializes ONE lis/addi base.
+#[derive(Default)]
+pub(super) struct TableContext {
+    pub(super) name: Option<String>,
+    pub(super) tables: std::collections::HashSet<String>,
+}
+
+fn build_tree_with_tables(
+    expression: &Expression,
+    params: &[(String, u32)],
+    locals: &[(String, usize)],
+    seen_literals: &mut Vec<u64>,
+    table: &mut TableContext,
+) -> Option<Tree> {
+    if let Expression::Index { base, index } = expression {
+        let Expression::Variable(name) = base.as_ref() else {
+            return None;
+        };
+        if !table.tables.contains(name) {
+            return None;
+        }
+        let Expression::IntegerLiteral(element) = index.as_ref() else {
+            return None;
+        };
+        let offset = i16::try_from(element.checked_mul(8)?).ok()?;
+        match &table.name {
+            Some(existing) if existing != name => return None,
+            _ => table.name = Some(name.clone()),
+        }
+        return Some(Tree::TableConst(offset));
+    }
     match expression {
         Expression::Variable(name) => {
             if let Some(&(_, index)) = locals.iter().find(|(local, _)| local == name) {
@@ -134,17 +174,17 @@ fn build_tree(
                     } else {
                         return None;
                     };
-                    let constant = build_tree(constant, params, locals, seen_literals)?;
-                    let other = build_tree(other, params, locals, seen_literals)?;
+                    let constant = build_tree_with_tables(constant, params, locals, seen_literals, table)?;
+                    let other = build_tree_with_tables(other, params, locals, seen_literals, table)?;
                     Some(Tree::Fadd { left: Box::new(constant), right: Box::new(other) })
                 }
                 (true, _) => {
                     let Expression::Binary { left: x, right: y, .. } = left.as_ref() else { unreachable!() };
-                    make_madd(x, y, right, params, locals, seen_literals)
+                    make_madd(x, y, right, params, locals, seen_literals, table)
                 }
                 (false, true) => {
                     let Expression::Binary { left: x, right: y, .. } = right.as_ref() else { unreachable!() };
-                    make_madd(x, y, left, params, locals, seen_literals)
+                    make_madd(x, y, left, params, locals, seen_literals, table)
                 }
             }
         }
@@ -159,9 +199,9 @@ fn build_tree(
                 if matches!(x.as_ref(), Expression::FloatLiteral(_)) && matches!(y.as_ref(), Expression::FloatLiteral(_)) {
                     return None;
                 }
-                let factor_left = build_tree(x, params, locals, seen_literals)?;
-                let factor_right = build_tree(y, params, locals, seen_literals)?;
-                let subtrahend = build_tree(right, params, locals, seen_literals)?;
+                let factor_left = build_tree_with_tables(x, params, locals, seen_literals, table)?;
+                let factor_right = build_tree_with_tables(y, params, locals, seen_literals, table)?;
+                let subtrahend = build_tree_with_tables(right, params, locals, seen_literals, table)?;
                 return Some(Tree::Fmsub {
                     factor_left: Box::new(factor_left),
                     factor_right: Box::new(factor_right),
@@ -171,17 +211,17 @@ fn build_tree(
             let Expression::Binary { operator: BinaryOperator::Multiply, left: x, right: y } = right.as_ref() else {
                 // Neither side a product: the plain unfused FSUB in source
                 // slots (the deep form runs the emission-order regime).
-                let minuend = build_tree(left, params, locals, seen_literals)?;
-                let subtrahend = build_tree(right, params, locals, seen_literals)?;
+                let minuend = build_tree_with_tables(left, params, locals, seen_literals, table)?;
+                let subtrahend = build_tree_with_tables(right, params, locals, seen_literals, table)?;
                 return Some(Tree::Fsub { left: Box::new(minuend), right: Box::new(subtrahend) });
             };
             let both_const = matches!(x.as_ref(), Expression::FloatLiteral(_)) && matches!(y.as_ref(), Expression::FloatLiteral(_));
             if both_const {
                 return None;
             }
-            let base = build_tree(left, params, locals, seen_literals)?;
-            let factor_left = build_tree(x, params, locals, seen_literals)?;
-            let factor_right = build_tree(y, params, locals, seen_literals)?;
+            let base = build_tree_with_tables(left, params, locals, seen_literals, table)?;
+            let factor_left = build_tree_with_tables(x, params, locals, seen_literals, table)?;
+            let factor_right = build_tree_with_tables(y, params, locals, seen_literals, table)?;
             Some(Tree::Fnmsub { factor_left: Box::new(factor_left), factor_right: Box::new(factor_right), base: Box::new(base) })
         }
         Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
@@ -197,15 +237,15 @@ fn build_tree(
                 if matches!(other.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. }) {
                     return None;
                 }
-                let constant = build_tree(constant, params, locals, seen_literals)?;
-                let other = build_tree(other, params, locals, seen_literals)?;
+                let constant = build_tree_with_tables(constant, params, locals, seen_literals, table)?;
+                let other = build_tree_with_tables(other, params, locals, seen_literals, table)?;
                 return Some(Tree::Mul { left: Box::new(constant), right: Box::new(other) });
             }
             let is_mul = |side: &Expression| matches!(side, Expression::Binary { operator: BinaryOperator::Multiply, .. });
             match (is_mul(left), is_mul(right)) {
                 (false, false) => {
-                    let left = build_tree(left, params, locals, seen_literals)?;
-                    let right = build_tree(right, params, locals, seen_literals)?;
+                    let left = build_tree_with_tables(left, params, locals, seen_literals, table)?;
+                    let right = build_tree_with_tables(right, params, locals, seen_literals, table)?;
                     Some(Tree::Mul { left: Box::new(left), right: Box::new(right) })
                 }
                 // The SHALLOW mul-of-mul (measured both source orders emit
@@ -222,12 +262,12 @@ fn build_tree(
                     if !matches!(x.as_ref(), Expression::Variable(_)) || !matches!(y.as_ref(), Expression::Variable(_)) {
                         return None;
                     }
-                    let chain_tree = build_tree(chain, params, locals, seen_literals)?;
+                    let chain_tree = build_tree_with_tables(chain, params, locals, seen_literals, table)?;
                     if !matches!(chain_tree, Tree::Madd { .. } | Tree::Fnmsub { .. }) {
                         return None;
                     }
-                    let x = build_tree(x, params, locals, seen_literals)?;
-                    let y = build_tree(y, params, locals, seen_literals)?;
+                    let x = build_tree_with_tables(x, params, locals, seen_literals, table)?;
+                    let y = build_tree_with_tables(y, params, locals, seen_literals, table)?;
                     let product_tree = Tree::Mul { left: Box::new(x), right: Box::new(y) };
                     Some(Tree::Mul { left: Box::new(chain_tree), right: Box::new(product_tree) })
                 }
@@ -246,14 +286,15 @@ fn make_madd(
     params: &[(String, u32)],
     locals: &[(String, usize)],
     seen_literals: &mut Vec<u64>,
+    table: &mut TableContext,
 ) -> Option<Tree> {
     let both_const = matches!(x, Expression::FloatLiteral(_)) && matches!(y, Expression::FloatLiteral(_));
     if both_const {
         return None;
     }
-    let factor_left = build_tree(x, params, locals, seen_literals)?;
-    let factor_right = build_tree(y, params, locals, seen_literals)?;
-    let addend = build_tree(addend, params, locals, seen_literals)?;
+    let factor_left = build_tree_with_tables(x, params, locals, seen_literals, table)?;
+    let factor_right = build_tree_with_tables(y, params, locals, seen_literals, table)?;
+    let addend = build_tree_with_tables(addend, params, locals, seen_literals, table)?;
     Some(Tree::Madd { factor_left: Box::new(factor_left), factor_right: Box::new(factor_right), addend: Box::new(addend) })
 }
 
@@ -295,7 +336,7 @@ fn collect_arith<'tree>(tree: &'tree Tree, level: u32, into: &mut Vec<(&'tree Tr
             collect_arith(left, level + 1, into);
             collect_arith(right, level + 1, into);
         }
-        Tree::Param(_) | Tree::LocalRef(_) | Tree::Const(_) => {}
+        Tree::Param(_) | Tree::LocalRef(_) | Tree::Const(_) | Tree::TableConst(_) => {}
     }
 }
 

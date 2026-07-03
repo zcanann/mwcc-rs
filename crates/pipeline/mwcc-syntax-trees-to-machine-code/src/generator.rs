@@ -124,6 +124,9 @@ pub(crate) struct Generator {
     /// `std::mem::take`/restore covers the whole set — missed per-field
     /// restores caused three real bugs across the float campaign.
     pub(crate) float: FloatContext,
+    /// File-scope `static const double T[] = {...}` coefficient tables:
+    /// constant-index reads become lfd's off ONE lis/addi ADDR16 base.
+    pub(crate) double_tables: std::collections::HashSet<String>,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in

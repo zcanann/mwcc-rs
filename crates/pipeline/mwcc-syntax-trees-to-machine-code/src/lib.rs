@@ -148,6 +148,16 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         reserved: HashSet::new(),
         frame_size: 0,
         float: generator::FloatContext::default(),
+        double_tables: globals
+            .iter()
+            .filter(|global| {
+                global.is_static
+                    && global.is_const
+                    && global.declared_type == mwcc_syntax_trees::Type::Double
+                    && global.array_length.is_some()
+            })
+            .map(|global| global.name.clone())
+            .collect(),
         behavior: Behavior::resolve(&config),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
