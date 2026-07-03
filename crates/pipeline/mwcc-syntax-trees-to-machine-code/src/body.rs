@@ -2387,6 +2387,9 @@ impl Generator {
             }
             // Parameters live across the call go in callee-saved registers (r31
             // descending), saved in the prologue and reloaded in the epilogue.
+            if self.try_float_callee_saved(function)? {
+                return Ok(());
+            }
             if self.try_callee_saved(function)? {
                 return Ok(());
             }
@@ -7660,6 +7663,103 @@ impl Generator {
     /// order — the LAST live parameter gets r31, the next r30, and so on — and the
     /// body/return then read the values from those registers. Returns whether it
     /// applied. (Locals, floats, and values passed to a call still defer.)
+    /// The FLOAT callee-saved survivor (fire 406, C1): `return g(x) OP x;`
+    /// with a double parameter surviving one external call. Measured:
+    /// stwu -16; mflr; stw r0,20; stfd f31,8; fmr f31,f1; bl; lwz r0,20
+    /// (the LR reload FIRST); the op; lfd f31,8; mtlr; addi; blr. The
+    /// fmr copy leaves f1 holding x for the call itself.
+    fn try_float_callee_saved(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.statements.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || function.return_type != Type::Double
+        {
+            return Ok(false);
+        }
+        let [x_param] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if x_param.parameter_type != Type::Double {
+            return Ok(false);
+        }
+        let x = x_param.name.as_str();
+        let Some(Expression::Binary { operator, left, right }) = &function.return_expression else {
+            return Ok(false);
+        };
+        // Call OP x, or x OP call. The emitted op reads (f31 = x) and
+        // (f1 = the result): mwcc commutes adds to put the saved value
+        // first (measured fadd f1,f31,f1 for `g(x) + x`).
+        let (call, call_first) = match (left.as_ref(), right.as_ref()) {
+            (Expression::Call { name, arguments }, Expression::Variable(v)) if v == x => {
+                ((name, arguments), true)
+            }
+            (Expression::Variable(v), Expression::Call { name, arguments }) if v == x => {
+                ((name, arguments), false)
+            }
+            _ => return Ok(false),
+        };
+        let (callee, arguments) = call;
+        // A single argument: x itself (the fmr leaves f1 intact).
+        if !matches!(arguments.as_slice(), [Expression::Variable(v)] if v == x) {
+            return Ok(false);
+        }
+        // The op: fadd (commuted saved-first), fsub per order, fmul
+        // (commuted saved-first).
+        enum Op {
+            Add,
+            Mul,
+            SubCallMinusX,
+            SubXMinusCall,
+        }
+        let op = match operator {
+            BinaryOperator::Add => Op::Add,
+            BinaryOperator::Multiply => Op::Mul,
+            BinaryOperator::Subtract if call_first => Op::SubCallMinusX,
+            BinaryOperator::Subtract => Op::SubXMinusCall,
+            _ => return Ok(false),
+        };
+        // -- emit --
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.callee_saved_float = 1;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 31, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::FloatMove { d: 31, b: 1 });
+        self.record_relocation(RelocationKind::Rel24, callee);
+        self.output.instructions.push(Instruction::BranchAndLink { target: callee.to_string() });
+        // The MULTIPLY schedules ahead of the LR reload (its latency
+        // starts early — measured); add/sub follow the reload.
+        if matches!(op, Op::Mul) {
+            self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 31, c: 1 });
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+        } else {
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+            match op {
+                Op::Add => self
+                    .output
+                    .instructions
+                    .push(Instruction::FloatAddDouble { d: 1, a: 31, b: 1 }),
+                Op::SubCallMinusX => self
+                    .output
+                    .instructions
+                    .push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 31 }),
+                Op::SubXMinusCall => self
+                    .output
+                    .instructions
+                    .push(Instruction::FloatSubtractDouble { d: 1, a: 31, b: 1 }),
+                Op::Mul => unreachable!(),
+            }
+        }
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 31, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     fn try_callee_saved(&mut self, function: &Function) -> Compilation<bool> {
         // Address-taken locals are handled by the frame-resident path before this.
         if !self.frame_slots.is_empty() {

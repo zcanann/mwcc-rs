@@ -139,6 +139,9 @@ pub(crate) struct Generator {
     /// Whether the function makes a call: it then saves/restores the link register
     /// around a stack frame (the non-leaf prologue/epilogue).
     pub(crate) non_leaf: bool,
+    /// Callee-saved FLOAT registers the arm saves (f31 descending) — the
+    /// extab's saved-FPR count.
+    pub(crate) callee_saved_float: u8,
     /// The next virtual-register id to hand out. A migrated selection site asks
     /// for a fresh virtual instead of picking a physical register itself; the
     /// allocation pass assigns the physical home from liveness.

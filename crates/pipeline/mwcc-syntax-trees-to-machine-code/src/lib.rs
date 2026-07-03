@@ -161,6 +161,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         behavior: Behavior::resolve(&config),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
+        callee_saved_float: 0,
         next_virtual: 0,
         register_avoid: HashMap::new(),
         stored_globals: HashMap::new(),
@@ -241,7 +242,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         let single_arithmetic = generator.output.instructions.iter().any(|instruction| instruction.is_single_precision_arithmetic());
         generator.output.frame = Some(FrameInfo {
             saved_gpr_count: generator.callee_saved.len() as u8,
-            saved_fpr_count: 0,
+            saved_fpr_count: generator.callee_saved_float,
             uses_fpu: (generator.non_leaf && touches_fpu) || single_arithmetic,
         });
     }
