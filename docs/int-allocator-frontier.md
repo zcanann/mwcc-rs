@@ -44,20 +44,52 @@ Shape family: `double f(double x)` punned int locals, guard local
 
 (*) the store-only NEW value in r0; the original is never loaded.
 
-## THE V1b ANOMALY
+## THE DISCARDED-HOME ANOMALY (fire 396 discriminators)
 
-V1b differs from W10 only in i1's mutation (`i1 = 0` vs `i1 &= ~i`),
-ending i1's home range at the or. (mid-block-1) instead of the store.
-Real assignment behaves as if **i1 were assigned FIRST** — with i1=r3
-pinned, everything else follows lowest-free exactly:
-j0[6,7]→r4, mask[2,8]→r5, i0[4,15]→r6, i[8,13]→r4 (j0 dead).
+A loaded local whose home's LAST READ is before the first branch and
+whose rewrite is a fresh value ("discarded home") breaks the base
+order. Discriminators (same scaffold as V1b unless noted):
 
-Orders tried and falsified for V1b: death asc (the model — predicts
-j0=r3), death desc, def order, original-statement order, final-write
-order, crossers-first, block-locals-first. The missing ingredient is
-whatever promotes a mid-death loaded-local ahead of shorter-lived
-temps; find it with more discriminators (vary WHERE i1's home dies:
-in the condition vs the first mutation vs a second condition).
+| id | i1's fate                                  | temp | mask | i0 | i1 | j0 | i  | class |
+|----|--------------------------------------------|------|------|----|----|----|----|-------|
+| D1 | `i1 &= 0x7ff` (const-mask → clrlwi r0)     | r3   | r4   | r5 | r6 | r3 | r3 | fits  |
+| D2 | `i1 = 5`                                   | r3   | r5   | r6 | r3 | r4 | r4 | V1b   |
+| D3 | `i1 = 0` ordered BEFORE `i0 &= ~i`         | r3   | r5   | r6 | r3 | r4 | r4 | V1b   |
+| D4 | BOTH discarded (`i0 = 0; i1 = 0`)          | r3   | r4   | r6 | r5 | r3 | r0 | NEW   |
+| D5 | i1 dies in a SECOND condition (post-branch)| r3   | r4   | r5 | r6 | r3 | r3 | fits  |
+
+Findings:
+- The trigger is precisely "home dead before the first branch, then a
+  fresh-value rewrite". The rewrite's VALUE (0 vs 5) and the mutation
+  ORDER are irrelevant (D2/D3 ≡ V1b). A rewrite that READS the home in
+  block 2 (D1) or a death after the first branch (D5) fits the base
+  model.
+- D1 wrinkle: a CONSTANT self-mask (`&= 0x7ff`) computes clrlwi into
+  r0 and stores from r0 (the home is read, not rewritten) — unlike
+  W10's variable `&= ~i` which lands in the home.
+- V1b/D2/D3 (ONE discarded + a crossing i0): the discarded local is
+  PROMOTED to right after the temp — verified order
+  [temp, i1, j0, mask, i, i0] reproduces every register via
+  lowest-free.
+- D4 (BOTH discarded, nothing crosses): NO promotion — the pair goes
+  at the END, in DEATH-DESC among themselves (i1 then i0):
+  [temp, j0, mask, i1(r5), i0(r6)]; the single-use i drops to r0.
+- The unifying key is still unknown: promotion-to-front (V1b) vs
+  demotion-to-back-swapped (D4) must fall out of one rule. Every
+  simple global key tried by hand fails one side: death asc/desc, def
+  asc/desc, statement order, final-write order, crossers-first,
+  block-locals-first, loads-def-asc-then-temps.
+
+## NEXT: the offline fitter
+
+Hand-fitting has stalled at 12 fixtures / 3-outlier structure — the
+float campaign's answer at this exact stage was the deep-fit
+enumerator. Build the analog: encode the 12 register maps as vreg
+fixtures, enumerate (order key × promotion rule × range extension ×
+r0 policy) against all of them simultaneously, and keep whatever
+combination scores 12/12. Candidate dimensions worth encoding first:
+the discarded-class handling (front/back/death-desc), whether ranges
+extend to stores, and tie-breaks by def position vs frame offset.
 
 ## Emission facts (independent of the anomaly)
 
