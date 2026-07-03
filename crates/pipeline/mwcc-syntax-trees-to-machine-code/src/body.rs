@@ -1847,6 +1847,9 @@ impl Generator {
         }
         // `if (c) { [g = w;] [v = NEW;] } return v;` over a PARAMETER — the in-place
         // diamond with the merge `mr r3,v`, folding to a conditional return when v is r3.
+        if self.try_guard_block_mutations(function)? {
+            return Ok(());
+        }
         if self.try_conditional_reassign_return(function)? {
             return Ok(());
         }
@@ -3383,6 +3386,93 @@ impl Generator {
     /// whose values are either all REGISTER-valued (emitted sequentially) or all CONSTANT (the
     /// batched materialization): `cmpwi; beq else; <then run>; blr; else: <else run>; blr`. The
     /// no-else form is handled by try_constant_store_fill / the register-valued trailing-if path.
+    /// GUARD-BLOCK MUTATIONS (the s_floor skeleton, fire 377): a chain of
+    /// nested no-else ifs whose innermost body only ASSIGNS constants to int
+    /// params, followed by a return expression. Every guard branches to ONE
+    /// join; the block mutates the params in their own registers; the join
+    /// computes the return (measured: `if(c){i0=0;i1=0;} return i0|i1` =
+    /// cmpwi; beq J; li; li; J: or; blr — and the nested form re-tests each
+    /// guard to the same join).
+    pub(crate) fn try_guard_block_mutations(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || !function.locals.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(return_expression) = &function.return_expression else {
+            return Ok(false);
+        };
+        // Flatten the guard chain: each level is exactly [If{no else}].
+        let mut conditions: Vec<&Expression> = Vec::new();
+        let mut body: &[Statement] = &function.statements;
+        loop {
+            match body {
+                [Statement::If { condition, then_body, else_body }] if else_body.is_empty() => {
+                    conditions.push(condition);
+                    body = then_body;
+                }
+                _ => break,
+            }
+        }
+        if conditions.is_empty() {
+            return Ok(false);
+        }
+        // The innermost block: constant assigns to DISTINCT int params.
+        let mut assigns: Vec<(u8, i64)> = Vec::new();
+        for statement in body {
+            let Statement::Assign { name, value } = statement else {
+                return Ok(false);
+            };
+            let Some(location) = self.locations.get(name.as_str()) else {
+                return Ok(false);
+            };
+            if location.class != ValueClass::General || location.width != 32 {
+                return Ok(false);
+            }
+            let Some(constant) = crate::analysis::constant_value(value) else {
+                return Ok(false);
+            };
+            if i16::try_from(constant).is_err() {
+                return Ok(false);
+            }
+            if assigns.iter().any(|&(register, _)| register == location.register) {
+                return Ok(false);
+            }
+            assigns.push((location.register, constant));
+        }
+        if assigns.len() < 2 && conditions.len() < 2 {
+            // The single-guard single-assign shapes belong to the measured
+            // reassign/select arms.
+            return Ok(false);
+        }
+        if assigns.is_empty() {
+            return Ok(false);
+        }
+        // A bare-variable return folds the guards to conditional RETURNS
+        // (bclr) instead of branch-to-join — the reassign arms' territory;
+        // this arm takes the expression-return join form only (measured).
+        if matches!(return_expression, Expression::Variable(_)) {
+            return Ok(false);
+        }
+        // The return must be claimable by the plain tail evaluator: an
+        // expression over params (no calls — gated above).
+        // -- commit --
+        let join = self.fresh_label();
+        for condition in conditions {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.emit_branch_conditional_to(options, condition_bit, join);
+        }
+        for &(register, constant) in &assigns {
+            self.output.instructions.push(Instruction::load_immediate(register, constant as i16));
+        }
+        self.bind_label(join);
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(return_expression, function.return_type, result)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     pub(crate) fn try_constant_store_if_else(&mut self, function: &Function) -> Compilation<bool> {
         if function_makes_call(function)
             || function.return_type != Type::Void
