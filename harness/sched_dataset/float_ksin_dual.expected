@@ -1,0 +1,23 @@
+fmul f6,f1,f1
+lfd f5,0(0)
+lfd f4,0(0)
+cmpwi r3,0
+lfd f3,0(0)
+lfd f0,0(0)
+fmadd f4,f5,f6,f4
+fmul f5,f6,f1
+fmadd f3,f6,f4,f3
+fmadd f3,f6,f3,f0
+bne 3c
+lfd f0,0(0)
+fmadd f0,f6,f3,f0
+fmadd f1,f5,f0,f1
+blr
+fmul f0,f5,f3
+lfd f3,0(0)
+lfd f4,0(0)
+fmsub f0,f3,f2,f0
+fmsub f0,f6,f0,f2
+fnmsub f0,f4,f5,f0
+fsub f1,f1,f0
+blr
