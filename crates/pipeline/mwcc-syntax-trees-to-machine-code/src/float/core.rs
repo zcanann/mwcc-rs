@@ -563,7 +563,15 @@ impl Generator {
         }
 
         let order = linearize(&nodes);
-        let registers = assign_float_registers(&nodes, &order, &params, FROZEN_FLOAT_REG);
+        // The COMPOSED tail (x re-reload + a frame local together) runs the
+        // emission sequence over the whole DAG (measured: the k_cos else).
+        let model = {
+            let mut model = FROZEN_FLOAT_REG;
+            model.emission_over_tier =
+                self.float.reload_x.is_some() && self.float.frame_local.is_some();
+            model
+        };
+        let registers = assign_float_registers(&nodes, &order, &params, model);
         if let Some(index) = phantom_index {
             self.float.phantom_register = registers[index];
         }
@@ -648,7 +656,14 @@ impl Generator {
                     // keeps A (fmul f1,f0,f1); otherwise any VALUE operand
                     // sorts the registers DESCENDING into A.
                     let (mut ra, mut rc) = (register_of(*a), register_of(*c));
-                    let both_params = matches!(a, Operand::Param(_)) && matches!(c, Operand::Param(_));
+                    // A FRAME LOAD (the x re-reload, the diamond local) is
+                    // param-LIKE for slot order: source order holds, no
+                    // register-DESC swap (measured: k_cos's fmul f0,f0,f2).
+                    let param_like = |operand: &Operand| {
+                        matches!(operand, Operand::Param(_))
+                            || matches!(operand, Operand::Node(index) if matches!(ops[*index], FloatOp::FrameLoad(_)))
+                    };
+                    let both_params = param_like(a) && param_like(c);
                     let const_a = matches!(a, Operand::Node(index) if matches!(ops[*index], FloatOp::Const(_)));
                     if !both_params && !const_a && rc > ra {
                         std::mem::swap(&mut ra, &mut rc);

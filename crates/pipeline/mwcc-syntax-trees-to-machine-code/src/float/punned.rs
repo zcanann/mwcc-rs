@@ -313,15 +313,6 @@ impl Generator {
         if ix_dual_big.is_some() && (lis_high.is_none() || int_params_early != 0 || !masked) {
             return Ok(false);
         }
-        // NOT YET SHIPPABLE: the composed ELSE TAIL (x re-reload + the
-        // diamond frame local + folded hz/a) claims but its register/order
-        // model is unfitted (probed fire 367: qx load f3 vs ours f5; the
-        // x*y fmul keeps SOURCE order with a reload operand where ours
-        // swaps register-DESC; r lands f4 vs f8) — the if-form defers until
-        // the two-frame-load tail class is captured and fitted.
-        if if_form.is_some() {
-            return Ok(false);
-        }
         // The k_cos ELSE COMPOSITION payload: the inner diamond + fold
         // locals, valid only in the big-const split mode (ix alive in r4,
         // the raw r3 free for the addis).

@@ -703,7 +703,10 @@ impl Generator {
             if let Instruction::Branch { target } = &mut self.output.instructions[join_index] {
                 *target = join;
             }
-            self.output.anonymous_label_bump += 3;
+            // The composed inner diamond consumes FOUR labels (measured:
+            // the k_cos pool @17 against +3's @16 — the else-join inside
+            // the dual costs one more than the standalone frame form).
+            self.output.anonymous_label_bump += 4;
             // The composed tail: x re-reloads, the diamond local frame-reads.
             if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
                 self.float.pseudo_params.retain(|(pseudo, _)| pseudo != name);

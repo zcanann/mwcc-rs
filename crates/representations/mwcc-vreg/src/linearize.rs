@@ -1309,6 +1309,11 @@ pub struct FloatRegModel {
     /// the fire-350/354 dual matrix; single-tail shapes keep death-asc).
     /// Set per-call by the dual composition arm.
     pub tier_position_desc: bool,
+    /// The COMPOSED-tail regime (the k_cos else: an x re-reload AND a frame
+    /// local together): the emission-ordered sequence takes the whole DAG —
+    /// the tier-forward machine and the structural crossing tier stand down
+    /// (measured against the plain frame-diamond tails, which keep them).
+    pub emission_over_tier: bool,
     /// TIER shapes run a FORWARD machine instead of the reverse one:
     /// non-tier values allocate in EMISSION order — loads descending
     /// first-fit from the window top, arith reusing the MINIMUM dying
@@ -1375,6 +1380,7 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     local_top_tier: true,
     window_floor: 0,
     tier_position_desc: false,
+    emission_over_tier: false,
     tier_forward_descending: true,
     dying_door_share: true,
     order_by_death: true,
@@ -1424,22 +1430,37 @@ pub fn assign_float_registers(
     if let Some(ret) = return_node {
         result[ret] = Some(1);
     }
-    // The WINDOW: max simultaneous live-INTO-slot count (params included; a
-    // def and its dying operands never coexist across a boundary).
+    // The WINDOW: the smallest W where every boundary's live set fits —
+    // counting a live param ONLY while its register sits INSIDE the window
+    // (register < W). A low param (x at f1) consumes a slot as before; a
+    // HIGH pseudo (the dual's z at f7, r at f4 feeding a tail) does not
+    // shrink the scratch region below it (measured: the k_cos else tail's
+    // tier lands f3 under scratch peak 4 while z/r live at f7/f4).
     let window = {
         let slots = order.len();
-        (0..=slots)
-            .map(|boundary| {
-                let values = (0..count)
-                    .filter(|&node| is_value(node))
-                    .filter(|&node| position[node] < boundary && value_end(node) >= boundary)
+        let boundary_values = |boundary: usize| -> usize {
+            (0..count)
+                .filter(|&node| is_value(node))
+                .filter(|&node| position[node] < boundary && value_end(node) >= boundary)
+                .count()
+        };
+        let mut window = (0..=slots).map(boundary_values).max().unwrap_or(0).max(params.len());
+        loop {
+            let fits = (0..=slots).all(|boundary| {
+                let inside_params = params
+                    .iter()
+                    .filter(|&&(value, register)| {
+                        (register as usize) < window && param_end(value) >= boundary
+                    })
                     .count();
-                let live_params = params.iter().filter(|&&(value, _)| param_end(value) >= boundary).count();
-                values + live_params
-            })
-            .max()
-            .unwrap_or(0)
-            .max(params.len())
+                boundary_values(boundary) + inside_params <= window
+            });
+            if fits {
+                break;
+            }
+            window += 1;
+        }
+        window
     } as u8;
     let window = window.max(model.window_floor);
     let param_registers: Vec<u8> = params.iter().map(|&(_, register)| register).collect();
@@ -1508,6 +1529,12 @@ pub fn assign_float_registers(
                         // single-consumer coefficients stay in the load pass
                         // (horner5's canary pinned that exclusion).
                         return consumer_count(node) >= 2;
+                    }
+                    // The COMPOSED emission regime keeps cascades on the
+                    // door chain — the structural crossing rule would hoist
+                    // the k_cos else's hz over its 0.5 door (measured: hz f1).
+                    if emission_regime && model.emission_over_tier {
+                        return false;
                     }
                     let start = position[node];
                     let end = value_end(node);
@@ -1591,7 +1618,10 @@ pub fn assign_float_registers(
             // (measured: the ksin tail's coefficients descend f6..f2 with
             // the chain riding the dying addends; horner5/6 — no tier —
             // stay on the reverse machine below).
-            if model.tier_forward_descending && !tier_members.is_empty() {
+            if model.tier_forward_descending
+                && !tier_members.is_empty()
+                && !(emission_regime && model.emission_over_tier)
+            {
                 // LOADS allocate by (death DESC, start DESC) with ASCENDING
                 // first-fit — the reverse machine's core rule. Identical to
                 // descending-from-the-top on non-interleaved shapes; on the
@@ -3054,9 +3084,11 @@ mod tests {
     /// pending-sibling block) — NOT the emission-ordered regime the
     /// Fsub-root flag currently forces. Real order also differs from the
     /// frozen scheduler by one swap (inner before a at slot 6).
-    /// Nodes mirror the composed-claim dump (params z=f7 r=f4 y=f2).
+    /// FITTED (fire 370): the inside-params window (a param consumes a
+    /// window slot only while its register sits inside it), the emission
+    /// regime overriding the tier-forward dispatch, and the structural
+    /// crossing tier gated out of emission-ordered cascades.
     #[test]
-    #[ignore]
     fn float_registers_frontier_kcos_else() {
         const FARITH: u32 = 3;
         let nodes = vec![
@@ -3076,7 +3108,9 @@ mod tests {
         let expected_order: Vec<usize> = vec![0, 1, 4, 2, 3, 5, 6, 7, 8, 9];
         let order_hits = order == expected_order;
         eprintln!("kcos_else order: got {order:?} want {expected_order:?} ({order_hits})");
-        let registers = assign_float_registers(&nodes, &order, &[(1, 7), (2, 4), (3, 2)], FROZEN_FLOAT_REG);
+        let mut model = FROZEN_FLOAT_REG;
+        model.emission_over_tier = true;
+        let registers = assign_float_registers(&nodes, &order, &[(1, 7), (2, 4), (3, 2)], model);
         let expected: Vec<Option<u8>> = vec![
             Some(0),
             Some(3),
@@ -3127,6 +3161,7 @@ mod tests {
                                                             local_top_tier,
                                                             window_floor: 0,
                                                             tier_position_desc: false,
+                                                            emission_over_tier: false,
                                                             tier_forward_descending,
                                                             dying_door_share,
                                                             order_by_death,
