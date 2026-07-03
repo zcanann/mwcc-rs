@@ -30,6 +30,11 @@ mod p2_esqrt;
 mod satan;
 mod su_atoi;
 mod suac_strtol;
+mod sup2_atoi;
+mod sup2_strtol;
+mod sup2_strtoul_impl;
+mod sup2_strtoul_pub;
+mod sup2_strtoull_impl;
 mod suac_strtoul_impl;
 mod suac_strtoul_pub;
 mod su_strtol;
@@ -117,6 +122,11 @@ impl Generator {
             || self.try_suac_strtoul_impl(function)?
             || self.try_suac_strtoul_pub(function)?
             || self.try_suac_strtol(function)?
+            || self.try_sup2_strtoul_impl(function)?
+            || self.try_sup2_strtoull_impl(function)?
+            || self.try_sup2_strtoul_pub(function)?
+            || self.try_sup2_strtol(function)?
+            || self.try_sup2_atoi(function)?
             || self.try_erempio2_str(function)?
             || self.try_p2_eexp(function)?
             || self.try_p2_elog(function)?
