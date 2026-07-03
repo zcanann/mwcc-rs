@@ -378,11 +378,15 @@ impl Generator {
         let mut arith_refs: Vec<(&Tree, u32)> = Vec::new();
         collect_arith(&tree, 0, &mut arith_refs);
         if arith_refs.is_empty()
-            || (arith_refs.len() < 2 && seen_literals.is_empty() && self.float_phantom_local.is_none())
+            || (arith_refs.len() < 2
+                && seen_literals.is_empty()
+                && self.float_phantom_local.is_none()
+                && self.float_pseudo_params.is_empty())
         {
             // A bare constant return and const-free single ops stay on the
             // existing verified paths; a pooled-constant single op is ours —
-            // and a PHANTOM tail has no other path at any arity.
+            // and a PHANTOM or PSEUDO-PARAM tail (the dual arm's) has no
+            // other path at any arity.
             return Ok(false);
         }
         arith_refs.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
@@ -1473,6 +1477,20 @@ impl Generator {
             collect_literals(then_value, &mut tail_literals);
             collect_literals(else_value, &mut tail_literals);
             if tail_literals.iter().any(|bits| shared_literals.contains(bits)) {
+                return Ok(false);
+            }
+            // An fmadd-family-rooted chain local with LITERAL-FREE tails
+            // takes MIN-dying at its root where the literal-tail class takes
+            // the C-operand (probed both ways at depth 3/4) — the
+            // discriminator is unfitted, so the literal-free class defers
+            // (its Mul-rooted sibling is consistent under either rule).
+            if tail_literals.is_empty()
+                && local_trees.iter().any(|tree| {
+                    !matches!(tree, Tree::Mul { .. })
+                        && matches!(tree, Tree::Madd { .. } | Tree::Fadd { .. } | Tree::Fnmsub { .. } | Tree::Fmsub { .. })
+                        && count_arith(tree) > 1
+                })
+            {
                 return Ok(false);
             }
         }
