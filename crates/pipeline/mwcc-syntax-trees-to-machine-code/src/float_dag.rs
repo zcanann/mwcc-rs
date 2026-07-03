@@ -1611,7 +1611,7 @@ impl Generator {
             // depth 5 DIFF — the deeper schedules interleave the chain to
             // cap the live window, which the frozen order model does not
             // reproduce yet).
-            let max_chain = if in_frame { 4 } else { 3 };
+            let max_chain = if in_frame { 5 } else { 3 };
             if !tree_literals.is_empty() && (refs.len() < 3 || refs.len() > max_chain) {
                 return Ok(false);
             }

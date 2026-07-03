@@ -1513,7 +1513,11 @@ pub fn assign_float_registers(
                     .map(|other| position[other])
                     .min();
                 if let Some(first_arith) = first_chain_arith {
-                    tier.retain(|&node| !nodes[node].local_home || position[node] < first_arith);
+                    // ADJACENCY (fire 364): only a local landing IMMEDIATELY
+                    // after the first chain arith is squeezed out of the tier
+                    // (d4's v, slot chain1+1); a load separating them keeps
+                    // the local in the tier (d5's v at chain1+2).
+                    tier.retain(|&node| !nodes[node].local_home || position[node] != first_arith + 1);
                 }
             }
             if model.tier_position_desc {
@@ -1571,6 +1575,38 @@ pub fn assign_float_registers(
             // the chain riding the dying addends; horner5/6 — no tier —
             // stay on the reverse machine below).
             if model.tier_forward_descending && !tier_members.is_empty() {
+                // LOADS allocate by (death DESC, start DESC) with ASCENDING
+                // first-fit — the reverse machine's core rule. Identical to
+                // descending-from-the-top on non-interleaved shapes; on the
+                // d5 interleave the post-chain C1 load claims f0 for [8,13]
+                // early, which blocks the first chain arith's MIN reuse
+                // (measured: chain1 lands on its factor's f5).
+                let mut pending_loads: Vec<usize> = (0..count)
+                    .filter(|_| model.tier_position_desc) // DUAL shapes only (measured there)
+                    .filter(|&node| {
+                        is_value(node) && result[node].is_none() && nodes[node].kind == OpKind::Load
+                    })
+                    .filter(|&node| {
+                        !nodes[node].writes.first().is_some_and(|value| {
+                            tier_members.iter().any(|&member| nodes[member].reads.contains(value))
+                        })
+                    })
+                    .collect();
+                pending_loads.sort_by_key(|&node| std::cmp::Reverse((value_end(node), position[node])));
+                for node in pending_loads {
+                    let start = position[node];
+                    let end = value_end(node);
+                    let register = match (0..window).find(|&register| {
+                        occupied.iter().all(|&(taken, taken_start, taken_end, _)| {
+                            taken != register || taken_end < start || taken_start > end
+                        })
+                    }) {
+                        Some(register) => register,
+                        None => return vec![None; count],
+                    };
+                    result[node] = Some(register);
+                    occupied.push((register, start, end, node));
+                }
                 for &node in order {
                     if !is_value(node) || result[node].is_some() {
                         continue;
@@ -1584,6 +1620,14 @@ pub fn assign_float_registers(
                     };
                     // The MIN register among operands dying exactly at this
                     // definition (in-place reuse).
+                    // A dying register is reusable only when nothing ELSE
+                    // holds it across this value's span (the d5 interleave's
+                    // early-claimed f0 blocks chain1's MIN — measured).
+                    let reusable = |register: u8, occupied: &Vec<(u8, usize, usize, usize)>| -> bool {
+                        occupied.iter().all(|&(taken, taken_start, taken_end, _)| {
+                            taken != register || taken_end <= start || taken_start > end
+                        })
+                    };
                     let min_dying: Option<u8> = nodes[node]
                         .reads
                         .iter()
@@ -1598,6 +1642,7 @@ pub fn assign_float_registers(
                                     (value_end(writer) == start).then(|| result[writer]).flatten()
                                 })
                         })
+                        .filter(|&register| reusable(register, &occupied))
                         .min();
                     // A load consumed by a TIER member (the single-consumer
                     // frame reload feeding z) allocates ASCENDING; the
@@ -1623,6 +1668,7 @@ pub fn assign_float_registers(
                             .and_then(|writer| {
                                 (value_end(writer) == position[node]).then(|| result[writer]).flatten()
                             })
+                            .filter(|&register| reusable(register, &occupied))
                     } else {
                         None
                     };
@@ -2916,6 +2962,72 @@ mod tests {
                 vec![Some(4), Some(3), Some(0), Some(3), Some(0), Some(1)],
             ),
         ]
+    }
+
+    /// FRONTIER (fire 364, not yet fitted): the in-frame depth-5 dual — the
+    /// k_cos chain length. The frozen ORDER model reproduces the real
+    /// schedule exactly (C1's load lands after chain1, v after that); the
+    /// REGISTERS do not fit the frozen machine: v joins the tier (def-DESC
+    /// top f8; the adjacency hypothesis — v is filtered only when it lands
+    /// IMMEDIATELY after the first chain arith — fits d4-filtered vs
+    /// d5-kept), and the load pattern f5,f0,f4,f3,f1 breaks descending
+    /// first-fit (3.5, chain1's addend, takes f0 early; C1 reuses it).
+    /// FITTED (fire 364): loads allocate death-DESC/start-DESC ascending
+    /// first-fit (dual shapes), dying reuse is availability-checked, and
+    /// the adjacency rule keeps v in the tier when a load separates it
+    /// from the first chain arith.
+    #[test]
+    fn float_registers_frontier_d5() {
+        const FARITH: u32 = 3;
+        const FMUL_D: u32 = 4;
+        let nodes = vec![
+            DagNode::new("lfd_x", LOAD).writes(&[9]),
+            DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[9, 9]).writes(&[40]),
+            DagNode::new("fmul_v", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[40, 9]).writes(&[41]),
+            DagNode::new("lfd_c45", LOAD).writes(&[42]),
+            DagNode::new("lfd_c35", LOAD).writes(&[43]),
+            DagNode::new("lfd_c25", LOAD).writes(&[44]),
+            DagNode::new("lfd_c15", LOAD).writes(&[45]),
+            DagNode::new("lfd_cC2", LOAD).writes(&[46]),
+            DagNode::new("lfd_cC1", LOAD).writes(&[47]),
+            DagNode::new("chain1", FARITH).hazard(HAZARD_FPU).reads(&[42, 40, 43]).writes(&[48]),
+            DagNode::new("chain2", FARITH).hazard(HAZARD_FPU).reads(&[40, 48, 44]).writes(&[49]),
+            DagNode::new("chain3", FARITH).hazard(HAZARD_FPU).reads(&[40, 49, 45]).writes(&[50]),
+            DagNode::new("chain4", FARITH).hazard(HAZARD_FPU).reads(&[40, 50, 46]).writes(&[51]),
+            DagNode::new("chain5", FARITH).hazard(HAZARD_FPU).reads(&[40, 51, 47]).writes(&[52]),
+            DagNode::new("sink", 1).kind(OpKind::Store).reads(&[40, 41, 52, 9, 2]),
+        ];
+        let expected: Vec<Option<u8>> = vec![
+            Some(6),
+            Some(7),
+            Some(8),
+            Some(5),
+            Some(0),
+            Some(4),
+            Some(3),
+            Some(1),
+            Some(0),
+            Some(5),
+            Some(4),
+            Some(3),
+            Some(1),
+            Some(1),
+            None,
+        ];
+        let order = linearize(&nodes);
+        let mut model = FROZEN_FLOAT_REG;
+        model.tier_position_desc = true;
+        model.window_floor = 7;
+        model.void_forward = false;
+        let registers = assign_float_registers(&nodes, &order, &[(2, 2)], model);
+        let hits = registers.iter().zip(&expected).filter(|(a, b)| a == b).count();
+        eprintln!("frontier d5: {hits}/{} against FROZEN+dual", expected.len());
+        for (index, (got, want)) in registers.iter().zip(&expected).enumerate() {
+            if got != want {
+                eprintln!("  node {index}: got {got:?} want {want:?}");
+            }
+        }
+        assert_eq!(registers, expected, "the d5 register frontier is not yet fitted");
     }
 
     /// Diagnostic: score both float register machines across the model space.
