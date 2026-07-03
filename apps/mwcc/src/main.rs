@@ -176,7 +176,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
         .functions
         .iter()
-        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, config))
+        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, &unit.skipped_inline_names, config))
         .collect::<Compilation<_>>()?;
     // Each SKIPPED inline function definition advanced mwcc's `@N` counter by 3
     // (compiled, then dropped) before the real functions were numbered — pre-bump

@@ -180,6 +180,10 @@ pub struct TranslationUnit {
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
     pub skipped_inline_functions: usize,
+    /// The skipped inline functions' NAMES: a body that calls one must defer
+    /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
+    /// be wrong bytes) — checked AFTER the exact-match templates get a claim.
+    pub skipped_inline_names: std::collections::HashSet<String>,
     /// Names of `static inline` functions whose body contains an inline `asm {}`
     /// block, in declaration order. mwcc keeps each as a deferred function and
     /// emits a local *undefined* symbol for it even when unused (it cannot inline

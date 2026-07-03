@@ -105,6 +105,9 @@ for idx, mn, ops in instrs:
     elif mn=="cmplwi": push(f"CompareLogicalWordImmediate {{ a: {R(ops[0])}, immediate: {ops[1]} }}")
     elif mn=="psq_l": push(f"PairedSingleQuantizedLoad {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]}, w: {ops[2]}, i: {ops[3]} }}")
     elif mn=="psq_st": push(f"PairedSingleQuantizedStore {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]}, w: {ops[2]}, i: {ops[3]} }}")
+    elif mn=="lfs":  push(f"LoadFloatSingle {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="fcmpu": push(f"FloatCompareUnordered {{ a: {ops[-2][1:]}, b: {ops[-1][1:]} }}")
+    elif mn=="frsqrte": push(f"FloatReciprocalSqrtEstimate {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4

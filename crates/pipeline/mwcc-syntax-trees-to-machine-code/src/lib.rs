@@ -36,7 +36,7 @@ use generator::Generator;
 /// `call_return_types` maps callable names (prototypes and definitions) to their
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
-pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, config: CompilerConfig) -> Compilation<MachineFunction> {
+pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, skipped_inline_names: &std::collections::HashSet<String>, config: CompilerConfig) -> Compilation<MachineFunction> {
     // A STATIC CONST float/double global is DE-NAMED by mwcc: every read compiles
     // as the literal value, pooled anonymously (@N in .sdata2) with no named
     // symbol — measured: `static const double two54 = C; x * two54` emits the
@@ -177,6 +177,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         narrow_truncation_context: false,
         known_locals: std::collections::HashSet::new(),
         call_return_types: call_return_types.clone(),
+        skipped_inline_names: skipped_inline_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
     };
     generator.assign_parameters(function)?;

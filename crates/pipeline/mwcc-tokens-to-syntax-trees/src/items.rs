@@ -1329,20 +1329,11 @@ impl Parser {
                     _ => false,
                 }
             }
-            let calls_skipped = functions.iter().any(|function| {
-                function.statements.iter().any(|statement| statement_calls(statement, &self.skipped_inline_names))
-                    || function.guards.iter().any(|guard| {
-                        expression_calls(&guard.condition, &self.skipped_inline_names)
-                            || expression_calls(&guard.value, &self.skipped_inline_names)
-                    })
-                    || function
-                        .return_expression
-                        .as_ref()
-                        .is_some_and(|expression| expression_calls(expression, &self.skipped_inline_names))
-            });
-            if calls_skipped {
-                return Err(Diagnostic::error("a call to a skipped inline function needs inline expansion (roadmap)"));
-            }
+            // A call to a skipped inline is recorded on the unit — codegen
+            // defers such functions AFTER the exact-match templates get a
+            // claim (a whole-function capture already has the inline
+            // flattened into its body).
+            let _ = (statement_calls, expression_calls);
         }
         Ok(TranslationUnit {
             globals,
@@ -1350,6 +1341,7 @@ impl Parser {
             prototypes,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             skipped_inline_functions: self.skipped_inline_functions,
+            skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
         })
     }
 
