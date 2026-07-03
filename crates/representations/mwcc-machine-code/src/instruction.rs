@@ -94,6 +94,8 @@ pub enum Instruction {
     ShiftRightWord { a: u8, s: u8, b: u8 },
     /// `srawi rA, rS, shift` — arithmetic shift right immediate.
     ShiftRightAlgebraicImmediate { a: u8, s: u8, shift: u8 },
+    /// `srawi. rA, rS, shift` — record form (sets CR0).
+    ShiftRightAlgebraicImmediateRecord { a: u8, s: u8, shift: u8 },
     /// `srwi rA, rS, shift` — logical shift right immediate, via `rlwinm`.
     ShiftRightLogicalImmediate { a: u8, s: u8, shift: u8 },
     /// `xori rA, rS, UIMM`

@@ -55,6 +55,9 @@ impl Instruction {
             Instruction::ShiftRightAlgebraicImmediate { a, s, shift } => {
                 (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (824 << 1)
             }
+            Instruction::ShiftRightAlgebraicImmediateRecord { a, s, shift } => {
+                (31 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((shift as u32) << 11) | (824 << 1) | 1
+            }
             // srwi rA,rS,n == rlwinm rA,rS,32-n,n,31
             Instruction::ShiftRightLogicalImmediate { a, s, shift } => {
                 let rotate = 32 - shift as u32;

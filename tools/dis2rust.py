@@ -48,9 +48,18 @@ for idx, mn, ops in instrs:
         if mn == "lfd" and rl[1] in POOL:
             out.append(f"        self.load_double_constant({ops[0][1:]}, 0x{POOL[rl[1]]});")
             continue
+        # an SDA21 access to a NAMED small-data global (errno): the reloc
+        # carries the symbol; the instruction encodes base 0, offset 0.
+        if mn in ("stw","lwz") and not rl[1].startswith("@"):
+            out.append(f'        self.record_relocation(RelocationKind::EmbSda21, "{rl[1]}");')
+            kind = "StoreWord {{ s: {r}, a: 0, offset: 0 }}" if mn=="stw" else "LoadWord {{ d: {r}, a: 0, offset: 0 }}"
+            out.append(f"        self.output.instructions.push(Instruction::{kind.format(r=R(ops[0]))});")
+            continue
         out.append(f"        // UNHANDLED SDA21: {mn} {ops} -> {rl[1]}")
         continue
-    if rl:
+    if rl and rl[0] == "R_PPC_REL24":
+        pass  # handled by the bl case itself
+    elif rl:
         kind = {"R_PPC_ADDR16_HA":"Addr16Ha","R_PPC_ADDR16_LO":"Addr16Lo"}[rl[0]]
         out.append(f'        self.record_relocation(RelocationKind::{kind}, "{rl[1]}");')
     def push(s): out.append(f"        self.output.instructions.push(Instruction::{s});")
@@ -108,6 +117,20 @@ for idx, mn, ops in instrs:
     elif mn=="lfs":  push(f"LoadFloatSingle {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="fcmpu": push(f"FloatCompareUnordered {{ a: {ops[-2][1:]}, b: {ops[-1][1:]} }}")
     elif mn=="frsqrte": push(f"FloatReciprocalSqrtEstimate {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
+    elif mn=="srawi.": push(f"ShiftRightAlgebraicImmediateRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]} }}")
+    elif mn=="mflr": push(f"MoveFromLinkRegister {{ d: {R(ops[0])} }}")
+    elif mn=="mtlr": push(f"MoveToLinkRegister {{ s: {R(ops[0])} }}")
+    elif mn=="cror":
+        cr = {"lt":0,"gt":1,"eq":2,"so":3,"un":3}
+        d_,a_,b_ = (cr.get(o, o) for o in ops)
+        push(f"ConditionRegisterOr {{ d: {d_}, a: {a_}, b: {b_} }}")
+    elif mn=="bl":
+        name = None
+        # the reloc line supplies the target name; ops[0] is the placeholder offset
+        if idx in reloc and reloc[idx][0]=="R_PPC_REL24": name = reloc[idx][1]
+        out.append(f'        self.record_relocation(RelocationKind::Rel24, "{name}");')
+        out.append(f'        self.output.instructions.push(Instruction::BranchAndLink {{ target: "{name}".to_string() }});')
+    elif mn=="andc": push(f"AndComplement {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4
