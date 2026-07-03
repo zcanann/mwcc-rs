@@ -134,6 +134,7 @@ for idx, mn, ops in instrs:
     elif mn=="clrlwi.": push(f"ClearLeftImmediateRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, clear: {ops[2]} }}")
     elif mn=="rlwinm.": push(f"RotateAndMaskRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
     elif mn=="fmr": push(f"FloatMove {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
+    elif mn=="rlwimi": push(f"RotateAndMaskInsert {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4
