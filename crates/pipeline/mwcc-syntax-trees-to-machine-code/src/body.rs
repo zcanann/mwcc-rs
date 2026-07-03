@@ -8094,7 +8094,15 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+        // A SCAFFOLD PREFIX may precede the loop (fire 425): the seam is
+        // pure concatenation — scaffold ops emit in source order before
+        // the mtctr, a loop-crossing sign local takes the next-free
+        // register BEFORE the count home frees, and the loop's internal
+        // temps allocate around it (hz keeps the freed count home, lz
+        // shifts past the sign). Probed forms only: `param &= LOWMASK`
+        // (in-place clrlwi), and the sign-extract pair `sign = param &
+        // 0x80000000; param ^= sign` (clrrwi + xor).
+        let [scaffold @ .., Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
@@ -8121,6 +8129,73 @@ impl Generator {
             return Ok(false);
         }
         let (hx, lx, hy, ly) = (p_hx.name.as_str(), p_lx.name.as_str(), p_hy.name.as_str(), p_ly.name.as_str());
+        // Parse the scaffold prefix (probed forms only).
+        enum ScaffoldOp {
+            MaskParam { name: String, clear: u8 },
+            SignExtract { source: String },
+            XorParam { name: String },
+        }
+        let is_int_parameter = |name: &str| {
+            function
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == name && matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt))
+        };
+        let mut scaffold_ops: Vec<ScaffoldOp> = Vec::new();
+        let mut sign_local: Option<&str> = None;
+        for statement in scaffold {
+            let Statement::Assign { name, value } = statement else {
+                return Ok(false);
+            };
+            let Expression::Binary { operator, left, right } = value else {
+                return Ok(false);
+            };
+            match operator {
+                // param &= (1<<n)-1  →  clrlwi param, param, 32-n (in place).
+                BinaryOperator::BitAnd
+                    if is_int_parameter(name)
+                        && matches!(left.as_ref(), Expression::Variable(v) if v == name) =>
+                {
+                    let Expression::IntegerLiteral(mask) = right.as_ref() else {
+                        return Ok(false);
+                    };
+                    let mask = *mask as u32;
+                    if mask == 0 || !(mask as u64 + 1).is_power_of_two() {
+                        return Ok(false);
+                    }
+                    let clear = mask.leading_zeros() as u8;
+                    scaffold_ops.push(ScaffoldOp::MaskParam { name: name.clone(), clear });
+                }
+                // sign = param & 0x80000000  →  clrrwi sign, param, 31.
+                BinaryOperator::BitAnd if !is_int_parameter(name) && sign_local.is_none() => {
+                    let Expression::Variable(source) = left.as_ref() else {
+                        return Ok(false);
+                    };
+                    if !is_int_parameter(source)
+                        || !matches!(right.as_ref(), Expression::IntegerLiteral(m) if *m as u32 == 0x8000_0000)
+                        || !function
+                            .locals
+                            .iter()
+                            .any(|local| local.name == *name && local.declared_type == Type::Int && local.initializer.is_none())
+                    {
+                        return Ok(false);
+                    }
+                    sign_local = Some(name.as_str());
+                    scaffold_ops.push(ScaffoldOp::SignExtract { source: source.clone() });
+                }
+                // param ^= sign  →  xor param, param, sign (in place).
+                BinaryOperator::BitXor
+                    if is_int_parameter(name)
+                        && matches!(left.as_ref(), Expression::Variable(v) if v == name) =>
+                {
+                    if !matches!(right.as_ref(), Expression::Variable(v) if Some(v.as_str()) == sign_local) {
+                        return Ok(false);
+                    }
+                    scaffold_ops.push(ScaffoldOp::XorParam { name: name.clone() });
+                }
+                _ => return Ok(false),
+            }
+        }
         // Body: [hz = hx - hy][lz = lx - ly][if (lx < ly) hz -= 1][diamond].
         let [Statement::Assign { name: hz, value: hz_value }, Statement::Assign { name: lz, value: lz_value }, Statement::If { condition: borrow_test, then_body: borrow_then, else_body: borrow_else }, Statement::If { condition: test, then_body, else_body }] =
             body.as_slice()
@@ -8144,6 +8219,11 @@ impl Generator {
         };
         if !names_distinct {
             return Ok(false);
+        }
+        if let Some(sign) = sign_local {
+            if [hx, lx, hy, ly, count.as_str(), hz.as_str(), lz.as_str()].contains(&sign) {
+                return Ok(false);
+            }
         }
         let is_free_local = |name: &str, declared: Type| {
             function
@@ -8239,6 +8319,10 @@ impl Generator {
         // The else arm may LEAD with the zero exit `if ((hz | lz) == 0)
         // return K;` — emitted INLINE as `or. r0,hz,lz; bne CONT; li r3,K;
         // blr` (a bare mid-loop return, no exit label; fire 422).
+        enum ExitValue {
+            Immediate(i16),
+            Sign,
+        }
         let (early_return, else_step) = match else_body.as_slice() {
             [Statement::If { condition: exit_test, then_body: exit_then, else_body: exit_else }, rest @ ..] => {
                 let Expression::Binary { operator: BinaryOperator::Equal, left: or_side, right: zero_side } =
@@ -8258,14 +8342,19 @@ impl Generator {
                 {
                     return Ok(false);
                 }
-                let [Statement::Return(Some(Expression::IntegerLiteral(returned)))] = exit_then.as_slice()
-                else {
-                    return Ok(false);
+                let exit_value = match exit_then.as_slice() {
+                    [Statement::Return(Some(Expression::IntegerLiteral(returned)))] => {
+                        let Ok(returned) = i16::try_from(*returned) else {
+                            return Ok(false);
+                        };
+                        ExitValue::Immediate(returned)
+                    }
+                    [Statement::Return(Some(Expression::Variable(v)))] if Some(v.as_str()) == sign_local => {
+                        ExitValue::Sign
+                    }
+                    _ => return Ok(false),
                 };
-                let Ok(returned) = i16::try_from(*returned) else {
-                    return Ok(false);
-                };
-                (Some(returned), rest)
+                (Some(exit_value), rest)
             }
             _ => (None, else_body.as_slice()),
         };
@@ -8284,13 +8373,62 @@ impl Generator {
         ) else {
             return Ok(false);
         };
-        if hx_register != 3 || count_register > 9 {
+        if hx_register != 3 {
             return Ok(false);
         }
-        // hz takes the freed count home; lz the next register up.
+        // The sign local takes the next-free register BEFORE the count home
+        // frees; hz keeps the freed count home; lz shifts past the sign.
+        let sign_register = if sign_local.is_some() { Some(3 + function.parameters.len() as u8) } else { None };
         let hz_register = count_register;
-        let lz_register = count_register + 1;
+        let lz_register = 3 + function.parameters.len() as u8 + if sign_local.is_some() { 1 } else { 0 };
+        if lz_register > 10 {
+            return Ok(false);
+        }
+        // Resolve every scaffold register before any emission.
+        enum ResolvedScaffold {
+            Mask { register: u8, clear: u8 },
+            Extract { source_register: u8 },
+            Xor { register: u8 },
+        }
+        let mut resolved_scaffold = Vec::new();
+        for op in &scaffold_ops {
+            match op {
+                ScaffoldOp::MaskParam { name, clear } => {
+                    let Some(register) = self.lookup_general(name) else {
+                        return Ok(false);
+                    };
+                    resolved_scaffold.push(ResolvedScaffold::Mask { register, clear: *clear });
+                }
+                ScaffoldOp::SignExtract { source } => {
+                    let Some(source_register) = self.lookup_general(source) else {
+                        return Ok(false);
+                    };
+                    resolved_scaffold.push(ResolvedScaffold::Extract { source_register });
+                }
+                ScaffoldOp::XorParam { name } => {
+                    let Some(register) = self.lookup_general(name) else {
+                        return Ok(false);
+                    };
+                    resolved_scaffold.push(ResolvedScaffold::Xor { register });
+                }
+            }
+        }
         // -- emit --
+        for op in &resolved_scaffold {
+            match op {
+                ResolvedScaffold::Mask { register, clear } => self
+                    .output
+                    .instructions
+                    .push(Instruction::AndContiguousMask { a: *register, s: *register, begin: *clear, end: 31 }),
+                ResolvedScaffold::Extract { source_register } => self.output.instructions.push(
+                    Instruction::AndContiguousMask { a: sign_register.unwrap(), s: *source_register, begin: 0, end: 0 },
+                ),
+                ResolvedScaffold::Xor { register } => self
+                    .output
+                    .instructions
+                    .push(Instruction::Xor { a: *register, s: *register, b: sign_register.unwrap() }),
+            }
+        }
         self.output.instructions.push(Instruction::MoveToCountRegister { s: count_register });
         self.output.instructions.push(Instruction::CompareWordImmediate { a: count_register, immediate: 0 });
         self.output
@@ -8315,11 +8453,18 @@ impl Generator {
         let join_label = self.fresh_label();
         self.emit_branch_to(join_label);
         self.bind_label(else_label);
-        if let Some(returned) = early_return {
+        if let Some(exit_value) = &early_return {
             self.output.instructions.push(Instruction::OrRecord { a: 0, s: hz_register, b: lz_register });
             let continue_label = self.fresh_label();
             self.emit_branch_conditional_to(4, 2, continue_label); // bne
-            self.output.instructions.push(Instruction::load_immediate(3, returned));
+            match exit_value {
+                ExitValue::Immediate(returned) => {
+                    self.output.instructions.push(Instruction::load_immediate(3, *returned));
+                }
+                ExitValue::Sign => {
+                    self.output.instructions.push(Instruction::move_register(3, sign_register.unwrap()));
+                }
+            }
             self.output.instructions.push(Instruction::BranchToLinkRegister);
             self.bind_label(continue_label);
         }

@@ -124,3 +124,54 @@ int norm_loop(int hx, unsigned lx, int iy)
 	}
 	return hx + iy;
 }
+/* Fire 425: THE COMPOSITION SEAM — a scaffold prefix before the pair
+   loop is pure concatenation. param &= LOWMASK folds clrlwi in place;
+   the sign-extract pair (sx = hx & 0x80000000; hx ^= sx) emits
+   clrrwi next-free + xor, the sign local claims its register BEFORE
+   the count home frees (hz keeps the freed home, lz shifts past sx),
+   and the zero exit may return the sign (mr r3,sx). @N +0. */
+int ctr_compose_mask(int hx, unsigned lx, int hy, unsigned ly, int n)
+{
+	int hz;
+	unsigned lz;
+	hx &= 0x7fffffff;
+	while (n--) {
+		hz = hx - hy;
+		lz = lx - ly;
+		if (lx < ly)
+			hz -= 1;
+		if (hz < 0) {
+			hx = hx + hx + (lx >> 31);
+			lx = lx + lx;
+		} else {
+			if ((hz | lz) == 0)
+				return 0;
+			hx = hz + hz + (lz >> 31);
+			lx = lz + lz;
+		}
+	}
+	return hx;
+}
+int ctr_compose_sign(int hx, unsigned lx, int hy, unsigned ly, int n)
+{
+	int hz, sx;
+	unsigned lz;
+	sx = hx & 0x80000000;
+	hx ^= sx;
+	while (n--) {
+		hz = hx - hy;
+		lz = lx - ly;
+		if (lx < ly)
+			hz -= 1;
+		if (hz < 0) {
+			hx = hx + hx + (lx >> 31);
+			lx = lx + lx;
+		} else {
+			if ((hz | lz) == 0)
+				return sx;
+			hx = hz + hz + (lz >> 31);
+			lx = lz + lz;
+		}
+	}
+	return hx;
+}
