@@ -3627,6 +3627,139 @@ impl Generator {
         Ok(true)
     }
 
+    /// The HOISTED-ELSE OVERWRITE: `if (j0 cmp K) p = C1; else p = C2;`
+    /// with BOTH arms nonzero constants branches (no if-conversion) with
+    /// the else value pre-loaded into the home before the compare and the
+    /// then arm as a skip (measured H1–H7, all six comparison ops):
+    ///   li rHome,C2; stfd; lwz r0; extract; [addi r0,-K0]; cmpwi r0;
+    ///   b<inverted> skip; li rHome,C1; skip: stw rHome
+    /// Homes obey the LIVENESS rule: the pre-loaded else value crosses the
+    /// r0 write, so rHome = r4 when the guard holds a home (K0 fold) and
+    /// r3 when the extract goes straight to r0 (K0 = 0, H7).
+    fn try_punned_hoisted_overwrite(
+        &mut self,
+        locals: &[(&str, i16)],
+        guard: &GuardLocal,
+        condition: &Expression,
+        then_body: &[Statement],
+        else_body: &[Statement],
+    ) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        let punned = locals[0].0;
+        let offset = locals[0].1;
+        let Expression::Binary { operator, left, right } = condition else {
+            return Ok(false);
+        };
+        // The inverted skip branch, (options, condition_bit) per op.
+        let inverted = match operator {
+            BinaryOperator::Less => (4, 0),          // bge
+            BinaryOperator::Greater => (4, 1),       // ble
+            BinaryOperator::Equal => (4, 2),         // bne
+            BinaryOperator::NotEqual => (12, 2),     // beq
+            BinaryOperator::LessEqual => (12, 1),    // bgt
+            BinaryOperator::GreaterEqual => (12, 0), // blt
+            _ => return Ok(false),
+        };
+        if !matches!(left.as_ref(), Expression::Variable(name) if name == guard.name) {
+            return Ok(false);
+        }
+        let Some(bound) = crate::analysis::constant_value(right) else {
+            return Ok(false);
+        };
+        let Ok(bound) = i16::try_from(bound) else {
+            return Ok(false);
+        };
+        let ([Statement::Assign { name: then_name, value: then_value }], [Statement::Assign { name: else_name, value: else_value }]) =
+            (then_body, else_body)
+        else {
+            return Ok(false);
+        };
+        if then_name != punned || else_name != punned {
+            return Ok(false);
+        }
+        let (Some(then_constant), Some(else_constant)) = (
+            crate::analysis::constant_value(then_value),
+            crate::analysis::constant_value(else_value),
+        ) else {
+            return Ok(false);
+        };
+        let (Ok(then_constant), Ok(else_constant)) =
+            (i16::try_from(then_constant), i16::try_from(else_constant))
+        else {
+            return Ok(false);
+        };
+        if then_constant == 0 || else_constant == 0 {
+            // One-zero forms if-convert (the zero-select path claims them
+            // first); both-zero is unmeasured.
+            return Ok(false);
+        }
+        if count_name_occurrences(condition, guard.name) != 1 {
+            return Ok(false);
+        }
+        let offset_negative = if guard.offset_k != 0 {
+            let Ok(negative) = i16::try_from(-guard.offset_k) else {
+                return Ok(false);
+            };
+            Some(negative)
+        } else {
+            None
+        };
+        // -- commit --
+        // With the -K0 fold the guard needs a home (r3) and the else value
+        // lands beyond it (r4); without it the extract computes in place
+        // on r0 and the home is r3 (measured H7).
+        let home: u8 = if offset_negative.is_some() { 4 } else { 3 };
+        let guard_register: u8 = if offset_negative.is_some() { 3 } else { 0 };
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::load_immediate(home, else_constant));
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 8 + offset });
+        match guard.mask {
+            Some(mask) => {
+                let rotated = ((32 - guard.shift as u32) % 32) as u8;
+                let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
+                    return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::RotateAndMask {
+                    a: guard_register,
+                    s: 0,
+                    shift: rotated,
+                    begin,
+                    end,
+                });
+            }
+            None => {
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: guard_register,
+                    s: 0,
+                    shift: guard.shift,
+                });
+            }
+        }
+        if let Some(negative) = offset_negative {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: guard_register,
+                immediate: negative,
+            });
+        }
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: bound });
+        let skip = self.fresh_label();
+        self.emit_branch_conditional_to(inverted.0, inverted.1, skip);
+        self.output.instructions.push(Instruction::load_immediate(home, then_constant));
+        self.bind_label(skip);
+        self.output.instructions.push(Instruction::StoreWord { s: home, a: 1, offset: 8 + offset });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The diamond's labels (measured +3 on the H1 object: real @8/@9
+        // vs the +0 base's @5/@6 — the same count as the if-converted
+        // select, so the label cost predates the conversion decision).
+        self.output.anonymous_label_bump += 3;
+        Ok(true)
+    }
+
     /// The computed GUARD local `j0 = ((punned >> S) [& M]) - K` shared by
     /// the punned-writeback family (parsed once, consumed by the branch
     /// and select paths).
@@ -3898,6 +4031,11 @@ impl Generator {
         if let Some(guard) = &guard_local {
             if locals.len() == 1
                 && self.try_punned_zero_select(&locals, guard, condition, block, else_body)?
+            {
+                return Ok(true);
+            }
+            if locals.len() == 1
+                && self.try_punned_hoisted_overwrite(&locals, guard, condition, block, else_body)?
             {
                 return Ok(true);
             }
