@@ -1164,6 +1164,28 @@ impl Generator {
             return Ok((4, 2)); // bne — skip when x != 0
         }
         if let Expression::Binary { operator, left, right } = condition {
+            // `(a & C) == 0` — the record-form mask (measured: clrlwi.
+            // r0,r3,30; bne — the s_floor integral test's other half).
+            if matches!(operator, BinaryOperator::Equal) && constant_value(right) == Some(0) {
+                if let Expression::Binary { operator: BinaryOperator::BitAnd, left: and_left, right: and_right } =
+                    left.as_ref()
+                {
+                    if let (Some(register), Some(mask)) = (
+                        leaf_name(and_left).and_then(|name| self.lookup_general(name)),
+                        constant_value(and_right),
+                    ) {
+                        if let Some((begin, end)) = mask_to_run(mask as u32) {
+                            self.output.instructions.push(Instruction::AndMaskRecord {
+                                a: GENERAL_SCRATCH,
+                                s: register,
+                                begin,
+                                end,
+                            });
+                            return Ok((4, 2)); // bne — skip when masked bits set
+                        }
+                    }
+                }
+            }
             // `(a | b) == 0` — the record-form OR sets cr0 in one op
             // (measured: or. r0,r3,r4; bne — the s_floor integral test).
             if matches!(operator, BinaryOperator::Equal) && constant_value(right) == Some(0) {

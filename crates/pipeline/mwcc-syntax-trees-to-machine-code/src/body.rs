@@ -3438,7 +3438,7 @@ impl Generator {
         if locals.is_empty() || locals.len() > 2 {
             return Ok(false);
         }
-        // statements = [If{cond, [const assigns to the locals]}] + one
+        // statements = [If{cond, [early-return-x if]? [mutations]}] + one
         // punned store per local writing it back to ITS offset.
         let (Some(Statement::If { condition, then_body, else_body }), stores) =
             (function.statements.first(), &function.statements[1..])
@@ -3448,25 +3448,56 @@ impl Generator {
         if !else_body.is_empty() || stores.len() != locals.len() {
             return Ok(false);
         }
-        // The mutations: i16 constants to distinct punned locals.
-        let mut mutations: Vec<(usize, i16)> = Vec::new();
-        for statement in then_body {
+        // A MID-CHAIN `return x` heading the block: branches straight to
+        // the shared epilogue, skipping the writeback AND the reload
+        // (measured: b <addi;blr> with f1 untouched).
+        let mut block: &[Statement] = then_body;
+        let mut early_return: Option<&Expression> = None;
+        if let [Statement::If { condition: inner, then_body: inner_then, else_body: inner_else }, rest @ ..] = block {
+            if inner_else.is_empty() {
+                if let [Statement::Return(Some(Expression::Variable(value)))] = inner_then.as_slice() {
+                    if value == x {
+                        early_return = Some(inner);
+                        block = rest;
+                    }
+                }
+            }
+        }
+        // The mutations: i16 constants OR self-masks to distinct locals.
+        enum WriteMutation {
+            Constant(i16),
+            SelfMask(u8, u8),
+        }
+        let mut mutations: Vec<(usize, WriteMutation)> = Vec::new();
+        for statement in block {
             let Statement::Assign { name, value } = statement else {
                 return Ok(false);
             };
             let Some(index) = locals.iter().position(|&(local, _)| local == name.as_str()) else {
                 return Ok(false);
             };
-            let Some(constant) = crate::analysis::constant_value(value) else {
-                return Ok(false);
-            };
-            let Ok(constant) = i16::try_from(constant) else {
-                return Ok(false);
-            };
             if mutations.iter().any(|&(seen, _)| seen == index) {
                 return Ok(false);
             }
-            mutations.push((index, constant));
+            if let Some(constant) = crate::analysis::constant_value(value) {
+                let Ok(constant) = i16::try_from(constant) else {
+                    return Ok(false);
+                };
+                mutations.push((index, WriteMutation::Constant(constant)));
+                continue;
+            }
+            // Self-mask `i0 &= C` (measured: clrlwi in place).
+            if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = value {
+                if matches!(left.as_ref(), Expression::Variable(read) if read == name) {
+                    if let Some(mask) = crate::analysis::constant_value(right) {
+                        if let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) {
+                            mutations.push((index, WriteMutation::SelfMask(begin, end)));
+                            continue;
+                        }
+                    }
+                }
+            }
+            return Ok(false);
         }
         if mutations.is_empty() {
             return Ok(false);
@@ -3483,13 +3514,40 @@ impl Generator {
                 return Ok(false);
             }
         }
-        // Registers: r0, then the freed condition register (measured: the
-        // second local takes r3 after the hoisted compare).
-        let registers: Vec<u8> = match locals.len() {
-            1 => vec![0],
-            _ => vec![0, 3],
-        };
-        if locals.len() == 2 {
+        // Registers: a punned local whose loaded value only feeds its own
+        // writeback takes the r0 scratch; one that feeds COMPUTATION (the
+        // early-return test, a self-mask) takes the freed condition
+        // register r3 (measured across all four capture shapes).
+        let computes: Vec<bool> = locals
+            .iter()
+            .enumerate()
+            .map(|(index, &(name, _))| {
+                mutations.iter().any(|(target, mutation)| {
+                    *target == index && matches!(mutation, WriteMutation::SelfMask(..))
+                }) || early_return
+                    .map(|condition| crate::analysis::count_name_occurrences(condition, name) > 0)
+                    .unwrap_or(false)
+            })
+            .collect();
+        let mut next_general = 3u8;
+        let mut registers: Vec<u8> = Vec::new();
+        for &computed in &computes {
+            if computed {
+                registers.push(next_general);
+                next_general += 1;
+            } else {
+                registers.push(0);
+            }
+        }
+        if registers.iter().filter(|&&register| register == 0).count() > 1 {
+            // Two store-only locals share r0 in no measured shape — the
+            // two-local capture used r0 + r3.
+            registers = match locals.len() {
+                1 => vec![0],
+                _ => vec![0, 3],
+            };
+        }
+        if registers.contains(&3) {
             // The r3 reuse requires the condition to consume the FIRST int
             // param (r3) — the only measured form.
             let condition_param_r3 = function
@@ -3511,20 +3569,75 @@ impl Generator {
             self.output.instructions.push(Instruction::LoadWord { d: registers[index], a: 1, offset: 8 + offset });
         }
         let join = self.fresh_label();
+        let epilogue = self.fresh_label();
         self.emit_branch_conditional_to(options, condition_bit, join);
-        for &(index, constant) in &mutations {
-            self.output.instructions.push(Instruction::load_immediate(registers[index], constant));
+        if let Some(inner) = early_return {
+            // The punned locals resolve in the inner test through temporary
+            // locations at their scratch registers.
+            let mut saved: Vec<(String, Option<crate::generator::Location>)> = Vec::new();
+            for (index, &(name, _)) in locals.iter().enumerate() {
+                saved.push((
+                    name.to_string(),
+                    self.locations.insert(
+                        name.to_string(),
+                        crate::generator::Location {
+                            class: ValueClass::General,
+                            register: registers[index],
+                            signed: true,
+                            width: 32,
+                            pointee: None,
+                            stride: None,
+                        },
+                    ),
+                ));
+            }
+            let test = self.emit_condition_test(inner);
+            for (name, previous) in saved {
+                match previous {
+                    Some(location) => {
+                        self.locations.insert(name, location);
+                    }
+                    None => {
+                        self.locations.remove(&name);
+                    }
+                }
+            }
+            let (options, condition_bit) = test?;
+            let mutations_label = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, mutations_label);
+            self.emit_branch_to(epilogue);
+            self.bind_label(mutations_label);
+        }
+        for (index, mutation) in &mutations {
+            match mutation {
+                WriteMutation::Constant(constant) => {
+                    self.output.instructions.push(Instruction::load_immediate(registers[*index], *constant));
+                }
+                WriteMutation::SelfMask(begin, end) => {
+                    self.output.instructions.push(Instruction::RotateAndMask {
+                        a: registers[*index],
+                        s: registers[*index],
+                        shift: 0,
+                        begin: *begin,
+                        end: *end,
+                    });
+                }
+            }
         }
         self.bind_label(join);
         for (index, &(_, offset)) in locals.iter().enumerate() {
             self.output.instructions.push(Instruction::StoreWord { s: registers[index], a: 1, offset: 8 + offset });
         }
         self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.bind_label(epilogue);
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         // The guard's if pair consumes two pre-pool labels, plus one per
-        // additional punned local (measured: one-local @7, two-local +3).
-        self.output.anonymous_label_bump += 1 + locals.len() as u32;
+        // additional punned local, plus two more for a mid-chain early
+        // return's inner if (measured: one-local @7, two-local +3, the
+        // early-return form +4).
+        self.output.anonymous_label_bump +=
+            1 + locals.len() as u32 + if early_return.is_some() { 2 } else { 0 };
         Ok(true)
     }
 

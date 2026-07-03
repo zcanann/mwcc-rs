@@ -29,3 +29,18 @@ double writeback_two(double x, int c)
 	*((int *)&x + 1) = i1;
 	return x;
 }
+
+double writeback_early_return(double x, int j0)
+{
+	int i0;
+
+	i0 = *(int *)&x;
+	if (j0 < 20) {
+		if ((i0 & 3) == 0) {
+			return x;
+		}
+		i0 &= 7;
+	}
+	*(int *)&x = i0;
+	return x;
+}
