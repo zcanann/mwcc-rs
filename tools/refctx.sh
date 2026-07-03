@@ -94,7 +94,16 @@ fi
 #    preprocess). mwcceppc only accepts .c/.cpp, so the real compiler builds the
 #    reference straight from ctx.c (preprocessing it internally) — identical input.
 ( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" ${extra[@]+"${extra[@]}"} -E ctx.c -o ctx.i ) 2>/dev/null
-if [[ ! -s "$dir/ctx.i" ]]; then echo "preprocess produced no .i"; exit 1; fi
+if [[ ! -s "$dir/ctx.i" ]]; then
+  # An effectively EMPTY TU (sunshine's exponentialsf.c is a single
+  # newline): mwcc -E emits nothing, but both compilers produce the
+  # trivial object — continue with an empty .i. Anything with real
+  # content that still failed -E is a genuine harness error.
+  if grep -q '[^[:space:]]' "$dir/ctx.c"; then
+    echo "preprocess produced no .i"; exit 1
+  fi
+  : > "$dir/ctx.i"
+fi
 
 # 3a. Reference object from the real compiler (from the self-contained ctx.c).
 ( cd "$dir" && "$wibo" "$sjis" "$compiler" "${base[@]}" ${extra[@]+"${extra[@]}"} -c ctx.c -o ref.o ) 2>/dev/null
