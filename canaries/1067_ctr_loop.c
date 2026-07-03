@@ -175,3 +175,24 @@ int ctr_compose_sign(int hx, unsigned lx, int hy, unsigned ly, int n)
 	}
 	return hx;
 }
+/* Fire 426: the ILOGB DIAMOND — rotated loops NEST INTO IF-ARMS by
+   concatenation with per-arm register context. ix lands directly in
+   r3 in every arm (hx dead there — no trailing mr); every arm ends
+   with its own inline blr (no join); r0 double-duties (the lis bound
+   dies at cmpw, arm 2 reuses it for the shift temp, whose init emits
+   BEFORE the li overwriting hx's home). @N +0. */
+int ilogb_diamond(int hx, unsigned lx)
+{
+	int ix, i;
+	if (hx < 0x00100000) {
+		if (hx == 0) {
+			for (ix = -1043, i = lx; i > 0; i <<= 1)
+				ix -= 1;
+		} else {
+			for (ix = -1022, i = (hx << 11); i > 0; i <<= 1)
+				ix -= 1;
+		}
+	} else
+		ix = (hx >> 20) - 1023;
+	return ix;
+}

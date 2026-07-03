@@ -1800,6 +1800,9 @@ impl Generator {
         if self.try_norm_loop(function)? {
             return Ok(());
         }
+        if self.try_ilogb_diamond(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -8475,6 +8478,284 @@ impl Generator {
         self.bind_label(join_label);
         self.emit_branch_conditional_to(16, 0, body_label); // bdnz
         self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The ILOGB DIAMOND (fire 426, e_fmod's exponent extract): rotated
+    /// loops NEST INTO IF-ARMS by concatenation with per-arm register
+    /// context —
+    ///   if (hx < BIG) { if (hx == 0) FOR-LOOP(lx) else FOR-LOOP(hx<<A) }
+    ///   else ix = (hx >> 20) - K;  return ix;
+    /// Measured: ix lands DIRECTLY in r3 in every arm (hx is dead inside
+    /// them, killing the standalone loop's trailing mr); each arm ends
+    /// with its own inline blr (no join); r0 double-duties (the lis
+    /// bound dies at the cmpw, arm 2 reuses r0 for its shift temp); the
+    /// arm-2 shift init emits BEFORE the li that overwrites hx's home.
+    fn try_ilogb_diamond(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::{LoopKind, Statement};
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [p_hx, p_lx] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if p_hx.parameter_type != Type::Int || p_lx.parameter_type != Type::UnsignedInt {
+            return Ok(false);
+        }
+        let (hx, lx) = (p_hx.name.as_str(), p_lx.name.as_str());
+        let [Statement::If { condition: outer_test, then_body, else_body }] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // Outer: hx < BIG (lis-only constant).
+        let Expression::Binary { operator: BinaryOperator::Less, left: outer_left, right: outer_right } =
+            outer_test
+        else {
+            return Ok(false);
+        };
+        if !matches!(outer_left.as_ref(), Expression::Variable(v) if v == hx) {
+            return Ok(false);
+        }
+        let Expression::IntegerLiteral(bound) = outer_right.as_ref() else {
+            return Ok(false);
+        };
+        if *bound & 0xffff != 0 {
+            return Ok(false);
+        }
+        let Ok(bound_high) = i16::try_from(*bound >> 16) else {
+            return Ok(false);
+        };
+        // Inner diamond: if (hx == 0) loop-over-lx else loop-over-(hx<<A).
+        let [Statement::If { condition: inner_test, then_body: zero_arm, else_body: shift_arm }] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Equal, left: inner_left, right: inner_right } =
+            inner_test
+        else {
+            return Ok(false);
+        };
+        if !matches!(inner_left.as_ref(), Expression::Variable(v) if v == hx)
+            || !matches!(inner_right.as_ref(), Expression::IntegerLiteral(0))
+        {
+            return Ok(false);
+        }
+        // An arm loop: for (ix = K, i = SRC; i > 0; i <<= 1) ix -= 1;
+        enum ArmSource {
+            InPlaceLow,
+            ShiftOfHigh(u8),
+        }
+        struct ArmLoop {
+            start: i16,
+            source: ArmSource,
+        }
+        let mut result_local: Option<String> = None;
+        let mut counter_local: Option<String> = None;
+        let mut parse_arm = |statements: &[Statement]| -> Option<ArmLoop> {
+            let [Statement::Loop { kind: LoopKind::For, initializer: Some(init), condition: Some(cond), step: Some(step), body }] =
+                statements
+            else {
+                return None;
+            };
+            // The comma init: (ix = K, i = SRC).
+            let Expression::Comma { left: first, right: second } = init else {
+                return None;
+            };
+            let Expression::Assign { target: ix_target, value: ix_value } = first.as_ref() else {
+                return None;
+            };
+            let Expression::Variable(ix_name) = ix_target.as_ref() else {
+                return None;
+            };
+            let Expression::IntegerLiteral(start) = ix_value.as_ref() else {
+                return None;
+            };
+            let start = i16::try_from(*start).ok()?;
+            let Expression::Assign { target: i_target, value: i_value } = second.as_ref() else {
+                return None;
+            };
+            let Expression::Variable(i_name) = i_target.as_ref() else {
+                return None;
+            };
+            let source = match i_value.as_ref() {
+                Expression::Variable(v) if v == lx => ArmSource::InPlaceLow,
+                Expression::Binary { operator: BinaryOperator::ShiftLeft, left, right } => {
+                    if !matches!(left.as_ref(), Expression::Variable(v) if v == hx) {
+                        return None;
+                    }
+                    let Expression::IntegerLiteral(amount) = right.as_ref() else {
+                        return None;
+                    };
+                    ArmSource::ShiftOfHigh(u8::try_from(*amount).ok().filter(|a| (1..=31).contains(a))?)
+                }
+                _ => return None,
+            };
+            // Locals consistent across arms; distinct from the params.
+            if ix_name == hx || ix_name == lx || i_name == hx || i_name == lx || ix_name == i_name {
+                return None;
+            }
+            match (&result_local, &counter_local) {
+                (None, None) => {
+                    result_local = Some(ix_name.clone());
+                    counter_local = Some(i_name.clone());
+                }
+                (Some(result), Some(counter)) => {
+                    if result != ix_name || counter != i_name {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+            // Condition: i > 0. Step: i <<= 1. Body: ix -= 1.
+            let Expression::Binary { operator: BinaryOperator::Greater, left: cond_left, right: cond_right } =
+                cond
+            else {
+                return None;
+            };
+            if !matches!(cond_left.as_ref(), Expression::Variable(v) if v == i_name)
+                || !matches!(cond_right.as_ref(), Expression::IntegerLiteral(0))
+            {
+                return None;
+            }
+            let Expression::Assign { target: step_target, value: step_value } = step else {
+                return None;
+            };
+            let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: step_left, right: step_right } =
+                step_value.as_ref()
+            else {
+                return None;
+            };
+            if !matches!(step_target.as_ref(), Expression::Variable(v) if v == i_name)
+                || !matches!(step_left.as_ref(), Expression::Variable(v) if v == i_name)
+                || !matches!(step_right.as_ref(), Expression::IntegerLiteral(1))
+            {
+                return None;
+            }
+            let [Statement::Assign { name: body_name, value: body_value }] = body.as_slice() else {
+                return None;
+            };
+            let Expression::Binary { operator: BinaryOperator::Subtract, left: body_left, right: body_right } =
+                body_value
+            else {
+                return None;
+            };
+            if body_name != ix_name
+                || !matches!(body_left.as_ref(), Expression::Variable(v) if v == ix_name)
+                || !matches!(body_right.as_ref(), Expression::IntegerLiteral(1))
+            {
+                return None;
+            }
+            Some(ArmLoop { start, source })
+        };
+        let Some(zero_loop) = parse_arm(zero_arm) else {
+            return Ok(false);
+        };
+        let Some(shift_loop) = parse_arm(shift_arm) else {
+            return Ok(false);
+        };
+        if !matches!(zero_loop.source, ArmSource::InPlaceLow)
+            || !matches!(shift_loop.source, ArmSource::ShiftOfHigh(_))
+        {
+            return Ok(false);
+        }
+        // The else arm: ix = (hx >> S) - K.
+        let [Statement::Assign { name: else_name, value: else_value }] = else_body.as_slice() else {
+            return Ok(false);
+        };
+        if Some(else_name.as_str()) != result_local.as_deref() {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Subtract, left: shifted, right: offset } =
+            else_value
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: shift_source, right: shift_amount } =
+            shifted.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(shift_source.as_ref(), Expression::Variable(v) if v == hx) {
+            return Ok(false);
+        }
+        let Expression::IntegerLiteral(else_shift) = shift_amount.as_ref() else {
+            return Ok(false);
+        };
+        let Ok(else_shift) = u8::try_from(*else_shift) else {
+            return Ok(false);
+        };
+        if !(1..=31).contains(&else_shift) {
+            return Ok(false);
+        }
+        let Expression::IntegerLiteral(else_offset) = offset.as_ref() else {
+            return Ok(false);
+        };
+        let Ok(negated_offset) = i16::try_from(-*else_offset) else {
+            return Ok(false);
+        };
+        if !matches!(&function.return_expression, Some(Expression::Variable(v)) if Some(v.as_str()) == result_local.as_deref())
+        {
+            return Ok(false);
+        }
+        let (Some(hx_register), Some(lx_register)) = (self.lookup_general(hx), self.lookup_general(lx))
+        else {
+            return Ok(false);
+        };
+        if hx_register != 3 {
+            return Ok(false);
+        }
+        // -- emit --
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 0, immediate: bound_high });
+        self.output.instructions.push(Instruction::CompareWord { a: hx_register, b: 0 });
+        let else_label = self.fresh_label();
+        self.emit_branch_conditional_to(4, 0, else_label); // bge
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: hx_register, immediate: 0 });
+        let shift_arm_label = self.fresh_label();
+        self.emit_branch_conditional_to(4, 2, shift_arm_label); // bne
+        // Arm 1: the loop over lx, ix in r3, counter in lx's home.
+        self.output.instructions.push(Instruction::load_immediate(3, zero_loop.start));
+        let test1 = self.fresh_label();
+        self.emit_branch_to(test1);
+        let body1 = self.fresh_label();
+        self.bind_label(body1);
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: lx_register, s: lx_register, shift: 1 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -1 });
+        self.bind_label(test1);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: lx_register, immediate: 0 });
+        self.emit_branch_conditional_to(12, 1, body1); // bgt
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // Arm 2: the loop over hx<<A; the shift temp rides r0 (the bound
+        // is dead), and its init emits BEFORE the li overwrites r3.
+        self.bind_label(shift_arm_label);
+        let ArmSource::ShiftOfHigh(amount) = shift_loop.source else {
+            return Ok(false);
+        };
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: hx_register, shift: amount });
+        self.output.instructions.push(Instruction::load_immediate(3, shift_loop.start));
+        let test2 = self.fresh_label();
+        self.emit_branch_to(test2);
+        let body2 = self.fresh_label();
+        self.bind_label(body2);
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: 0, shift: 1 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -1 });
+        self.bind_label(test2);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(12, 1, body2); // bgt
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The else arm: srawi + addi in place.
+        self.bind_label(else_label);
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: hx_register, shift: else_shift });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: negated_offset });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // @N: measured via objprobe after implementation.
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }
