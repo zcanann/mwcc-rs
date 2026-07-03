@@ -1,0 +1,220 @@
+
+/private/tmp/claude-501/-Users-zcanann-Documents-projects-FFCC-Decomp/2c2fdaaa-1028-468a-821d-b6912c915ce5/scratchpad/efmod/real.o:     file format elf32-powerpc
+
+
+Disassembly of section .text:
+
+00000000 <__ieee754_fmod>:
+   0:	94 21 ff e0 	stwu    r1,-32(r1)
+   4:	d8 41 00 10 	stfd    f2,16(r1)
+   8:	d8 21 00 08 	stfd    f1,8(r1)
+   c:	81 41 00 10 	lwz     r10,16(r1)
+  10:	80 c1 00 08 	lwz     r6,8(r1)
+  14:	80 a1 00 14 	lwz     r5,20(r1)
+  18:	55 48 00 7e 	clrlwi  r8,r10,1
+  1c:	54 c0 00 00 	clrrwi  r0,r6,31
+  20:	80 81 00 0c 	lwz     r4,12(r1)
+  24:	7d 03 2b 79 	or.     r3,r8,r5
+  28:	7c c7 02 78 	xor     r7,r6,r0
+  2c:	41 82 00 28 	beq     54 <__ieee754_fmod+0x54>
+  30:	3c c0 7f f0 	lis     r6,32752
+  34:	7c 07 30 00 	cmpw    r7,r6
+  38:	40 80 00 1c 	bge     54 <__ieee754_fmod+0x54>
+  3c:	7c 65 00 d0 	neg     r3,r5
+  40:	7c a3 1b 78 	or      r3,r5,r3
+  44:	54 63 0f fe 	srwi    r3,r3,31
+  48:	7d 03 1b 78 	or      r3,r8,r3
+  4c:	7c 03 30 40 	cmplw   r3,r6
+  50:	40 81 00 18 	ble     68 <__ieee754_fmod+0x68>
+  54:	c8 21 00 08 	lfd     f1,8(r1)
+  58:	c8 01 00 10 	lfd     f0,16(r1)
+  5c:	fc 01 00 32 	fmul    f0,f1,f0
+  60:	fc 20 00 24 	fdiv    f1,f0,f0
+  64:	48 00 02 d0 	b       334 <__ieee754_fmod+0x334>
+  68:	7c 07 40 00 	cmpw    r7,r8
+  6c:	41 81 00 30 	bgt     9c <__ieee754_fmod+0x9c>
+  70:	41 80 00 0c 	blt     7c <__ieee754_fmod+0x7c>
+  74:	7c 04 28 40 	cmplw   r4,r5
+  78:	40 80 00 0c 	bge     84 <__ieee754_fmod+0x84>
+  7c:	c8 21 00 08 	lfd     f1,8(r1)
+  80:	48 00 02 b4 	b       334 <__ieee754_fmod+0x334>
+  84:	40 82 00 18 	bne     9c <__ieee754_fmod+0x9c>
+  88:	3c 60 00 00 	lis     r3,0
+			8a: R_PPC_ADDR16_HA	Zero
+  8c:	54 00 27 38 	rlwinm  r0,r0,4,28,28
+  90:	38 63 00 00 	addi    r3,r3,0
+			92: R_PPC_ADDR16_LO	Zero
+  94:	7c 23 04 ae 	lfdx    f1,r3,r0
+  98:	48 00 02 9c 	b       334 <__ieee754_fmod+0x334>
+  9c:	3c 60 00 10 	lis     r3,16
+  a0:	7c 07 18 00 	cmpw    r7,r3
+  a4:	40 80 00 4c 	bge     f0 <__ieee754_fmod+0xf0>
+  a8:	2c 07 00 00 	cmpwi   r7,0
+  ac:	40 82 00 24 	bne     d0 <__ieee754_fmod+0xd0>
+  b0:	7c 83 23 78 	mr      r3,r4
+  b4:	39 60 fb ed 	li      r11,-1043
+  b8:	48 00 00 0c 	b       c4 <__ieee754_fmod+0xc4>
+  bc:	54 63 08 3c 	slwi    r3,r3,1
+  c0:	39 6b ff ff 	addi    r11,r11,-1
+  c4:	2c 03 00 00 	cmpwi   r3,0
+  c8:	41 81 ff f4 	bgt     bc <__ieee754_fmod+0xbc>
+  cc:	48 00 00 2c 	b       f8 <__ieee754_fmod+0xf8>
+  d0:	54 e3 58 28 	slwi    r3,r7,11
+  d4:	39 60 fc 02 	li      r11,-1022
+  d8:	48 00 00 0c 	b       e4 <__ieee754_fmod+0xe4>
+  dc:	54 63 08 3c 	slwi    r3,r3,1
+  e0:	39 6b ff ff 	addi    r11,r11,-1
+  e4:	2c 03 00 00 	cmpwi   r3,0
+  e8:	41 81 ff f4 	bgt     dc <__ieee754_fmod+0xdc>
+  ec:	48 00 00 0c 	b       f8 <__ieee754_fmod+0xf8>
+  f0:	7c e3 a6 70 	srawi   r3,r7,20
+  f4:	39 63 fc 01 	addi    r11,r3,-1023
+  f8:	3c 60 00 10 	lis     r3,16
+  fc:	7c 08 18 00 	cmpw    r8,r3
+ 100:	40 80 00 4c 	bge     14c <__ieee754_fmod+0x14c>
+ 104:	2c 08 00 00 	cmpwi   r8,0
+ 108:	40 82 00 24 	bne     12c <__ieee754_fmod+0x12c>
+ 10c:	7c a6 2b 78 	mr      r6,r5
+ 110:	38 60 fb ed 	li      r3,-1043
+ 114:	48 00 00 0c 	b       120 <__ieee754_fmod+0x120>
+ 118:	54 c6 08 3c 	slwi    r6,r6,1
+ 11c:	38 63 ff ff 	addi    r3,r3,-1
+ 120:	2c 06 00 00 	cmpwi   r6,0
+ 124:	41 81 ff f4 	bgt     118 <__ieee754_fmod+0x118>
+ 128:	48 00 00 2c 	b       154 <__ieee754_fmod+0x154>
+ 12c:	55 06 58 28 	slwi    r6,r8,11
+ 130:	38 60 fc 02 	li      r3,-1022
+ 134:	48 00 00 0c 	b       140 <__ieee754_fmod+0x140>
+ 138:	54 c6 08 3c 	slwi    r6,r6,1
+ 13c:	38 63 ff ff 	addi    r3,r3,-1
+ 140:	2c 06 00 00 	cmpwi   r6,0
+ 144:	41 81 ff f4 	bgt     138 <__ieee754_fmod+0x138>
+ 148:	48 00 00 0c 	b       154 <__ieee754_fmod+0x154>
+ 14c:	7d 03 a6 70 	srawi   r3,r8,20
+ 150:	38 63 fc 01 	addi    r3,r3,-1023
+ 154:	2c 0b fc 02 	cmpwi   r11,-1022
+ 158:	41 80 00 10 	blt     168 <__ieee754_fmod+0x168>
+ 15c:	54 e6 03 3e 	clrlwi  r6,r7,12
+ 160:	64 c9 00 10 	oris    r9,r6,16
+ 164:	48 00 00 34 	b       198 <__ieee754_fmod+0x198>
+ 168:	21 2b fc 02 	subfic  r9,r11,-1022
+ 16c:	2c 09 00 1f 	cmpwi   r9,31
+ 170:	41 81 00 1c 	bgt     18c <__ieee754_fmod+0x18c>
+ 174:	20 c9 00 20 	subfic  r6,r9,32
+ 178:	7c e7 48 30 	slw     r7,r7,r9
+ 17c:	7c 86 34 30 	srw     r6,r4,r6
+ 180:	7c 84 48 30 	slw     r4,r4,r9
+ 184:	7c e9 33 78 	or      r9,r7,r6
+ 188:	48 00 00 10 	b       198 <__ieee754_fmod+0x198>
+ 18c:	38 c9 ff e0 	addi    r6,r9,-32
+ 190:	7c 89 30 30 	slw     r9,r4,r6
+ 194:	38 80 00 00 	li      r4,0
+ 198:	2c 03 fc 02 	cmpwi   r3,-1022
+ 19c:	41 80 00 10 	blt     1ac <__ieee754_fmod+0x1ac>
+ 1a0:	55 46 03 3e 	clrlwi  r6,r10,12
+ 1a4:	64 c7 00 10 	oris    r7,r6,16
+ 1a8:	48 00 00 34 	b       1dc <__ieee754_fmod+0x1dc>
+ 1ac:	21 43 fc 02 	subfic  r10,r3,-1022
+ 1b0:	2c 0a 00 1f 	cmpwi   r10,31
+ 1b4:	41 81 00 1c 	bgt     1d0 <__ieee754_fmod+0x1d0>
+ 1b8:	20 ca 00 20 	subfic  r6,r10,32
+ 1bc:	7d 07 50 30 	slw     r7,r8,r10
+ 1c0:	7c a6 34 30 	srw     r6,r5,r6
+ 1c4:	7c a5 50 30 	slw     r5,r5,r10
+ 1c8:	7c e7 33 78 	or      r7,r7,r6
+ 1cc:	48 00 00 10 	b       1dc <__ieee754_fmod+0x1dc>
+ 1d0:	38 ca ff e0 	addi    r6,r10,-32
+ 1d4:	7c a7 30 30 	slw     r7,r5,r6
+ 1d8:	38 a0 00 00 	li      r5,0
+ 1dc:	7c c3 58 51 	subf.   r6,r3,r11
+ 1e0:	7c c9 03 a6 	mtctr   r6
+ 1e4:	41 82 00 64 	beq     248 <__ieee754_fmod+0x248>
+ 1e8:	7c 04 28 40 	cmplw   r4,r5
+ 1ec:	7d 07 48 50 	subf    r8,r7,r9
+ 1f0:	7d 45 20 50 	subf    r10,r5,r4
+ 1f4:	40 80 00 08 	bge     1fc <__ieee754_fmod+0x1fc>
+ 1f8:	39 08 ff ff 	addi    r8,r8,-1
+ 1fc:	2c 08 00 00 	cmpwi   r8,0
+ 200:	40 80 00 18 	bge     218 <__ieee754_fmod+0x218>
+ 204:	54 86 0f fe 	srwi    r6,r4,31
+ 208:	7c 84 22 14 	add     r4,r4,r4
+ 20c:	7c c9 32 14 	add     r6,r9,r6
+ 210:	7d 29 32 14 	add     r9,r9,r6
+ 214:	48 00 00 30 	b       244 <__ieee754_fmod+0x244>
+ 218:	7d 04 53 79 	or.     r4,r8,r10
+ 21c:	40 82 00 18 	bne     234 <__ieee754_fmod+0x234>
+ 220:	3c 60 00 00 	lis     r3,0
+			222: R_PPC_ADDR16_HA	Zero
+ 224:	54 00 27 38 	rlwinm  r0,r0,4,28,28
+ 228:	38 63 00 00 	addi    r3,r3,0
+			22a: R_PPC_ADDR16_LO	Zero
+ 22c:	7c 23 04 ae 	lfdx    f1,r3,r0
+ 230:	48 00 01 04 	b       334 <__ieee754_fmod+0x334>
+ 234:	55 46 0f fe 	srwi    r6,r10,31
+ 238:	7c 8a 52 14 	add     r4,r10,r10
+ 23c:	7d 28 32 14 	add     r9,r8,r6
+ 240:	7d 28 4a 14 	add     r9,r8,r9
+ 244:	42 00 ff a4 	bdnz    1e8 <__ieee754_fmod+0x1e8>
+ 248:	7c 04 28 40 	cmplw   r4,r5
+ 24c:	7c c7 48 50 	subf    r6,r7,r9
+ 250:	7c a5 20 50 	subf    r5,r5,r4
+ 254:	40 80 00 08 	bge     25c <__ieee754_fmod+0x25c>
+ 258:	38 c6 ff ff 	addi    r6,r6,-1
+ 25c:	2c 06 00 00 	cmpwi   r6,0
+ 260:	41 80 00 0c 	blt     26c <__ieee754_fmod+0x26c>
+ 264:	7c c9 33 78 	mr      r9,r6
+ 268:	7c a4 2b 78 	mr      r4,r5
+ 26c:	7d 25 23 79 	or.     r5,r9,r4
+ 270:	40 82 00 18 	bne     288 <__ieee754_fmod+0x288>
+ 274:	3c 60 00 00 	lis     r3,0
+			276: R_PPC_ADDR16_HA	Zero
+ 278:	54 00 27 38 	rlwinm  r0,r0,4,28,28
+ 27c:	38 63 00 00 	addi    r3,r3,0
+			27e: R_PPC_ADDR16_LO	Zero
+ 280:	7c 23 04 ae 	lfdx    f1,r3,r0
+ 284:	48 00 00 b0 	b       334 <__ieee754_fmod+0x334>
+ 288:	3c a0 00 10 	lis     r5,16
+ 28c:	48 00 00 18 	b       2a4 <__ieee754_fmod+0x2a4>
+ 290:	54 86 0f fe 	srwi    r6,r4,31
+ 294:	7c 84 22 14 	add     r4,r4,r4
+ 298:	7c c9 32 14 	add     r6,r9,r6
+ 29c:	38 63 ff ff 	addi    r3,r3,-1
+ 2a0:	7d 29 32 14 	add     r9,r9,r6
+ 2a4:	7c 09 28 00 	cmpw    r9,r5
+ 2a8:	41 80 ff e8 	blt     290 <__ieee754_fmod+0x290>
+ 2ac:	2c 03 fc 02 	cmpwi   r3,-1022
+ 2b0:	41 80 00 24 	blt     2d4 <__ieee754_fmod+0x2d4>
+ 2b4:	38 63 03 ff 	addi    r3,r3,1023
+ 2b8:	3c a9 ff f0 	addis   r5,r9,-16
+ 2bc:	54 63 a0 16 	slwi    r3,r3,20
+ 2c0:	90 81 00 0c 	stw     r4,12(r1)
+ 2c4:	7c a3 1b 78 	or      r3,r5,r3
+ 2c8:	7c 60 03 78 	or      r0,r3,r0
+ 2cc:	90 01 00 08 	stw     r0,8(r1)
+ 2d0:	48 00 00 60 	b       330 <__ieee754_fmod+0x330>
+ 2d4:	20 c3 fc 02 	subfic  r6,r3,-1022
+ 2d8:	2c 06 00 14 	cmpwi   r6,20
+ 2dc:	41 81 00 1c 	bgt     2f8 <__ieee754_fmod+0x2f8>
+ 2e0:	20 66 00 20 	subfic  r3,r6,32
+ 2e4:	7c 84 34 30 	srw     r4,r4,r6
+ 2e8:	7d 23 18 30 	slw     r3,r9,r3
+ 2ec:	7d 29 36 30 	sraw    r9,r9,r6
+ 2f0:	7c 83 1b 78 	or      r3,r4,r3
+ 2f4:	48 00 00 30 	b       324 <__ieee754_fmod+0x324>
+ 2f8:	2c 06 00 1f 	cmpwi   r6,31
+ 2fc:	41 81 00 1c 	bgt     318 <__ieee754_fmod+0x318>
+ 300:	20 a6 00 20 	subfic  r5,r6,32
+ 304:	7c 83 34 30 	srw     r3,r4,r6
+ 308:	7d 24 28 30 	slw     r4,r9,r5
+ 30c:	7c 09 03 78 	mr      r9,r0
+ 310:	7c 83 1b 78 	or      r3,r4,r3
+ 314:	48 00 00 10 	b       324 <__ieee754_fmod+0x324>
+ 318:	38 66 ff e0 	addi    r3,r6,-32
+ 31c:	7d 23 1e 30 	sraw    r3,r9,r3
+ 320:	7c 09 03 78 	mr      r9,r0
+ 324:	7d 20 03 78 	or      r0,r9,r0
+ 328:	90 61 00 0c 	stw     r3,12(r1)
+ 32c:	90 01 00 08 	stw     r0,8(r1)
+ 330:	c8 21 00 08 	lfd     f1,8(r1)
+ 334:	38 21 00 20 	addi    r1,r1,32
+ 338:	4e 80 00 20 	blr
