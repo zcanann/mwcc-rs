@@ -10,7 +10,7 @@ mod eatan2_pik;
 mod eatan2_ww;
 mod efmod;
 mod epow;
-// mod epow_ww; // parked: needs the named-scalar sdata2 interleave (fire 452 notes)
+mod epow_ww;
 mod erempio2;
 mod ktan;
 mod ktan_ww;
@@ -60,6 +60,7 @@ impl Generator {
             || self.try_eatan2_pik(function)?
             || self.try_eatan2_ww(function)?
             || self.try_epow(function)?
+            || self.try_epow_ww(function)?
             || self.try_sldexp(function)?
             || self.try_erempio2(function)?)
     }

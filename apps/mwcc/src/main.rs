@@ -249,7 +249,12 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         // mwcc emits it to `.rodata` with a LOCAL symbol — so let it fall through to the
         // const-data path (which now binds it LOCAL via `global.is_static`).
         if global.is_static && global.is_const && global.array_length.is_none() {
-            continue;
+            let kept = machine_functions
+                .iter()
+                .any(|function| function.keep_named_const_scalars.iter().any(|name| name == &global.name));
+            if !kept {
+                continue;
+            }
         }
         // A pointer global initialized with addresses (`int *p = &g;`, a string
         // `char *s = "…"`, or a `{…}` table): four zero bytes per element in

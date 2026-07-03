@@ -65,6 +65,10 @@ pub struct MachineFunction {
     /// constant is numbered) — an int<->float conversion's internal label sits
     /// between the constants it separates (k_tan's @69 -> @71 jump).
     pub constant_number_gaps: Vec<(usize, u32)>,
+    /// Named `static const` SCALARS this function's TU must EMIT (mwcc
+    /// usually folds/elides them, but some header/source contexts keep the
+    /// named .sdata2 object — measured per capture; ww's e_pow keeps `one`).
+    pub keep_named_const_scalars: Vec<String>,
     /// Whether the function emits a floating-point conditional branch. mwcc's
     /// anonymous `@N` counter advances by three for such a branch.
     pub has_float_branch: bool,
@@ -113,6 +117,7 @@ impl MachineFunction {
             static_locals: Vec::new(),
             has_conversion: false,
             constant_number_gaps: Vec::new(),
+            keep_named_const_scalars: Vec::new(),
             has_float_branch: false,
             anonymous_label_bump: 0,
             post_constant_label_bump: 0,
