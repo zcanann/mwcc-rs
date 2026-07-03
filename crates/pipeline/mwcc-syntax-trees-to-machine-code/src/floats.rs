@@ -126,6 +126,25 @@ impl Generator {
                         }
                     }
                 }
+                // `E / E` for a structurally identical product ((x*y)/(x*y) —
+                // e_fmod's NaN purge): mwcc CSEs the product into ONE compute
+                // and divides it by itself (`fmul f0,x,y; fdiv d,f0,f0`), NOT
+                // two independent multiplies. Gated to the probed shape — a
+                // multiply of two register-resident variables (side-effect
+                // free, so one evaluation is observably identical).
+                if *operator == BinaryOperator::Divide
+                    && structurally_equal(left, right)
+                    && matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, left: a, right: b }
+                        if matches!(a.as_ref(), Expression::Variable(_)) && matches!(b.as_ref(), Expression::Variable(_)))
+                {
+                    self.evaluate_float(left, FLOAT_SCRATCH)?;
+                    self.output.instructions.push(if double {
+                        Instruction::FloatDivideDouble { d: destination, a: FLOAT_SCRATCH, b: FLOAT_SCRATCH }
+                    } else {
+                        Instruction::FloatDivideSingle { d: destination, a: FLOAT_SCRATCH, b: FLOAT_SCRATCH }
+                    });
+                    return Ok(());
+                }
                 // `f op f` for the identical side-effect-free MEMORY load (`*p + *p`, `a[i]*a[i]`, a
                 // float global `gf * gf`): load ONCE into the scratch, then apply the op to that
                 // register twice (`lfs f0,(p); fadds d,f0,f0`), like the integer identical-load idiom —

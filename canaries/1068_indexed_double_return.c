@@ -9,3 +9,15 @@ double zret(int sx)
 {
 	return Zero[(unsigned)sx >> 31];
 }
+/* Fire 434: the DIVIDE-OF-IDENTICAL-PRODUCTS CSE ((x*y)/(x*y) —
+   e_fmod's NaN purge). mwcc computes the product ONCE and divides it
+   by itself: fmul f0,x,y; fdiv f1,f0,f0 — ours previously emitted TWO
+   fmuls (a latent DIFF caught by probing the purge). Both widths. */
+double fpurge(double x, double y)
+{
+	return (x * y) / (x * y);
+}
+float fpurgef(float x, float y)
+{
+	return (x * y) / (x * y);
+}
