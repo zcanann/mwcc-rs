@@ -107,6 +107,8 @@ pub struct FunctionObject<'a> {
     /// Mid-pool `@N` gaps applied while numbering constants: (constant index,
     /// extra numbers consumed before it).
     pub constant_number_gaps: Vec<(usize, u32)>,
+    /// UND externals with no relocation, emitted first among the externals.
+    pub phantom_externals: Vec<String>,
     /// `@N` numbers consumed after the constants, before the extab pair.
     pub post_constant_bump: u32,
     /// The count of NEW (non-reused) strings this function contributes to the unit's

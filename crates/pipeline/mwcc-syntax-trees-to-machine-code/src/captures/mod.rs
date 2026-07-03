@@ -4,8 +4,10 @@
 
 mod eacos;
 mod eacos_bl;
+mod eacos_str;
 mod easin;
 mod easin_bl;
+mod easin_str;
 mod eatan2_ac;
 mod eatan2_pik;
 mod eatan2_sun;
@@ -14,12 +16,14 @@ mod efmod;
 mod epow;
 mod epow_ww;
 mod erempio2;
+mod erempio2_str;
 mod ktan;
 mod ktan_ww;
 mod satan;
 mod satan_pik;
 mod satan_sun;
 mod sldexp;
+mod sldexp_str;
 
 use crate::generator::Generator;
 use mwcc_core::Compilation;
@@ -69,8 +73,10 @@ impl Generator {
             || self.try_ktan_ww(function)?
             || self.try_easin(function)?
             || self.try_easin_bl(function)?
+            || self.try_easin_str(function)?
             || self.try_eacos(function)?
             || self.try_eacos_bl(function)?
+            || self.try_eacos_str(function)?
             || self.try_eatan2_pik(function)?
             || self.try_eatan2_ac(function)?
             || self.try_eatan2_sun(function)?
@@ -78,6 +84,8 @@ impl Generator {
             || self.try_epow(function)?
             || self.try_epow_ww(function)?
             || self.try_sldexp(function)?
-            || self.try_erempio2(function)?)
+            || self.try_sldexp_str(function)?
+            || self.try_erempio2(function)?
+            || self.try_erempio2_str(function)?)
     }
 }

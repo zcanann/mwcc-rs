@@ -88,6 +88,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 + function.anonymous_label_bump,
             post_constant_bump: function.post_constant_label_bump,
             constant_number_gaps: function.constant_number_gaps.clone(),
+            phantom_externals: function.phantom_externals.clone(),
             // The unit's string resolver set these: the function's NEW-string count and the `@N`
             // names of those strings. The writer numbers/emits them at the front of the function's
             // `@N` block (interleaved per-function with its constants and unwind entries).

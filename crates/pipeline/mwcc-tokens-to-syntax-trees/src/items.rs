@@ -1435,12 +1435,14 @@ impl Parser {
     fn inline_asm_function_name(&self) -> Option<String> {
         let mut index = self.position;
         let mut is_inline = false;
+        let mut is_static = false;
         let mut name: Option<String> = None;
-        // Signature up to the first `(`: note `inline`, and the last identifier
-        // before the `(` (the function name).
+        // Signature up to the first `(`: note `static`/`inline`, and the last
+        // identifier before the `(` (the function name).
         while let Some(token) = self.tokens.get(index) {
             match token {
                 Token::Identifier(word) if word == "inline" || word == "__inline" => is_inline = true,
+                Token::Identifier(word) if word == "static" => is_static = true,
                 Token::Identifier(word) => name = Some(word.clone()),
                 Token::ParenOpen => break,
                 Token::Semicolon | Token::BraceOpen | Token::EndOfFile => return None,
@@ -1448,7 +1450,11 @@ impl Parser {
             }
             index += 1;
         }
-        if !is_inline {
+        // Only a STATIC inline asm helper becomes the early local-UND symbol
+        // (the measured OSFastCast.h shape). A PLAIN inline one (strikers'
+        // __frsqrte) is a normal external created by the dropped compilation —
+        // captures declare it via phantom_externals.
+        if !is_inline || !is_static {
             return None;
         }
         let name = name?;

@@ -694,6 +694,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .collect();
         let mut ordered: Vec<&str> = Vec::new();
         let mut listed = std::collections::HashSet::new();
+        // Phantom externals first (created before the function's own refs).
+        for name in &function.phantom_externals {
+            if listed.insert(name.as_str()) {
+                ordered.push(name.as_str());
+            }
+        }
         for name in &function.symbol_order {
             if external_targets.contains(name.as_str()) && listed.insert(name.as_str()) {
                 ordered.push(name.as_str());

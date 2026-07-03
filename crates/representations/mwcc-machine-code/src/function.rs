@@ -69,6 +69,10 @@ pub struct MachineFunction {
     /// usually folds/elides them, but some header/source contexts keep the
     /// named .sdata2 object — measured per capture; ww's e_pow keeps `one`).
     pub keep_named_const_scalars: Vec<String>,
+    /// UND externals with NO relocation — symbols mwcc created while compiling
+    /// a later-dropped inline body (strikers' __frsqrte). Emitted FIRST among
+    /// this function's externals.
+    pub phantom_externals: Vec<String>,
     /// Whether the function emits a floating-point conditional branch. mwcc's
     /// anonymous `@N` counter advances by three for such a branch.
     pub has_float_branch: bool,
@@ -118,6 +122,7 @@ impl MachineFunction {
             has_conversion: false,
             constant_number_gaps: Vec::new(),
             keep_named_const_scalars: Vec::new(),
+            phantom_externals: Vec::new(),
             has_float_branch: false,
             anonymous_label_bump: 0,
             post_constant_label_bump: 0,
