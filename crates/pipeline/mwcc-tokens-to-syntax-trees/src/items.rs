@@ -210,13 +210,9 @@ impl Parser {
             }
             return Ok(ArmBody::Return(result));
         }
-        if !braced {
-            return Err(Diagnostic::error(
-                "a statement-bodied switch arm must be braced (roadmap)",
-            ));
-        }
-        // A braced statement body: if-statements and returns, ending at
-        // `break;` or the closing brace.
+        // A statement body: if-statements and returns, ending at `break;`
+        // (unbraced arms also end at the next case/default label or the
+        // switch's closing brace).
         let mut statements: Vec<Statement> = Vec::new();
         let mut local_names = std::collections::HashSet::new();
         let mut block_locals = Vec::new();
@@ -224,9 +220,20 @@ impl Parser {
             if matches!(self.peek(), Token::Identifier(word) if word == "break") {
                 self.advance();
                 self.expect(Token::Semicolon)?;
-                continue; // dead after full-return diamonds; end-of-arm otherwise
+                if braced {
+                    continue; // dead after full-return diamonds; end-of-arm otherwise
+                }
+                break; // an unbraced arm ends at its break
             }
-            if *self.peek() == Token::BraceClose {
+            if !braced
+                && matches!(self.peek(), Token::Identifier(word) if word == "case" || word == "default")
+            {
+                break; // fall into the next label's arm boundary
+            }
+            if !braced && *self.peek() == Token::BraceClose {
+                break; // the switch's closing brace
+            }
+            if braced && *self.peek() == Token::BraceClose {
                 self.advance();
                 break;
             }

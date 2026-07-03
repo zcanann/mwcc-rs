@@ -2836,6 +2836,13 @@ impl Generator {
         if self.known_locals.contains(name) {
             return Err(Diagnostic::error("a call through an unallocated function-pointer local is not supported yet (roadmap)"));
         }
+        // A call through a function-pointer PARAMETER would otherwise emit
+        // `bl <param-name>` with a bogus relocation — defer.
+        if self.locations.contains_key(name) {
+            return Err(Diagnostic::error(
+                "a call through a function-pointer parameter is not supported yet (roadmap)",
+            ));
+        }
         self.emit_arguments(arguments, name)?;
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });

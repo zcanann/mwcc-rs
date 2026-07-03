@@ -469,6 +469,31 @@ impl Parser {
         };
         loop {
             match self.peek() {
+                // `(*fp)(args)` — an indirect call through a function-pointer
+                // variable. The Call carries the VARIABLE's name; codegen
+                // resolves locals/parameters (and defers the unallocated).
+                Token::ParenOpen
+                    if matches!(&expression, Expression::Dereference { pointer }
+                        if matches!(pointer.as_ref(), Expression::Variable(_))) =>
+                {
+                    let Expression::Dereference { pointer } = &expression else { unreachable!() };
+                    let Expression::Variable(name) = pointer.as_ref() else { unreachable!() };
+                    let name = name.clone();
+                    self.advance(); // `(`
+                    let mut arguments = Vec::new();
+                    if *self.peek() != Token::ParenClose {
+                        loop {
+                            arguments.push(self.expression()?);
+                            if *self.peek() == Token::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Token::ParenClose)?;
+                    expression = Expression::Call { name, arguments };
+                }
                 Token::BracketOpen => {
                     self.advance();
                     let index = self.expression()?;
