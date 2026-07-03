@@ -61,3 +61,15 @@ void rotloop_copy_walk(char *dst, char *src)
 		src++;
 	}
 }
+/* Fire 417: the PIPELINED COPY (the strcpy idiom) — the assignment IS
+   the condition; no separate test block. mr alias (params_top+2);
+   LOOP: lbz carry (params_top+1); addi src; extsb. (the test); stb;
+   addi p; bne LOOP; blr with dst riding r3 to the return. Built on
+   the faithful PostStep AST (pre/post distinct). */
+char *rotloop_strcpy(char *dst, char *src)
+{
+	char *p = dst;
+	while ((*p++ = *src++))
+		;
+	return dst;
+}

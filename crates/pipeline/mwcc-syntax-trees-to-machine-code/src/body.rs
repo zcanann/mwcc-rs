@@ -1788,6 +1788,9 @@ impl Generator {
         if self.try_rotated_loop(function)? {
             return Ok(());
         }
+        if self.try_pipelined_copy(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -7689,6 +7692,93 @@ impl Generator {
     /// order — the LAST live parameter gets r31, the next r30, and so on — and the
     /// body/return then read the values from those registers. Returns whether it
     /// applied. (Locals, floats, and values passed to a call still defer.)
+    /// The PIPELINED COPY (fire 417, the strcpy idiom): `char *p = dst;
+    /// while ((*p++ = *src++)) ;` — the assignment IS the condition, so
+    /// there is no separate test block. Measured: mr alias; LOOP: lbz
+    /// carry,0(src); addi src,1; extsb. (the test); stb carry,0(p);
+    /// addi p,1; bne LOOP; blr — the alias takes params_top+2 (r6) and
+    /// the carried char params_top+1 (r5); dst rides r3 to the return.
+    fn try_pipelined_copy(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::{LoopKind, Statement};
+        if function.return_type != Type::Pointer(Pointee::Char)
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [dst_param, src_param] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if dst_param.parameter_type != Type::Pointer(Pointee::Char)
+            || src_param.parameter_type != Type::Pointer(Pointee::Char)
+        {
+            return Ok(false);
+        }
+        let dst = dst_param.name.as_str();
+        let source = src_param.name.as_str();
+        let [alias_local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if alias_local.declared_type != Type::Pointer(Pointee::Char)
+            || !matches!(&alias_local.initializer, Some(Expression::Variable(v)) if v == dst)
+        {
+            return Ok(false);
+        }
+        let alias = alias_local.name.as_str();
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !body.is_empty() {
+            return Ok(false);
+        }
+        // The condition: *p++ = *src++ (both POSTFIX — the old pointers).
+        let post_deref = |expression: &Expression| -> Option<String> {
+            let Expression::Dereference { pointer } = expression else { return None };
+            let Expression::PostStep { target, operator: BinaryOperator::Add } = pointer.as_ref()
+            else {
+                return None;
+            };
+            let Expression::Variable(name) = target.as_ref() else { return None };
+            Some(name.clone())
+        };
+        let Expression::Assign { target, value } = condition else {
+            return Ok(false);
+        };
+        if post_deref(target).as_deref() != Some(alias) || post_deref(value).as_deref() != Some(source)
+        {
+            return Ok(false);
+        }
+        if !matches!(&function.return_expression, Some(Expression::Variable(v)) if v == dst) {
+            return Ok(false);
+        }
+        let Some(dst_register) = self.lookup_general(dst) else {
+            return Ok(false);
+        };
+        let Some(src_register) = self.lookup_general(source) else {
+            return Ok(false);
+        };
+        let top = dst_register.max(src_register);
+        let carry = top + 1;
+        let alias_register = top + 2;
+        // -- emit --
+        self.output.instructions.push(Instruction::move_register(alias_register, dst_register));
+        let loop_at = self.fresh_label();
+        self.bind_label(loop_at);
+        self.output.instructions.push(Instruction::LoadByteZero { d: carry, a: src_register, offset: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: src_register, a: src_register, immediate: 1 });
+        self.output.instructions.push(Instruction::ExtendSignByteRecord { a: 0, s: carry });
+        self.output.instructions.push(Instruction::StoreByte { s: carry, a: alias_register, offset: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: alias_register, a: alias_register, immediate: 1 });
+        self.emit_branch_conditional_to(4, 2, loop_at); // bne
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // @N: measured after implementation (objprobe) — placeholder 0.
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
     /// The ROTATED LOOP (fire 413, the e_fmod ilogb family): mwcc emits
     /// non-counted loops as `init; b TEST; BODY: [step][body]; TEST:
     /// cond; b<positive> BODY; [mr]` with NO unrolling (counted loops
