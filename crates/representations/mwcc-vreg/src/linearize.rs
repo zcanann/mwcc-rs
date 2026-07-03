@@ -802,7 +802,7 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         end: usize,
     }
     let mut intervals: Vec<Interval> = Vec::new();
-    let mut param_end = |value: u32| -> usize {
+    let param_end = |value: u32| -> usize {
         (0..count)
             .filter(|&reader| nodes[reader].reads.contains(&value))
             .map(|reader| position[reader])

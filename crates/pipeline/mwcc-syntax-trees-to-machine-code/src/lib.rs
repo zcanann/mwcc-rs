@@ -24,7 +24,7 @@ mod narrow;
 mod casts;
 mod placement;
 mod floats;
-mod float_dag;
+mod float;
 mod value_tracking;
 mod switch;
 mod symbol_order;
@@ -147,13 +147,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
             .collect(),
         reserved: HashSet::new(),
         frame_size: 0,
-        float_reload_x: None,
-        float_dual_compare: None,
-        float_phantom_local: None,
-        float_phantom_register: None,
-        float_frame_local: None,
-        float_else_composition: None,
-        float_pseudo_params: Vec::new(),
+        float: generator::FloatContext::default(),
         behavior: Behavior::resolve(&config),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,

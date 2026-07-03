@@ -33,6 +33,30 @@ pub(crate) struct Location {
     pub(crate) stride: Option<u16>,
 }
 
+/// The float-composition channel (see `Generator::float`).
+#[derive(Default)]
+pub(crate) struct FloatContext {
+    /// The float DAG tail reloads x from this frame offset (the fctiwz
+    /// punned-guard composition): x's references become a frame lfd node
+    /// (value id 9) and f1 frees for the chain.
+    pub(crate) reload_x: Option<i16>,
+    /// Extra float bindings for a DAG tail: shared dual-tail locals already
+    /// materialized in registers (name -> FPR).
+    pub(crate) pseudo_params: Vec<(String, u8)>,
+    /// A double local defined by a CONDITIONAL diamond ahead of the float
+    /// tail: the tail's DAG allocates it as a window-top tier value (a
+    /// PHANTOM node, value id 8, emitting nothing) and reports the assigned
+    /// register back so the diamond arms load into it.
+    pub(crate) phantom_local: Option<String>,
+    pub(crate) phantom_register: Option<u8>,
+    /// A double local resident in a FRAME slot (value id 7).
+    pub(crate) frame_local: Option<(String, i16)>,
+    /// The BIG-constant dual compare: (lis high, addi low, ix register).
+    pub(crate) dual_compare: Option<(i16, i16, u8)>,
+    /// The k_cos ELSE composition payload.
+    pub(crate) else_composition: Option<FloatElseComposition>,
+}
+
 /// The k_cos else-branch composition payload (set by the punned arm,
 /// consumed by the dual arm's else phase).
 #[derive(Clone)]
@@ -95,32 +119,11 @@ pub(crate) struct Generator {
     /// Stack frame size in bytes (0 = leaf function, no frame). Set when an
     /// operation needs scratch stack space (e.g. an int/float conversion).
     pub(crate) frame_size: i16,
-    /// The float DAG tail reloads x from this frame offset (the fctiwz
-    /// punned-guard composition): x's references become a frame lfd node
-    /// and f1 frees for the chain.
-    pub(crate) float_reload_x: Option<i16>,
-    /// Extra float bindings for a DAG tail: shared dual-tail locals already
-    /// materialized in registers (name -> FPR).
-    pub(crate) float_pseudo_params: Vec<(String, u8)>,
-    /// The k_cos-family BIG-constant dual compare: (lis high, addi low, the
-    /// preserved ix register). The in-frame dual weaves `lis r3,high;
-    /// addi r0,r3,low` right after the x reload and `cmpw ix,r0` after the
-    /// fourth shared load (measured at chain depths 3 and 4).
-    pub(crate) float_dual_compare: Option<(i16, i16, u8)>,
-    /// A double local defined by a CONDITIONAL diamond ahead of the float
-    /// tail (k_cos's qx): the tail's DAG allocates it as a window-top tier
-    /// value (a PHANTOM node, value id 8, emitting nothing) and reports the
-    /// assigned register back so the diamond arms load into it.
-    pub(crate) float_phantom_local: Option<String>,
-    pub(crate) float_phantom_register: Option<u8>,
-    /// A double local resident in a FRAME slot (the punned qx diamond): the
-    /// tail's DAG reads it as a FrameLoad node (value id 7).
-    pub(crate) float_frame_local: Option<(String, i16)>,
-    /// The k_cos ELSE composition: the dual's else branch opens with a
-    /// frame-punned diamond (an inner lis/cmpw against the preserved ix)
-    /// and its tail reads x RE-reloaded plus the diamond local from the
-    /// frame, with fold-away else-only locals.
-    pub(crate) float_else_composition: Option<FloatElseComposition>,
+    /// The float-composition CHANNEL: everything an arm sets around a claim
+    /// (and must restore afterward). One struct so a single
+    /// `std::mem::take`/restore covers the whole set — missed per-field
+    /// restores caused three real bugs across the float campaign.
+    pub(crate) float: FloatContext,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in
