@@ -1804,6 +1804,12 @@ impl Generator {
         if self.try_frexp_family(function)? {
             return Ok(());
         }
+        // The punned-guard WRITEBACK (the s_floor tail) binds its punned
+        // locals to scratch registers — ahead of the inline-away pass that
+        // would dissolve them into repeated frame reads.
+        if self.try_punned_guard_writeback(function)? {
+            return Ok(());
+        }
         // The raise family (a fn-pointer local live across calls) likewise.
         if self.try_raise_family(function)? {
             return Ok(());
@@ -3386,6 +3392,142 @@ impl Generator {
     /// whose values are either all REGISTER-valued (emitted sequentially) or all CONSTANT (the
     /// batched materialization): `cmpwi; beq else; <then run>; blr; else: <else run>; blr`. The
     /// no-else form is handled by try_constant_store_fill / the register-valued trailing-if path.
+    /// THE PUNNED-GUARD WRITEBACK (the s_floor tail, fire 380): punned int
+    /// reads of the double param spill it to the frame, a guard block
+    /// mutates the punned locals in scratch registers, the block writes
+    /// them back and the double reloads. Measured (one and two locals):
+    /// stwu; cmpwi (HOISTED — the second local reuses the freed condition
+    /// register); stfd f1,8; lwz r0[, lwz r3]; beq JOIN; li...; JOIN:
+    /// stw...; lfd f1,8; addi; blr.
+    pub(crate) fn try_punned_guard_writeback(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || self.non_leaf
+        {
+            return Ok(false);
+        }
+        let Some(Expression::Variable(returned)) = &function.return_expression else {
+            return Ok(false);
+        };
+        let Some(first) = function.parameters.first() else {
+            return Ok(false);
+        };
+        if first.parameter_type != Type::Double || returned != &first.name {
+            return Ok(false);
+        }
+        let x = first.name.as_str();
+        // Every local: an int punned read of x at a distinct word offset.
+        let mut locals: Vec<(&str, i16)> = Vec::new();
+        for local in &function.locals {
+            if local.declared_type != Type::Int || local.array_length.is_some() {
+                return Ok(false);
+            }
+            let Some(init) = &local.initializer else {
+                return Ok(false);
+            };
+            let Some(offset) = crate::frame::pun_word_offset_pub(init, x) else {
+                return Ok(false);
+            };
+            if locals.iter().any(|&(_, seen)| seen == offset) {
+                return Ok(false);
+            }
+            locals.push((local.name.as_str(), offset));
+        }
+        if locals.is_empty() || locals.len() > 2 {
+            return Ok(false);
+        }
+        // statements = [If{cond, [const assigns to the locals]}] + one
+        // punned store per local writing it back to ITS offset.
+        let (Some(Statement::If { condition, then_body, else_body }), stores) =
+            (function.statements.first(), &function.statements[1..])
+        else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() || stores.len() != locals.len() {
+            return Ok(false);
+        }
+        // The mutations: i16 constants to distinct punned locals.
+        let mut mutations: Vec<(usize, i16)> = Vec::new();
+        for statement in then_body {
+            let Statement::Assign { name, value } = statement else {
+                return Ok(false);
+            };
+            let Some(index) = locals.iter().position(|&(local, _)| local == name.as_str()) else {
+                return Ok(false);
+            };
+            let Some(constant) = crate::analysis::constant_value(value) else {
+                return Ok(false);
+            };
+            let Ok(constant) = i16::try_from(constant) else {
+                return Ok(false);
+            };
+            if mutations.iter().any(|&(seen, _)| seen == index) {
+                return Ok(false);
+            }
+            mutations.push((index, constant));
+        }
+        if mutations.is_empty() {
+            return Ok(false);
+        }
+        // The writebacks: each local stored to its own offset, in order.
+        for (statement, &(name, offset)) in stores.iter().zip(&locals) {
+            let Statement::Store { target, value } = statement else {
+                return Ok(false);
+            };
+            if crate::frame::pun_word_offset_pub(target, x) != Some(offset) {
+                return Ok(false);
+            }
+            if !matches!(value, Expression::Variable(read) if read == name) {
+                return Ok(false);
+            }
+        }
+        // Registers: r0, then the freed condition register (measured: the
+        // second local takes r3 after the hoisted compare).
+        let registers: Vec<u8> = match locals.len() {
+            1 => vec![0],
+            _ => vec![0, 3],
+        };
+        if locals.len() == 2 {
+            // The r3 reuse requires the condition to consume the FIRST int
+            // param (r3) — the only measured form.
+            let condition_param_r3 = function
+                .parameters
+                .iter()
+                .find(|parameter| parameter.parameter_type != Type::Double)
+                .and_then(|parameter| self.lookup_general(&parameter.name))
+                == Some(3);
+            if !condition_param_r3 {
+                return Ok(false);
+            }
+        }
+        // -- commit --
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        for (index, &(_, offset)) in locals.iter().enumerate() {
+            self.output.instructions.push(Instruction::LoadWord { d: registers[index], a: 1, offset: 8 + offset });
+        }
+        let join = self.fresh_label();
+        self.emit_branch_conditional_to(options, condition_bit, join);
+        for &(index, constant) in &mutations {
+            self.output.instructions.push(Instruction::load_immediate(registers[index], constant));
+        }
+        self.bind_label(join);
+        for (index, &(_, offset)) in locals.iter().enumerate() {
+            self.output.instructions.push(Instruction::StoreWord { s: registers[index], a: 1, offset: 8 + offset });
+        }
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The guard's if pair consumes two pre-pool labels, plus one per
+        // additional punned local (measured: one-local @7, two-local +3).
+        self.output.anonymous_label_bump += 1 + locals.len() as u32;
+        Ok(true)
+    }
+
     /// GUARD-BLOCK MUTATIONS (the s_floor skeleton, fire 377): a chain of
     /// nested no-else ifs whose innermost body only ASSIGNS constants to int
     /// params, followed by a return expression. Every guard branches to ONE
