@@ -151,6 +151,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         float_dual_compare: None,
         float_phantom_local: None,
         float_phantom_register: None,
+        float_frame_local: None,
         float_pseudo_params: Vec::new(),
         behavior: Behavior::resolve(&config),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),

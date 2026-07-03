@@ -208,6 +208,11 @@ impl Generator {
             // node's write), the same convention as the reload's 9.
             param_ids.push((name.clone(), 8));
         }
+        if let Some((name, _)) = &self.float_frame_local {
+            // The frame-resident diamond local reads as value id 7 — a
+            // FrameLoad node in the tail's DAG.
+            param_ids.push((name.clone(), 7));
+        }
         // Lower the expression to the contracted tree (or bail).
         let mut seen_literals: Vec<u64> = Vec::new();
         let local_names: Vec<(String, usize)> = kept_locals
@@ -231,6 +236,79 @@ impl Generator {
         }
         let Some(tree) = build_tree(return_expression, &param_ids, &local_names, &mut seen_literals) else {
             return Ok(false);
+        };
+        // A FRAME-resident diamond local as a ROOT-multiply factor blocks the
+        // root contraction (measured: fmadd in register form, fmul+fadd/fsub
+        // in frame form; the INNER contractions keep fusing, and qx as the
+        // ADDEND fuses normally).
+        fn subtree_reads_value(tree: &Tree, value: u32) -> bool {
+            match tree {
+                Tree::Param(read) => *read == value,
+                Tree::Madd { factor_left, factor_right, addend }
+                | Tree::Fnmsub { factor_left, factor_right, base: addend }
+                | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                    subtree_reads_value(factor_left, value)
+                        || subtree_reads_value(factor_right, value)
+                        || subtree_reads_value(addend, value)
+                }
+                Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                    subtree_reads_value(left, value) || subtree_reads_value(right, value)
+                }
+                _ => false,
+            }
+        }
+        let tree = if self.float_frame_local.is_some() {
+            let direct = |side: &Tree| matches!(side, Tree::Param(7));
+            let inside = |side: &Tree| subtree_reads_value(side, 7) && !matches!(side, Tree::Param(7));
+            match tree {
+                Tree::Madd { factor_left, factor_right, addend } => {
+                    if !(direct(&factor_left) || direct(&factor_right))
+                        && (inside(&factor_left) || inside(&factor_right))
+                    {
+                        return Ok(false);
+                    }
+                    if direct(&factor_left) || direct(&factor_right) {
+                        if matches!(addend.as_ref(), Tree::Const(_)) {
+                            // A pooled-constant addend on the decontracted
+                            // root is unmeasured (probed DIFF) — defer.
+                            return Ok(false);
+                        }
+                        self.output.anonymous_label_bump += 1;
+                        Tree::Fadd {
+                            left: addend,
+                            right: Box::new(Tree::Mul { left: factor_left, right: factor_right }),
+                        }
+                    } else {
+                        Tree::Madd { factor_left, factor_right, addend }
+                    }
+                }
+                Tree::Fnmsub { factor_left, factor_right, base } => {
+                    if !(direct(&factor_left) || direct(&factor_right))
+                        && (inside(&factor_left) || inside(&factor_right))
+                    {
+                        return Ok(false);
+                    }
+                    if direct(&factor_left) || direct(&factor_right) {
+                        self.output.anonymous_label_bump += 1;
+                        Tree::Fsub {
+                            left: base,
+                            right: Box::new(Tree::Mul { left: factor_left, right: factor_right }),
+                        }
+                    } else {
+                        Tree::Fnmsub { factor_left, factor_right, base }
+                    }
+                }
+                Tree::Fmsub { factor_left, factor_right, subtrahend } => {
+                    if subtree_reads_value(&factor_left, 7) || subtree_reads_value(&factor_right, 7) {
+                        // qx*(...) - b in frame form is unmeasured.
+                        return Ok(false);
+                    }
+                    Tree::Fmsub { factor_left, factor_right, subtrahend }
+                }
+                other => other,
+            }
+        } else {
+            tree
         };
         // Local shapes beyond the captured range defer: a >= 4-arith return
         // tree over locals diverges (probed: the 4-coefficient z-chain), and
@@ -332,6 +410,13 @@ impl Generator {
             phantom_operand = Some(Operand::Node(index));
             phantom_index = Some(index);
         }
+        let mut frame_local_operand: Option<Operand> = None;
+        if let Some((_, offset)) = self.float_frame_local {
+            let index = nodes.len();
+            nodes.push(DagNode::new("lfd_local", LOAD_LATENCY).writes(&[7]));
+            ops.push(FloatOp::FrameLoad(offset));
+            frame_local_operand = Some(Operand::Node(index));
+        }
         // The locals' shared nodes, in declaration order (their arith emits
         // ahead of the loads: measured, z's fmul is slot 0).
         let mut local_operands: Vec<Operand> = Vec::new();
@@ -340,6 +425,7 @@ impl Generator {
                 match leaf {
                     Tree::Param(9) => reload_operand,
                     Tree::Param(8) if phantom_operand.is_some() => phantom_operand,
+                    Tree::Param(7) if frame_local_operand.is_some() => frame_local_operand,
                     Tree::Param(value) => Some(Operand::Param(*value)),
                     Tree::LocalRef(local) => local_operands.get(*local).copied(),
                     _ => None,
@@ -418,6 +504,7 @@ impl Generator {
                 match subtree {
                     Tree::Param(9) => reload_operand,
                     Tree::Param(8) if phantom_operand.is_some() => phantom_operand,
+                    Tree::Param(7) if frame_local_operand.is_some() => frame_local_operand,
                     Tree::Param(value) => Some(Operand::Param(*value)),
                     Tree::LocalRef(local) => local_operands.get(*local).copied(),
                     _ => built
@@ -535,6 +622,8 @@ impl Generator {
             self.float_phantom_register = registers[index];
         }
         if registers.iter().any(|register| register.is_none()) {
+            {
+            }
             return Ok(false);
         }
         // mwcc pools the constants in SOURCE-appearance order (measured:
@@ -1849,10 +1938,73 @@ impl Generator {
                 _ => None,
             }
         };
-        let (Some(then_bits), Some(else_bits)) = (arm_literal(then_body), arm_literal(else_body)) else {
+        // The FRAME-punned else arm (k_cos's qx): `*(int*)&qx = HI;
+        // *((int*)&qx+1) = 0;` — HI a general leaf (stw direct) or
+        // leaf±lis-able-constant (addis into the freed condition register).
+        let punned_else: Option<&Expression> = match else_body.as_slice() {
+            [Statement::Store { target: hi_target, value: hi_value }, Statement::Store { target: lo_target, value: lo_value }]
+                if crate::frame::pun_word_offset_pub(hi_target, qx) == Some(0)
+                    && crate::frame::pun_word_offset_pub(lo_target, qx) == Some(4)
+                    && crate::analysis::constant_value(lo_value) == Some(0) =>
+            {
+                Some(hi_value)
+            }
+            _ => None,
+        };
+        let Some(then_bits) = arm_literal(then_body) else {
             return Ok(false);
         };
-        if then_bits == else_bits {
+        let else_bits = arm_literal(else_body);
+        if punned_else.is_none() {
+            let Some(else_bits) = else_bits else {
+                return Ok(false);
+            };
+            if then_bits == else_bits {
+                return Ok(false);
+            }
+        }
+        // The punned form's HI store: (leaf register, optional addis shift).
+        let general_leaf = |expression: &Expression| -> Option<u8> {
+            match expression {
+                Expression::Variable(name) => self
+                    .locations
+                    .get(name)
+                    .filter(|location| location.class == ValueClass::General)
+                    .map(|location| location.register),
+                _ => None,
+            }
+        };
+        let punned_hi: Option<(u8, Option<i16>)> = match punned_else {
+            None => None,
+            Some(Expression::Variable(_)) => {
+                let Some(register) = general_leaf(punned_else.expect("checked")) else {
+                    return Ok(false);
+                };
+                Some((register, None))
+            }
+            Some(Expression::Binary { operator, left, right })
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) =>
+            {
+                // addis needs a plain-Variable condition whose register the
+                // shifted add reuses (measured: addis r3,r4,-32).
+                if !matches!(condition, Expression::Variable(_)) {
+                    return Ok(false);
+                }
+                let Some(register) = general_leaf(left) else {
+                    return Ok(false);
+                };
+                let Some(constant) = crate::analysis::constant_value(right) else {
+                    return Ok(false);
+                };
+                let signed = if matches!(operator, BinaryOperator::Subtract) { -constant } else { constant };
+                if signed & 0xffff != 0 {
+                    return Ok(false);
+                }
+                Some((register, Some((signed >> 16) as i16)))
+            }
+            Some(_) => return Ok(false),
+        };
+        if punned_else.is_some() && punned_hi.is_none() {
             return Ok(false);
         }
         // The tail: qx free, no locals (a diamond alongside other locals is
@@ -1871,11 +2023,82 @@ impl Generator {
         // Pool constants intern in SOURCE order: the arms' literals precede
         // the tail's.
         self.output.intern_constant(then_bits, 8);
-        self.output.intern_constant(else_bits, 8);
-        // PASS 1 (dry): learn qx's register from the tail's allocation.
+        if let Some(bits) = else_bits {
+            self.output.intern_constant(bits, 8);
+        }
         let instructions_before = self.output.instructions.len();
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
+        let frame_before = self.frame_size;
+        let rollback = |generator: &mut Generator| {
+            generator.output.instructions.truncate(instructions_before);
+            generator.output.relocations.truncate(relocations_before);
+            generator.output.anonymous_label_bump = bump_before;
+            generator.frame_size = frame_before;
+        };
+        if let Some((hi_register, addis_shift)) = punned_hi {
+            // D2, the FRAME form: cmpwi HOISTS above the stwu; the then arm
+            // stores through the f0 scratch; the else arm addis?/li/stw/stw;
+            // the tail reads qx as a FrameLoad (measured: the D2 battery).
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            self.frame_size = 16;
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            let skip_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.load_double_constant(0, then_bits);
+            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 8 });
+            let join_index = self.output.instructions.len();
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+            let else_start = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_index] {
+                *target = else_start;
+            }
+            let hi_store_register = match addis_shift {
+                Some(shift) => {
+                    let Expression::Variable(name) = condition else {
+                        unreachable!("gated above")
+                    };
+                    let condition_register = self
+                        .locations
+                        .get(name)
+                        .map(|location| location.register)
+                        .expect("condition tested above");
+                    self.output.instructions.push(Instruction::AddImmediateShifted {
+                        d: condition_register,
+                        a: hi_register,
+                        immediate: shift,
+                    });
+                    condition_register
+                }
+                None => hi_register,
+            };
+            self.output.instructions.push(Instruction::load_immediate(0, 0));
+            self.output.instructions.push(Instruction::StoreWord { s: hi_store_register, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 12 });
+            let join = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[join_index] {
+                *target = join;
+            }
+            self.float_frame_local = Some((qx.to_string(), 8));
+            let claimed = self.try_float_dag_return(&synthetic);
+            self.float_frame_local = None;
+            match claimed {
+                Ok(true) => {}
+                other => {
+                    rollback(self);
+                    return other.map(|_| false);
+                }
+            }
+            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            // The FRAME form consumes 3 labels like the register form; the
+            // root DECONTRACTION adds its own +1 inside the claim (measured:
+            // pool @9 = bump 4 decontracted, extab @41 = bump 3 contracted).
+            self.output.anonymous_label_bump += 3;
+            return Ok(true);
+        }
+        let else_bits = else_bits.expect("checked above");
+        // PASS 1 (dry): learn qx's register from the tail's allocation.
         self.float_phantom_local = Some(qx.to_string());
         self.float_phantom_register = None;
         let dry = self.try_float_dag_return(&synthetic);
@@ -1911,9 +2134,7 @@ impl Generator {
         match claimed {
             Ok(true) => {}
             other => {
-                self.output.instructions.truncate(instructions_before);
-                self.output.relocations.truncate(relocations_before);
-                self.output.anonymous_label_bump = bump_before;
+                rollback(self);
                 return other.map(|_| false);
             }
         }

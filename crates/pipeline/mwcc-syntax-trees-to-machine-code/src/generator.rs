@@ -89,6 +89,9 @@ pub(crate) struct Generator {
     /// assigned register back so the diamond arms load into it.
     pub(crate) float_phantom_local: Option<String>,
     pub(crate) float_phantom_register: Option<u8>,
+    /// A double local resident in a FRAME slot (the punned qx diamond): the
+    /// tail's DAG reads it as a FrameLoad node (value id 7).
+    pub(crate) float_frame_local: Option<(String, i16)>,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in
