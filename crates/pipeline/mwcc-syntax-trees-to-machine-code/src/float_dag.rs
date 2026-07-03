@@ -832,9 +832,14 @@ impl Generator {
         // return x; }` arrives as one statement — followed by the C89 local
         // assigns the leading normalizer could not reach past the if. The
         // flat form arrives as a hoisted guard. Exactly one of the two.
+        // A trailing iy-split (one non-x guard + else-return) composes with
+        // the nested form: the guard passes through to the DUAL tail arm.
+        let dual_tail = function.guards.len() == 1
+            && function.return_expression.is_some()
+            && !matches!(&function.guards[0].value, Expression::Variable(_));
         let nested = matches!(
             function.statements.first(),
-            Some(Statement::If { .. }) if function.guards.is_empty()
+            Some(Statement::If { .. }) if function.guards.is_empty() || dual_tail
         );
         // Trailing `z = x*x;`-style assigns behind the nested if become
         // initializers (each target a declared, uninitialized local,
@@ -952,7 +957,7 @@ impl Generator {
         let ix_uses_elsewhere = function
             .guards
             .iter()
-            .skip(1)
+            .skip(if nested { 0 } else { 1 })
             .map(|guard| {
                 crate::analysis::count_name_occurrences(&guard.condition, ix)
                     + crate::analysis::count_name_occurrences(&guard.value, ix)
@@ -1017,7 +1022,7 @@ impl Generator {
             parameters: function.parameters.clone(),
             locals: synthetic_locals,
             statements: Vec::new(),
-            guards: Vec::new(),
+            guards: if nested { function.guards.clone() } else { Vec::new() },
             return_expression: function.return_expression.clone(),
         };
         let _ = Statement::Return(None); // keep the use import stable
@@ -1108,7 +1113,11 @@ impl Generator {
         if nested {
             self.float_reload_x = Some(8);
         }
-        let claimed = self.try_float_dag_return(&synthetic);
+        let claimed = if synthetic.guards.is_empty() {
+            self.try_float_dag_return(&synthetic)
+        } else {
+            self.try_dual_tail_float_return(&synthetic)
+        };
         self.float_reload_x = None;
         self.frame_slots = saved_frame_slots;
         match claimed {
@@ -1184,10 +1193,14 @@ impl Generator {
         if !condition_ok {
             return Ok(false);
         }
+        // IN-FRAME (the punned k_sin composition): x lives in the frame —
+        // its shared-DAG references become a reload node (value id 9, the
+        // core arm's convention) and f1 frees for the chain.
+        let in_frame = self.float_reload_x.is_some();
         // Double params for the shared DAG.
         let mut params: Vec<(u32, u8)> = Vec::new();
         let mut param_ids: Vec<(String, u32)> = Vec::new();
-        for parameter in &function.parameters {
+        for (index, parameter) in function.parameters.iter().enumerate() {
             let Some(location) = self.locations.get(&parameter.name) else {
                 return Ok(false);
             };
@@ -1195,6 +1208,10 @@ impl Generator {
                 Type::Double => {
                     if location.class != ValueClass::Float || location.width != 64 {
                         return Ok(false);
+                    }
+                    if in_frame && index == 0 {
+                        param_ids.push((parameter.name.clone(), 9));
+                        continue;
                     }
                     let value = (params.len() + 1) as u32;
                     params.push((value, location.register));
@@ -1273,6 +1290,10 @@ impl Generator {
         let mut built: Vec<(*const Tree, Operand)> = Vec::new();
         let mut local_operands: Vec<Operand> = Vec::new();
         let mut next_value = 40u32;
+        if in_frame {
+            nodes.push(DagNode::new("lfd_x", LOAD_LATENCY).writes(&[9]));
+            ops.push(FloatOp::FrameLoad(self.float_reload_x.expect("in_frame")));
+        }
         for local_tree in &local_trees {
             // Loads first (per chain), then its arith deepest-level first.
             let mut refs: Vec<(&Tree, u32)> = Vec::new();
@@ -1340,6 +1361,7 @@ impl Generator {
             for (order_index, &(arith, _)) in refs.iter().enumerate() {
                 let resolve = |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
                     match subtree {
+                        Tree::Param(9) if in_frame => Some(Operand::Node(0)),
                         Tree::Param(value) => Some(Operand::Param(*value)),
                         Tree::LocalRef(local) => local_operands.get(*local).copied(),
                         _ => built
@@ -1488,6 +1510,10 @@ impl Generator {
                         self.load_double_constant(d, *bits);
                         emitted_loads += 1;
                     }
+                    FloatOp::FrameLoad(offset) => {
+                        self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 1, offset: *offset });
+                        emitted_loads += 1;
+                    }
                     FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
                         d,
                         a: register_of(*a),
@@ -1529,7 +1555,15 @@ impl Generator {
                 // The compare interleaves after the SECOND shared load
                 // (measured: A/ksin_dual), or after the FIRST float op
                 // when the shared DAG is loadless (measured: fire-350).
-                let trigger = if shared_loads >= 2 { emitted_loads == 2 && matches!(ops[node], FloatOp::Const(_)) } else { emitted_ops == 1 };
+                // IN-FRAME the compare lands right after the x reload
+                // (measured: the real k_sin, cmpwi at slot 1).
+                let trigger = if in_frame {
+                    emitted_loads == 1 && matches!(ops[node], FloatOp::FrameLoad(_))
+                } else if shared_loads >= 2 {
+                    emitted_loads == 2 && matches!(ops[node], FloatOp::Const(_))
+                } else {
+                    emitted_ops == 1
+                };
                 if condition_encoding.is_none() && trigger {
                     condition_encoding = Some(self.emit_condition_test(&guard.condition)?);
                 }
@@ -1540,7 +1574,14 @@ impl Generator {
                     self.float_pseudo_params.push((local_names[index].0.clone(), registers[node].expect("checked above")));
                 }
             }
+            if in_frame {
+                if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
+                    self.float_pseudo_params.push((name.clone(), registers[0].expect("checked above")));
+                }
+            }
         }
+        // The tails see x through its pseudo-param, not a re-reload.
+        self.float_reload_x = None;
         let (options, condition_bit) = match condition_encoding {
             Some(encoding) => encoding,
             None => self.emit_condition_test(&guard.condition)?,
@@ -1567,7 +1608,15 @@ impl Generator {
                 return other.map(|_| false);
             }
         }
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        let mut then_join: Option<usize> = None;
+        if in_frame {
+            // The then tail joins the caller's shared epilogue (measured:
+            // b <addi;blr>); the else tail falls through into it.
+            then_join = Some(self.output.instructions.len());
+            self.output.instructions.push(Instruction::Branch { target: 0 });
+        } else {
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+        }
         let else_start = self.output.instructions.len();
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
             *target = else_start;
@@ -1579,7 +1628,16 @@ impl Generator {
                 return other.map(|_| false);
             }
         }
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        if in_frame {
+            let epilogue = self.output.instructions.len();
+            if let Some(index) = then_join {
+                if let Instruction::Branch { target } = &mut self.output.instructions[index] {
+                    *target = epilogue;
+                }
+            }
+        } else {
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+        }
         self.float_pseudo_params.clear();
         Ok(true)
     }
