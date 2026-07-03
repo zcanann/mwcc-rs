@@ -1283,6 +1283,10 @@ pub struct FloatRegModel {
     /// allocate before L15 at slot 4 because it dies later; horner4's
     /// "anomalous" second load falls out naturally under this order).
     pub order_by_death: bool,
+    /// A LOWER BOUND on the register window: the dual composition arm
+    /// passes the tails' pressure (escaping values + live params + tail
+    /// constants), which the shared DAG alone cannot see.
+    pub window_floor: u8,
     /// DUAL-TAIL shapes order the prefix tier by DEFINITION descending
     /// (the LAST-defined local takes the top: w > v > z — measured across
     /// the fire-350/354 dual matrix; single-tail shapes keep death-asc).
@@ -1352,6 +1356,7 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     share_f0_only: false,
     share_blocked_by_pending_arith: true,
     local_top_tier: true,
+    window_floor: 0,
     tier_position_desc: false,
     tier_forward_descending: true,
     dying_door_share: true,
@@ -1419,6 +1424,7 @@ pub fn assign_float_registers(
             .unwrap_or(0)
             .max(params.len())
     } as u8;
+    let window = window.max(model.window_floor);
     let param_registers: Vec<u8> = params.iter().map(|&(_, register)| register).collect();
     let use_reverse = model.reverse && (return_node.is_some() || !model.void_forward);
     if use_reverse {
@@ -2925,6 +2931,7 @@ mod tests {
                                                             share_f0_only,
                                                             share_blocked_by_pending_arith,
                                                             local_top_tier,
+                                                            window_floor: 0,
                                                             tier_position_desc: false,
                                                             tier_forward_descending,
                                                             dying_door_share,
@@ -2956,6 +2963,7 @@ mod tests {
                     share_f0_only: false,
                     share_blocked_by_pending_arith: false,
                     local_top_tier: false,
+                    window_floor: 0,
                     tier_position_desc: false,
                     tier_forward_descending: false,
                     dying_door_share: false,

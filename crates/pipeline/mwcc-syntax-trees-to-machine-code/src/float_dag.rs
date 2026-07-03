@@ -11,7 +11,7 @@
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Type};
-use mwcc_vreg::{assign_float_registers, linearize, DagNode, FROZEN_FLOAT_REG, HAZARD_FPU};
+use mwcc_vreg::{assign_float_registers, linearize, DagNode, OpKind, FROZEN_FLOAT_REG, HAZARD_FPU};
 use crate::generator::*;
 
 /// A value in the lowered tree: a parameter's DAG value id or a node index.
@@ -54,6 +54,8 @@ enum FloatOp {
     Mul { a: Operand, c: Operand },
     Add { a: Operand, b: Operand },
     Sub { a: Operand, b: Operand },
+    /// The dual arm's liveness sink (emits nothing).
+    Sink,
 }
 
 const LOAD_LATENCY: u32 = 2;
@@ -601,6 +603,7 @@ impl Generator {
                     a: register_of(*a),
                     b: register_of(*b),
                 }),
+                FloatOp::Sink => {}
             }
         }
         Ok(true)
@@ -1138,56 +1141,26 @@ impl Generator {
     /// guard form upstream and never reaches here).
     pub(crate) fn try_dual_tail_float_return(&mut self, function: &Function) -> Compilation<bool> {
         // The parser normalizes `if (c) return A; else return B;` into a
-        // guard {condition, value: A} + the trailing return B. The guard's
-        // value here is a COMPUTED tree (a bare x folds to the bclr form in
-        // the flat guard arm instead). ONE shared local (z = x*x, a single
-        // const-free arith over params) may precede — it materializes at
-        // f(max tail pool-constants) ahead of the compare and feeds both
-        // tails as a pseudo-param (measured; multi-local duals order
-        // DEFINITION-ASC to the top and are banked, not yet emitted).
+        // guard {condition, value: A} + the trailing return B. Shared
+        // locals — pure register PRODUCTS (z = x*x) and load-dependent
+        // CHAINS (the k_sin r) — materialize as ONE shared DAG ahead of the
+        // compare and feed both tails as pseudo-params. The register
+        // machine runs in DUAL mode: prefix tier definition-descending, a
+        // STORE sink carrying tail liveness, the tails' pressure as the
+        // window floor, and escaping chain roots on their C-operand.
         if function.return_type != Type::Double
             || function.guards.len() != 1
-            || function.locals.len() > 1
             || !function.statements.is_empty()
             || function.return_expression.is_none()
         {
             return Ok(false);
         }
-        let shared_local: Option<(&str, &Expression)> = match function.locals.first() {
-            None => None,
-            Some(local) => {
-                if local.declared_type != Type::Double || local.array_length.is_some() {
-                    return Ok(false);
-                }
-                let Some(init) = local.initializer.as_ref() else {
-                    return Ok(false);
-                };
-                // A single fmul/fadd over PARAMS only (z = x*x), no consts.
-                let simple = match init {
-                    Expression::Binary { operator: BinaryOperator::Multiply | BinaryOperator::Add, left, right } => {
-                        let is_param = |side: &Expression| {
-                            matches!(side, Expression::Variable(name)
-                                if self.locations.get(name).is_some_and(|location| location.class == ValueClass::Float))
-                        };
-                        is_param(left) && is_param(right)
-                    }
-                    _ => false,
-                };
-                if !simple {
-                    return Ok(false);
-                }
-                Some((local.name.as_str(), init))
-            }
-        };
         let guard = &function.guards[0];
         let then_value = &guard.value;
         let else_value = function.return_expression.as_ref().expect("checked above");
-        // A bare-variable guard value belongs to the bclr arm.
         if matches!(then_value, Expression::Variable(_)) {
             return Ok(false);
         }
-        // The condition: an int-param leaf compare (the existing guard
-        // vocabulary via emit_condition_test).
         let condition_ok = match &guard.condition {
             Expression::Variable(name) => self
                 .locations
@@ -1211,35 +1184,371 @@ impl Generator {
         if !condition_ok {
             return Ok(false);
         }
-        // z's register = f(max pool-constant count across the tails)
-        // (measured: 1-const tails -> f1, 2-const -> f2); deeper tails are
-        // uncaptured with a shared local.
-        let shared_register: Option<u8> = if shared_local.is_some() {
+        // Double params for the shared DAG.
+        let mut params: Vec<(u32, u8)> = Vec::new();
+        let mut param_ids: Vec<(String, u32)> = Vec::new();
+        for parameter in &function.parameters {
+            let Some(location) = self.locations.get(&parameter.name) else {
+                return Ok(false);
+            };
+            match parameter.parameter_type {
+                Type::Double => {
+                    if location.class != ValueClass::Float || location.width != 64 {
+                        return Ok(false);
+                    }
+                    let value = (params.len() + 1) as u32;
+                    params.push((value, location.register));
+                    param_ids.push((parameter.name.clone(), value));
+                }
+                _ if location.class == ValueClass::General => {}
+                _ => return Ok(false),
+            }
+        }
+        // The shared locals as trees over params + prior locals.
+        let mut local_names: Vec<(String, usize)> = Vec::new();
+        let mut local_trees: Vec<Tree> = Vec::new();
+        for local in &function.locals {
+            if local.declared_type != Type::Double || local.array_length.is_some() {
+                return Ok(false);
+            }
+            let Some(init) = local.initializer.as_ref() else {
+                return Ok(false);
+            };
+            let mut chain_literals: Vec<u64> = Vec::new();
+            let Some(tree) = build_tree(init, &param_ids, &local_names, &mut chain_literals) else {
+                return Ok(false);
+            };
+            local_names.push((local.name.clone(), local_trees.len()));
+            local_trees.push(tree);
+        }
+        // Tail liveness: which locals/params each tail reads.
+        let reads_of = |tree_value: &Expression, name: &str| crate::analysis::count_name_occurrences(tree_value, name);
+        let escaping_locals: Vec<usize> = (0..local_trees.len())
+            .filter(|&index| {
+                let name = &local_names[index].0;
+                reads_of(then_value, name) + reads_of(else_value, name) > 0
+            })
+            .collect();
+        if !function.locals.is_empty() && escaping_locals.is_empty() {
+            return Ok(false);
+        }
+        // The tails' window pressure (the shared DAG cannot see it).
+        let tail_pressure = |value: &Expression| -> u8 {
+            let locals_read = (0..local_trees.len())
+                .filter(|&index| reads_of(value, &local_names[index].0) > 0)
+                .count();
+            let params_read = param_ids
+                .iter()
+                .filter(|(name, _)| reads_of(value, name) > 0)
+                .count();
+            let mut literals: Vec<u64> = Vec::new();
+            collect_literals(value, &mut literals);
+            (locals_read + params_read + literals.len()) as u8
+        };
+        // UNION floor (measured, K=2 w=v*z matrix probe): locals read by
+        // EITHER tail + params read by either tail + the max per-tail
+        // literal count — not the per-tail max (K=2 wants 6, per-tail says 5).
+        let union_floor = {
+            let locals_read = (0..local_trees.len())
+                .filter(|&index| {
+                    let name = &local_names[index].0;
+                    reads_of(then_value, name) + reads_of(else_value, name) > 0
+                })
+                .count();
+            let params_read = param_ids
+                .iter()
+                .filter(|(name, _)| reads_of(then_value, name) + reads_of(else_value, name) > 0)
+                .count();
             let mut then_literals: Vec<u64> = Vec::new();
             collect_literals(then_value, &mut then_literals);
             let mut else_literals: Vec<u64> = Vec::new();
             collect_literals(else_value, &mut else_literals);
-            let max_constants = then_literals.len().max(else_literals.len());
-            if !(1..=3).contains(&max_constants) {
-                return Ok(false);
-            }
-            // x must DIE at the shared local (the tails read only z) — a
-            // live x shifts the window (uncaptured for K=1).
-            let (name, _) = shared_local.as_ref().expect("checked above");
-            let x_read_in_tails = function.parameters.first().is_some_and(|parameter| {
-                crate::analysis::count_name_occurrences(then_value, &parameter.name)
-                    + crate::analysis::count_name_occurrences(else_value, &parameter.name)
-                    > 0
-            });
-            let local_read = crate::analysis::count_name_occurrences(then_value, name)
-                + crate::analysis::count_name_occurrences(else_value, name);
-            if x_read_in_tails || local_read == 0 {
-                return Ok(false);
-            }
-            Some(max_constants as u8)
-        } else {
-            None
+            (locals_read + params_read + then_literals.len().max(else_literals.len())) as u8
         };
+        let window_floor = tail_pressure(then_value).max(tail_pressure(else_value)).max(union_floor);
+
+        // ---- the shared DAG ----
+        let mut nodes: Vec<DagNode> = Vec::new();
+        let mut ops: Vec<FloatOp> = Vec::new();
+        let mut built: Vec<(*const Tree, Operand)> = Vec::new();
+        let mut local_operands: Vec<Operand> = Vec::new();
+        let mut next_value = 40u32;
+        for local_tree in &local_trees {
+            // Loads first (per chain), then its arith deepest-level first.
+            let mut refs: Vec<(&Tree, u32)> = Vec::new();
+            collect_arith(local_tree, 0, &mut refs);
+            refs.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
+            for &(arith, _) in &refs {
+                let mut push_const = |bits: u64, nodes: &mut Vec<DagNode>, ops: &mut Vec<FloatOp>, built: &mut Vec<(*const Tree, Operand)>, key: *const Tree, next_value: &mut u32| {
+                    let index = nodes.len();
+                    nodes.push(DagNode::new("lfd", LOAD_LATENCY).writes(&[*next_value]));
+                    *next_value += 1;
+                    ops.push(FloatOp::Const(bits));
+                    built.push((key, Operand::Node(index)));
+                };
+                match arith {
+                    Tree::Madd { factor_left, factor_right, addend }
+                    | Tree::Fnmsub { factor_left, factor_right, base: addend }
+                    | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                        for side in [factor_left, factor_right, addend] {
+                            if let Tree::Const(bits) = side.as_ref() {
+                                push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree, &mut next_value);
+                            }
+                        }
+                    }
+                    Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                        for side in [left, right] {
+                            if let Tree::Const(bits) = side.as_ref() {
+                                push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree, &mut next_value);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let tree_literals = {
+                let mut literals: Vec<u64> = Vec::new();
+                fn has_const(tree: &Tree, found: &mut Vec<u64>) {
+                    match tree {
+                        Tree::Const(bits) => found.push(*bits),
+                        Tree::Madd { factor_left, factor_right, addend }
+                        | Tree::Fnmsub { factor_left, factor_right, base: addend }
+                        | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                            has_const(factor_left, found);
+                            has_const(factor_right, found);
+                            has_const(addend, found);
+                        }
+                        Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                            has_const(left, found);
+                            has_const(right, found);
+                        }
+                        _ => {}
+                    }
+                }
+                has_const(local_tree, &mut literals);
+                literals
+            };
+            // A const-bearing shared chain shallower than 3 ariths is an
+            // unmeasured placement regime (probed DIFF at depth 1 and 2;
+            // k_sin's r at depth 3 matches) — defer.
+            if !tree_literals.is_empty() && refs.len() < 3 {
+                return Ok(false);
+            }
+            let is_product = refs.len() == 1
+                && matches!(local_tree, Tree::Mul { .. } | Tree::Fadd { .. })
+                && tree_literals.is_empty();
+            for (order_index, &(arith, _)) in refs.iter().enumerate() {
+                let resolve = |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
+                    match subtree {
+                        Tree::Param(value) => Some(Operand::Param(*value)),
+                        Tree::LocalRef(local) => local_operands.get(*local).copied(),
+                        _ => built
+                            .iter()
+                            .rev()
+                            .find(|(key, _)| std::ptr::eq(*key, subtree as *const Tree))
+                            .map(|&(_, operand)| operand),
+                    }
+                };
+                let value_of = |operand: Operand, nodes: &Vec<DagNode>| -> u32 {
+                    match operand {
+                        Operand::Param(value) => value,
+                        Operand::Node(index) => nodes[index].writes[0],
+                    }
+                };
+                let index = nodes.len();
+                let is_root = order_index + 1 == refs.len();
+                let (op, operands): (FloatOp, Vec<Operand>) = match arith {
+                    Tree::Madd { factor_left, factor_right, addend } => {
+                        let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(addend, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
+                        (FloatOp::Madd { a, c, b }, vec![a, c, b])
+                    }
+                    Tree::Fnmsub { factor_left, factor_right, base } => {
+                        let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(base, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
+                        (FloatOp::Fnmsub { a, c, b }, vec![a, c, b])
+                    }
+                    Tree::Fmsub { factor_left, factor_right, subtrahend } => {
+                        let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(subtrahend, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
+                        (FloatOp::Fmsub { a, c, b }, vec![a, c, b])
+                    }
+                    Tree::Mul { left, right } => {
+                        let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let c = resolve(right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        (FloatOp::Mul { a, c }, vec![a, c])
+                    }
+                    Tree::Fadd { left, right } => {
+                        let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        (FloatOp::Add { a, b }, vec![a, b])
+                    }
+                    _ => return Ok(false),
+                };
+                let reads: Vec<u32> = operands.iter().map(|&operand| value_of(operand, &nodes)).collect();
+                let mut node = DagNode::new(if is_product { "flocal" } else { "fshared" }, FLOAT_ARITH_LATENCY)
+                    .hazard(HAZARD_FPU)
+                    .reads(&reads)
+                    .writes(&[next_value]);
+                next_value += 1;
+                if matches!(op, FloatOp::Mul { .. }) {
+                    node = node.gate(FLOAT_MUL_GATE);
+                }
+                if is_product && is_root {
+                    node = node.local_home();
+                }
+                nodes.push(node);
+                ops.push(op);
+                if is_root {
+                    local_operands.push(Operand::Node(index));
+                    built.push((arith as *const Tree, Operand::Node(index)));
+                } else {
+                    built.push((arith as *const Tree, Operand::Node(index)));
+                }
+            }
+        }
+        // The SINK: a store reading every escaping local + every tail-read
+        // param — it drives liveness/window and emits nothing.
+        let mut sink_reads: Vec<u32> = Vec::new();
+        for &index in &escaping_locals {
+            if let Operand::Node(node) = local_operands[index] {
+                sink_reads.push(nodes[node].writes[0]);
+            }
+        }
+        for (name, value) in &param_ids {
+            if reads_of(then_value, name) + reads_of(else_value, name) > 0 {
+                sink_reads.push(*value);
+            }
+        }
+        if !nodes.is_empty() {
+            nodes.push(DagNode::new("sink", 1).kind(OpKind::Store).reads(&sink_reads));
+            ops.push(FloatOp::Sink);
+        }
+
+        // ---- shared registers + emission ----
+        let instructions_before = self.output.instructions.len();
+        let relocations_before = self.output.relocations.len();
+        let bump_before = self.output.anonymous_label_bump;
+        let rollback = |generator: &mut Generator| {
+            generator.output.instructions.truncate(instructions_before);
+            generator.output.relocations.truncate(relocations_before);
+            generator.output.anonymous_label_bump = bump_before;
+            generator.float_pseudo_params.clear();
+        };
+        let mut condition_encoding: Option<(u8, u8)> = None;
+        if !nodes.is_empty() {
+            let order = linearize(&nodes);
+            let mut model = FROZEN_FLOAT_REG;
+            model.tier_position_desc = true;
+            model.window_floor = window_floor;
+            // The sink absorbs every consumer, so there is no return node;
+            // the shared DAG still allocates on the reverse/tier machine.
+            model.void_forward = false;
+            let registers = assign_float_registers(&nodes, &order, &params, model);
+            if registers.iter().enumerate().any(|(index, register)| {
+                register.is_none() && !matches!(ops[index], FloatOp::Sink)
+            }) {
+                return Ok(false);
+            }
+            let register_of = |operand: Operand| -> u8 {
+                match operand {
+                    Operand::Param(value) => params.iter().find(|&&(v, _)| v == value).map(|&(_, register)| register).unwrap_or(1),
+                    Operand::Node(index) => registers[index].unwrap_or(1),
+                }
+            };
+            // Pool constants intern in SOURCE order (the frozen convention):
+            // the locals' initializers left-to-right here; each tail then
+            // self-interns its own literals at claim time — while the lfd's
+            // emit in schedule order (measured: ksin_dual's .sdata2).
+            for local in &function.locals {
+                if let Some(init) = local.initializer.as_ref() {
+                    let mut literals: Vec<u64> = Vec::new();
+                    collect_literals(init, &mut literals);
+                    for bits in literals {
+                        self.output.intern_constant(bits, 8);
+                    }
+                }
+            }
+            let shared_loads = ops.iter().filter(|op| matches!(op, FloatOp::Const(_))).count();
+            let mut emitted_ops = 0usize;
+            let mut emitted_loads = 0usize;
+            for &node in &order {
+                if matches!(ops[node], FloatOp::Sink) {
+                    continue;
+                }
+                let d = registers[node].expect("checked above");
+                match &ops[node] {
+                    FloatOp::Const(bits) => {
+                        self.load_double_constant(d, *bits);
+                        emitted_loads += 1;
+                    }
+                    FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
+                        d,
+                        a: register_of(*a),
+                        c: register_of(*c),
+                        b: register_of(*b),
+                    }),
+                    FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble {
+                        d,
+                        a: register_of(*a),
+                        c: register_of(*c),
+                        b: register_of(*b),
+                    }),
+                    FloatOp::Fmsub { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplySubtractDouble {
+                        d,
+                        a: register_of(*a),
+                        c: register_of(*c),
+                        b: register_of(*b),
+                    }),
+                    FloatOp::Mul { a, c } => {
+                        let (mut ra, mut rc) = (register_of(*a), register_of(*c));
+                        let both_params = matches!(a, Operand::Param(_)) && matches!(c, Operand::Param(_));
+                        let const_a = matches!(a, Operand::Node(index) if matches!(ops[*index], FloatOp::Const(_)));
+                        if !both_params && !const_a && rc > ra {
+                            std::mem::swap(&mut ra, &mut rc);
+                        }
+                        self.output.instructions.push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
+                    }
+                    FloatOp::Add { a, b } => self.output.instructions.push(Instruction::FloatAddDouble {
+                        d,
+                        a: register_of(*a),
+                        b: register_of(*b),
+                    }),
+                    _ => {
+                        rollback(self);
+                        return Ok(false);
+                    }
+                }
+                emitted_ops += 1;
+                // The compare interleaves after the SECOND shared load
+                // (measured: A/ksin_dual), or after the FIRST float op
+                // when the shared DAG is loadless (measured: fire-350).
+                let trigger = if shared_loads >= 2 { emitted_loads == 2 && matches!(ops[node], FloatOp::Const(_)) } else { emitted_ops == 1 };
+                if condition_encoding.is_none() && trigger {
+                    condition_encoding = Some(self.emit_condition_test(&guard.condition)?);
+                }
+            }
+            // Pseudo-params for the tails.
+            for &index in &escaping_locals {
+                if let Operand::Node(node) = local_operands[index] {
+                    self.float_pseudo_params.push((local_names[index].0.clone(), registers[node].expect("checked above")));
+                }
+            }
+        }
+        let (options, condition_bit) = match condition_encoding {
+            Some(encoding) => encoding,
+            None => self.emit_condition_test(&guard.condition)?,
+        };
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        // The if pair + the else-join label (measured: pools at @8/@9).
+        self.output.anonymous_label_bump += 3;
         let synthetic = |value: &Expression| Function {
             return_type: function.return_type,
             name: function.name.clone(),
@@ -1250,38 +1559,6 @@ impl Generator {
             statements: Vec::new(),
             guards: Vec::new(),
             return_expression: Some(value.clone()),
-        };
-        let instructions_before = self.output.instructions.len();
-        let relocations_before = self.output.relocations.len();
-        let bump_before = self.output.anonymous_label_bump;
-        if let (Some((name, init)), Some(register)) = (&shared_local, shared_register) {
-            // z = x OP y in place, ahead of the compare (measured slot 0).
-            let Expression::Binary { operator, left, right } = init else {
-                unreachable!("gated above");
-            };
-            let register_of = |side: &Expression| -> Compilation<u8> {
-                let Expression::Variable(param) = side else { unreachable!("gated above") };
-                Ok(self.locations.get(param).expect("gated above").register)
-            };
-            let a = register_of(left)?;
-            let b = register_of(right)?;
-            let instruction = match operator {
-                BinaryOperator::Multiply => Instruction::FloatMultiplyDouble { d: register, a, c: b },
-                _ => Instruction::FloatAddDouble { d: register, a, b },
-            };
-            self.output.instructions.push(instruction);
-            self.float_pseudo_params.push((name.to_string(), register));
-        }
-        let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
-        let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-        // The if pair + the else-join label (measured: pools at @8/@9).
-        self.output.anonymous_label_bump += 3;
-        let rollback = |generator: &mut Generator| {
-            generator.output.instructions.truncate(instructions_before);
-            generator.output.relocations.truncate(relocations_before);
-            generator.output.anonymous_label_bump = bump_before;
-            generator.float_pseudo_params.clear();
         };
         match self.try_float_dag_return(&synthetic(then_value)) {
             Ok(true) => {}
