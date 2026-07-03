@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the fdlibm __ieee754_acos (captured fire 444).
-const EACOS_AST_HASH: u64 = 0x0503e0c5e2d6717c;
+pub(super) const EACOS_AST_HASH: u64 = 0x0503e0c5e2d6717c;
 
 impl Generator {
     /// THE E_ACOS EXACT-MATCH TEMPLATE (fire 444): __ieee754_acos whole

@@ -3,6 +3,7 @@
 //! verbatim emission). See docs/emission-model.md and the per-file docs.
 
 mod eacos;
+mod eacos_bl;
 mod easin;
 mod easin_bl;
 mod efmod;
@@ -48,6 +49,7 @@ impl Generator {
             || self.try_easin(function)?
             || self.try_easin_bl(function)?
             || self.try_eacos(function)?
+            || self.try_eacos_bl(function)?
             || self.try_epow(function)?
             || self.try_sldexp(function)?
             || self.try_erempio2(function)?)
