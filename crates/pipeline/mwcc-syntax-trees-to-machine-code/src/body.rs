@@ -3504,7 +3504,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if !else_body.is_empty() || stores.len() != locals.len() {
+        if stores.len() != locals.len() {
             return Ok(false);
         }
         // The BLOCK: a recursive tree over the measured statement forms —
@@ -3574,6 +3574,12 @@ impl Generator {
         let mut else_arms = 0usize;
         if !validate_block(block, &locals, x, &mut mutated, &mut inner_conditions, &mut else_arms) {
             return Ok(false);
+        }
+        if !else_body.is_empty() {
+            else_arms += 1;
+            if !validate_block(else_body, &locals, x, &mut mutated, &mut inner_conditions, &mut else_arms) {
+                return Ok(false);
+            }
         }
         if mutated.is_empty() {
             return Ok(false);
@@ -3678,7 +3684,9 @@ impl Generator {
             let Ok(bound) = i16::try_from(bound) else {
                 return Ok(false);
             };
-            let elsewhere = block_reads(block, guard.name)
+            let condition_reads =
+                count_name_occurrences(condition, guard.name) + block_condition_reads(block, guard.name);
+            let non_condition = block_reads(block, guard.name) - block_condition_reads(block, guard.name)
                 + stores
                     .iter()
                     .map(|statement| match statement {
@@ -3689,10 +3697,15 @@ impl Generator {
                         _ => 0,
                     })
                     .sum::<usize>();
-            if elsewhere != 0 {
+            if non_condition != 0 {
                 return Ok(false);
             }
-            guard_compare = Some((bound, guard.offset_k));
+            if condition_reads == 1 {
+                // Single read: the -K folds into the scratch compare.
+                guard_compare = Some((bound, guard.offset_k));
+            }
+            // Multi-read: the home takes the FULL value (addi into the
+            // home, measured L1) and every condition reads it plainly.
         }
         // Registers: a punned local whose loaded value only feeds its own
         // writeback takes the r0 scratch; one that feeds COMPUTATION (the
@@ -3781,64 +3794,86 @@ impl Generator {
             // only the arm's own labels (measured: pool @50 vs +3's @53).
             self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
         }
-        let (options, condition_bit) = match hoisted {
-            Some(encoding) => encoding,
-            None if float_guard.is_some() => (4, 1), // ble — the > 0.0 skip
-            None => {
-                // The guard local computes AFTER the loads: the fused
-                // shift+mask (rlwinm) or plain srawi into its home, the
-                // trailing -K folded into a scratch compare (measured).
-                let guard = guard_local.as_ref().expect("gated above");
-                let source_register = locals
-                    .iter()
-                    .position(|&(name, _)| name == guard.source)
-                    .map(|index| registers[index])
-                    .expect("source is punned");
-                match guard.mask {
-                    Some(mask) => {
-                        let rotated = (32 - guard.shift as u32) % 32;
-                        let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
-                            return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
-                        };
-                        self.output.instructions.push(Instruction::RotateAndMask {
-                            a: guard_register,
-                            s: source_register,
-                            shift: rotated as u8,
-                            begin,
-                            end,
-                        });
-                    }
-                    None => {
-                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
-                            a: guard_register,
-                            s: source_register,
-                            shift: guard.shift,
-                        });
-                    }
-                }
-                let (bound, offset_k) = guard_compare.expect("gated above");
-                if offset_k != 0 {
-                    let Ok(negative) = i16::try_from(-offset_k) else {
-                        return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
+        if let Some(guard) = &guard_local {
+            // The guard local computes AFTER the loads: the fused shift+mask
+            // (rlwinm) or plain srawi into its home; a SINGLE condition read
+            // folds the -K into the scratch compare, MULTIPLE reads land the
+            // full value in the home (measured L1's addi r3,r3,-1023).
+            let source_register = locals
+                .iter()
+                .position(|&(name, _)| name == guard.source)
+                .map(|index| registers[index])
+                .expect("source is punned");
+            match guard.mask {
+                Some(mask) => {
+                    let rotated = (32 - guard.shift as u32) % 32;
+                    let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
+                        return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
                     };
-                    self.output.instructions.push(Instruction::AddImmediate {
-                        d: 0,
+                    self.output.instructions.push(Instruction::RotateAndMask {
                         a: guard_register,
-                        immediate: negative,
-                    });
-                    self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: bound });
-                } else {
-                    self.output.instructions.push(Instruction::CompareWordImmediate {
-                        a: guard_register,
-                        immediate: bound,
+                        s: source_register,
+                        shift: rotated as u8,
+                        begin,
+                        end,
                     });
                 }
-                (4, 0) // bge — the Less guard's skip sense
+                None => {
+                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: guard_register,
+                        s: source_register,
+                        shift: guard.shift,
+                    });
+                }
             }
-        };
+            if guard_compare.is_none() && guard.offset_k != 0 {
+                let Ok(negative) = i16::try_from(-guard.offset_k) else {
+                    return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: guard_register,
+                    a: guard_register,
+                    immediate: negative,
+                });
+            }
+        }
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
-        self.emit_branch_conditional_to(options, condition_bit, join);
+        let outer_laddered = !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
+        if outer_laddered {
+            // STAGED, NOT SHIPPABLE: the top-level ladder claims but its
+            // registers diverge (L2's store-only i0 keeps r0 with the
+            // guard-addi live, where the else-less P1 pushes it to r4 —
+            // the allocator rule is unfitted). Defer until measured.
+            return Ok(false);
+        }
+        if !outer_laddered {
+            let (options, condition_bit) = match hoisted {
+                Some(encoding) => encoding,
+                None if float_guard.is_some() => (4, 1), // ble — the > 0.0 skip
+                None => {
+                    let (bound, offset_k) = guard_compare.expect("gated above");
+                    if offset_k != 0 {
+                        let Ok(negative) = i16::try_from(-offset_k) else {
+                            return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
+                        };
+                        self.output.instructions.push(Instruction::AddImmediate {
+                            d: 0,
+                            a: guard_register,
+                            immediate: negative,
+                        });
+                        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: bound });
+                    } else {
+                        self.output.instructions.push(Instruction::CompareWordImmediate {
+                            a: guard_register,
+                            immediate: bound,
+                        });
+                    }
+                    (4, 0) // bge — the Less guard's skip sense
+                }
+            };
+            self.emit_branch_conditional_to(options, condition_bit, join);
+        }
         // The punned locals resolve in every inner condition through
         // temporary locations at their scratch registers, installed around
         // the whole block walk.
@@ -3859,12 +3894,34 @@ impl Generator {
                 ),
             ));
         }
-        let bindings: Vec<(String, u8)> = locals
+        let mut bindings: Vec<(String, u8)> = locals
             .iter()
             .enumerate()
             .map(|(index, &(name, _))| (name.to_string(), registers[index]))
             .collect();
-        let walked = self.emit_writeback_block(block, &bindings, join, epilogue);
+        if let Some(guard) = &guard_local {
+            bindings.push((guard.name.to_string(), guard_register));
+            saved.push((
+                guard.name.to_string(),
+                self.locations.insert(
+                    guard.name.to_string(),
+                    crate::generator::Location {
+                        class: ValueClass::General,
+                        register: guard_register,
+                        signed: true,
+                        width: 32,
+                        pointee: None,
+                        stride: None,
+                    },
+                ),
+            ));
+        }
+        let outer_statement = [function.statements[0].clone()];
+        let walked = if outer_laddered {
+            self.emit_writeback_block(&outer_statement, &bindings, join, epilogue)
+        } else {
+            self.emit_writeback_block(block, &bindings, join, epilogue)
+        };
         for (name, previous) in saved {
             match previous {
                 Some(location) => {
@@ -3943,6 +4000,18 @@ impl Generator {
                 }
                 Statement::If { condition, then_body, else_body } => {
                     let (options, condition_bit) = self.emit_condition_test(condition)?;
+                    if let [Statement::Return(Some(_))] = else_body.as_slice() {
+                        // The whole ELSE returns x: the branch INVERTS — the
+                        // taken sense enters the then arm, the return lands
+                        // inline as b epilogue (measured: blt; b epi; muts).
+                        let continuation = self.fresh_label();
+                        self.emit_branch_conditional_to(options ^ 8, condition_bit, continuation);
+                        self.emit_branch_to(epilogue);
+                        self.bind_label(continuation);
+                        self.emit_writeback_block(then_body, bindings, join, epilogue)?;
+                        index += 1;
+                        continue;
+                    }
                     if !else_body.is_empty() {
                         // if/ELSE-IF: branch over the then arm; b join after it.
                         let else_label = self.fresh_label();
