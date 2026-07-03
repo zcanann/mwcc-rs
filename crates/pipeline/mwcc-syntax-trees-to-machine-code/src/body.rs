@@ -3998,24 +3998,56 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // i0 >= 0
-        let sign1_ok = matches!(sign1,
-            Expression::Binary { operator: BinaryOperator::GreaterEqual, left, right }
-                if matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0))
-                    && crate::analysis::constant_value(right) == Some(0));
-        if !sign1_ok {
+        // The sign comparison: `i0 >= 0` (s_floor) or `i0 < 0` (s_ceil) —
+        // the emitted branch is the inverted sense to the else arm either
+        // way.
+        let Expression::Binary { operator: sign1_op, left: sign1_l, right: sign1_r } = sign1 else {
+            return Ok(false);
+        };
+        let sign1_branch = match sign1_op {
+            BinaryOperator::GreaterEqual => (12u8, 0u8), // blt
+            BinaryOperator::Less => (4u8, 0u8),          // bge
+            _ => return Ok(false),
+        };
+        if !matches!(sign1_l.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0))
+            || crate::analysis::constant_value(sign1_r) != Some(0)
+        {
             return Ok(false);
         }
-        // then: i0 = i1 = 0 (the chained assign).
-        let chain_ok = matches!(sign1_then.as_slice(),
-            [Statement::Assign { name, value: Expression::Assign { target, value } }]
-                if local_index(name) == Some(i0)
-                    && matches!(target.as_ref(), Expression::Variable(v) if local_index(v) == Some(i1))
-                    && crate::analysis::constant_value(value) == Some(0));
-        if !chain_ok {
-            return Ok(false);
+        // A constant pair `[i0 = C, i1 = C']` (each li or lis form), or the
+        // chained `i0 = i1 = 0` (emitted inner-first).
+        enum ConstPair {
+            Chained0,
+            Pair { first: i64, second: i64 },
         }
-        // else: If{((i0 & M) | i1) != 0, [i0 = HIGH, i1 = 0]}.
+        let parse_pair = |body: &[Statement]| -> Option<ConstPair> {
+            match body {
+                [Statement::Assign { name, value: Expression::Assign { target, value } }]
+                    if local_index(name) == Some(i0)
+                        && matches!(target.as_ref(), Expression::Variable(v) if local_index(v) == Some(i1))
+                        && crate::analysis::constant_value(value) == Some(0) =>
+                {
+                    Some(ConstPair::Chained0)
+                }
+                [Statement::Assign { name: a, value: av }, Statement::Assign { name: b, value: bv }]
+                    if local_index(a) == Some(i0) && local_index(b) == Some(i1) =>
+                {
+                    let first = crate::analysis::constant_value(av)? as u32 as i32 as i64;
+                    let second = crate::analysis::constant_value(bv)? as u32 as i32 as i64;
+                    let representable = |constant: i64| {
+                        i16::try_from(constant).is_ok() || constant & 0xffff == 0
+                    };
+                    (representable(first) && representable(second))
+                        .then_some(ConstPair::Pair { first, second })
+                }
+                _ => None,
+            }
+        };
+        let Some(sign1_pair) = parse_pair(sign1_then) else {
+            return Ok(false);
+        };
+        // else: If{((i0 [& M]) | i1) != 0, [pair]} — the mask is optional
+        // (s_ceil's plain `(i0 | i1) != 0`).
         let [Statement::If { condition: mag_cond, then_body: mag_then, else_body: mag_else }] =
             sign1_else.as_slice()
         else {
@@ -4024,7 +4056,7 @@ impl Generator {
         if !mag_else.is_empty() {
             return Ok(false);
         }
-        let Some((mag_begin, mag_end, _)) = (|| {
+        let Some(mag_mask) = (|| {
             let Expression::Binary { operator: BinaryOperator::NotEqual, left, right } = mag_cond
             else {
                 return None;
@@ -4040,35 +4072,24 @@ impl Generator {
             if !matches!(or_r.as_ref(), Expression::Variable(v) if local_index(v) == Some(i1)) {
                 return None;
             }
-            let Expression::Binary { operator: BinaryOperator::BitAnd, left: and_l, right: and_r } =
-                or_l.as_ref()
-            else {
-                return None;
-            };
-            if !matches!(and_l.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0)) {
-                return None;
+            match or_l.as_ref() {
+                Expression::Variable(v) if local_index(v) == Some(i0) => Some(None),
+                Expression::Binary { operator: BinaryOperator::BitAnd, left: and_l, right: and_r }
+                    if matches!(and_l.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0)) =>
+                {
+                    let mask = crate::analysis::constant_value(and_r)?;
+                    let (begin, end) = crate::analysis::rlwinm_mask(mask)?;
+                    Some(Some((begin, end)))
+                }
+                _ => None,
             }
-            let mask = crate::analysis::constant_value(and_r)?;
-            let (begin, end) = crate::analysis::rlwinm_mask(mask)?;
-            Some((begin, end, mask))
         })() else {
             return Ok(false);
         };
-        let [Statement::Assign { name: mag_a, value: mag_av }, Statement::Assign { name: mag_b, value: mag_bv }] =
-            mag_then.as_slice()
+        let Some(ConstPair::Pair { first: mag_first, second: mag_second }) = parse_pair(mag_then)
         else {
             return Ok(false);
         };
-        let Some(high_value) = crate::analysis::constant_value(mag_av) else {
-            return Ok(false);
-        };
-        if local_index(mag_a) != Some(i0)
-            || high_value & 0xffff != 0
-            || local_index(mag_b) != Some(i1)
-            || crate::analysis::constant_value(mag_bv) != Some(0)
-        {
-            return Ok(false);
-        }
         // ARM2 (fire 399): [i = C >> j0, If{test, [Ret x]}, If{huge, [If{i0<0, [i0 += C2>>j0]}, i0 &= ~i, i1 = 0]}].
         let [Statement::Assign { name: a2_shift_name, value: a2_shift_value }, Statement::If { condition: a2_test, then_body: a2_ret, else_body: a2_test_else }, Statement::If { condition: a2_guard, then_body: a2_guard_body, else_body: a2_guard_else }] =
             arm2.as_slice()
@@ -4116,10 +4137,23 @@ impl Generator {
         else {
             return Ok(false);
         };
+        let parse_sign = |condition: &Expression| -> Option<(u8, u8)> {
+            let Expression::Binary { operator, left, right } = condition else { return None };
+            if !matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0))
+                || crate::analysis::constant_value(right) != Some(0)
+            {
+                return None;
+            }
+            match operator {
+                BinaryOperator::Less => Some((4, 0)),    // bge — skip when >= 0
+                BinaryOperator::Greater => Some((4, 1)), // ble — skip when <= 0
+                _ => None,
+            }
+        };
+        let Some(a2_sign_branch) = parse_sign(a2_sign) else {
+            return Ok(false);
+        };
         let a2_ok = a2_sign_else.is_empty()
-            && matches!(a2_sign, Expression::Binary { operator: BinaryOperator::Less, left, right }
-                if matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0))
-                    && crate::analysis::constant_value(right) == Some(0))
             && matches!(a2_add.as_slice(), [Statement::Assign { name, value }]
                 if local_index(name) == Some(i0)
                     && matches!(value, Expression::Binary { operator: BinaryOperator::Add, left, right }
@@ -4176,10 +4210,10 @@ impl Generator {
         else {
             return Ok(false);
         };
+        let Some(a3_sign_branch) = parse_sign(a3_sign) else {
+            return Ok(false);
+        };
         let a3_frame_ok = a3_sign_else.is_empty()
-            && matches!(a3_sign, Expression::Binary { operator: BinaryOperator::Less, left, right }
-                if matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0))
-                    && crate::analysis::constant_value(right) == Some(0))
             && local_index(a3_andc_name) == Some(i1)
             && matches!(a3_andc_value, Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
                 if matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(i1))
@@ -4253,18 +4287,30 @@ impl Generator {
         if !carry_ok {
             return Ok(false);
         }
-        // -- the model (positions per the fire-401 capture template) --
+        // -- the model (positions computed from the emission template) --
         use mwcc_vreg::int_alloc::{allocate, Class, Value};
+        // arm1's sign diamond: [cmpwi, branch, then(1 or 2), b] + else
+        // ([clrlwi]?, or., beq, lis, li, b).
+        let sign1_then_len: u32 = match &sign1_pair {
+            ConstPair::Chained0 => 2,
+            ConstPair::Pair { .. } => 2,
+        };
+        let mag_len: u32 = if mag_mask.is_some() { 6 } else { 5 };
+        let arm1_diamond = 2 + sign1_then_len + 1 + mag_len;
+        let arm2_base = 15 + arm1_diamond; // preamble 0..9 + float(4)+ble @10..14
+        let ladder2 = arm2_base + 19;
+        let arm3_base = ladder2 + 6;
+        let join_at = arm3_base + 26;
         let values = [
-            Value { class: Class::Temp, def: 4, last: 5 },        // extract temp
-            Value { class: Class::Temp, def: 26, last: 40 },      // arm2 lis (CSE to sraw2)
-            Value { class: Class::Mask, def: 52, last: 53 },      // arm3 li mask
-            Value { class: Class::Mask, def: 69, last: 70 },      // carry one
-            Value { class: Class::Scrutinee, def: 5, last: 68 },  // j0
-            Value { class: Class::LoadSurviving, def: 2, last: 77 }, // i0
-            Value { class: Class::LoadSurviving, def: 3, last: 78 }, // i1
-            Value { class: Class::ArmShift, def: 28, last: 42 },  // arm2 i
-            Value { class: Class::ArmShift, def: 53, last: 76 },  // arm3 i
+            Value { class: Class::Temp, def: 4, last: 5 },
+            Value { class: Class::Temp, def: arm2_base, last: arm2_base + 14 }, // lis..sraw2 (CSE)
+            Value { class: Class::Mask, def: arm3_base + 1, last: arm3_base + 2 },
+            Value { class: Class::Mask, def: arm3_base + 18, last: arm3_base + 19 }, // the ONE
+            Value { class: Class::Scrutinee, def: 5, last: arm3_base + 17 },   // ..subfic
+            Value { class: Class::LoadSurviving, def: 2, last: join_at },
+            Value { class: Class::LoadSurviving, def: 3, last: join_at + 1 },
+            Value { class: Class::ArmShift, def: arm2_base + 2, last: arm2_base + 16 },
+            Value { class: Class::ArmShift, def: arm3_base + 2, last: arm3_base + 25 },
         ];
         let registers = allocate(&values);
         let extract_temp = registers[0];
@@ -4329,24 +4375,47 @@ impl Generator {
         self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
         self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
         self.emit_branch_conditional_to(4, 1, join); // ble
-        let arm1_neg = self.fresh_label();
+        let arm1_else = self.fresh_label();
         self.output.instructions.push(Instruction::CompareWordImmediate { a: i0_reg, immediate: 0 });
-        self.emit_branch_conditional_to(12, 0, arm1_neg); // blt — the arm swap
-        self.output.instructions.push(Instruction::load_immediate(i1_reg, 0));
-        self.output.instructions.push(Instruction::load_immediate(i0_reg, 0));
+        self.emit_branch_conditional_to(sign1_branch.0, sign1_branch.1, arm1_else);
+        let emit_constant = |generator: &mut Self, register: u8, constant: i64| {
+            if let Ok(small) = i16::try_from(constant) {
+                generator.output.instructions.push(Instruction::load_immediate(register, small));
+            } else {
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(register, (constant >> 16) as i16));
+            }
+        };
+        match &sign1_pair {
+            ConstPair::Chained0 => {
+                // The chained `i0 = i1 = 0` assigns inner-first.
+                self.output.instructions.push(Instruction::load_immediate(i1_reg, 0));
+                self.output.instructions.push(Instruction::load_immediate(i0_reg, 0));
+            }
+            ConstPair::Pair { first, second } => {
+                emit_constant(self, i0_reg, *first);
+                emit_constant(self, i1_reg, *second);
+            }
+        }
         self.emit_branch_to(join);
-        self.bind_label(arm1_neg);
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 0,
-            s: i0_reg,
-            shift: 0,
-            begin: mag_begin,
-            end: mag_end,
-        });
-        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: i1_reg });
+        self.bind_label(arm1_else);
+        if let Some((begin, end)) = mag_mask {
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: 0,
+                s: i0_reg,
+                shift: 0,
+                begin,
+                end,
+            });
+            self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: i1_reg });
+        } else {
+            self.output.instructions.push(Instruction::OrRecord { a: 0, s: i0_reg, b: i1_reg });
+        }
         self.emit_branch_conditional_to(12, 2, join); // beq
-        self.output.instructions.push(Instruction::load_immediate_shifted(i0_reg, (high_value >> 16) as i16));
-        self.output.instructions.push(Instruction::load_immediate(i1_reg, 0));
+        emit_constant(self, i0_reg, mag_first);
+        emit_constant(self, i1_reg, mag_second);
         self.emit_branch_to(join);
         // ARM2.
         self.bind_label(arm2_at);
@@ -4370,7 +4439,7 @@ impl Generator {
         self.emit_branch_conditional_to(4, 1, join); // ble
         let a2_skip = self.fresh_label();
         self.output.instructions.push(Instruction::CompareWordImmediate { a: i0_reg, immediate: 0 });
-        self.emit_branch_conditional_to(4, 0, a2_skip); // bge
+        self.emit_branch_conditional_to(a2_sign_branch.0, a2_sign_branch.1, a2_skip);
         self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: 0, s: a2_temp, b: j0_reg });
         self.output.instructions.push(Instruction::Add { d: i0_reg, a: i0_reg, b: 0 });
         self.bind_label(a2_skip);
@@ -4404,7 +4473,7 @@ impl Generator {
         let a3_carry = self.fresh_label();
         let a3_no_carry = self.fresh_label();
         self.output.instructions.push(Instruction::CompareWordImmediate { a: i0_reg, immediate: 0 });
-        self.emit_branch_conditional_to(4, 0, a3_andc); // bge
+        self.emit_branch_conditional_to(a3_sign_branch.0, a3_sign_branch.1, a3_andc);
         self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: k5 });
         self.emit_branch_conditional_to(4, 2, a3_carry); // bne
         self.output.instructions.push(Instruction::AddImmediate { d: i0_reg, a: i0_reg, immediate: 1 });
