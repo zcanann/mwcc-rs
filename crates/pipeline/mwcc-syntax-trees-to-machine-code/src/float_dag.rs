@@ -733,6 +733,36 @@ impl Generator {
 /// Lower an expression to the contracted tree. `None` defers: anything
 /// outside the captured vocabulary (params + distinct double literals
 /// combined by fmadd/fmul).
+/// The destination of a float-family instruction (the dry-run claim
+/// harvest for the escaping-root rule).
+fn float_def(instruction: &Instruction) -> Option<u8> {
+    match instruction {
+        Instruction::LoadFloatDouble { d, .. }
+        | Instruction::FloatMultiplyDouble { d, .. }
+        | Instruction::FloatAddDouble { d, .. }
+        | Instruction::FloatSubtractDouble { d, .. }
+        | Instruction::FloatMultiplyAddDouble { d, .. }
+        | Instruction::FloatMultiplySubtractDouble { d, .. }
+        | Instruction::FloatNegativeMultiplySubtractDouble { d, .. } => Some(*d),
+        _ => None,
+    }
+}
+
+fn float_reads_register(instruction: &Instruction, register: u8) -> bool {
+    match instruction {
+        Instruction::FloatMultiplyDouble { a, c, .. } => *a == register || *c == register,
+        Instruction::FloatAddDouble { a, b, .. } | Instruction::FloatSubtractDouble { a, b, .. } => {
+            *a == register || *b == register
+        }
+        Instruction::FloatMultiplyAddDouble { a, c, b, .. }
+        | Instruction::FloatMultiplySubtractDouble { a, c, b, .. }
+        | Instruction::FloatNegativeMultiplySubtractDouble { a, c, b, .. } => {
+            *a == register || *c == register || *b == register
+        }
+        _ => false,
+    }
+}
+
 fn build_tree(
     expression: &Expression,
     params: &[(String, u32)],
@@ -1479,20 +1509,6 @@ impl Generator {
             if tail_literals.iter().any(|bits| shared_literals.contains(bits)) {
                 return Ok(false);
             }
-            // An fmadd-family-rooted chain local with LITERAL-FREE tails
-            // takes MIN-dying at its root where the literal-tail class takes
-            // the C-operand (probed both ways at depth 3/4) — the
-            // discriminator is unfitted, so the literal-free class defers
-            // (its Mul-rooted sibling is consistent under either rule).
-            if tail_literals.is_empty()
-                && local_trees.iter().any(|tree| {
-                    !matches!(tree, Tree::Mul { .. })
-                        && matches!(tree, Tree::Madd { .. } | Tree::Fadd { .. } | Tree::Fnmsub { .. } | Tree::Fmsub { .. })
-                        && count_arith(tree) > 1
-                })
-            {
-                return Ok(false);
-            }
         }
         // Tail liveness: which locals/params each tail reads.
         let reads_of = |tree_value: &Expression, name: &str| crate::analysis::count_name_occurrences(tree_value, name);
@@ -1545,6 +1561,7 @@ impl Generator {
         let mut ops: Vec<FloatOp> = Vec::new();
         let mut built: Vec<(*const Tree, Operand)> = Vec::new();
         let mut local_operands: Vec<Operand> = Vec::new();
+        let mut local_is_product: Vec<bool> = Vec::new();
         let mut next_value = 40u32;
         if in_frame {
             nodes.push(DagNode::new("lfd_x", LOAD_LATENCY).writes(&[9]));
@@ -1611,13 +1628,14 @@ impl Generator {
             // depth 5 DIFF — the deeper schedules interleave the chain to
             // cap the live window, which the frozen order model does not
             // reproduce yet).
-            let max_chain = if in_frame { 5 } else { 3 };
+            let max_chain = if in_frame { 6 } else { 3 };
             if !tree_literals.is_empty() && (refs.len() < 3 || refs.len() > max_chain) {
                 return Ok(false);
             }
             let is_product = refs.len() == 1
                 && matches!(local_tree, Tree::Mul { .. } | Tree::Fadd { .. })
                 && tree_literals.is_empty();
+            local_is_product.push(is_product);
             for (order_index, &(arith, _)) in refs.iter().enumerate() {
                 let resolve = |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
                     match subtree {
@@ -1713,6 +1731,17 @@ impl Generator {
             ops.push(FloatOp::Sink);
         }
 
+        let synthetic = |value: &Expression| Function {
+            return_type: function.return_type,
+            name: function.name.clone(),
+            is_static: function.is_static,
+            is_weak: function.is_weak,
+            parameters: function.parameters.clone(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(value.clone()),
+        };
         // ---- shared registers + emission ----
         let instructions_before = self.output.instructions.len();
         let relocations_before = self.output.relocations.len();
@@ -1738,16 +1767,12 @@ impl Generator {
             }) {
                 return Ok(false);
             }
-            let register_of = |operand: Operand| -> u8 {
-                match operand {
-                    Operand::Param(value) => params.iter().find(|&&(v, _)| v == value).map(|&(_, register)| register).unwrap_or(1),
-                    Operand::Node(index) => registers[index].unwrap_or(1),
-                }
-            };
+            let mut registers = registers;
             // Pool constants intern in SOURCE order (the frozen convention):
-            // the locals' initializers left-to-right here; each tail then
-            // self-interns its own literals at claim time — while the lfd's
-            // emit in schedule order (measured: ksin_dual's .sdata2).
+            // the locals' initializers left-to-right BEFORE the tail
+            // dry-runs below intern the tails' literals — while the lfd's
+            // emit in schedule order (measured: ksin_dual's .sdata2, and
+            // the 1049 canary's pool caught the dry-run reordering).
             for local in &function.locals {
                 if let Some(init) = local.initializer.as_ref() {
                     let mut literals: Vec<u64> = Vec::new();
@@ -1757,6 +1782,113 @@ impl Generator {
                     }
                 }
             }
+            // THE ESCAPING-ROOT RULE (fire 365, causal probes): the non-tier
+            // chain root allocates ASCENDING, skipping registers each tail
+            // claims BEFORE the root's last read on that path, plus
+            // everything still live at the root's definition. Both tails
+            // dry-run with the root as a HIGH placeholder pseudo (f30 — the
+            // tails' scratch fills below it, independent), the claims are
+            // harvested from the emitted instructions, and the register is
+            // fixed before the shared emission (deterministic re-claim).
+            let chain_locals: Vec<usize> = (0..local_trees.len())
+                .filter(|&index| !local_is_product[index] && escaping_locals.contains(&index))
+                .collect();
+            if let [chain_index] = chain_locals.as_slice() {
+                let Operand::Node(root_node) = local_operands[*chain_index] else {
+                    return Ok(false);
+                };
+                let mut dry_pseudos: Vec<(String, u8)> = Vec::new();
+                for &index in &escaping_locals {
+                    if let Operand::Node(node) = local_operands[index] {
+                        let register = if index == *chain_index {
+                            30
+                        } else {
+                            registers[node].expect("checked above")
+                        };
+                        dry_pseudos.push((local_names[index].0.clone(), register));
+                    }
+                }
+                if in_frame {
+                    if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
+                        dry_pseudos.push((name.clone(), registers[0].expect("checked above")));
+                    }
+                }
+                let saved_pseudo = std::mem::take(&mut self.float_pseudo_params);
+                let saved_reload = self.float_reload_x.take();
+                let mut exclusions: Vec<u8> = Vec::new();
+                for tail in [then_value, else_value] {
+                    self.float_pseudo_params = dry_pseudos.clone();
+                    let mark = self.output.instructions.len();
+                    let relocation_mark = self.output.relocations.len();
+                    let bump_mark = self.output.anonymous_label_bump;
+                    let claimed = self.try_float_dag_return(&synthetic(tail));
+                    let claimed_ok = matches!(claimed, Ok(true));
+                    let mut last_read: Option<usize> = None;
+                    for (offset, instruction) in self.output.instructions[mark..].iter().enumerate() {
+                        if float_reads_register(instruction, 30) {
+                            last_read = Some(offset);
+                        }
+                    }
+                    if let Some(last) = last_read {
+                        for instruction in &self.output.instructions[mark..mark + last] {
+                            if let Some(register) = float_def(instruction) {
+                                if !exclusions.contains(&register) {
+                                    exclusions.push(register);
+                                }
+                            }
+                        }
+                    }
+                    self.output.instructions.truncate(mark);
+                    self.output.relocations.truncate(relocation_mark);
+                    self.output.anonymous_label_bump = bump_mark;
+                    if !claimed_ok || last_read.is_none() {
+                        self.float_pseudo_params = saved_pseudo;
+                        self.float_reload_x = saved_reload;
+                        return claimed.map(|_| false);
+                    }
+                }
+                self.float_pseudo_params = saved_pseudo;
+                self.float_reload_x = saved_reload;
+                // Everything still live at (or beyond) the root's slot.
+                let root_position = order.iter().position(|&node| node == root_node).expect("scheduled");
+                let live_end = |node: usize| -> usize {
+                    let write = nodes[node].writes.first().copied();
+                    (0..nodes.len())
+                        .filter(|&reader| {
+                            write.is_some_and(|value| nodes[reader].reads.contains(&value))
+                        })
+                        .map(|reader| order.iter().position(|&slot| slot == reader).unwrap_or(0))
+                        .max()
+                        .unwrap_or(root_position)
+                };
+                for node in 0..nodes.len() {
+                    if node == root_node {
+                        continue;
+                    }
+                    if let Some(register) = registers[node] {
+                        // Dying exactly AT the root is reusable — only
+                        // values living BEYOND it exclude their register.
+                        if live_end(node) > root_position && !exclusions.contains(&register) {
+                            exclusions.push(register);
+                        }
+                    }
+                }
+                for &(_, register) in &params {
+                    if !exclusions.contains(&register) {
+                        exclusions.push(register);
+                    }
+                }
+                let Some(root_register) = (0..32u8).find(|register| !exclusions.contains(register)) else {
+                    return Ok(false);
+                };
+                registers[root_node] = Some(root_register);
+            }
+            let register_of = |operand: Operand| -> u8 {
+                match operand {
+                    Operand::Param(value) => params.iter().find(|&&(v, _)| v == value).map(|&(_, register)| register).unwrap_or(1),
+                    Operand::Node(index) => registers[index].unwrap_or(1),
+                }
+            };
             let shared_loads = ops.iter().filter(|op| matches!(op, FloatOp::Const(_))).count();
             let mut emitted_ops = 0usize;
             let mut emitted_loads = 0usize;
@@ -1867,17 +1999,6 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
         // The if pair + the else-join label (measured: pools at @8/@9).
         self.output.anonymous_label_bump += 3;
-        let synthetic = |value: &Expression| Function {
-            return_type: function.return_type,
-            name: function.name.clone(),
-            is_static: function.is_static,
-            is_weak: function.is_weak,
-            parameters: function.parameters.clone(),
-            locals: Vec::new(),
-            statements: Vec::new(),
-            guards: Vec::new(),
-            return_expression: Some(value.clone()),
-        };
         match self.try_float_dag_return(&synthetic(then_value)) {
             Ok(true) => {}
             other => {
