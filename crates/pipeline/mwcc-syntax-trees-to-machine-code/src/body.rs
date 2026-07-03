@@ -2387,6 +2387,9 @@ impl Generator {
             }
             // Parameters live across the call go in callee-saved registers (r31
             // descending), saved in the prologue and reloaded in the epilogue.
+            if self.try_frsqrte_sqrt(function)? {
+                return Ok(());
+            }
             if self.try_float_callee_saved(function)? {
                 return Ok(());
             }
@@ -7663,6 +7666,188 @@ impl Generator {
     /// order — the LAST live parameter gets r31, the next r30, and so on — and the
     /// body/return then read the values from those registers. Returns whether it
     /// applied. (Locals, floats, and values passed to a call still defer.)
+    /// The __frsqrte NEWTON SQRT (fire 407, the Dolphin math_inlines
+    /// pattern): a LEAF float ladder around N reciprocal-sqrt refinement
+    /// steps. Measured: lfd 0.0; fcmpo; ble; frsqrte f2,f1; lfd f4(.5);
+    /// lfd f3(3.0); N x [fmul f0,f2,f2; fmul f2,f4,f2; fnmsub f0,f1,f0,f3;
+    /// fmul f2,f2,f0] with the LAST step's product landing in f0; fmul
+    /// f1,f1,f0; blr — then the ladder: fcmpu f0,f1 (==0, operands
+    /// pool-first); fmr f1,f0; fcmpu f1,f0 (bare x, swapped); lis+lfs
+    /// through the NAN/INFINITY int-array globals (Addr16 pairs).
+    fn try_frsqrte_sqrt(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double || !function.guards.is_empty() {
+            return Ok(false);
+        }
+        let [x_param] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if x_param.parameter_type != Type::Double {
+            return Ok(false);
+        }
+        let x = x_param.name.as_str();
+        let [guess_local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if guess_local.declared_type != Type::Double || guess_local.initializer.is_some() {
+            return Ok(false);
+        }
+        let guess = guess_local.name.as_str();
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // if (x > 0.0)
+        if !matches!(condition, Expression::Binary { operator: BinaryOperator::Greater, left, right }
+            if matches!(left.as_ref(), Expression::Variable(v) if v == x)
+                && matches!(right.as_ref(), Expression::FloatLiteral(zero) if *zero == 0.0))
+        {
+            return Ok(false);
+        }
+        // then: guess = __frsqrte(x); N refinements; return x * guess.
+        let [Statement::Assign { name: seed_name, value: seed }, refinements @ .., Statement::Return(Some(product))] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if seed_name != guess
+            || !matches!(seed, Expression::Call { name, arguments }
+                if name == "__frsqrte"
+                    && matches!(arguments.as_slice(), [Expression::Variable(v)] if v == x))
+        {
+            return Ok(false);
+        }
+        if refinements.is_empty() {
+            return Ok(false);
+        }
+        // Each: guess = .5 * guess * (3.0 - guess * guess * x)
+        for refinement in refinements {
+            let Statement::Assign { name, value } = refinement else {
+                return Ok(false);
+            };
+            if name != guess {
+                return Ok(false);
+            }
+            let ok = matches!(value, Expression::Binary { operator: BinaryOperator::Multiply, left, right }
+                if matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, left: half, right: g }
+                    if matches!(half.as_ref(), Expression::FloatLiteral(h) if *h == 0.5)
+                        && matches!(g.as_ref(), Expression::Variable(v) if v == guess))
+                    && matches!(right.as_ref(), Expression::Binary { operator: BinaryOperator::Subtract, left: three, right: ggx }
+                        if matches!(three.as_ref(), Expression::FloatLiteral(t) if *t == 3.0)
+                            && matches!(ggx.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, left: gg, right: xv }
+                                if matches!(xv.as_ref(), Expression::Variable(v) if v == x)
+                                    && matches!(gg.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, left: g1, right: g2 }
+                                        if matches!(g1.as_ref(), Expression::Variable(v) if v == guess)
+                                            && matches!(g2.as_ref(), Expression::Variable(v) if v == guess)))));
+            if !ok {
+                return Ok(false);
+            }
+        }
+        if !matches!(product, Expression::Binary { operator: BinaryOperator::Multiply, left, right }
+            if matches!(left.as_ref(), Expression::Variable(v) if v == x)
+                && matches!(right.as_ref(), Expression::Variable(v) if v == guess))
+        {
+            return Ok(false);
+        }
+        // else: if (x == 0.0) return 0; else if (x) return *(float*)NAN;
+        // ... with the trailing return *(float*)INF.
+        let [Statement::If { condition: zero_cond, then_body: zero_then, else_body: zero_else }] =
+            else_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !matches!(zero_cond, Expression::Binary { operator: BinaryOperator::Equal, left, right }
+            if matches!(left.as_ref(), Expression::Variable(v) if v == x)
+                && matches!(right.as_ref(), Expression::FloatLiteral(zero) if *zero == 0.0))
+        {
+            return Ok(false);
+        }
+        if !matches!(zero_then.as_slice(), [Statement::Return(Some(value))]
+            if crate::analysis::constant_value(value) == Some(0))
+        {
+            return Ok(false);
+        }
+        let float_global = |expression: &Expression| -> Option<String> {
+            let Expression::Dereference { pointer } = expression else { return None };
+            let Expression::Cast { target_type: Type::Pointer(Pointee::Float), operand } =
+                pointer.as_ref()
+            else {
+                return None;
+            };
+            let Expression::Variable(name) = operand.as_ref() else { return None };
+            Some(name.clone())
+        };
+        let [Statement::If { condition: nan_cond, then_body: nan_then, else_body: nan_else }] =
+            zero_else.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !matches!(nan_cond, Expression::Variable(v) if v == x) || !nan_else.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Return(Some(nan_value))] = nan_then.as_slice() else {
+            return Ok(false);
+        };
+        let (Some(nan_symbol), Some(Some(infinity_symbol))) = (
+            float_global(nan_value),
+            function.return_expression.as_ref().map(|value| float_global(value)),
+        ) else {
+            return Ok(false);
+        };
+        // -- emit (a leaf: no frame at all) --
+        let steps = refinements.len();
+        self.load_double_constant(0, 0.0f64.to_bits());
+        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+        let ladder = self.fresh_label();
+        self.emit_branch_conditional_to(4, 1, ladder); // ble
+        self.output.instructions.push(Instruction::FloatReciprocalSqrtEstimate { d: 2, b: 1 });
+        self.load_double_constant(4, 0.5f64.to_bits());
+        self.load_double_constant(3, 3.0f64.to_bits());
+        for step in 0..steps {
+            let last = step + 1 == steps;
+            self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 2, c: 2 });
+            self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 2, a: 4, c: 2 });
+            self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble {
+                d: 0,
+                a: 1,
+                c: 0,
+                b: 3,
+            });
+            self.output.instructions.push(Instruction::FloatMultiplyDouble {
+                d: if last { 0 } else { 2 },
+                a: 2,
+                c: 0,
+            });
+        }
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.bind_label(ladder);
+        // x == 0.0: fcmpu with the POOL value first; return the pooled 0.
+        self.output.instructions.push(Instruction::FloatCompareUnordered { a: 0, b: 1 });
+        let nan_at = self.fresh_label();
+        self.emit_branch_conditional_to(4, 2, nan_at); // bne
+        self.output.instructions.push(Instruction::FloatMove { d: 1, b: 0 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.bind_label(nan_at);
+        // bare x: fcmpu the other way; INFINITY on equal-to-zero.
+        self.output.instructions.push(Instruction::FloatCompareUnordered { a: 1, b: 0 });
+        let infinity_at = self.fresh_label();
+        self.emit_branch_conditional_to(12, 2, infinity_at); // beq
+        self.emit_address_high(3, &nan_symbol);
+        self.record_relocation(RelocationKind::Addr16Lo, &nan_symbol);
+        self.output.instructions.push(Instruction::LoadFloatSingle { d: 1, a: 3, offset: 0 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.bind_label(infinity_at);
+        self.emit_address_high(3, &infinity_symbol);
+        self.record_relocation(RelocationKind::Addr16Lo, &infinity_symbol);
+        self.output.instructions.push(Instruction::LoadFloatSingle { d: 1, a: 3, offset: 0 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // Pre-pool labels (measured @17 on the math_inlines object vs the
+        // +0 base's @5).
+        self.output.anonymous_label_bump += 12;
+        Ok(true)
+    }
+
     /// The FLOAT callee-saved survivor (fire 406, C1): `return g(x) OP x;`
     /// with a double parameter surviving one external call. Measured:
     /// stwu -16; mflr; stw r0,20; stfd f31,8; fmr f31,f1; bl; lwz r0,20

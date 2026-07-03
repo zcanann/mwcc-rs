@@ -175,6 +175,8 @@ pub enum Instruction {
     FloatNegativeMultiplySubtractDouble { d: u8, a: u8, c: u8, b: u8 },
     /// `frsp frD, frB` — round a double to single precision.
     RoundToSingle { d: u8, b: u8 },
+    /// `frsqrte frD, frB` — floating reciprocal square root estimate.
+    FloatReciprocalSqrtEstimate { d: u8, b: u8 },
     /// `fmr frD, frB`
     FloatMove { d: u8, b: u8 },
     /// `fneg frD, frB`
