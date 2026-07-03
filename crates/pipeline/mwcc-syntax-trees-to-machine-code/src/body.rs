@@ -939,6 +939,32 @@ enum SelectArm {
     Computed { source: u8, immediate: i16 },
 }
 
+/// `HUGE + x > 0.0` (the statics folded upstream to literals) — the fdlibm
+/// inexact-raising guard, matched at the outer arm level and inside the
+/// writeback walker.
+fn float_guard_condition(condition: &Expression) -> Option<(u64, u64)> {
+    let Expression::Binary { operator: BinaryOperator::Greater, left, right } = condition else {
+        return None;
+    };
+    let Expression::FloatLiteral(zero) = right.as_ref() else {
+        return None;
+    };
+    if *zero != 0.0 {
+        return None;
+    }
+    let Expression::Binary { operator: BinaryOperator::Add, left: huge, right: xvar } = left.as_ref()
+    else {
+        return None;
+    };
+    if !matches!(xvar.as_ref(), Expression::Variable(_)) {
+        return None;
+    }
+    let Expression::FloatLiteral(huge) = huge.as_ref() else {
+        return None;
+    };
+    Some((huge.to_bits(), zero.to_bits()))
+}
+
 /// The computed guard local `j0 = ((punned >> S) [& M]) - K` shared by the
 /// punned-writeback branch path and the zero-select path.
 struct GuardLocal<'a> {
@@ -3887,6 +3913,28 @@ impl Generator {
                         if !mutated.contains(&index) {
                             mutated.push(index);
                         }
+                        // The chain `i0 = i1 = C`: both locals mutate from
+                        // one small constant.
+                        if let Expression::Assign { target, value: inner_value } = value {
+                            let Expression::Variable(inner) = target.as_ref() else {
+                                return false;
+                            };
+                            let Some(inner_index) =
+                                locals.iter().position(|&(local, _)| local == inner.as_str())
+                            else {
+                                return false;
+                            };
+                            if !mutated.contains(&inner_index) {
+                                mutated.push(inner_index);
+                            }
+                            if !crate::analysis::constant_value(inner_value)
+                                .map(|constant| i16::try_from(constant).is_ok())
+                                .unwrap_or(false)
+                            {
+                                return false;
+                            }
+                            continue;
+                        }
                         let constant_ok = crate::analysis::constant_value(value)
                             .map(|constant| {
                                 i16::try_from(constant).is_ok()
@@ -4258,12 +4306,22 @@ impl Generator {
                         let Ok(negative) = i16::try_from(-offset_k) else {
                             return Err(Diagnostic::error("guard offset beyond i16 (roadmap)"));
                         };
-                        self.output.instructions.push(Instruction::AddImmediate {
-                            d: 0,
-                            a: guard_register,
-                            immediate: negative,
-                        });
-                        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: bound });
+                        if bound == 0 {
+                            // A zero bound records the fold itself — the
+                            // compare is free (measured G1: addic. r0; bge).
+                            self.output.instructions.push(Instruction::AddImmediateCarryingRecord {
+                                d: 0,
+                                a: guard_register,
+                                immediate: negative,
+                            });
+                        } else {
+                            self.output.instructions.push(Instruction::AddImmediate {
+                                d: 0,
+                                a: guard_register,
+                                immediate: negative,
+                            });
+                            self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: bound });
+                        }
                     } else {
                         self.output.instructions.push(Instruction::CompareWordImmediate {
                             a: guard_register,
@@ -4395,6 +4453,25 @@ impl Generator {
                         .find(|(local, _)| local == name)
                         .map(|&(_, register)| register)
                         .expect("validated");
+                    // The chain `i0 = i1 = C` assigns right-to-left: the
+                    // inner local first, then the outer from the same
+                    // constant (measured G1: li r5,0; li r4,0).
+                    if let Expression::Assign { target, value: inner_value } = value {
+                        let Expression::Variable(inner) = target.as_ref() else {
+                            return Err(Diagnostic::error("chained store target beyond the walker (roadmap)"));
+                        };
+                        let inner_register = bindings
+                            .iter()
+                            .find(|(local, _)| local == inner)
+                            .map(|&(_, register)| register)
+                            .expect("validated");
+                        let constant = crate::analysis::constant_value(inner_value).expect("validated");
+                        let small = i16::try_from(constant).expect("validated");
+                        self.output.instructions.push(Instruction::load_immediate(inner_register, small));
+                        self.output.instructions.push(Instruction::load_immediate(register, small));
+                        index += 1;
+                        continue;
+                    }
                     if let Some(constant) = crate::analysis::constant_value(value) {
                         if let Ok(small) = i16::try_from(constant) {
                             self.output.instructions.push(Instruction::load_immediate(register, small));
@@ -4432,6 +4509,25 @@ impl Generator {
                     self.emit_branch_to(epilogue);
                 }
                 Statement::If { condition, then_body, else_body } => {
+                    if let Some((huge, zero)) = float_guard_condition(condition) {
+                        // The NESTED inexact guard (measured G2): huge and
+                        // 0.0 pool-load back-to-back into f2/f0, the fadd
+                        // clobbers f1 (x stays spilled), ble chains to the
+                        // join like any tail guard.
+                        if !else_body.is_empty() || !last {
+                            return Err(Diagnostic::error(
+                                "a non-tail float guard in the walker (roadmap)",
+                            ));
+                        }
+                        self.load_double_constant(2, huge);
+                        self.load_double_constant(0, zero);
+                        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
+                        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+                        self.emit_branch_conditional_to(4, 1, join);
+                        self.emit_writeback_block(then_body, bindings, join, epilogue)?;
+                        index += 1;
+                        continue;
+                    }
                     let (options, condition_bit) = self.emit_condition_test(condition)?;
                     if let [Statement::Return(Some(_))] = else_body.as_slice() {
                         if matches!(then_body.last(), Some(Statement::Return(_))) {

@@ -180,3 +180,56 @@ double writeback_midchain_fadd(double x)
 	*(int *)&x = i0;
 	return x;
 }
+/* Fire 390: s_floor ARM1 — the chained assign (i0=i1=0, inner local
+   first), the addic. bound-0 fold (the record form makes the compare
+   free), and the NESTED inexact guard (huge/0.0 pool-load back-to-back
+   into f2/f0, fadd clobbers the spilled f1, ble chains to the join). */
+static const double huge_arm1 = 1.0e300;
+double writeback_chained(double x)
+{
+	int i0, i1, j0;
+	i0 = *(int *)&x;
+	i1 = *((int *)&x + 1);
+	j0 = ((i0 >> 20) & 0x7ff) - 0x3ff;
+	if (j0 < 0) {
+		i0 = i1 = 0;
+	}
+	*(int *)&x = i0;
+	*((int *)&x + 1) = i1;
+	return x;
+}
+double writeback_nested_float_guard(double x)
+{
+	int i0, i1, j0;
+	i0 = *(int *)&x;
+	i1 = *((int *)&x + 1);
+	j0 = ((i0 >> 20) & 0x7ff) - 0x3ff;
+	if (j0 < 0) {
+		if (huge_arm1 + x > 0.0) {
+			i0 = i1 = 0;
+		}
+	}
+	*(int *)&x = i0;
+	*((int *)&x + 1) = i1;
+	return x;
+}
+double writeback_floor_arm1(double x)
+{
+	int i0, i1, j0;
+	i0 = *(int *)&x;
+	i1 = *((int *)&x + 1);
+	j0 = ((i0 >> 20) & 0x7ff) - 0x3ff;
+	if (j0 < 0) {
+		if (huge_arm1 + x > 0.0) {
+			if (i0 >= 0) {
+				i0 = i1 = 0;
+			} else if (((i0 & 0x7fffffff) | i1) != 0) {
+				i0 = 0xbff00000;
+				i1 = 0;
+			}
+		}
+	}
+	*(int *)&x = i0;
+	*((int *)&x + 1) = i1;
+	return x;
+}
