@@ -3438,6 +3438,7 @@ impl Generator {
             Small(i16),
             High(i16),
             LeafAdd(u8, i16),
+            Mask(u8, u8),
         }
         let mut assigns: Vec<(u8, BlockValue)> = Vec::new();
         for statement in body {
@@ -3460,6 +3461,24 @@ impl Generator {
                     return Ok(false);
                 }
             } else {
+                // Self-masking (`i0 &= C`, desugared): the in-place rlwinm
+                // (measured: clrlwi r3,r3,21 in source order).
+                if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = value {
+                    if let Expression::Variable(read) = left.as_ref() {
+                        if read == name {
+                            if let Some(mask) = crate::analysis::constant_value(right) {
+                                if let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) {
+                                    if assigns.iter().any(|&(written, _)| written == target) {
+                                        return Ok(false);
+                                    }
+                                    assigns.push((target, BlockValue::Mask(begin, end)));
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    return Ok(false);
+                }
                 // leaf ± i16 (Add with a possibly-negative constant).
                 let (leaf, offset) = match value {
                     Expression::Variable(read) => (read, 0i64),
@@ -3496,8 +3515,12 @@ impl Generator {
                     // A bare register move inside the block is unmeasured.
                     return Ok(false);
                 }
-                // The read must precede any overwrite of its register.
-                if assigns.iter().any(|&(written, _)| written == read_location.register) {
+                // The read must precede any overwrite of its register — and
+                // a SELF-read (i0 = i0 + 5) reorders in mwcc (the
+                // independent li hoists above the self-addi; probed) — defer.
+                if read_location.register == target
+                    || assigns.iter().any(|&(written, _)| written == read_location.register)
+                {
                     return Ok(false);
                 }
                 BlockValue::LeafAdd(read_location.register, offset)
@@ -3555,6 +3578,15 @@ impl Generator {
                                     immediate: *offset,
                                 });
                             }
+                            BlockValue::Mask(begin, end) => {
+                                self.output.instructions.push(Instruction::RotateAndMask {
+                                    a: *register,
+                                    s: *register,
+                                    shift: 0,
+                                    begin: *begin,
+                                    end: *end,
+                                });
+                            }
                         }
                     }
                     self.bind_label(join);
@@ -3593,6 +3625,15 @@ impl Generator {
                         d: *register,
                         a: *source,
                         immediate: *offset,
+                    });
+                }
+                BlockValue::Mask(begin, end) => {
+                    self.output.instructions.push(Instruction::RotateAndMask {
+                        a: *register,
+                        s: *register,
+                        shift: 0,
+                        begin: *begin,
+                        end: *end,
                     });
                 }
             }

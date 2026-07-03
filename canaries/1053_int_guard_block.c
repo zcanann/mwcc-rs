@@ -76,3 +76,12 @@ int guard_block_early_fold(int i0, int i1, int j0)
 	}
 	return i0 | i1;
 }
+
+int guard_block_mask(int i0, int i1, int c)
+{
+	if (c) {
+		i0 &= 0x7ff;
+		i1 = 0;
+	}
+	return i0 | i1;
+}
