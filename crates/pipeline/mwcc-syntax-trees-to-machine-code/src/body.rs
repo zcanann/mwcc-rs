@@ -1809,6 +1809,9 @@ impl Generator {
         if self.try_indexed_double_return(function)? {
             return Ok(());
         }
+        if self.try_punned_pair_ladder(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -8485,6 +8488,152 @@ impl Generator {
         self.emit_branch_conditional_to(16, 0, body_label); // bdnz
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The PUNNED PAIR LADDER (fire 429/430, e_fmod's |x|<=|y| purge fed
+    /// from DOUBLE params): the frame/int marriage. `int f(double x,
+    /// double y)` punning hx/lx/hy/ly then the fire-427 ladder.
+    /// Measured FRAMED rules (contrast the frameless captures): arms
+    /// JOIN at the shared epilogue (`li; b JOIN` — inline blr is a
+    /// frameless-only behavior); punned loads emit in first-use order
+    /// with ly DELAYED past the cmpw into its branch latency, reusing
+    /// dead hx's r0; frame 32 = 8 linkage + 2x8 doubles, spilled at
+    /// 8/16(r1); no stmw.
+    fn try_punned_pair_ladder(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [p_x, p_y] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if p_x.parameter_type != Type::Double || p_y.parameter_type != Type::Double {
+            return Ok(false);
+        }
+        let (x, y) = (p_x.name.as_str(), p_y.name.as_str());
+        if x == y {
+            return Ok(false);
+        }
+        // The four extracts in e_fmod's order: x-high, x-low, y-high, y-low.
+        let [Statement::Assign { name: hx, value: hx_value }, Statement::Assign { name: lx, value: lx_value }, Statement::Assign { name: hy, value: hy_value }, Statement::Assign { name: ly, value: ly_value }, Statement::If { condition: outer, then_body, else_body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if crate::frame::pun_word_offset_pub(hx_value, x) != Some(0)
+            || crate::frame::pun_word_offset_pub(lx_value, x) != Some(4)
+            || crate::frame::pun_word_offset_pub(hy_value, y) != Some(0)
+            || crate::frame::pun_word_offset_pub(ly_value, y) != Some(4)
+            || !else_body.is_empty()
+        {
+            return Ok(false);
+        }
+        let names_distinct = {
+            let mut names = [x, y, hx.as_str(), lx.as_str(), hy.as_str(), ly.as_str()];
+            names.sort_unstable();
+            names.windows(2).all(|pair| pair[0] != pair[1])
+        };
+        if !names_distinct {
+            return Ok(false);
+        }
+        let typed_local = |name: &str, declared: Type| {
+            function
+                .locals
+                .iter()
+                .any(|local| local.name == name && local.declared_type == declared && local.initializer.is_none())
+        };
+        if !typed_local(hx, Type::Int)
+            || !typed_local(hy, Type::Int)
+            || !typed_local(lx, Type::UnsignedInt)
+            || !typed_local(ly, Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        // The ladder (fire 427's shape over the punned locals).
+        let is_pair = |expression: &Expression, operator: BinaryOperator, a: &str, b: &str| -> bool {
+            let Expression::Binary { operator: found, left, right } = expression else {
+                return false;
+            };
+            *found == operator
+                && matches!(left.as_ref(), Expression::Variable(v) if v == a)
+                && matches!(right.as_ref(), Expression::Variable(v) if v == b)
+        };
+        if !is_pair(outer, BinaryOperator::LessEqual, hx, hy) {
+            return Ok(false);
+        }
+        let [Statement::If { condition: or_test, then_body: or_then, else_body: or_else }, Statement::If { condition: eq_test, then_body: eq_then, else_body: eq_else }] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !or_else.is_empty() || !eq_else.is_empty() {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::LogicalOr, left: or_left, right: or_right } =
+            or_test
+        else {
+            return Ok(false);
+        };
+        if !is_pair(or_left.as_ref(), BinaryOperator::Less, hx, hy)
+            || !is_pair(or_right.as_ref(), BinaryOperator::Less, lx, ly)
+            || !is_pair(eq_test, BinaryOperator::Equal, lx, ly)
+        {
+            return Ok(false);
+        }
+        let arm_return = |statements: &[Statement]| -> Option<i16> {
+            let [Statement::Return(Some(Expression::IntegerLiteral(value)))] = statements else {
+                return None;
+            };
+            i16::try_from(*value).ok()
+        };
+        let (Some(k1), Some(k2)) = (arm_return(or_then), arm_return(eq_then)) else {
+            return Ok(false);
+        };
+        let Some(Expression::IntegerLiteral(k3)) = &function.return_expression else {
+            return Ok(false);
+        };
+        let Ok(k3) = i16::try_from(*k3) else {
+            return Ok(false);
+        };
+        // -- emit (registers per the capture: hx r0, hy r3, lx r4, ly r0) --
+        self.frame_size = 32;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 2, a: 1, offset: 16 });
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 1, offset: 16 });
+        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::CompareWord { a: 0, b: 3 });
+        // ly's load DELAYS into the compare->branch latency, reusing dead hx's r0.
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+        let end_label = self.fresh_label();
+        self.emit_branch_conditional_to(12, 1, end_label); // bgt
+        let first_return_label = self.fresh_label();
+        self.emit_branch_conditional_to(12, 0, first_return_label); // blt
+        self.output.instructions.push(Instruction::CompareLogicalWord { a: 4, b: 0 });
+        let equality_label = self.fresh_label();
+        self.emit_branch_conditional_to(4, 0, equality_label); // bge
+        let join_label = self.fresh_label();
+        self.bind_label(first_return_label);
+        self.output.instructions.push(Instruction::load_immediate(3, k1));
+        self.emit_branch_to(join_label);
+        self.bind_label(equality_label);
+        self.emit_branch_conditional_to(4, 2, end_label); // bne (CR0 reused from the cmplw)
+        self.output.instructions.push(Instruction::load_immediate(3, k2));
+        self.emit_branch_to(join_label);
+        self.bind_label(end_label);
+        self.output.instructions.push(Instruction::load_immediate(3, k3));
+        self.bind_label(join_label);
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // @N: measured via objprobe — the real extab lands at @12 (mwcc
+        // numbers the ladder's internal labels).
+        self.output.anonymous_label_bump += 7;
         Ok(true)
     }
 
