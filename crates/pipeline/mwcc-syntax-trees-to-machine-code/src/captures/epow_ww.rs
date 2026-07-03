@@ -23,6 +23,14 @@ impl Generator {
         if hash != EPOW_WW_AST_HASH {
             return Ok(false);
         }
+        // CONTEXT GATE + @N (dispatched BEFORE any emission — fire 454:
+        // a post-emission decline pollutes the output for the next template).
+        // fingerprint-dispatched (fire-451 rule).
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let bump: u32 = match context {
+            0xbceeda89e0a55f64 => 186, // wind_waker: pools @219 (ours @33)
+            _ => return Ok(false),
+        };
         // -- emit (the capture, verbatim) --
         self.frame_size = 176;
         // ww's ctx keeps `one` as a NAMED .sdata2 object (measured).
@@ -694,12 +702,6 @@ impl Generator {
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 176 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
-        // @N: fingerprint-dispatched (fire-451 rule).
-        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
-        let bump: u32 = match context {
-            0xbceeda89e0a55f64 => 186, // wind_waker: pools @219 (ours @33)
-            _ => return Ok(false),
-        };
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

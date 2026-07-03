@@ -6,6 +6,7 @@ mod eacos;
 mod eacos_bl;
 mod easin;
 mod easin_bl;
+mod eatan2_ac;
 mod eatan2_pik;
 mod eatan2_ww;
 mod efmod;
@@ -58,6 +59,7 @@ impl Generator {
             || self.try_eacos(function)?
             || self.try_eacos_bl(function)?
             || self.try_eatan2_pik(function)?
+            || self.try_eatan2_ac(function)?
             || self.try_eatan2_ww(function)?
             || self.try_epow(function)?
             || self.try_epow_ww(function)?

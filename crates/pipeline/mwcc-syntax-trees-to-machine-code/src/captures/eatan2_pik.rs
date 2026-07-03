@@ -22,6 +22,18 @@ impl Generator {
         if hash != EATAN2_PIK_AST_HASH {
             return Ok(false);
         }
+        // CONTEXT GATE + @N (dispatched BEFORE any emission — fire 454:
+        // a post-emission decline pollutes the output for the next template).
+        // measured per HEADER CONTEXT (fingerprint-dispatched; the
+        // fire-451 lesson — an unconditional bump is a latent DIFF).
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let bump: u32 = match context {
+            // animal_crossing shares this AST but its mwcc INLINES fabs__Fd
+            // (a different emission) — unregistered, so it defers honestly
+            // until captured separately.
+            0x626216a8cf3d36f5 => 51, // pikmin: pools @56 (ours @5)
+            _ => return Ok(false),
+        };
         // -- emit (the capture, verbatim) --
         self.frame_size = 48;
         self.non_leaf = true;
@@ -244,16 +256,6 @@ impl Generator {
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 48 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
-        // @N: measured per HEADER CONTEXT (fingerprint-dispatched; the
-        // fire-451 lesson — an unconditional bump is a latent DIFF).
-        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
-        let bump: u32 = match context {
-            // animal_crossing shares this AST but its mwcc INLINES fabs__Fd
-            // (a different emission) — unregistered, so it defers honestly
-            // until captured separately.
-            0x626216a8cf3d36f5 => 51, // pikmin: pools @56 (ours @5)
-            _ => return Ok(false),
-        };
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

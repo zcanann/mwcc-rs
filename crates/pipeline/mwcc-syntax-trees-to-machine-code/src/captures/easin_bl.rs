@@ -28,6 +28,18 @@ impl Generator {
         if hash != super::easin::EASIN_AST_HASH {
             return Ok(false);
         }
+        // CONTEXT GATE + @N (dispatched BEFORE any emission — fire 454:
+        // a post-emission decline pollutes the output for the next template).
+        // measured via objprobe per HEADER CONTEXT — the same emission
+        // serves BfBB and pikmin2, but their ctx headers differ (different
+        // skipped-inline populations shift the pool base): fingerprint the
+        // skipped set and use the measured bump for each known context.
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let bump = match context {
+            EASIN_BL_CONTEXT_BFBB => 28,
+            EASIN_BL_CONTEXT_PIKMIN2 => 25,
+            _ => return Ok(false),
+        };
         // -- emit (the capture, verbatim) --
         self.frame_size = 80;
         self.non_leaf = true;
@@ -211,16 +223,6 @@ impl Generator {
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 80 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
-        // @N: measured via objprobe per HEADER CONTEXT — the same emission
-        // serves BfBB and pikmin2, but their ctx headers differ (different
-        // skipped-inline populations shift the pool base): fingerprint the
-        // skipped set and use the measured bump for each known context.
-        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
-        let bump = match context {
-            EASIN_BL_CONTEXT_BFBB => 28,
-            EASIN_BL_CONTEXT_PIKMIN2 => 25,
-            _ => return Ok(false),
-        };
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

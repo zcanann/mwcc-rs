@@ -26,6 +26,16 @@ impl Generator {
         if hash != KTAN_WW_AST_HASH {
             return Ok(false);
         }
+        // CONTEXT GATE + @N (dispatched BEFORE any emission — fire 454:
+        // a post-emission decline pollutes the output for the next template).
+        // measured per HEADER CONTEXT (the same emission serves ww,
+        // BfBB, and pikmin2 — their pool bases differ).
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let bump = match context {
+            CONTEXT_WW | CONTEXT_BFBB => 30, // pools @63 (ours @33)
+            CONTEXT_PIKMIN2 => 27,           // pools @89 (ours @62 unbumped)
+            _ => return Ok(false),
+        };
         // -- emit (the capture, verbatim) --
         self.frame_size = 64;
         self.output.constant_number_gaps = vec![(6, 1)];
@@ -187,14 +197,6 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadFloatDouble { d: 31, a: 1, offset: 48 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 64 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
-        // @N: measured per HEADER CONTEXT (the same emission serves ww,
-        // BfBB, and pikmin2 — their pool bases differ).
-        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
-        let bump = match context {
-            CONTEXT_WW | CONTEXT_BFBB => 30, // pools @63 (ours @33)
-            CONTEXT_PIKMIN2 => 27,           // pools @89 (ours @62 unbumped)
-            _ => return Ok(false),
-        };
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

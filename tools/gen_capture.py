@@ -71,14 +71,23 @@ impl Generator {{
             eprintln!("{a.name} hash candidate: {{hash:#x}}");
             return Ok(false);
         }}
+        // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
+        // post-emission decline would pollute the output for the next
+        // template). Register measured (fingerprint -> bump) pairs only.
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let bump: u32 = match context {{
+            _ => {{
+                eprintln!("{a.name} context candidate: {{context:#x}}");
+                return Ok(false);
+            }}
+        }};
         // -- emit (the capture, verbatim) --
 {setup}{pool_block}        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in {targets} {{
             labels.insert(target, self.fresh_label());
         }}
 {body}
-        // @N: measured via objprobe after implementation.
-        self.output.anonymous_label_bump += 0;
+        self.output.anonymous_label_bump += bump;
         Ok(true)
     }}
 }}

@@ -1,4 +1,4 @@
-//! eatan2_ww: an exact-match whole-function capture (fire 452).
+//! eatan2_ac: an exact-match whole-function capture (fire 454).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,10 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const EATAN2_WW_AST_HASH: u64 = 0x4cf94f9a99810736;
+const EATAN2_AC_AST_HASH: u64 = 0x464a7c755d2a00c4;
 
 impl Generator {
-    pub(super) fn try_eatan2_ww(&mut self, function: &Function) -> Compilation<bool> {
+    pub(super) fn try_eatan2_ac(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "__ieee754_atan2"
             || function.return_type != Type::Double
             || function.parameters.len() != 2
@@ -19,18 +19,15 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != EATAN2_WW_AST_HASH {
+        if hash != EATAN2_AC_AST_HASH {
             return Ok(false);
         }
         // CONTEXT GATE + @N (dispatched BEFORE any emission — fire 454:
         // a post-emission decline pollutes the output for the next template).
-        // measured per HEADER CONTEXT (fingerprint-dispatched; the
-        // fire-451 lesson — an unconditional bump is a latent DIFF).
+        // fingerprint-dispatched (fire-451 rule).
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0xbceeda89e0a55f64 => 51, // wind_waker: pools @84 (ours @33)
-            0xb61776ae26f47f0e => 51, // BfBB (sweep-verified)
-            0xbd60acb658c79e45 => 51, // pikmin2 (sweep-verified)
+            0xcded6feb0651de3a => 54, // animal_crossing: pools @59 (ours @5)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
