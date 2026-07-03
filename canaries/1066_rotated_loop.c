@@ -49,3 +49,15 @@ int rotloop_do_while(int n)
 	} while (i < n);
 	return i;
 }
+/* Fire 415: the CARRIED STORE — `while (*src) { *dst = *src; dst++;
+   src++; }` — the char loaded by the TEST (lbz into the carry
+   register, r5) crosses the back edge into the body's stb. The
+   extsb. tests through r0 while the carry keeps the value. */
+void rotloop_copy_walk(char *dst, char *src)
+{
+	while (*src) {
+		*dst = *src;
+		dst++;
+		src++;
+	}
+}

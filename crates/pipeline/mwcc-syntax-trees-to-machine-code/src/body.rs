@@ -7698,7 +7698,7 @@ impl Generator {
     /// takes a param home freed during init, else the next free.
     fn try_rotated_loop(&mut self, function: &Function) -> Compilation<bool> {
         use mwcc_syntax_trees::{LoopKind, Statement};
-        if function.return_type != Type::Int
+        if !matches!(function.return_type, Type::Int | Type::Void)
             || !function.guards.is_empty()
             || !self.frame_slots.is_empty()
             || function_makes_call(function)
@@ -7710,9 +7710,9 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Some(Expression::Variable(returned)) = &function.return_expression else {
+        if function.return_type != Type::Void && !matches!(&function.return_expression, Some(Expression::Variable(_))) {
             return Ok(false);
-        };
+        }
         // Locals: uninitialized (bound via the comma init), or initialized
         // with a small constant (an init-plan entry).
         let mut local_constant_inits: Vec<(&str, i16)> = Vec::new();
@@ -7894,8 +7894,31 @@ impl Generator {
             AddImmediate { register: u8, value: i16 },
             SelfAdd { register: u8 },
             ShiftLeft { register: u8, amount: u8 },
+            /// `*dst = *src` where src is the walk's condition pointer —
+            /// the char loaded by the TEST carries across the back edge
+            /// into this store (measured S2).
+            CarriedStore { destination: u8 },
         }
+        let condition_pointer: Option<&str> = match condition {
+            Expression::Dereference { pointer } => match pointer.as_ref() {
+                Expression::Variable(name) => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
         let parse_op = |homes: &[(String, u8)], statement: &Statement| -> Option<LoopOp> {
+            if let Statement::Store { target, value } = statement {
+                // `*dst = *src` with src the condition pointer.
+                let Expression::Dereference { pointer: dst } = target else { return None };
+                let Expression::Variable(dst_name) = dst.as_ref() else { return None };
+                let destination = home_of(homes, dst_name)?;
+                let Expression::Dereference { pointer: src } = value else { return None };
+                let Expression::Variable(src_name) = src.as_ref() else { return None };
+                if condition_pointer != Some(src_name.as_str()) {
+                    return None;
+                }
+                return Some(LoopOp::CarriedStore { destination });
+            }
             let Statement::Assign { name, value } = statement else { return None };
             let register = home_of(homes, name)?;
             let Expression::Binary { operator, left, right } = value else { return None };
@@ -7965,8 +7988,24 @@ impl Generator {
         if loop_ops.is_empty() {
             return Ok(false);
         }
-        let Some(return_register) = home_of(&homes, returned) else {
-            return Ok(false);
+        let has_carried_store = loop_ops.iter().any(|op| matches!(op, LoopOp::CarriedStore { .. }));
+        // The carried char takes the next free register (S2: r5).
+        let carry_register = if has_carried_store {
+            let top = homes.iter().map(|&(_, r)| r).filter(|&r| r != 0).max().unwrap_or(2);
+            top + 1
+        } else {
+            0
+        };
+        let return_register = if function.return_type == Type::Void {
+            3 // no move needed
+        } else {
+            let Some(Expression::Variable(returned)) = &function.return_expression else {
+                return Ok(false);
+            };
+            let Some(register) = home_of(&homes, returned) else {
+                return Ok(false);
+            };
+            register
         };
         // -- emit --
         // Init: param-reading shifts first, then constants (the freed-home
@@ -8021,6 +8060,13 @@ impl Generator {
                         shift: *amount,
                     });
                 }
+                LoopOp::CarriedStore { destination } => {
+                    self.output.instructions.push(Instruction::StoreByte {
+                        s: carry_register,
+                        a: *destination,
+                        offset: 0,
+                    });
+                }
             }
         }
         self.bind_label(test_at);
@@ -8039,12 +8085,19 @@ impl Generator {
                 self.output.instructions.push(Instruction::CompareWord { a: *left, b: *right });
             }
             LoopTest::CharLoad { pointer } => {
-                self.output.instructions.push(Instruction::LoadByteZero { d: 0, a: *pointer, offset: 0 });
-                self.output.instructions.push(Instruction::ExtendSignByteRecord { a: 0, s: 0 });
+                // A carried store loads into its carry register; a bare
+                // walk uses r0.
+                let target = if has_carried_store { carry_register } else { 0 };
+                self.output.instructions.push(Instruction::LoadByteZero {
+                    d: target,
+                    a: *pointer,
+                    offset: 0,
+                });
+                self.output.instructions.push(Instruction::ExtendSignByteRecord { a: 0, s: target });
             }
         }
         self.emit_branch_conditional_to(back_branch.0, back_branch.1, body_at);
-        if return_register != 3 {
+        if function.return_type != Type::Void && return_register != 3 {
             self.output.instructions.push(Instruction::move_register(3, return_register));
         }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
