@@ -1073,6 +1073,20 @@ pub(crate) fn pun_word_offset_pub(expression: &Expression, variable: &str) -> Op
 }
 
 fn pun_word_offset(expression: &Expression, variable: &str) -> Option<i16> {
+    // The array-index macro form `((int*)&x)[K]` (fminmaxdim's __HI/__LO).
+    if let Expression::Index { base, index } = expression {
+        let is_cast_address = matches!(base.as_ref(),
+            Expression::Cast { target_type: Type::Pointer(Pointee::Int), operand }
+                if matches!(operand.as_ref(), Expression::AddressOf { operand }
+                    if matches!(operand.as_ref(), Expression::Variable(name) if name == variable)));
+        if is_cast_address {
+            return match constant_value(index) {
+                Some(0) => Some(0),
+                Some(1) => Some(4),
+                _ => None,
+            };
+        }
+    }
     let Expression::Dereference { pointer } = expression else { return None };
     pun_pointer_offset(pointer, variable)
 }

@@ -1783,6 +1783,9 @@ impl Generator {
         if self.try_trig_dispatcher(function)? {
             return Ok(());
         }
+        if self.try_fpclassify_switch(function)? {
+            return Ok(());
+        }
         // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
         // folds to the direct `gf();` (identical bytes: the pointer loads at the call).
         if let Some(folded) = inline_first_call_target_alias(function) {
@@ -7681,6 +7684,194 @@ impl Generator {
     /// order — the LAST live parameter gets r31, the next r30, and so on — and the
     /// body/return then read the values from those registers. Returns whether it
     /// applied. (Locals, floats, and values passed to a call still defer.)
+    /// The FPCLASSIFY SWITCH (fire 411, fminmaxdim's __fpclassifyd): a
+    /// two-case-plus-default switch on `pun(x) & BIGMASK` whose arms are
+    /// short-circuit || diamonds over the pun words. Measured: hx loads
+    /// to r4 (live through the arms), the scrutinee rlwinm to r3, the
+    /// tree compares r3 against the lis-built big value (cmpw) then 0
+    /// (cmpwi); each arm: clrlwi. (record) -> bne TRUE; lwz the LOW word
+    /// from the SPILL; cmpwi; beq FALSE; li/b-END per side; default li.
+    fn try_fpclassify_switch(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::{ArmBody, Statement};
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let [x_param] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if x_param.parameter_type != Type::Double {
+            return Ok(false);
+        }
+        let x = x_param.name.as_str();
+        // The default is either `default:` inside the switch, or the
+        // trailing `return K;` after it (the real fminmaxdim form).
+        let (scrutinee, arms, default) = match function.statements.as_slice() {
+            [Statement::Switch { scrutinee, arms, default }]
+                if function.return_expression.is_none() && default.is_some() =>
+            {
+                (scrutinee, arms, default.as_ref())
+            }
+            [Statement::Switch { scrutinee, arms, default }]
+                if default.is_none() && function.return_expression.is_some() =>
+            {
+                (scrutinee, arms, function.return_expression.as_ref())
+            }
+            _ => return Ok(false),
+        };
+        // pun0(x) & BIGMASK (lis-only mask).
+        let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = scrutinee else {
+            return Ok(false);
+        };
+        if crate::frame::pun_word_offset_pub(left, x) != Some(0) {
+            return Ok(false);
+        }
+        let Some(big_mask) = crate::analysis::constant_value(right) else {
+            return Ok(false);
+        };
+        let big_mask = big_mask as u32 as i64;
+        let Some((mask_begin, mask_end)) = crate::analysis::rlwinm_mask(big_mask) else {
+            return Ok(false);
+        };
+        if big_mask & 0xffff != 0 {
+            return Ok(false);
+        }
+        // Exactly two cases: the mask value itself + zero, and a default.
+        let Some(default_value) = default else {
+            return Ok(false);
+        };
+        let _ = &default_value;
+        let Some(default_constant) =
+            crate::analysis::constant_value(default_value).and_then(|k| i16::try_from(k).ok())
+        else {
+            return Ok(false);
+        };
+        if arms.len() != 2 {
+            return Ok(false);
+        }
+        // The || diamond: (pun0 & M2) || pun4[& 0xffffffff] -> (A, B).
+        struct Diamond {
+            second_begin: u8,
+            second_end: u8,
+            when_true: i16,
+            when_false: i16,
+        }
+        let parse_diamond = |body: &ArmBody| -> Option<Diamond> {
+            let ArmBody::Statements(statements) = body else { return None };
+            let [Statement::If { condition, then_body, else_body }] = statements.as_slice() else {
+                return None;
+            };
+            let Expression::Binary { operator: BinaryOperator::LogicalOr, left, right } = condition
+            else {
+                return None;
+            };
+            let Expression::Binary { operator: BinaryOperator::BitAnd, left: p0, right: m2 } =
+                left.as_ref()
+            else {
+                return None;
+            };
+            if crate::frame::pun_word_offset_pub(p0, x) != Some(0) {
+                return None;
+            }
+            let (second_begin, second_end) =
+                crate::analysis::rlwinm_mask(crate::analysis::constant_value(m2)?)?;
+            // The low word, optionally masked with the identity 0xffffffff.
+            let low_ok = match right.as_ref() {
+                Expression::Binary { operator: BinaryOperator::BitAnd, left: p4, right: identity } => {
+                    crate::frame::pun_word_offset_pub(p4, x) == Some(4)
+                        && crate::analysis::constant_value(identity).map(|c| c as u32)
+                            == Some(0xffff_ffff)
+                }
+                other => crate::frame::pun_word_offset_pub(other, x) == Some(4),
+            };
+            if !low_ok {
+                return None;
+            }
+            let value_of = |body: &[Statement]| -> Option<i16> {
+                let [Statement::Return(Some(value))] = body else { return None };
+                crate::analysis::constant_value(value).and_then(|k| i16::try_from(k).ok())
+            };
+            Some(Diamond {
+                second_begin,
+                second_end,
+                when_true: value_of(then_body)?,
+                when_false: value_of(else_body)?,
+            })
+        };
+        let mut big_arm: Option<Diamond> = None;
+        let mut zero_arm: Option<Diamond> = None;
+        for arm in arms {
+            let diamond = parse_diamond(&arm.body);
+            if arm.value == big_mask {
+                big_arm = diamond;
+            } else if arm.value == 0 {
+                zero_arm = diamond;
+            } else {
+                return Ok(false);
+            }
+        }
+        let (Some(big_arm), Some(zero_arm)) = (big_arm, zero_arm) else {
+            return Ok(false);
+        };
+        // -- emit --
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, (big_mask >> 16) as i16));
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: 3,
+            s: 4,
+            shift: 0,
+            begin: mask_begin,
+            end: mask_end,
+        });
+        self.output.instructions.push(Instruction::CompareWord { a: 3, b: 0 });
+        let big_at = self.fresh_label();
+        let zero_at = self.fresh_label();
+        let default_at = self.fresh_label();
+        let end_at = self.fresh_label();
+        self.emit_branch_conditional_to(12, 2, big_at); // beq
+        self.emit_branch_conditional_to(4, 0, default_at); // bge
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+        self.emit_branch_conditional_to(12, 2, zero_at); // beq
+        self.emit_branch_to(default_at);
+        let mut emit_diamond = |generator: &mut Self, diamond: &Diamond, label| {
+            generator.bind_label(label);
+            let when_true = generator.fresh_label();
+            let when_false = generator.fresh_label();
+            generator.output.instructions.push(Instruction::AndMaskRecord {
+                a: 0,
+                s: 4,
+                begin: diamond.second_begin,
+                end: diamond.second_end,
+            });
+            generator.emit_branch_conditional_to(4, 2, when_true); // bne
+            generator.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 12 });
+            generator.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+            generator.emit_branch_conditional_to(12, 2, when_false); // beq
+            generator.bind_label(when_true);
+            generator.output.instructions.push(Instruction::load_immediate(3, diamond.when_true));
+            generator.emit_branch_to(end_at);
+            generator.bind_label(when_false);
+            generator.output.instructions.push(Instruction::load_immediate(3, diamond.when_false));
+            generator.emit_branch_to(end_at);
+        };
+        emit_diamond(self, &big_arm, big_at);
+        emit_diamond(self, &zero_arm, zero_at);
+        self.bind_label(default_at);
+        self.output.instructions.push(Instruction::load_immediate(3, default_constant));
+        self.bind_label(end_at);
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // Pre-pool labels (measured @18 on the fpclassify object vs the
+        // +0 base's @5).
+        self.output.anonymous_label_bump += 13;
+        Ok(true)
+    }
+
     /// The TRIG DISPATCHER (fire 408, s_sin/s_cos): the fdlibm range
     /// dispatch — a small-|x| kernel call, the inf/NaN x-x rung, then
     /// __ieee754_rem_pio2 into a frame array and a four-way switch of
