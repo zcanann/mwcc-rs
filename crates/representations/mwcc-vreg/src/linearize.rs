@@ -362,6 +362,23 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
 
     let mut order = Vec::with_capacity(count);
     let mut issued_at: Vec<Option<u32>> = vec![None; count];
+    // PER-EDGE gating (measured: the k_cos else tail): a DOUBLE-FMUL
+    // producer (gate 4) consumed in its reader's B slot — the LAST read of
+    // a 3-operand fmadd family, the subtrahend/addend — forwards at its
+    // plain latency (3); the factor slots keep the full gate.
+    let edge_gate = |dependency: usize, consumer: usize| -> u32 {
+        let gate = nodes[dependency].gate_latency;
+        if gate > nodes[dependency].latency
+            && nodes[consumer].reads.len() >= 2
+            && nodes[dependency]
+                .writes
+                .first()
+                .is_some_and(|value| nodes[consumer].reads.last() == Some(value))
+        {
+            return nodes[dependency].latency;
+        }
+        gate
+    };
     let mut time = 0u32;
     let mut robin_flip = false;
     while order.len() < count {
@@ -371,7 +388,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 deps[candidate].iter().all(|&dependency| {
                     issued_at[dependency].is_some_and(|at| {
                         if model.gate_on_complete {
-                            at + nodes[dependency].gate_latency <= time
+                            at + edge_gate(dependency, candidate) <= time
                         } else {
                             at < time
                         }
@@ -391,7 +408,7 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             }
             deps[candidate]
                 .iter()
-                .filter_map(|&dependency| issued_at[dependency].map(|at| at + nodes[dependency].gate_latency))
+                .filter_map(|&dependency| issued_at[dependency].map(|at| at + edge_gate(dependency, candidate)))
                 .max()
                 .is_some_and(|completed| completed == time)
         };
@@ -3028,6 +3045,57 @@ mod tests {
             }
         }
         assert_eq!(registers, expected, "the d5 register frontier is not yet fitted");
+    }
+
+    /// FRONTIER (fire 368): the k_cos ELSE TAIL — x re-reload + the diamond
+    /// frame local + folded hz/a, an Fsub-rooted tail whose REAL registers
+    /// fit the REVERSE machine (death DESC with a consumer-count tiebreak
+    /// before start DESC, ascending first-fit, boundary doors, the
+    /// pending-sibling block) — NOT the emission-ordered regime the
+    /// Fsub-root flag currently forces. Real order also differs from the
+    /// frozen scheduler by one swap (inner before a at slot 6).
+    /// Nodes mirror the composed-claim dump (params z=f7 r=f4 y=f2).
+    #[test]
+    #[ignore]
+    fn float_registers_frontier_kcos_else() {
+        const FARITH: u32 = 3;
+        let nodes = vec![
+            DagNode::new("lfd_x", LOAD).writes(&[9]),
+            DagNode::new("lfd_qx", LOAD).writes(&[7]),
+            DagNode::new("lfd_05", LOAD).writes(&[12]),
+            DagNode::new("lfd_one", LOAD).writes(&[13]),
+            DagNode::new("fmul_xy", FARITH).gate(4).hazard(HAZARD_FPU).reads(&[9, 3]).writes(&[14]),
+            DagNode::new("fmsub_hz", FARITH).hazard(HAZARD_FPU).reads(&[12, 1, 7]).writes(&[15]),
+            DagNode::new("fmsub_in", FARITH).hazard(HAZARD_FPU).reads(&[1, 2, 14]).writes(&[16]),
+            DagNode::new("fsub_a", FARITH).hazard(HAZARD_FPU).reads(&[13, 7]).writes(&[17]),
+            DagNode::new("fsub_s2", FARITH).hazard(HAZARD_FPU).reads(&[15, 16]).writes(&[18]),
+            DagNode::new("fsub_rt", FARITH).hazard(HAZARD_FPU).reads(&[17, 18]).writes(&[19]).emission_ordered(),
+        ];
+        let order = linearize(&nodes);
+        // REAL schedule: x, qx, xy, 0.5, one, hz, INNER, a, s2, root.
+        let expected_order: Vec<usize> = vec![0, 1, 4, 2, 3, 5, 6, 7, 8, 9];
+        let order_hits = order == expected_order;
+        eprintln!("kcos_else order: got {order:?} want {expected_order:?} ({order_hits})");
+        let registers = assign_float_registers(&nodes, &order, &[(1, 7), (2, 4), (3, 2)], FROZEN_FLOAT_REG);
+        let expected: Vec<Option<u8>> = vec![
+            Some(0),
+            Some(3),
+            Some(1),
+            Some(2),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(2),
+            Some(0),
+            Some(1),
+        ];
+        for (index, (got, want)) in registers.iter().zip(&expected).enumerate() {
+            if got != want {
+                eprintln!("  reg node {index}: got {got:?} want {want:?}");
+            }
+        }
+        assert!(order_hits, "kcos else ORDER unfitted");
+        assert_eq!(registers, expected, "kcos else REGISTERS unfitted");
     }
 
     /// Diagnostic: score both float register machines across the model space.
