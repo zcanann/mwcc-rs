@@ -1355,6 +1355,14 @@ pub struct FloatRegModel {
     /// the tier-forward machine and the structural crossing tier stand down
     /// (measured against the plain frame-diamond tails, which keep them).
     pub emission_over_tier: bool,
+    /// FITTER KNOB: run the death-DESC load pre-pass on every tier-forward
+    /// shape (not only duals).
+    pub prepass_always: bool,
+    /// FITTER KNOB: the pre-pass equal-death tiebreak uses start ASC.
+    pub prepass_start_asc: bool,
+    /// FITTER KNOB: chain ariths take the LOWEST reusable register instead
+    /// of the minimum dying operand.
+    pub chain_lowest: bool,
     /// TIER shapes run a FORWARD machine instead of the reverse one:
     /// non-tier values allocate in EMISSION order — loads descending
     /// first-fit from the window top, arith reusing the MINIMUM dying
@@ -1422,6 +1430,9 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     window_floor: 0,
     tier_position_desc: false,
     emission_over_tier: false,
+    prepass_always: false,
+    prepass_start_asc: false,
+    chain_lowest: false,
     tier_forward_descending: true,
     dying_door_share: true,
     order_by_death: true,
@@ -1670,7 +1681,7 @@ pub fn assign_float_registers(
                 // early, which blocks the first chain arith's MIN reuse
                 // (measured: chain1 lands on its factor's f5).
                 let mut pending_loads: Vec<usize> = (0..count)
-                    .filter(|_| model.tier_position_desc) // DUAL shapes only (measured there)
+                    .filter(|_| model.tier_position_desc || model.prepass_always)
                     .filter(|&node| {
                         is_value(node) && result[node].is_none() && nodes[node].kind == OpKind::Load
                     })
@@ -1680,7 +1691,11 @@ pub fn assign_float_registers(
                         })
                     })
                     .collect();
-                pending_loads.sort_by_key(|&node| std::cmp::Reverse((value_end(node), position[node])));
+                if model.prepass_start_asc {
+                    pending_loads.sort_by_key(|&node| (std::cmp::Reverse(value_end(node)), position[node]));
+                } else {
+                    pending_loads.sort_by_key(|&node| std::cmp::Reverse((value_end(node), position[node])));
+                }
                 for node in pending_loads {
                     let start = position[node];
                     let end = value_end(node);
@@ -1772,8 +1787,13 @@ pub fn assign_float_registers(
                     } else {
                         None
                     };
+                    let chain_pick = if model.chain_lowest {
+                        (0..window).find(|&register| reusable(register, &occupied))
+                    } else {
+                        min_dying
+                    };
                     let register = if nodes[node].kind != OpKind::Load {
-                        match c_dying.or(min_dying) {
+                        match c_dying.or(chain_pick) {
                             Some(register) => register,
                             None => match (0..window).rev().find(|&register| free(register, &occupied)) {
                                 Some(register) => register,
@@ -3281,6 +3301,96 @@ mod tests {
         assert_eq!(registers, expected, "v2 REGISTERS unfitted");
     }
 
+    /// THE DEEP-FIT ENUMERATOR (fire 376): score every knob combo against
+    /// the pinned fixtures AND the frontier captures simultaneously —
+    /// replaces sequential hand-fitting (four hand-fits each broke on the
+    /// fifth shape). Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn float_registers_deep_fit() {
+        const FARITH: u32 = 3;
+        const FMUL_D: u32 = 4;
+        let mut shapes = float_register_fixtures();
+        // T5 (the 5-coefficient s_atan split).
+        shapes.push((
+            "frontier_t5",
+            vec![
+                DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[10]),
+                DagNode::new("fmul_w", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[10, 10]).writes(&[11]),
+                DagNode::new("lfd_t4", LOAD).writes(&[12]),
+                DagNode::new("lfd_t2", LOAD).writes(&[13]),
+                DagNode::new("lfd_t3", LOAD).writes(&[14]),
+                DagNode::new("lfd_t1", LOAD).writes(&[15]),
+                DagNode::new("lfd_t0", LOAD).writes(&[16]),
+                DagNode::new("even1", FARITH).hazard(HAZARD_FPU).reads(&[11, 12, 13]).writes(&[17]),
+                DagNode::new("odd1", FARITH).hazard(HAZARD_FPU).reads(&[11, 14, 15]).writes(&[18]),
+                DagNode::new("even2", FARITH).hazard(HAZARD_FPU).reads(&[11, 17, 16]).writes(&[19]),
+                DagNode::new("mul_odd", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[11, 18]).writes(&[20]),
+                DagNode::new("root", FARITH).hazard(HAZARD_FPU).reads(&[10, 19, 20]).writes(&[21]),
+            ],
+            vec![(1, 1)],
+            vec![
+                Some(5), Some(6), Some(4), Some(3), Some(1), Some(0), Some(2), Some(3), Some(0), Some(1), Some(0), Some(1),
+            ],
+        ));
+        // V3 (the 7-coefficient split).
+        shapes.push((
+            "frontier_v3",
+            vec![
+                DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[10]),
+                DagNode::new("fmul_w", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[10, 10]).writes(&[11]),
+                DagNode::new("lfd_t6", LOAD).writes(&[12]),
+                DagNode::new("lfd_t4", LOAD).writes(&[13]),
+                DagNode::new("lfd_t5", LOAD).writes(&[14]),
+                DagNode::new("lfd_t3", LOAD).writes(&[15]),
+                DagNode::new("lfd_t2", LOAD).writes(&[16]),
+                DagNode::new("even1", FARITH).hazard(HAZARD_FPU).reads(&[11, 12, 13]).writes(&[17]),
+                DagNode::new("lfd_t1", LOAD).writes(&[18]),
+                DagNode::new("lfd_t0", LOAD).writes(&[19]),
+                DagNode::new("odd1", FARITH).hazard(HAZARD_FPU).reads(&[11, 14, 15]).writes(&[20]),
+                DagNode::new("even2", FARITH).hazard(HAZARD_FPU).reads(&[11, 17, 16]).writes(&[21]),
+                DagNode::new("odd2", FARITH).hazard(HAZARD_FPU).reads(&[11, 20, 18]).writes(&[22]),
+                DagNode::new("even3", FARITH).hazard(HAZARD_FPU).reads(&[11, 21, 19]).writes(&[23]),
+                DagNode::new("mul_odd", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[11, 22]).writes(&[24]),
+                DagNode::new("root", FARITH).hazard(HAZARD_FPU).reads(&[10, 23, 24]).writes(&[25]),
+            ],
+            vec![(1, 1)],
+            vec![
+                Some(6), Some(7), Some(3), Some(0), Some(2), Some(1), Some(4), Some(5), Some(0), Some(3), Some(1), Some(2), Some(0), Some(1), Some(0), Some(1),
+            ],
+        ));
+        for prepass_always in [false, true] {
+            for prepass_start_asc in [false, true] {
+                for chain_lowest in [false, true] {
+                    let mut model = FROZEN_FLOAT_REG;
+                    model.prepass_always = prepass_always;
+                    model.prepass_start_asc = prepass_start_asc;
+                    model.chain_lowest = chain_lowest;
+                    let mut full = 0usize;
+                    let mut names: Vec<&str> = Vec::new();
+                    for (name, nodes, params, expected) in &shapes {
+                        let order = linearize(nodes);
+                        let registers = assign_float_registers(nodes, &order, params, model);
+                        if &registers == expected {
+                            full += 1;
+                        } else {
+                            names.push(name);
+                        }
+                    }
+                    eprintln!(
+                        "prepass_always={} start_asc={} chain_lowest={} => {}/{} (miss: {:?})",
+                        prepass_always,
+                        prepass_start_asc,
+                        chain_lowest,
+                        full,
+                        shapes.len(),
+                        &names[..names.len().min(6)]
+                    );
+                }
+            }
+        }
+    }
+
     /// Diagnostic: score both float register machines across the model space.
     #[test]
     fn float_registers() {
@@ -3311,6 +3421,9 @@ mod tests {
                                                             window_floor: 0,
                                                             tier_position_desc: false,
                                                             emission_over_tier: false,
+                                                            prepass_always: false,
+                                                            prepass_start_asc: false,
+                                                            chain_lowest: false,
                                                             tier_forward_descending,
                                                             dying_door_share,
                                                             order_by_death,
@@ -3344,6 +3457,9 @@ mod tests {
                     window_floor: 0,
                     tier_position_desc: false,
                     emission_over_tier: false,
+                    prepass_always: false,
+                    prepass_start_asc: false,
+                    chain_lowest: false,
                     tier_forward_descending: false,
                     dying_door_share: false,
                     order_by_death: false,
