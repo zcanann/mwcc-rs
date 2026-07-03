@@ -78,6 +78,11 @@ pub(crate) struct Generator {
     /// Extra float bindings for a DAG tail: shared dual-tail locals already
     /// materialized in registers (name -> FPR).
     pub(crate) float_pseudo_params: Vec<(String, u8)>,
+    /// The k_cos-family BIG-constant dual compare: (lis high, addi low, the
+    /// preserved ix register). The in-frame dual weaves `lis r3,high;
+    /// addi r0,r3,low` right after the x reload and `cmpw ix,r0` after the
+    /// fourth shared load (measured at chain depths 3 and 4).
+    pub(crate) float_dual_compare: Option<(i16, i16, u8)>,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in

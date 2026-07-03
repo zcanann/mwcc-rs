@@ -945,6 +945,11 @@ impl Generator {
             }
             &first_guard.condition
         };
+        let int_params_early = function
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.parameter_type != Type::Double)
+            .count() as u8;
         let Expression::Binary { operator: BinaryOperator::Less, left, right } = outer_condition else {
             return Ok(false);
         };
@@ -974,12 +979,38 @@ impl Generator {
                         | BinaryOperator::Equal | BinaryOperator::NotEqual)
                         && matches!(left.as_ref(), Expression::Variable(name) if name == ix)
                         && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok()));
+        // The k_cos BIG-constant split (`ix < 0x3FD33333`): the constant
+        // materializes lis r3 + addi r0 INSIDE the shared schedule, so the
+        // prefix must keep ix out of r3 — the SPLIT form (lwz r3 raw,
+        // clrlwi r4). Measured for Less with a positive addi low half and
+        // no int params.
+        let ix_dual_big: Option<(i16, i16)> = if nested && dual_tail && !ix_in_dual_condition {
+            match &function.guards[0].condition {
+                Expression::Binary { operator: BinaryOperator::Less, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(name) if name == ix) =>
+                {
+                    match right.as_ref() {
+                        Expression::IntegerLiteral(value)
+                            if u32::try_from(*value).is_ok()
+                                && (*value & 0xffff) <= 0x7fff
+                                && i16::try_from(*value).is_err() =>
+                        {
+                            Some(((*value >> 16) as i16, (*value & 0xffff) as i16))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         // ix appears nowhere else.
         let ix_uses_elsewhere = function
             .guards
             .iter()
             .enumerate()
-            .filter(|&(index, _)| !(nested && index == 0 && ix_in_dual_condition))
+            .filter(|&(index, _)| !(nested && index == 0 && (ix_in_dual_condition || ix_dual_big.is_some())))
             .map(|(_, guard)| guard)
             .skip(if nested { 0 } else { 1 })
             .map(|guard| {
@@ -1022,6 +1053,9 @@ impl Generator {
         if ix_in_dual_condition && lis_high.is_none() {
             // The preserved-ix dual is measured only in the lis/cmpw form
             // (target r3/r4); the r0 small-compare form would be clobbered.
+            return Ok(false);
+        }
+        if ix_dual_big.is_some() && (lis_high.is_none() || int_params_early != 0 || !masked) {
             return Ok(false);
         }
         // The synthetic tail: the double locals + return, no guards; the
@@ -1075,10 +1109,13 @@ impl Generator {
             .iter()
             .filter(|parameter| parameter.parameter_type != Type::Double)
             .count() as u8;
-        let target_register = if lis_high.is_some() { 3 + int_params } else { 0 };
-        self.output.instructions.push(Instruction::LoadWord { d: target_register, a: 1, offset: 8 });
+        // The big-const dual SPLITS raw/masked (lwz r3; clrlwi r4,r3) so the
+        // dual's lis can take r3; otherwise the mask is in-place.
+        let load_register = if lis_high.is_some() { 3 + int_params } else { 0 };
+        let target_register = if ix_dual_big.is_some() { load_register + 1 } else { load_register };
+        self.output.instructions.push(Instruction::LoadWord { d: load_register, a: 1, offset: 8 });
         if masked {
-            self.output.instructions.push(Instruction::ClearLeftImmediate { a: target_register, s: target_register, clear: 1 });
+            self.output.instructions.push(Instruction::ClearLeftImmediate { a: target_register, s: load_register, clear: 1 });
         }
         if lis_high.is_some() {
             self.output.instructions.push(Instruction::CompareWord { a: target_register, b: 0 });
@@ -1150,6 +1187,9 @@ impl Generator {
         }
         // The preserved ix resolves in the dual's condition test through a
         // temporary location at the prefix's compare register.
+        if let Some((high, low)) = ix_dual_big {
+            self.float_dual_compare = Some((high, low, target_register));
+        }
         let saved_ix_location = if ix_in_dual_condition {
             self.locations.insert(
                 ix.to_string(),
@@ -1181,6 +1221,7 @@ impl Generator {
             }
         }
         self.float_reload_x = None;
+        self.float_dual_compare = None;
         self.frame_slots = saved_frame_slots;
         match claimed {
             Ok(true) => {}
@@ -1252,7 +1293,9 @@ impl Generator {
             }
             _ => false,
         };
-        if !condition_ok {
+        // The punned caller vets the BIG-const ix compare itself (the
+        // lis/addi/cmpw weave) — condition_ok only gates the leaf forms.
+        if !condition_ok && self.float_dual_compare.is_none() {
             return Ok(false);
         }
         // IN-FRAME (the punned k_sin composition): x lives in the frame —
@@ -1596,6 +1639,12 @@ impl Generator {
                     FloatOp::FrameLoad(offset) => {
                         self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 1, offset: *offset });
                         emitted_loads += 1;
+                        if let Some((high, low, _)) = self.float_dual_compare {
+                            // The big compare constant materializes right
+                            // after the reload: lis r3 + addi r0 (measured).
+                            self.output.instructions.push(Instruction::load_immediate_shifted(3, high));
+                            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: low });
+                        }
                     }
                     FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
                         d,
@@ -1639,16 +1688,27 @@ impl Generator {
                 // (measured: A/ksin_dual), or after the FIRST float op
                 // when the shared DAG is loadless (measured: fire-350).
                 // IN-FRAME the compare lands right after the x reload
-                // (measured: the real k_sin, cmpwi at slot 1).
-                let trigger = if in_frame {
-                    emitted_loads == 1 && matches!(ops[node], FloatOp::FrameLoad(_))
-                } else if shared_loads >= 2 {
-                    emitted_loads == 2 && matches!(ops[node], FloatOp::Const(_))
+                // (measured: the real k_sin, cmpwi at slot 1) — except the
+                // BIG-const form, whose cmpw lands after the FOURTH shared
+                // load (measured at chain depths 3 and 4).
+                if let Some((_, _, ix_register)) = self.float_dual_compare {
+                    if condition_encoding.is_none() && emitted_loads == 4 {
+                        self.output.instructions.push(Instruction::CompareWord { a: ix_register, b: 0 });
+                        // Less against the materialized constant: skip to
+                        // the else tail on bge.
+                        condition_encoding = Some((4, 0));
+                    }
                 } else {
-                    emitted_ops == 1
-                };
-                if condition_encoding.is_none() && trigger {
-                    condition_encoding = Some(self.emit_condition_test(&guard.condition)?);
+                    let trigger = if in_frame {
+                        emitted_loads == 1 && matches!(ops[node], FloatOp::FrameLoad(_))
+                    } else if shared_loads >= 2 {
+                        emitted_loads == 2 && matches!(ops[node], FloatOp::Const(_))
+                    } else {
+                        emitted_ops == 1
+                    };
+                    if condition_encoding.is_none() && trigger {
+                        condition_encoding = Some(self.emit_condition_test(&guard.condition)?);
+                    }
                 }
             }
             // Pseudo-params for the tails.
