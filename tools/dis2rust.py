@@ -131,6 +131,8 @@ for idx, mn, ops in instrs:
         out.append(f'        self.record_relocation(RelocationKind::Rel24, "{name}");')
         out.append(f'        self.output.instructions.push(Instruction::BranchAndLink {{ target: "{name}".to_string() }});')
     elif mn=="andc": push(f"AndComplement {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="clrlwi.": push(f"ClearLeftImmediateRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, clear: {ops[2]} }}")
+    elif mn=="rlwinm.": push(f"RotateAndMaskRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
     elif mn=="blr": push("BranchToLinkRegister")
     elif mn=="b":
         t=int(ops[0],16)//4

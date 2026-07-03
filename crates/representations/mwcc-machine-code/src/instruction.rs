@@ -136,6 +136,9 @@ pub enum Instruction {
     /// `[begin, end]`. The general form; mwcc fuses a narrow unsigned shift and
     /// its width mask into one of these.
     RotateAndMask { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
+    /// `rlwinm. rA, rS, shift, begin, end` — the general rotate-and-mask,
+    /// record form (sets CR0).
+    RotateAndMaskRecord { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
     /// `rlwnm rA, rS, rB, begin, end` — like `rlwinm` but the rotate amount is the
     /// low five bits of `rB` (a register) rather than an immediate. mwcc uses it for
     /// the `x <= 0` idiom: rotating a `1` left by `cntlzw(x)` lands in the low bit

@@ -87,7 +87,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         | ExtendSignHalfwordRecord { a, s }
         | OrImmediate { a, s, .. } | OrImmediateShifted { a, s, .. } | ShiftLeftImmediate { a, s, .. } | ShiftRightAlgebraicImmediate { a, s, .. } | ShiftRightAlgebraicImmediateRecord { a, s, .. }
         | ShiftRightLogicalImmediate { a, s, .. } | XorImmediate { a, s, .. } | XorImmediateShifted { a, s, .. }
-        | ClearLeftImmediate { a, s, .. } | ClearLeftImmediateRecord { a, s, .. } | AndContiguousMask { a, s, .. } | RotateAndMask { a, s, .. }
+        | ClearLeftImmediate { a, s, .. } | ClearLeftImmediateRecord { a, s, .. } | AndContiguousMask { a, s, .. } | RotateAndMask { a, s, .. } | RotateAndMaskRecord { a, s, .. }
         | AndMaskRecord { a, s, .. } => {
             visit(D, G, a);
             visit(U, G, s);
