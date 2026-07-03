@@ -1803,6 +1803,9 @@ impl Generator {
         if self.try_ilogb_diamond(function)? {
             return Ok(());
         }
+        if self.try_early_ladder(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -8478,6 +8481,119 @@ impl Generator {
         self.bind_label(join_label);
         self.emit_branch_conditional_to(16, 0, body_label); // bdnz
         self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The EARLY LADDER (fire 427, e_fmod's |x|<=|y| purge):
+    ///   if (hx <= hy) { if ((hx < hy) || (lx < ly)) return K1;
+    ///                   if (lx == ly) return K2; }  return K3;
+    /// Measured: ONE `cmplw lx,ly` serves BOTH the `||` arm and the
+    /// later `==` test — CR0 survives the branch between them (compare
+    /// CSE across branches); the `||` short-circuits through `blt` into
+    /// the shared return; every return is inline (li; blr — no join).
+    fn try_early_ladder(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let [p_hx, p_lx, p_hy, p_ly] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if p_hx.parameter_type != Type::Int
+            || p_lx.parameter_type != Type::UnsignedInt
+            || p_hy.parameter_type != Type::Int
+            || p_ly.parameter_type != Type::UnsignedInt
+        {
+            return Ok(false);
+        }
+        let (hx, lx, hy, ly) = (p_hx.name.as_str(), p_lx.name.as_str(), p_hy.name.as_str(), p_ly.name.as_str());
+        let [Statement::If { condition: outer, then_body, else_body }] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let is_pair = |expression: &Expression, operator: BinaryOperator, a: &str, b: &str| -> bool {
+            let Expression::Binary { operator: found, left, right } = expression else {
+                return false;
+            };
+            *found == operator
+                && matches!(left.as_ref(), Expression::Variable(v) if v == a)
+                && matches!(right.as_ref(), Expression::Variable(v) if v == b)
+        };
+        if !is_pair(outer, BinaryOperator::LessEqual, hx, hy) {
+            return Ok(false);
+        }
+        let [Statement::If { condition: or_test, then_body: or_then, else_body: or_else }, Statement::If { condition: eq_test, then_body: eq_then, else_body: eq_else }] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !or_else.is_empty() || !eq_else.is_empty() {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::LogicalOr, left: or_left, right: or_right } =
+            or_test
+        else {
+            return Ok(false);
+        };
+        if !is_pair(or_left.as_ref(), BinaryOperator::Less, hx, hy)
+            || !is_pair(or_right.as_ref(), BinaryOperator::Less, lx, ly)
+            || !is_pair(eq_test, BinaryOperator::Equal, lx, ly)
+        {
+            return Ok(false);
+        }
+        let arm_return = |statements: &[Statement]| -> Option<i16> {
+            let [Statement::Return(Some(Expression::IntegerLiteral(value)))] = statements else {
+                return None;
+            };
+            i16::try_from(*value).ok()
+        };
+        let (Some(k1), Some(k2)) = (arm_return(or_then), arm_return(eq_then)) else {
+            return Ok(false);
+        };
+        let Some(Expression::IntegerLiteral(k3)) = &function.return_expression else {
+            return Ok(false);
+        };
+        let Ok(k3) = i16::try_from(*k3) else {
+            return Ok(false);
+        };
+        let (Some(hx_register), Some(lx_register), Some(hy_register), Some(ly_register)) = (
+            self.lookup_general(hx),
+            self.lookup_general(lx),
+            self.lookup_general(hy),
+            self.lookup_general(ly),
+        ) else {
+            return Ok(false);
+        };
+        // -- emit --
+        self.output.instructions.push(Instruction::CompareWord { a: hx_register, b: hy_register });
+        let end_label = self.fresh_label();
+        self.emit_branch_conditional_to(12, 1, end_label); // bgt
+        let first_return_label = self.fresh_label();
+        self.emit_branch_conditional_to(12, 0, first_return_label); // blt (the || short-circuit)
+        self.output.instructions.push(Instruction::CompareLogicalWord { a: lx_register, b: ly_register });
+        let equality_label = self.fresh_label();
+        self.emit_branch_conditional_to(4, 0, equality_label); // bge
+        self.bind_label(first_return_label);
+        self.output.instructions.push(Instruction::load_immediate(3, k1));
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The equality test REUSES the cmplw's CR0 (no second compare).
+        self.bind_label(equality_label);
+        self.emit_branch_conditional_to(4, 2, end_label); // bne
+        self.output.instructions.push(Instruction::load_immediate(3, k2));
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.bind_label(end_label);
+        self.output.instructions.push(Instruction::load_immediate(3, k3));
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // @N: measured via objprobe after implementation.
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }

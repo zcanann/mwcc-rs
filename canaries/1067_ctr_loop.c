@@ -196,3 +196,17 @@ int ilogb_diamond(int hx, unsigned lx)
 		ix = (hx >> 20) - 1023;
 	return ix;
 }
+/* Fire 427: the EARLY LADDER (e_fmod's |x|<=|y| purge) — ONE cmplw
+   serves both the || arm and the later == test (CR0 survives the
+   branch between them); the || short-circuits via blt into the
+   shared return; every return is inline li/blr, no join. @N +0. */
+int early_ladder(int hx, unsigned lx, int hy, unsigned ly)
+{
+	if (hx <= hy) {
+		if ((hx < hy) || (lx < ly))
+			return 1;
+		if (lx == ly)
+			return 2;
+	}
+	return 3;
+}
