@@ -13,6 +13,9 @@ pub(crate) struct StructField {
     pub(crate) offset: u16,
     pub(crate) struct_tag: Option<String>,
     pub(crate) array_element: Option<Pointee>,
+    /// For an array member, the array's TOTAL byte size (dimensions x element
+    /// size) — feeds the `sizeof(s.arr)` constant fold. `None` for a scalar.
+    pub(crate) array_bytes: Option<u16>,
     /// For a bit-field member, `(bit_offset, width)` — the field occupies `width` bits
     /// starting `bit_offset` bits from the most-significant end of its storage unit
     /// (which begins at byte `offset`). `None` for an ordinary member. Member access
@@ -69,6 +72,17 @@ pub(crate) struct Parser {
     /// Layout and a simple access ignore it; a value-tracked local guards on it and
     /// defers (a volatile local's access must not be elided/folded).
     pub(crate) last_type_was_volatile: bool,
+    /// Set when a member access decays an ARRAY member to its address
+    /// (`Expression::MemberAddress`): the array's total byte size. Consumed by
+    /// the `sizeof(s.arr)` fold, which resets it before parsing its operand.
+    pub(crate) last_member_array_bytes: Option<u16>,
+    /// Active block-scope shadow renames, innermost last: (source name,
+    /// internal hoisted name like `i@2`). Pushed when a block declaration
+    /// shadows an existing local; truncated at the block's close brace.
+    /// `factor` resolves bare names through this stack (latest wins).
+    pub(crate) block_renames: Vec<(String, String)>,
+    /// Monotonic counter feeding shadow-rename internal names.
+    pub(crate) rename_counter: usize,
     /// Names of skipped `static inline` functions with an inline `asm {}` body, in
     /// declaration order; mwcc emits a local undefined symbol for each.
     pub(crate) inline_asm_symbols: Vec<String>,

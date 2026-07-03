@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const EATAN2_SUN_AST_HASH: u64 = 0xe05c3edddc370ffb;
+const EATAN2_SUN_AST_HASH: u64 = 0xfdd3dfcd95cb8c62;
 
 impl Generator {
     pub(super) fn try_eatan2_sun(&mut self, function: &Function) -> Compilation<bool> {

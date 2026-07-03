@@ -600,7 +600,10 @@ fn inline_switch_scrutinee_locals(function: &Function) -> Option<Function> {
             };
             occurrences += crate::analysis::count_name_occurrences(result, &local.name);
         }
-        if let Some(expression) = default {
+        if let Some(body) = default {
+            let Some(expression) = body.return_expression() else {
+                return None; // a statement-bodied default skips this fold
+            };
             occurrences += crate::analysis::count_name_occurrences(expression, &local.name);
         }
         if let Some(expression) = &function.return_expression {
@@ -618,6 +621,7 @@ fn inline_switch_scrutinee_locals(function: &Function) -> Option<Function> {
                 arm.result().expect("gated above"),
                 &values,
             )),
+            falls_through: false,
         })
         .collect();
     Some(Function {
@@ -630,7 +634,12 @@ fn inline_switch_scrutinee_locals(function: &Function) -> Option<Function> {
         statements: vec![Statement::Switch {
             scrutinee: crate::value_tracking::substitute(scrutinee, &values),
             arms,
-            default: default.as_ref().map(|expression| crate::value_tracking::substitute(expression, &values)),
+            default: default.as_ref().map(|body| {
+                mwcc_syntax_trees::ArmBody::Return(crate::value_tracking::substitute(
+                    body.return_expression().expect("gated above"),
+                    &values,
+                ))
+            }),
         }],
         guards: function.guards.clone(),
         return_expression: function.return_expression.as_ref().map(|expression| crate::value_tracking::substitute(expression, &values)),
@@ -2236,9 +2245,16 @@ impl Generator {
         // arm if present, else the function's trailing `return`). The cases and
         // default each end in their own `blr`, so this owns the whole body.
         if let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() {
-            if function.guards.is_empty() && function.locals.is_empty() && !function_makes_call(function) {
+            let statement_bodied_default =
+                matches!(default, Some(body) if body.return_expression().is_none());
+            if function.guards.is_empty()
+                && function.locals.is_empty()
+                && !function_makes_call(function)
+                && !statement_bodied_default
+            {
                 let default_expression = default
                     .as_ref()
+                    .and_then(|body| body.return_expression())
                     .or(function.return_expression.as_ref())
                     .ok_or_else(|| Diagnostic::error("a switch with no default needs a trailing return"))?;
                 let result = match function.return_type {
@@ -10120,7 +10136,10 @@ impl Generator {
             [Statement::Switch { scrutinee, arms, default }]
                 if function.return_expression.is_none() && default.is_some() =>
             {
-                (scrutinee, arms, default.as_ref())
+                let Some(result) = default.as_ref().and_then(|body| body.return_expression()) else {
+                    return Ok(false); // a statement-bodied default is not this shape
+                };
+                (scrutinee, arms, Some(result))
             }
             [Statement::Switch { scrutinee, arms, default }]
                 if default.is_none() && function.return_expression.is_some() =>
@@ -10330,7 +10349,7 @@ impl Generator {
         // Two tails: the four-way SWITCH of kernels (sin/cos), or the
         // direct parity call `return kernel(y0,y1,1-((n&1)<<1))` (tan) —
         // the latter arrives as the function's trailing return.
-        let (head, switch_tail, return_tail): (&[Statement], Option<(&Expression, &Vec<mwcc_syntax_trees::SwitchArm>, &Option<Expression>)>, Option<&Expression>) =
+        let (head, switch_tail, return_tail): (&[Statement], Option<(&Expression, &Vec<mwcc_syntax_trees::SwitchArm>, &Option<mwcc_syntax_trees::ArmBody>)>, Option<&Expression>) =
             match function.statements.as_slice() {
                 [head @ .., Statement::Switch { scrutinee, arms, default }] if head.len() == 5 => {
                     (head, Some((scrutinee, arms, default)), None)
@@ -10497,7 +10516,7 @@ impl Generator {
                 };
                 quadrants[index as usize] = parse_quadrant(result);
             }
-            let Some(default_result) = default else {
+            let Some(default_result) = default.as_ref().and_then(|body| body.return_expression()) else {
                 return Ok(false);
             };
             quadrants[3] = parse_quadrant(default_result);
@@ -13743,7 +13762,12 @@ fn function_calls_any(function: &Function, names: &std::collections::HashSet<Str
             S::Return(value) => value.as_ref().is_some_and(|expression| expression_calls(expression, names)),
             S::Switch { scrutinee, arms, default } => {
                 expression_calls(scrutinee, names)
-                    || default.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                    || default.as_ref().is_some_and(|body| match body {
+                        mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            statements.iter().any(|inner| statement_calls(inner, names))
+                        }
+                    })
                     || arms.iter().any(|arm| match &arm.body {
                         mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
                         mwcc_syntax_trees::ArmBody::Statements(statements) => {

@@ -497,7 +497,12 @@ pub(crate) fn statement_has_call(statement: &Statement) -> bool {
                         statements.iter().any(statement_has_call)
                     }
                 })
-                || default.as_ref().is_some_and(expression_has_call)
+                || default.as_ref().is_some_and(|body| match body {
+                    mwcc_syntax_trees::ArmBody::Return(result) => expression_has_call(result),
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                        statements.iter().any(statement_has_call)
+                    }
+                })
         }
         Statement::If { condition, then_body, else_body } => {
             expression_has_call(condition) || block_has_call(then_body) || block_has_call(else_body)

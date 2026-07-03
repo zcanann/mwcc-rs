@@ -155,7 +155,7 @@ impl Parser {
     /// Parse `switch (scrutinee) { case <int>: return E; ... default: return E; }`.
     /// The subset requires every arm to be a single `return`; fall-through, blocks,
     /// and non-constant case labels are not supported yet.
-    fn parse_switch(&mut self) -> Compilation<Statement> {
+    fn parse_switch(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
         self.eat_word("switch");
         self.expect(Token::ParenOpen)?;
         let scrutinee = self.expression()?;
@@ -167,21 +167,12 @@ impl Parser {
             if self.eat_word("case") {
                 let value = self.parse_integer_constant()?;
                 self.expect(Token::Colon)?;
-                let body = self.parse_switch_arm_body()?;
-                arms.push(SwitchArm { value, body });
+                let (body, falls_through) = self.parse_switch_arm_body(local_names, block_locals)?;
+                arms.push(SwitchArm { value, body, falls_through });
             } else if self.eat_word("default") {
                 self.expect(Token::Colon)?;
-                let braced = self.eat_keyword(Token::BraceOpen);
-                self.expect(Token::KeywordReturn)?;
-                default = Some(self.expression()?);
-                self.expect(Token::Semicolon)?;
-                if braced {
-                    while matches!(self.peek(), Token::Identifier(word) if word == "break") {
-                        self.advance();
-                        self.expect(Token::Semicolon)?;
-                    }
-                    self.expect(Token::BraceClose)?;
-                }
+                let (body, _falls_through) = self.parse_switch_arm_body(local_names, block_locals)?;
+                default = Some(body);
             } else {
                 return Err(Diagnostic::error("a switch arm must be `case <int>: return …;` or `default: return …;` (roadmap)"));
             }
@@ -194,7 +185,7 @@ impl Parser {
     /// dead trailing `break;`s), or a braced STATEMENT body ending at its
     /// `break;` — represented faithfully (mwcc branches these; a ternary
     /// lowering is byte-different).
-    fn parse_switch_arm_body(&mut self) -> Compilation<mwcc_syntax_trees::ArmBody> {
+    fn parse_switch_arm_body(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<(mwcc_syntax_trees::ArmBody, bool)> {
         use mwcc_syntax_trees::ArmBody;
         let braced = self.eat_keyword(Token::BraceOpen);
         if *self.peek() == Token::KeywordReturn {
@@ -208,18 +199,19 @@ impl Parser {
                 }
                 self.expect(Token::BraceClose)?;
             }
-            return Ok(ArmBody::Return(result));
+            return Ok((ArmBody::Return(result), false));
         }
         // A statement body: if-statements and returns, ending at `break;`
         // (unbraced arms also end at the next case/default label or the
-        // switch's closing brace).
+        // switch's closing brace). An arm ending WITHOUT break/return falls
+        // through — an empty body is a shared label (`case 'd': case 'i':`).
         let mut statements: Vec<Statement> = Vec::new();
-        let mut local_names = std::collections::HashSet::new();
-        let mut block_locals = Vec::new();
+        let mut saw_break = false;
         loop {
             if matches!(self.peek(), Token::Identifier(word) if word == "break") {
                 self.advance();
                 self.expect(Token::Semicolon)?;
+                saw_break = true;
                 if braced {
                     continue; // dead after full-return diamonds; end-of-arm otherwise
                 }
@@ -238,19 +230,28 @@ impl Parser {
                 break;
             }
             if *self.peek() == Token::KeywordIf {
-                statements.push(self.parse_if_statement(&mut local_names, &mut block_locals)?);
+                statements.push(self.parse_if_statement(local_names, block_locals)?);
                 continue;
             }
             if *self.peek() == Token::KeywordReturn {
                 statements.push(self.parse_return_statement()?);
                 continue;
             }
-            statements.push(self.parse_simple_statement(&local_names)?);
+            if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
+                statements.push(self.parse_loop_statement(local_names, block_locals)?);
+                continue;
+            }
+            // A bare `{ ... }` scoping block inside an arm flattens like one in
+            // a function body (its declarations hoist with the block's).
+            if *self.peek() == Token::BraceOpen {
+                let mut inner = self.parse_block(local_names, block_locals)?;
+                statements.append(&mut inner);
+                continue;
+            }
+            statements.push(self.parse_simple_statement(local_names, block_locals)?);
         }
-        if !block_locals.is_empty() {
-            return Err(Diagnostic::error("a switch-arm local is not supported yet (roadmap)"));
-        }
-        Ok(ArmBody::Statements(statements))
+        let falls_through = !saw_break && !matches!(statements.last(), Some(Statement::Return(_)));
+        Ok((ArmBody::Statements(statements), falls_through))
     }
 
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
@@ -795,7 +796,7 @@ impl Parser {
                         self.structs.insert(tag.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
-                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(tag), array_element: None, bit_field: None });
+                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(tag), array_element: None, array_bytes: None, bit_field: None });
                         offset += inner_size;
                     }
                     (Some(tag), None) => {
@@ -812,7 +813,7 @@ impl Parser {
                         self.structs.insert(synthetic.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
-                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(synthetic), array_element: None, bit_field: None });
+                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(synthetic), array_element: None, array_bytes: None, bit_field: None });
                         offset += inner_size;
                     }
                     (None, None) => {
@@ -824,6 +825,7 @@ impl Parser {
                                 offset: offset + field.offset,
                                 struct_tag: field.struct_tag.clone(),
                                 array_element: field.array_element,
+                                array_bytes: field.array_bytes,
                                 bit_field: field.bit_field,
                             });
                         }
@@ -877,6 +879,7 @@ impl Parser {
                                 offset: offset + field.offset,
                                 struct_tag: field.struct_tag.clone(),
                                 array_element: field.array_element,
+                                array_bytes: field.array_bytes,
                                 bit_field: field.bit_field,
                             });
                         }
@@ -916,7 +919,7 @@ impl Parser {
                 }
                     alignment_max = alignment_max.max(alignment);
                     offset = offset.div_ceil(alignment) * alignment;
-                    layout.fields.insert(field_name, StructField { member_type: element, offset, struct_tag: None, array_element: Some(pointee_of(element)?), bit_field: None });
+                    layout.fields.insert(field_name, StructField { member_type: element, offset, struct_tag: None, array_element: Some(pointee_of(element)?), array_bytes: Some(count.saturating_mul(element_size)), bit_field: None });
                     offset += count.saturating_mul(element_size);
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -961,7 +964,7 @@ impl Parser {
                     let alignment = 4u16;
                     alignment_max = alignment_max.max(alignment);
                     offset = offset.div_ceil(alignment) * alignment;
-                    layout.fields.insert(pointer_name, StructField { member_type: Type::StructPointer { element_size: 0 }, offset, struct_tag: None, array_element: None, bit_field: None });
+                    layout.fields.insert(pointer_name, StructField { member_type: Type::StructPointer { element_size: 0 }, offset, struct_tag: None, array_element: None, array_bytes: None, bit_field: None });
                     offset += 4;
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -1031,7 +1034,7 @@ impl Parser {
                             (unit_offset, 0)
                         }
                     };
-                    layout.fields.insert(field_name, StructField { member_type: field_type, offset: unit_offset, struct_tag: None, array_element: None, bit_field: Some((bit_offset, width)) });
+                    layout.fields.insert(field_name, StructField { member_type: field_type, offset: unit_offset, struct_tag: None, array_element: None, array_bytes: None, bit_field: Some((bit_offset, width)) });
                     if !self.eat_keyword(Token::Comma) {
                         break;
                     }
@@ -1047,9 +1050,11 @@ impl Parser {
                 // An array member `type name[N]` occupies `N` elements; its access
                 // yields the array address rather than a loaded value.
                 let mut array_element = None;
+                let mut is_array = false;
                 let mut size = type_size(field_type);
                 let element_size = size;
                 if *self.peek() == Token::BracketOpen {
+                    is_array = true;
                     // A scalar array records its element type for indexed access. A
                     // struct-value array (`GXTexRegion TexRegions[8];`) or a pointer
                     // array (`u8 *mess_stack[8];`) has no scalar pointee — its element
@@ -1078,7 +1083,7 @@ impl Parser {
                 let alignment = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
                 alignment_max = alignment_max.max(alignment);
                 offset = offset.div_ceil(alignment) * alignment;
-                layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element, bit_field: None });
+                layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element, array_bytes: is_array.then_some(size), bit_field: None });
                 offset += size;
                 if !self.eat_keyword(Token::Comma) {
                     break;
@@ -1123,7 +1128,7 @@ impl Parser {
                 let name = self.parse_identifier()?;
                 let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
                 self.structs.insert(variant_tag.clone(), inner);
-                layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset: 0, struct_tag: Some(variant_tag), array_element: None, bit_field: None });
+                layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset: 0, struct_tag: Some(variant_tag), array_element: None, array_bytes: None, bit_field: None });
                 max_size = max_size.max(inner_size);
                 max_align = max_align.max(inner_align);
                 self.expect(Token::Semicolon)?;
@@ -1140,8 +1145,10 @@ impl Parser {
             // An array member occupies the product of its dimensions; it still
             // starts at offset 0, so it only widens the union.
             let mut array_element = None;
+            let mut is_array = false;
             let mut size = type_size(field_type);
             if *self.peek() == Token::BracketOpen {
+                is_array = true;
                 array_element = Some(pointee_of(field_type)?);
                 let mut total: u16 = 1;
                 while *self.peek() == Token::BracketOpen {
@@ -1152,7 +1159,7 @@ impl Parser {
                 size = total * type_size(field_type);
             }
             let align = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
-            layout.fields.insert(name, StructField { member_type: field_type, offset: 0, struct_tag, array_element, bit_field: None });
+            layout.fields.insert(name, StructField { member_type: field_type, offset: 0, struct_tag, array_element, array_bytes: is_array.then_some(size), bit_field: None });
             max_size = max_size.max(size);
             max_align = max_align.max(align);
             self.expect(Token::Semicolon)?;
@@ -1324,7 +1331,12 @@ impl Parser {
                             statements.iter().any(|statement| statement_calls(statement, names))
                         }
                     })
-                            || default.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                            || default.as_ref().is_some_and(|body| match body {
+                                mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
+                                mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                                    statements.iter().any(|statement| statement_calls(statement, names))
+                                }
+                            })
                     }
                     Statement::Return(Some(expression)) => expression_calls(expression, names),
                     Statement::Loop { initializer, condition, step, body, .. } => {
@@ -2726,7 +2738,7 @@ impl Parser {
                     statements.push(self.parse_loop_statement(&mut local_names, &mut block_locals)?);
                     continue;
                 }
-                let statement = self.parse_simple_statement(&local_names)?;
+                let statement = self.parse_simple_statement(&mut local_names, &mut block_locals)?;
                 statements.push(statement);
             }
 
@@ -2921,9 +2933,9 @@ impl Parser {
 impl Parser {
     /// Parse one simple (non-control-flow) statement: a `switch`, an increment,
     /// an assignment / compound assignment / memory store, or a bare expression.
-    fn parse_simple_statement(&mut self, local_names: &std::collections::HashSet<String>) -> Compilation<Statement> {
+    fn parse_simple_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
         if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
-            return self.parse_switch();
+            return self.parse_switch(local_names, block_locals);
         }
         let first = self.factor()?;
         // Prefix `++`/`--` desugars to `target = target ± 1` in factor; the
@@ -3118,7 +3130,7 @@ impl Parser {
         if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
             return Ok(vec![self.parse_loop_statement(local_names, block_locals)?]);
         }
-        Ok(vec![self.parse_simple_statement(local_names)?])
+        Ok(vec![self.parse_simple_statement(local_names, block_locals)?])
     }
 
     /// A `{ ... }` block of simple statements, nested if-blocks, and `return`s. A
@@ -3127,6 +3139,7 @@ impl Parser {
     /// makes nested if-return chains fold into nested ternaries.
     fn parse_block(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Vec<Statement>> {
         self.expect(Token::BraceOpen)?;
+        let rename_depth = self.block_renames.len();
         let mut statements = Vec::new();
         while *self.peek() != Token::BraceClose {
             // An empty statement (a lone `;`) produces no code — skip it.
@@ -3159,13 +3172,25 @@ impl Parser {
                     return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
                 }
                 loop {
-                    if *self.peek() == Token::Star {
-                        return Err(Diagnostic::error("a pointer declarator in a nested block is not supported yet (roadmap)"));
+                    let mut declared_type = declared_type;
+                    if self.eat_keyword(Token::Star) {
+                        if *self.peek() == Token::Star {
+                            return Err(Diagnostic::error("a pointer-to-pointer declarator in a nested block is not supported yet (roadmap)"));
+                        }
+                        declared_type = Type::Pointer(pointee_of(declared_type)?);
                     }
                     let name = self.parse_identifier()?;
-                    if local_names.contains(&name) {
-                        return Err(Diagnostic::error("a shadowing block-scoped declaration is not supported yet (roadmap)"));
-                    }
+                    // A shadowing declaration hoists under a fresh internal name
+                    // (`i@2`); references inside the block resolve to it via the
+                    // rename stack (mwcc gives the shadow its own value/slot).
+                    let name = if local_names.contains(&name) {
+                        self.rename_counter += 1;
+                        let internal = format!("{name}@{}", self.rename_counter);
+                        self.block_renames.push((name, internal.clone()));
+                        internal
+                    } else {
+                        name
+                    };
                     if *self.peek() == Token::BracketOpen {
                         return Err(Diagnostic::error("a block-scoped array is not supported yet (roadmap)"));
                     }
@@ -3182,10 +3207,11 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 continue;
             }
-            statements.push(self.parse_simple_statement(local_names)?);
+            statements.push(self.parse_simple_statement(local_names, block_locals)?);
         }
         collapse_if_return_chain(&mut statements);
         self.expect(Token::BraceClose)?;
+        self.block_renames.truncate(rename_depth);
         Ok(statements)
     }
 }

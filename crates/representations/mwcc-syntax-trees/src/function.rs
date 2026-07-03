@@ -47,6 +47,11 @@ pub struct GuardedReturn {
 pub struct SwitchArm {
     pub value: i64,
     pub body: ArmBody,
+    /// True when the arm's body ends WITHOUT a `break;` or `return` — control
+    /// falls through into the next arm (an empty body is a shared label like
+    /// `case 'd': case 'i':`). Recorded for AST-hash fidelity; the general
+    /// switch lowering only accepts non-fallthrough shapes.
+    pub falls_through: bool,
 }
 
 /// A switch arm's payload: the common `return <expr>;` form, or a general
@@ -61,7 +66,14 @@ pub enum ArmBody {
 impl SwitchArm {
     /// The return expression for a plain `case V: return E;` arm.
     pub fn result(&self) -> Option<&Expression> {
-        match &self.body {
+        self.body.return_expression()
+    }
+}
+
+impl ArmBody {
+    /// The return expression for the plain `return E;` body form.
+    pub fn return_expression(&self) -> Option<&Expression> {
+        match self {
             ArmBody::Return(expression) => Some(expression),
             ArmBody::Statements(_) => None,
         }
@@ -87,7 +99,7 @@ pub enum Statement {
     Return(Option<Expression>),
     /// `switch (scrutinee) { case V: return E; ... default: return D; }` — a
     /// terminal multi-way return (each arm and the default return a value).
-    Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<Expression> },
+    Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<ArmBody> },
     /// A loop: `while (c) { body }`, `do { body } while (c);`, or
     /// `for (init; c; step) { body }`. `initializer`/`step` are the for-clause
     /// expressions (evaluated for effect); a `None` `condition` is an always-true

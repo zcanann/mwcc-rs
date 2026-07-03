@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const SUAC_STRTOUL_IMPL_AST_HASH: u64 = 0xf2729223e0e951ee;
+const SUAC_STRTOUL_IMPL_AST_HASH: u64 = 0xa9916bc70833ca5d;
 
 impl Generator {
     pub(super) fn try_suac_strtoul_impl(&mut self, function: &Function) -> Compilation<bool> {

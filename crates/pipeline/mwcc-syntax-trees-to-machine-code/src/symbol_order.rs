@@ -89,8 +89,14 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
                     }
                 }
             }
-            if let Some(default) = default {
-                collect(default, names);
+            match default {
+                Some(mwcc_syntax_trees::ArmBody::Return(result)) => collect(result, names),
+                Some(mwcc_syntax_trees::ArmBody::Statements(statements)) => {
+                    for statement in statements {
+                        collect_statement(statement, names);
+                    }
+                }
+                None => {}
             }
         }
         Statement::If { condition, then_body, else_body } => {

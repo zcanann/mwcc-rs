@@ -116,6 +116,17 @@ pub(crate) fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
 }
 
 impl Parser {
+    /// Resolve a bare name through the active block-scope shadow renames
+    /// (innermost wins); names with no active shadow pass through.
+    pub(crate) fn resolve_block_rename(&self, name: String) -> String {
+        for (source, internal) in self.block_renames.iter().rev() {
+            if *source == name {
+                return internal.clone();
+            }
+        }
+        name
+    }
+
     pub(crate) fn expression(&mut self) -> Compilation<Expression> {
         // A compound assignment is valid in expression position too —
         // `(c -= '0') >= base` (strtoul's digit fold). Handled here so every
@@ -321,6 +332,7 @@ impl Parser {
             // `sizeof expr` / `sizeof(expr)` for a resolvable form folds to a `size_t` constant
             // (`li r3,N`), like `sizeof(type)`: a known variable, a struct member (`s->f`), a cast,
             // or a pointer deref/subscript (`*p`, `a[i]` -> the pointee size). Other shapes defer.
+            self.last_member_array_bytes = None;
             let operand = if parenthesized {
                 let inner = self.expression()?;
                 self.expect(Token::ParenClose)?;
@@ -347,6 +359,9 @@ impl Parser {
                     .or_else(|| self.variable_types.get(name).map(|variable_type| size_of(*variable_type)))
                     .or_else(|| self.global_sizes.get(name).map(|&(total, _)| total)),
                 Expression::Member { member_type, .. } => Some(size_of(*member_type)),
+                // An array member decayed to its address — the side channel holds
+                // the array's TOTAL byte size (`sizeof(f.char_set)` = 32, not 4).
+                Expression::MemberAddress { .. } => self.last_member_array_bytes.map(|bytes| bytes as u32),
                 Expression::Cast { target_type, .. } => Some(size_of(*target_type)),
                 // `*p` / `a[i]`: the size of the pointed-to element. For an ARRAY base the element
                 // type is in variable_types (local) or global_sizes (file-scope); for a POINTER base
@@ -414,10 +429,11 @@ impl Parser {
                     _ => Expression::Call { name, arguments },
                 }
             }
-            // A bare name is an enumerator (its integer value) if known, else a variable.
+            // A bare name is an enumerator (its integer value) if known, else a
+            // variable — resolved through any active block-scope shadow renames.
             Token::Identifier(name) => match self.enum_constants.get(&name) {
                 Some(&value) => Expression::IntegerLiteral(value),
-                None => Expression::Variable(name),
+                None => Expression::Variable(self.resolve_block_rename(name)),
             },
             Token::ParenOpen => {
                 // `(type) expr` is a cast; otherwise a parenthesised expression.
@@ -534,8 +550,8 @@ impl Parser {
                         .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
                     let bit_field = member.bit_field;
                     let signed = member.member_type.is_signed();
-                    let (offset, member_type, next_tag, array_element) =
-                        (member.offset, member.member_type, member.struct_tag.clone(), member.array_element);
+                    let (offset, member_type, next_tag, array_element, array_bytes) =
+                        (member.offset, member.member_type, member.struct_tag.clone(), member.array_element, member.array_bytes);
                     // `a[i].field`: the index scales by the struct size — recorded so
                     // codegen can emit `a + i*size + offset`.
                     let index_stride = matches!(expression, Expression::Index { .. }).then_some(struct_size);
@@ -594,7 +610,10 @@ impl Parser {
                     }
                     expression = match array_element {
                         // An array member decays to the address of its first element.
-                        Some(element) => Expression::MemberAddress { base: Box::new(expression), offset, element },
+                        Some(element) => {
+                            self.last_member_array_bytes = array_bytes;
+                            Expression::MemberAddress { base: Box::new(expression), offset, element }
+                        }
                         None => Expression::Member { base: Box::new(expression), offset, member_type, index_stride },
                     };
                     struct_tag = next_tag;

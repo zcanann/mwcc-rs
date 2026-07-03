@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const EATAN2_PIK_AST_HASH: u64 = 0x464a7c755d2a00c4;
+const EATAN2_PIK_AST_HASH: u64 = 0x326bed6a6d76ed89;
 
 impl Generator {
     pub(super) fn try_eatan2_pik(&mut self, function: &Function) -> Compilation<bool> {
