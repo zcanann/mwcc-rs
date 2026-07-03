@@ -120,6 +120,7 @@ pub(crate) fn expression_reads_name(expression: &Expression, name: &str) -> bool
 /// Used to detect a value that would be materialized at more than one site if inlined.
 pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usize {
     match expression {
+        Expression::AggregateLiteral(_) => 0,
         Expression::Variable(variable) => usize::from(variable == name),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => 0,
         Expression::Binary { left, right, .. } => count_name_occurrences(left, name) + count_name_occurrences(right, name),
@@ -250,6 +251,7 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
 /// within `expression`.
 fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, collected: &mut Vec<String>) {
     match expression {
+        Expression::AggregateLiteral(_) => {}
         Expression::PostStep { target, .. } => collect_register_reads(target, registers, collected),
         Expression::Variable(name) => {
             if registers.contains(name.as_str()) && !collected.iter().any(|seen| seen == name) {
@@ -367,6 +369,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
             || (expression_has_call(right) && reads_register(left, registers))
     };
     match expression {
+        Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => matches!(target.as_ref(), Expression::Call { .. }) || expression_has_call(target),
         Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
         Expression::Binary { left, right, .. } => pair(left, right),
@@ -407,6 +410,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
 /// Whether `expression` reads any register-resident name.
 pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
     match expression {
+        Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => reads_register(target, registers),
         Expression::Variable(name) => registers.contains(name.as_str()),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
@@ -687,6 +691,7 @@ pub(crate) fn has_repeated_nonleaf_subexpression(expression: &Expression) -> boo
 /// etc. to find nested computations, but not counting those non-arithmetic nodes themselves).
 fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Vec<&'a Expression>) {
     match expression {
+        Expression::AggregateLiteral(_) => {}
         Expression::PostStep { target, .. } => collect_computed_subexpressions(target, into),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) | Expression::Variable(_) => {}
         Expression::Binary { left, right, .. } => {

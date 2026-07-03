@@ -400,6 +400,7 @@ impl Generator {
     /// operand is unsigned.
     pub(crate) fn signedness_of(&self, expression: &Expression) -> Compilation<bool> {
         match expression {
+            Expression::AggregateLiteral(_) => Err(Diagnostic::error("an aggregate initializer is not supported here (captures only)")),
             Expression::PostStep { target, .. } => self.signedness_of(target),
             Expression::IntegerLiteral(_) => Ok(true),
             Expression::FloatLiteral(_) => Ok(true),

@@ -13525,6 +13525,7 @@ impl Generator {
         fn feeds_an_addition(name: &str, expression: &Expression) -> bool {
             let is_local = |operand: &Expression| matches!(operand, Expression::Variable(variable) if variable == name);
             match expression {
+                Expression::AggregateLiteral(_) => false,
                 Expression::PostStep { target, .. } => feeds_an_addition(name, target),
                 Expression::Binary { operator, left, right } => {
                     (*operator == BinaryOperator::Add && (is_local(left) || is_local(right)))

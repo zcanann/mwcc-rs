@@ -1439,6 +1439,26 @@ impl Parser {
         None
     }
 
+    /// A braced aggregate initializer: `{ e, e, { ... }, "s" }` — elements are
+    /// expressions, nested braces recurse. Parsed for AST fidelity; codegen
+    /// defers on aggregate-initialized locals unless a capture claims the fn.
+    fn aggregate_literal(&mut self) -> Compilation<Expression> {
+        self.expect(Token::BraceOpen)?;
+        let mut elements = Vec::new();
+        while *self.peek() != Token::BraceClose {
+            if *self.peek() == Token::BraceOpen {
+                elements.push(self.aggregate_literal()?);
+            } else {
+                elements.push(self.expression()?);
+            }
+            if !self.eat_keyword(Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::BraceClose)?;
+        Ok(Expression::AggregateLiteral(elements))
+    }
+
     fn inline_asm_function_name(&self) -> Option<String> {
         let mut index = self.position;
         let mut is_inline = false;
@@ -2629,7 +2649,15 @@ impl Parser {
                 } else {
                     None
                 };
-                let initializer = if array_length.is_none() && self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
+                let initializer = if array_length.is_none() && self.eat_keyword(Token::Equals) {
+                    if *self.peek() == Token::BraceOpen {
+                        Some(self.aggregate_literal()?)
+                    } else {
+                        Some(self.expression()?)
+                    }
+                } else {
+                    None
+                };
                 // A scalar local's type — and an array's ELEMENT type — feeds `sizeof(local)` and
                 // `sizeof(local[i])`/`sizeof(*local)`; an array also records its TOTAL byte size
                 // (element size * length) for `sizeof(arr)`.
@@ -2671,6 +2699,14 @@ impl Parser {
         let mut conditional_return = None;
         'body: loop {
             while !matches!(self.peek(), Token::KeywordReturn | Token::BraceClose) {
+                // A bare `{ ... }` scoping block is TRANSPARENT: its statements
+                // flatten into the enclosing list and its declarations hoist
+                // like other block-scoped locals (strtold's exponent block).
+                if *self.peek() == Token::BraceOpen {
+                    let mut inner = self.parse_block(&mut local_names, &mut block_locals)?;
+                    statements.append(&mut inner);
+                    continue;
+                }
                 // An empty statement (a lone `;`) produces no code — skip it.
                 if *self.peek() == Token::Semicolon {
                     self.advance();

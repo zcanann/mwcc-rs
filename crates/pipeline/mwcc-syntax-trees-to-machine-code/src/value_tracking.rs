@@ -367,6 +367,7 @@ impl Generator {
 /// instruction (`srwi`/`srawi`, `divwu`/`divw`, `cmplw`/`cmpw`).
 fn used_in_sign_sensitive_op(expression: &Expression, names: &std::collections::HashSet<&str>) -> bool {
     match expression {
+        Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative: block folds through a postfix step
         Expression::Binary { operator, left, right } => {
             let sign_sensitive = matches!(
@@ -411,6 +412,7 @@ fn has_additive_chain(expression: &Expression) -> bool {
         matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, .. })
     }
     match expression {
+        Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative
         Expression::Binary { operator, left, right } => {
             (matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) && (additive(left) || additive(right)))
@@ -439,6 +441,7 @@ fn is_leaf_value(expression: &Expression) -> bool {
 /// Count references to the variable `name` within `expression`.
 fn count_references(name: &str, expression: &Expression) -> usize {
     match expression {
+        Expression::AggregateLiteral(_) => 0,
         Expression::PostStep { target, .. } => 2 * count_references(name, target),
         Expression::Variable(variable) => usize::from(variable == name),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => 0,
@@ -463,6 +466,7 @@ fn count_references(name: &str, expression: &Expression) -> usize {
 /// recursively. Names not in `values` (parameters, globals) are left untouched.
 pub(crate) fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> Expression {
     match expression {
+        other @ Expression::AggregateLiteral(_) => other.clone(),
         // A postfix step mutates its target — never substitute through it.
         Expression::PostStep { .. } => expression.clone(),
         Expression::Variable(name) => values.get(name).cloned().unwrap_or_else(|| expression.clone()),

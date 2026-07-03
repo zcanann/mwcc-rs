@@ -13,6 +13,9 @@ pub enum Expression {
     /// object's address.
     StringLiteral(Vec<u8>),
     Variable(String),
+    /// A braced aggregate initializer on a LOCAL (`decimal d = { 0, 0, { 0, "" } }`)
+    /// — parsed for AST fidelity (the capture hash); general codegen defers on it.
+    AggregateLiteral(Vec<Expression>),
     Binary {
         operator: BinaryOperator,
         left: Box<Expression>,
