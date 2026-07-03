@@ -102,3 +102,42 @@ extend to stores, and tie-breaks by def position vs frame offset.
   lis/addi pair occupies (hoisted before the spill).
 - W4's second condition reuses i from its home (`or. r0,r5,r3` with
   the mutated i0) — conditions do not re-materialize the mask.
+
+## THE COMPOSED s_floor FIXTURE (fire 401)
+
+The full three-arm ladder (probe: the complete s_floor source). Register
+map with instruction indices (r0-assigned values excluded — arm2's mask,
+the arm3 amount fold, and the carry j all sit in r0):
+
+| value        | class    | range    | reg |
+|--------------|----------|----------|-----|
+| extract-temp | Temp     | [4,5]    | r3  |
+| arm2-temp    | Temp(CSE)| [26,40]  | r3  |
+| arm3-mask    | Mask     | [52,53]  | r3  |
+| carry-one    | Mask     | [69,70]  | r3  |
+| j0           | Computed | [5,68]   | r7  |
+| i0           | Load     | [2,77]   | r5  |
+| i1           | Load     | [3,78]   | r6  |
+| i (arm2)     | Shift    | [28,42]  | r4  |
+| i (arm3)     | Shift    | [53,76]  | r4  |
+
+THE PUZZLE: standalone arm3 assigns j0=r4, i=r7; composed assigns
+i=r4, j0=r7 — the same arm allocates OPPOSITELY in context, and death
+order (j0 dies before the arm3 shift in BOTH) explains neither side
+alone. [Temp, Mask, Shift, Load, Computed] fits the composed map
+exactly but breaks standalone arm3. Candidate distinctions for the
+enumerator: the LADDER SCRUTINEE as its own class (j0 is read by the
+outer cmpwi chain here and not standalone); reads-count keys; per-arm
+value grouping. Also note: NO constant hoisting before the spill in
+the composed form — each arm synthesizes its own constants in-arm
+(the shared preamble is loads + extract + j0 only), and both arms'
+shifts share r4 with disjoint ranges.
+
+Emission facts for the composition (all verified in the capture):
+- The ladder = the L1 walker shape: cmpwi j0,20; bge; cmpwi j0,0; bge
+  (arm1 inline); ... cmpwi j0,51; ble arm3; the middle arm's dual
+  return inline (cmpwi 1024; bne EPI; fadd; b EPI).
+- ALL arms share one JOIN (the stores) and one EPI; arm bodies are
+  exactly the standalone templates with in-arm constants.
+- arm1 keeps its L2-style arm-swap diamond (blt; li li; b JOIN /
+  clrlwi; or.; beq JOIN; lis; li; b JOIN).
