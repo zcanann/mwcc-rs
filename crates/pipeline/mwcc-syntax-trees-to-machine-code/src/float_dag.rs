@@ -905,6 +905,7 @@ impl Generator {
         // The ix compare: `ix < C` from guards[0] (flat) or the outer nested
         // if; C either cmpwi-able or lis-able (low half zero). The nested
         // inner body must be exactly `if ((int)x == 0) return x;`.
+        let mut early_return_const: Option<u64> = None;
         let outer_condition: &Expression = if nested {
             let Some(Statement::If { condition, then_body, else_body }) = function.statements.first() else {
                 return Ok(false);
@@ -915,10 +916,18 @@ impl Generator {
             let [Statement::If { condition: inner, then_body: inner_then, else_body: inner_else }] = then_body.as_slice() else {
                 return Ok(false);
             };
-            if !inner_else.is_empty()
-                || !matches!(inner_then.as_slice(), [Statement::Return(Some(Expression::Variable(name)))] if name == x)
-            {
+            if !inner_else.is_empty() {
                 return Ok(false);
+            }
+            match inner_then.as_slice() {
+                [Statement::Return(Some(Expression::Variable(name)))] if name == x => {}
+                // `return one;` — a folded static-const double pools and
+                // loads into f1 ahead of the epilogue branch (measured:
+                // k_cos's early return).
+                [Statement::Return(Some(Expression::FloatLiteral(value)))] => {
+                    early_return_const = Some(value.to_bits());
+                }
+                _ => return Ok(false),
             }
             let Expression::Binary { operator: BinaryOperator::Equal, left, right } = inner else {
                 return Ok(false);
@@ -1072,6 +1081,12 @@ impl Generator {
             self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
             tail_branches.push(self.output.instructions.len());
             self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 0 });
+            if let Some(bits) = early_return_const {
+                self.load_double_constant(1, bits);
+                // The const-return early path consumes ONE fewer pre-pool
+                // label than return-x (measured: pool @10 vs @11).
+                self.output.anonymous_label_bump -= 1;
+            }
             epilogue_branches.push(self.output.instructions.len());
             self.output.instructions.push(Instruction::Branch { target: 0 });
             // Two folded ifs + the epilogue block; the fctiwz is an
@@ -1224,6 +1239,7 @@ impl Generator {
         // The shared locals as trees over params + prior locals.
         let mut local_names: Vec<(String, usize)> = Vec::new();
         let mut local_trees: Vec<Tree> = Vec::new();
+        let mut shared_literals: Vec<u64> = Vec::new();
         for local in &function.locals {
             if local.declared_type != Type::Double || local.array_length.is_some() {
                 return Ok(false);
@@ -1235,8 +1251,24 @@ impl Generator {
             let Some(tree) = build_tree(init, &param_ids, &local_names, &mut chain_literals) else {
                 return Ok(false);
             };
+            // A literal duplicated across locals shares its load — unmodeled.
+            if chain_literals.iter().any(|bits| shared_literals.contains(bits)) {
+                return Ok(false);
+            }
+            shared_literals.extend(chain_literals);
             local_names.push((local.name.clone(), local_trees.len()));
             local_trees.push(tree);
+        }
+        // A literal in BOTH the shared region and a tail keeps the shared
+        // load live into the tail (measured: the 0.5 chain/else dup DIFFs
+        // if reloaded) — defer until that share is modeled.
+        {
+            let mut tail_literals: Vec<u64> = Vec::new();
+            collect_literals(then_value, &mut tail_literals);
+            collect_literals(else_value, &mut tail_literals);
+            if tail_literals.iter().any(|bits| shared_literals.contains(bits)) {
+                return Ok(false);
+            }
         }
         // Tail liveness: which locals/params each tail reads.
         let reads_of = |tree_value: &Expression, name: &str| crate::analysis::count_name_occurrences(tree_value, name);

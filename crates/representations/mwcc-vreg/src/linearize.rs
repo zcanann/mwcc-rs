@@ -1522,7 +1522,21 @@ pub fn assign_float_registers(
             } else {
                 // Death ASCENDING (position tiebreak): the reload slots BETWEEN
                 // the locals (z f7, XR f6, v f5 in the real k_sin).
-                tier.sort_by_key(|&node| (value_end(node), position[node]));
+                // Equal deaths break by CONSUMER COUNT DESC, then position
+                // (measured: reload_zv's root tie picks the 3-consumer reload
+                // over the 1-consumer v; the composed 5-const chain's root tie
+                // picks the 5-consumer z over the 2-consumer reload).
+                tier.sort_by_key(|&node| {
+                    // ... and equal counts put the LOCAL above the load
+                    // (measured: the 2-const return-x tie wants z over the
+                    // reload at 2 consumers each).
+                    (
+                        value_end(node),
+                        std::cmp::Reverse(consumer_count(node)),
+                        nodes[node].kind == OpKind::Load,
+                        position[node],
+                    )
+                });
             }
             let tier_members: Vec<usize> = tier.clone();
             let mut next_top = window.saturating_sub(1);

@@ -312,6 +312,7 @@ pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwc
                 then_body: then_body.iter().map(|inner| map_statement(inner, map)).collect(),
                 else_body: else_body.iter().map(|inner| map_statement(inner, map)).collect(),
             },
+            Statement::Return(value) => Statement::Return(value.as_ref().map(map)),
             other => other.clone(),
         }
     }
