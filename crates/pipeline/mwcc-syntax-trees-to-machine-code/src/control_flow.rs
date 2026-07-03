@@ -1164,6 +1164,39 @@ impl Generator {
             return Ok((4, 2)); // bne — skip when x != 0
         }
         if let Expression::Binary { operator, left, right } = condition {
+            // `((a & C) | b) != 0` — the sign/magnitude compound (measured:
+            // clrlwi r0,a,N; or. r0,r0,b; beq — the s_floor negative test).
+            if matches!(operator, BinaryOperator::NotEqual) && constant_value(right) == Some(0) {
+                if let Expression::Binary { operator: BinaryOperator::BitOr, left: or_left, right: or_right } =
+                    left.as_ref()
+                {
+                    if let Expression::Binary { operator: BinaryOperator::BitAnd, left: and_left, right: and_right } =
+                        or_left.as_ref()
+                    {
+                        if let (Some(a), Some(mask), Some(b)) = (
+                            leaf_name(and_left).and_then(|name| self.lookup_general(name)),
+                            constant_value(and_right),
+                            leaf_name(or_right).and_then(|name| self.lookup_general(name)),
+                        ) {
+                            if let Some((begin, end)) = mask_to_run(mask as u32) {
+                                self.output.instructions.push(Instruction::RotateAndMask {
+                                    a: GENERAL_SCRATCH,
+                                    s: a,
+                                    shift: 0,
+                                    begin,
+                                    end,
+                                });
+                                self.output.instructions.push(Instruction::OrRecord {
+                                    a: GENERAL_SCRATCH,
+                                    s: GENERAL_SCRATCH,
+                                    b,
+                                });
+                                return Ok((12, 2)); // beq — skip when zero
+                            }
+                        }
+                    }
+                }
+            }
             // `(a & C) == 0` — the record-form mask (measured: clrlwi.
             // r0,r3,30; bne — the s_floor integral test's other half).
             if matches!(operator, BinaryOperator::Equal) && constant_value(right) == Some(0) {

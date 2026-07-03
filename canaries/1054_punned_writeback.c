@@ -84,3 +84,37 @@ double writeback_float_guard(double x)
 	*(int *)&x = i0;
 	return x;
 }
+
+double writeback_nested_guard(double x)
+{
+	int i0;
+
+	i0 = *(int *)&x;
+	if (huge + x > 0.0) {
+		if (i0 >= 0) {
+			i0 = 0;
+		}
+	}
+	*(int *)&x = i0;
+	return x;
+}
+
+double writeback_else_if(double x)
+{
+	int i0, i1;
+
+	i0 = *(int *)&x;
+	i1 = *((int *)&x + 1);
+	if (huge + x > 0.0) {
+		if (i0 >= 0) {
+			i0 = 0;
+			i1 = 0;
+		} else if (((i0 & 0x7fffffff) | i1) != 0) {
+			i0 = 0xbff00000;
+			i1 = 0;
+		}
+	}
+	*(int *)&x = i0;
+	*((int *)&x + 1) = i1;
+	return x;
+}

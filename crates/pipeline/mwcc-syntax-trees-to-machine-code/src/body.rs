@@ -3507,59 +3507,115 @@ impl Generator {
         if !else_body.is_empty() || stores.len() != locals.len() {
             return Ok(false);
         }
-        // A MID-CHAIN `return x` heading the block: branches straight to
-        // the shared epilogue, skipping the writeback AND the reload
-        // (measured: b <addi;blr> with f1 untouched).
-        let mut block: &[Statement] = then_body;
-        let mut early_return: Option<&Expression> = None;
-        if let [Statement::If { condition: inner, then_body: inner_then, else_body: inner_else }, rest @ ..] = block {
-            if inner_else.is_empty() {
-                if let [Statement::Return(Some(Expression::Variable(value)))] = inner_then.as_slice() {
-                    if value == x {
-                        early_return = Some(inner);
-                        block = rest;
-                    }
-                }
-            }
-        }
-        // The mutations: i16 constants OR self-masks to distinct locals.
-        enum WriteMutation {
-            Constant(i16),
-            SelfMask(u8, u8),
-        }
-        let mut mutations: Vec<(usize, WriteMutation)> = Vec::new();
-        for statement in block {
-            let Statement::Assign { name, value } = statement else {
-                return Ok(false);
-            };
-            let Some(index) = locals.iter().position(|&(local, _)| local == name.as_str()) else {
-                return Ok(false);
-            };
-            if mutations.iter().any(|&(seen, _)| seen == index) {
-                return Ok(false);
-            }
-            if let Some(constant) = crate::analysis::constant_value(value) {
-                let Ok(constant) = i16::try_from(constant) else {
-                    return Ok(false);
-                };
-                mutations.push((index, WriteMutation::Constant(constant)));
-                continue;
-            }
-            // Self-mask `i0 &= C` (measured: clrlwi in place).
-            if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = value {
-                if matches!(left.as_ref(), Expression::Variable(read) if read == name) {
-                    if let Some(mask) = crate::analysis::constant_value(right) {
-                        if let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) {
-                            mutations.push((index, WriteMutation::SelfMask(begin, end)));
+        // The BLOCK: a recursive tree over the measured statement forms —
+        // constant/high/self-mask mutations, nested no-else guards (chained
+        // to the join), if/ELSE-IF arms (branch-over + b join), and
+        // mid-chain `return x` (straight to the epilogue). Validated here;
+        // emitted by the recursive walker below.
+        let block: &[Statement] = then_body;
+        fn validate_block(
+            block: &[Statement],
+            locals: &[(&str, i16)],
+            x: &str,
+            mutated: &mut Vec<usize>,
+            conditions: &mut usize,
+            arms: &mut usize,
+        ) -> bool {
+            for statement in block {
+                match statement {
+                    Statement::Assign { name, value } => {
+                        let Some(index) = locals.iter().position(|&(local, _)| local == name.as_str()) else {
+                            return false;
+                        };
+                        if !mutated.contains(&index) {
+                            mutated.push(index);
+                        }
+                        let constant_ok = crate::analysis::constant_value(value)
+                            .map(|constant| {
+                                i16::try_from(constant).is_ok()
+                                    || (constant & 0xffff == 0 && u32::try_from(constant).is_ok())
+                            })
+                            .unwrap_or(false);
+                        if constant_ok {
                             continue;
                         }
+                        let mask_ok = matches!(
+                            value,
+                            Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
+                                if matches!(left.as_ref(), Expression::Variable(read) if read == name.as_str())
+                                    && crate::analysis::constant_value(right)
+                                        .and_then(crate::analysis::rlwinm_mask)
+                                        .is_some()
+                        );
+                        if !mask_ok {
+                            return false;
+                        }
                     }
+                    Statement::Return(Some(Expression::Variable(value))) if value == x => {}
+                    Statement::If { condition: _, then_body, else_body } => {
+                        *conditions += 1;
+                        if !validate_block(then_body, locals, x, mutated, conditions, arms) {
+                            return false;
+                        }
+                        if !else_body.is_empty() {
+                            *arms += 1;
+                            if !validate_block(else_body, locals, x, mutated, conditions, arms) {
+                                return false;
+                            }
+                        }
+                    }
+                    _ => return false,
                 }
             }
+            true
+        }
+        let mut mutated: Vec<usize> = Vec::new();
+        let mut inner_conditions = 0usize;
+        let mut else_arms = 0usize;
+        if !validate_block(block, &locals, x, &mut mutated, &mut inner_conditions, &mut else_arms) {
             return Ok(false);
         }
-        if mutations.is_empty() {
+        if mutated.is_empty() {
             return Ok(false);
+        }
+        fn block_reads(block: &[Statement], name: &str) -> usize {
+            block
+                .iter()
+                .map(|statement| match statement {
+                    Statement::Assign { value, .. } => count_name_occurrences(value, name),
+                    Statement::Return(Some(value)) => count_name_occurrences(value, name),
+                    Statement::If { condition, then_body, else_body } => {
+                        count_name_occurrences(condition, name)
+                            + block_reads(then_body, name)
+                            + block_reads(else_body, name)
+                    }
+                    _ => 0,
+                })
+                .sum()
+        }
+        fn block_condition_reads(block: &[Statement], name: &str) -> usize {
+            block
+                .iter()
+                .map(|statement| match statement {
+                    Statement::If { condition, then_body, else_body } => {
+                        count_name_occurrences(condition, name)
+                            + block_condition_reads(then_body, name)
+                            + block_condition_reads(else_body, name)
+                    }
+                    _ => 0,
+                })
+                .sum()
+        }
+        fn block_self_masks(block: &[Statement], name: &str) -> bool {
+            block.iter().any(|statement| match statement {
+                Statement::Assign { name: target, value } => {
+                    target.as_str() == name && crate::analysis::constant_value(value).is_none()
+                }
+                Statement::If { then_body, else_body, .. } => {
+                    block_self_masks(then_body, name) || block_self_masks(else_body, name)
+                }
+                _ => false,
+            })
         }
         // The writebacks: each local stored to its own offset, in order.
         for (statement, &(name, offset)) in stores.iter().zip(&locals) {
@@ -3622,20 +3678,17 @@ impl Generator {
             let Ok(bound) = i16::try_from(bound) else {
                 return Ok(false);
             };
-            let elsewhere = block
-                .iter()
-                .chain(stores.iter())
-                .map(|statement| match statement {
-                    Statement::Assign { value, .. } => count_name_occurrences(value, guard.name),
-                    Statement::Store { target, value } => {
-                        count_name_occurrences(target, guard.name) + count_name_occurrences(value, guard.name)
-                    }
-                    _ => 0,
-                })
-                .sum::<usize>()
-                + early_return
-                    .map(|inner| count_name_occurrences(inner, guard.name))
-                    .unwrap_or(0);
+            let elsewhere = block_reads(block, guard.name)
+                + stores
+                    .iter()
+                    .map(|statement| match statement {
+                        Statement::Store { target, value } => {
+                            count_name_occurrences(target, guard.name)
+                                + count_name_occurrences(value, guard.name)
+                        }
+                        _ => 0,
+                    })
+                    .sum::<usize>();
             if elsewhere != 0 {
                 return Ok(false);
             }
@@ -3645,50 +3698,59 @@ impl Generator {
         // writeback takes the r0 scratch; one that feeds COMPUTATION (the
         // early-return test, a self-mask) takes the freed condition
         // register r3 (measured across all four capture shapes).
-        let computes: Vec<bool> = locals
-            .iter()
-            .enumerate()
-            .map(|(index, &(name, _))| {
-                mutations.iter().any(|(target, mutation)| {
-                    *target == index && matches!(mutation, WriteMutation::SelfMask(..))
-                }) || early_return
-                    .map(|condition| crate::analysis::count_name_occurrences(condition, name) > 0)
-                    .unwrap_or(false)
-                    || guard_local
-                        .as_ref()
-                        .map(|guard| guard.source == name)
-                        .unwrap_or(false)
+        // THE SCRATCH RULE (measured across all eight capture shapes):
+        // punned locals take r0 first — UNLESS any emitted test needs the
+        // r0 scratch (a record-form idiom, the guard local's folded addi),
+        // in which case they start at r3.
+        fn condition_needs_scratch(condition: &Expression) -> bool {
+            !matches!(
+                condition,
+                Expression::Variable(_)
+                    | Expression::Binary { left: _, right: _, .. }
+                        if matches!(condition, Expression::Variable(_))
+                            || matches!(
+                                condition,
+                                Expression::Binary { left, right, .. }
+                                    if matches!(left.as_ref(), Expression::Variable(_))
+                                        && matches!(right.as_ref(), Expression::IntegerLiteral(_))
+                            )
+            )
+        }
+        fn block_needs_scratch(block: &[Statement]) -> bool {
+            block.iter().any(|statement| match statement {
+                Statement::If { condition, then_body, else_body } => {
+                    condition_needs_scratch(condition)
+                        || block_needs_scratch(then_body)
+                        || block_needs_scratch(else_body)
+                }
+                _ => false,
             })
-            .collect();
-        let guard_register = 3u8;
+        }
+        let scratch_taken = guard_local.is_some() || block_needs_scratch(block);
         let mut next_general = if guard_local.is_some() { 4u8 } else { 3u8 };
+        let guard_register = 3u8;
         let mut registers: Vec<u8> = Vec::new();
-        for &computed in &computes {
-            if computed {
+        let mut r0_used = scratch_taken;
+        for _ in &locals {
+            if !r0_used {
+                registers.push(0);
+                r0_used = true;
+            } else {
                 registers.push(next_general);
                 next_general += 1;
-            } else {
-                registers.push(0);
             }
         }
-        if registers.iter().filter(|&&register| register == 0).count() > 1 {
-            // Two store-only locals share r0 in no measured shape — the
-            // two-local capture used r0 + r3.
-            registers = match locals.len() {
-                1 => vec![0],
-                _ => vec![0, 3],
+        // Live int params below the allocated range are unmeasured — every
+        // capture either had none or had them freed by the outer condition.
+        let top = registers.iter().copied().max().unwrap_or(0);
+        for parameter in &function.parameters {
+            if parameter.parameter_type == Type::Double {
+                continue;
+            }
+            let Some(register) = self.lookup_general(&parameter.name) else {
+                return Ok(false);
             };
-        }
-        if registers.contains(&3) {
-            // The r3 reuse requires the condition to consume the FIRST int
-            // param (r3) — the only measured form.
-            let condition_param_r3 = function
-                .parameters
-                .iter()
-                .find(|parameter| parameter.parameter_type != Type::Double)
-                .and_then(|parameter| self.lookup_general(&parameter.name))
-                == Some(3);
-            if !condition_param_r3 {
+            if register <= top && count_name_occurrences(condition, &parameter.name) == 0 {
                 return Ok(false);
             }
         }
@@ -3777,59 +3839,43 @@ impl Generator {
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
         self.emit_branch_conditional_to(options, condition_bit, join);
-        if let Some(inner) = early_return {
-            // The punned locals resolve in the inner test through temporary
-            // locations at their scratch registers.
-            let mut saved: Vec<(String, Option<crate::generator::Location>)> = Vec::new();
-            for (index, &(name, _)) in locals.iter().enumerate() {
-                saved.push((
+        // The punned locals resolve in every inner condition through
+        // temporary locations at their scratch registers, installed around
+        // the whole block walk.
+        let mut saved: Vec<(String, Option<crate::generator::Location>)> = Vec::new();
+        for (index, &(name, _)) in locals.iter().enumerate() {
+            saved.push((
+                name.to_string(),
+                self.locations.insert(
                     name.to_string(),
-                    self.locations.insert(
-                        name.to_string(),
-                        crate::generator::Location {
-                            class: ValueClass::General,
-                            register: registers[index],
-                            signed: true,
-                            width: 32,
-                            pointee: None,
-                            stride: None,
-                        },
-                    ),
-                ));
-            }
-            let test = self.emit_condition_test(inner);
-            for (name, previous) in saved {
-                match previous {
-                    Some(location) => {
-                        self.locations.insert(name, location);
-                    }
-                    None => {
-                        self.locations.remove(&name);
-                    }
-                }
-            }
-            let (options, condition_bit) = test?;
-            let mutations_label = self.fresh_label();
-            self.emit_branch_conditional_to(options, condition_bit, mutations_label);
-            self.emit_branch_to(epilogue);
-            self.bind_label(mutations_label);
+                    crate::generator::Location {
+                        class: ValueClass::General,
+                        register: registers[index],
+                        signed: true,
+                        width: 32,
+                        pointee: None,
+                        stride: None,
+                    },
+                ),
+            ));
         }
-        for (index, mutation) in &mutations {
-            match mutation {
-                WriteMutation::Constant(constant) => {
-                    self.output.instructions.push(Instruction::load_immediate(registers[*index], *constant));
+        let bindings: Vec<(String, u8)> = locals
+            .iter()
+            .enumerate()
+            .map(|(index, &(name, _))| (name.to_string(), registers[index]))
+            .collect();
+        let walked = self.emit_writeback_block(block, &bindings, join, epilogue);
+        for (name, previous) in saved {
+            match previous {
+                Some(location) => {
+                    self.locations.insert(name, location);
                 }
-                WriteMutation::SelfMask(begin, end) => {
-                    self.output.instructions.push(Instruction::RotateAndMask {
-                        a: registers[*index],
-                        s: registers[*index],
-                        shift: 0,
-                        begin: *begin,
-                        end: *end,
-                    });
+                None => {
+                    self.locations.remove(&name);
                 }
             }
         }
+        walked?;
         self.bind_label(join);
         for (index, &(_, offset)) in locals.iter().enumerate() {
             self.output.instructions.push(Instruction::StoreWord { s: registers[index], a: 1, offset: 8 + offset });
@@ -3838,13 +3884,92 @@ impl Generator {
         self.bind_label(epilogue);
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
-        // The guard's if pair consumes two pre-pool labels, plus one per
-        // additional punned local, plus two more for a mid-chain early
-        // return's inner if (measured: one-local @7, two-local +3, the
-        // early-return form +4).
-        self.output.anonymous_label_bump +=
-            1 + locals.len() as u32 + if early_return.is_some() { 2 } else { 0 };
+        // Pre-pool labels: the outer if pair, one per additional punned
+        // local, two per inner condition, one per else arm (measured up to
+        // the two-condition/one-arm forms; deeper shapes iterate).
+        self.output.anonymous_label_bump += 1
+            + locals.len() as u32
+            + 2 * inner_conditions as u32
+            + else_arms as u32;
         Ok(true)
+    }
+
+    /// The writeback block WALKER: mutations, tail guards chaining to the
+    /// join, if/ELSE-IF arms, and mid-chain `return x` straight to the
+    /// epilogue (measured: the N1/N2 nested captures).
+    fn emit_writeback_block(
+        &mut self,
+        block: &[Statement],
+        bindings: &[(String, u8)],
+        join: mwcc_vreg::Label,
+        epilogue: mwcc_vreg::Label,
+    ) -> Compilation<()> {
+        use mwcc_syntax_trees::Statement;
+        let mut index = 0usize;
+        while index < block.len() {
+            let statement = &block[index];
+            let last = index + 1 == block.len();
+            match statement {
+                Statement::Assign { name, value } => {
+                    let register = bindings
+                        .iter()
+                        .find(|(local, _)| local == name)
+                        .map(|&(_, register)| register)
+                        .expect("validated");
+                    if let Some(constant) = crate::analysis::constant_value(value) {
+                        if let Ok(small) = i16::try_from(constant) {
+                            self.output.instructions.push(Instruction::load_immediate(register, small));
+                        } else {
+                            self.output
+                                .instructions
+                                .push(Instruction::load_immediate_shifted(register, (constant >> 16) as i16));
+                        }
+                    } else if let Expression::Binary { operator: BinaryOperator::BitAnd, right, .. } = value {
+                        let mask = crate::analysis::constant_value(right).expect("validated");
+                        let (begin, end) = crate::analysis::rlwinm_mask(mask).expect("validated");
+                        self.output.instructions.push(Instruction::RotateAndMask {
+                            a: register,
+                            s: register,
+                            shift: 0,
+                            begin,
+                            end,
+                        });
+                    } else {
+                        return Err(Diagnostic::error("writeback mutation beyond the walker (roadmap)"));
+                    }
+                }
+                Statement::Return(Some(_)) => {
+                    self.emit_branch_to(epilogue);
+                }
+                Statement::If { condition, then_body, else_body } => {
+                    let (options, condition_bit) = self.emit_condition_test(condition)?;
+                    if !else_body.is_empty() {
+                        // if/ELSE-IF: branch over the then arm; b join after it.
+                        let else_label = self.fresh_label();
+                        self.emit_branch_conditional_to(options, condition_bit, else_label);
+                        self.emit_writeback_block(then_body, bindings, join, epilogue)?;
+                        self.emit_branch_to(join);
+                        self.bind_label(else_label);
+                        self.emit_writeback_block(else_body, bindings, join, epilogue)?;
+                    } else if let [Statement::Return(Some(_))] = then_body.as_slice() {
+                        // The mid-chain return: skip to the continuation.
+                        let continuation = self.fresh_label();
+                        self.emit_branch_conditional_to(options, condition_bit, continuation);
+                        self.emit_branch_to(epilogue);
+                        self.bind_label(continuation);
+                    } else if last {
+                        // A tail guard chains to the block's join.
+                        self.emit_branch_conditional_to(options, condition_bit, join);
+                        self.emit_writeback_block(then_body, bindings, join, epilogue)?;
+                    } else {
+                        return Err(Diagnostic::error("a non-tail guard in the writeback (roadmap)"));
+                    }
+                }
+                _ => return Err(Diagnostic::error("writeback statement beyond the walker (roadmap)")),
+            }
+            index += 1;
+        }
+        Ok(())
     }
 
     /// GUARD-BLOCK MUTATIONS (the s_floor skeleton, fire 377): a chain of
