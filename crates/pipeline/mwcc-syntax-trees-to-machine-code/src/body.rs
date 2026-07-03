@@ -4056,9 +4056,12 @@ impl Generator {
             let Ok(bound) = i16::try_from(bound) else {
                 return Ok(false);
             };
-            let condition_reads =
-                count_name_occurrences(condition, guard.name) + block_condition_reads(block, guard.name);
+            let condition_reads = count_name_occurrences(condition, guard.name)
+                + block_condition_reads(block, guard.name)
+                + block_condition_reads(else_body, guard.name);
             let non_condition = block_reads(block, guard.name) - block_condition_reads(block, guard.name)
+                + block_reads(else_body, guard.name)
+                - block_condition_reads(else_body, guard.name)
                 + stores
                     .iter()
                     .map(|statement| match statement {
@@ -4079,14 +4082,15 @@ impl Generator {
             // Multi-read: the home takes the FULL value (addi into the
             // home, measured L1) and every condition reads it plainly.
         }
-        // Registers: a punned local whose loaded value only feeds its own
-        // writeback takes the r0 scratch; one that feeds COMPUTATION (the
-        // early-return test, a self-mask) takes the freed condition
-        // register r3 (measured across all four capture shapes).
-        // THE SCRATCH RULE (measured across all eight capture shapes):
-        // punned locals take r0 first — UNLESS any emitted test needs the
-        // r0 scratch (a record-form idiom, the guard local's folded addi),
-        // in which case they start at r3.
+        // THE LIVENESS RULE (refines the old scratch rule; measured
+        // P1/L1/L2 plus the eight 1054 shapes): r0 is denied to the
+        // punned locals only when the r0 scratch is actually WRITTEN
+        // (the single-read guard fold, a record-form idiom) while an
+        // ORIGINAL loaded value is still live past the scratch point —
+        // an arm reads it, or some writeback-reaching path skips
+        // reassigning it so the stw reads it. L1's multi-read guard
+        // (addi into the home, no fold) leaves r0 free; L2's
+        // else-returns shape reassigns on every surviving path.
         fn condition_needs_scratch(condition: &Expression) -> bool {
             !matches!(
                 condition,
@@ -4111,7 +4115,25 @@ impl Generator {
                 _ => false,
             })
         }
-        let scratch_taken = guard_local.is_some() || block_needs_scratch(block);
+        // Every leaf path either reassigns the local or leaves the
+        // function before the writeback.
+        fn covered(block: &[Statement], name: &str) -> bool {
+            block.iter().any(|statement| match statement {
+                Statement::Assign { name: target, .. } => target.as_str() == name,
+                Statement::Return(_) => true,
+                Statement::If { then_body, else_body, .. } => {
+                    !else_body.is_empty() && covered(then_body, name) && covered(else_body, name)
+                }
+                _ => false,
+            })
+        }
+        let scratch_written =
+            guard_compare.is_some() || block_needs_scratch(block) || block_needs_scratch(else_body);
+        let any_original_survives = locals.iter().any(|&(name, _)| {
+            block_reads(block, name) + block_reads(else_body, name) > 0
+                || !(covered(block, name) && !else_body.is_empty() && covered(else_body, name))
+        });
+        let scratch_taken = scratch_written && any_original_survives;
         let mut next_general = if guard_local.is_some() { 4u8 } else { 3u8 };
         let guard_register = 3u8;
         let mut registers: Vec<u8> = Vec::new();
@@ -4212,11 +4234,12 @@ impl Generator {
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
         let outer_laddered = !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
-        if outer_laddered {
-            // STAGED, NOT SHIPPABLE: the top-level ladder claims but its
-            // registers diverge (L2's store-only i0 keeps r0 with the
-            // guard-addi live, where the else-less P1 pushes it to r4 —
-            // the allocator rule is unfitted). Defer until measured.
+        if outer_laddered && !(guard_local.is_some() && guard_compare.is_none()) {
+            // Laddered forms are BYTE-verified only for the multi-read
+            // guard (L1: the addi lands in the home and every condition
+            // reads it plainly). A single-read fold or plain/float outer
+            // condition inside the walker is unfitted (L2's inverted
+            // else-return, the hoisted double-emission) — defer.
             return Ok(false);
         }
         if !outer_laddered {
@@ -4315,11 +4338,14 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         // Pre-pool labels: the outer if pair, one per additional punned
         // local, two per inner condition, one per else arm (measured up to
-        // the two-condition/one-arm forms; deeper shapes iterate).
+        // the two-condition/one-arm forms; deeper shapes iterate). The
+        // laddered outer costs one more (measured L1: @12 vs the +6
+        // formula's @11).
         self.output.anonymous_label_bump += 1
             + locals.len() as u32
             + 2 * inner_conditions as u32
-            + else_arms as u32;
+            + else_arms as u32
+            + outer_laddered as u32;
         Ok(true)
     }
 
