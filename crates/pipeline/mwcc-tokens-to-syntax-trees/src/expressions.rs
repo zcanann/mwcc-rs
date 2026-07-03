@@ -117,7 +117,24 @@ pub(crate) fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
 
 impl Parser {
     pub(crate) fn expression(&mut self) -> Compilation<Expression> {
-        let condition = self.binary_expression(1)?;
+        // A compound assignment is valid in expression position too —
+        // `(c -= '0') >= base` (strtoul's digit fold). Handled here so every
+        // expression() caller (parens, conditions) accepts it.
+        let first = self.factor()?;
+        if let Some(operator) = self.peek_compound_assignment() {
+            self.advance();
+            self.advance();
+            let rhs = self.expression()?;
+            return Ok(Expression::Assign {
+                target: Box::new(first.clone()),
+                value: Box::new(Expression::Binary {
+                    operator,
+                    left: Box::new(first),
+                    right: Box::new(rhs),
+                }),
+            });
+        }
+        let condition = self.binary_expression_from(first, 1)?;
         // ternary conditional has the lowest precedence above assignment
         if *self.peek() == Token::Question {
             self.advance();

@@ -13,6 +13,10 @@ pub enum Pointee {
     UnsignedShort,
     Float,
     Double,
+    /// A pointer-to-pointer's element (`char **end` — strtoul's out-param).
+    /// Word-sized loads/stores; the inner pointee's identity is not tracked
+    /// (a double deref defers at codegen).
+    Pointer,
 }
 
 impl Pointee {
@@ -27,6 +31,10 @@ impl Pointee {
             Pointee::UnsignedShort => Type::UnsignedShort,
             Pointee::Float => Type::Float,
             Pointee::Double => Type::Double,
+            // The element of a pointer-to-pointer is itself a pointer: word-
+            // sized, integer-classed. Reported as an unsigned-int-shaped word
+            // (loads lwz, stores stw) — the inner pointee is not tracked.
+            Pointee::Pointer => Type::Pointer(Pointee::UnsignedInt),
         }
     }
     /// Size in bytes of one element (for indexing).

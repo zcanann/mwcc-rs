@@ -22,7 +22,7 @@ pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
 fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction {
     match pointee {
-        Pointee::Int | Pointee::UnsignedInt => Instruction::LoadWord { d, a, offset },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::LoadWord { d, a, offset },
         Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZero { d, a, offset },
         Pointee::Short => Instruction::LoadHalfwordAlgebraic { d, a, offset },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZero { d, a, offset },
@@ -34,7 +34,7 @@ fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Instruction
 /// The indexed load for a pointee type (`lwzx`/`lbzx`/`lhax`/`lhzx`/`lfsx`).
 fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Instruction {
     match pointee {
-        Pointee::Int | Pointee::UnsignedInt => Instruction::LoadWordIndexed { d, a, b },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::LoadWordIndexed { d, a, b },
         Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZeroIndexed { d, a, b },
         Pointee::Short => Instruction::LoadHalfwordAlgebraicIndexed { d, a, b },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZeroIndexed { d, a, b },
@@ -77,7 +77,7 @@ pub(crate) fn pointer_stride(value_type: Type) -> Option<u16> {
 /// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
 pub(crate) fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Instruction {
     match pointee {
-        Pointee::Int | Pointee::UnsignedInt => Instruction::StoreWord { s, a, offset },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::StoreWord { s, a, offset },
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByte { s, a, offset },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfword { s, a, offset },
         Pointee::Float => Instruction::StoreFloatSingle { s, a, offset },
@@ -123,7 +123,7 @@ fn const_address_of(pointer: &Expression) -> Option<u32> {
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
 pub(crate) fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Instruction {
     match pointee {
-        Pointee::Int | Pointee::UnsignedInt => Instruction::StoreWordIndexed { s, a, b },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer => Instruction::StoreWordIndexed { s, a, b },
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByteIndexed { s, a, b },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfwordIndexed { s, a, b },
         Pointee::Float => Instruction::StoreFloatSingleIndexed { s, a, b },

@@ -696,6 +696,13 @@ impl Parser {
         if *self.peek() == Token::Star {
             self.advance();
             self.consume_trailing_qualifiers();
+            // A SECOND `*` is a pointer-to-pointer (`char **end`): word-sized
+            // element, inner pointee untracked (double derefs defer at codegen).
+            if *self.peek() == Token::Star {
+                self.advance();
+                self.consume_trailing_qualifiers();
+                return Ok(Type::Pointer(Pointee::Pointer));
+            }
             return Ok(Type::Pointer(pointee_of(base)?));
         }
         Ok(base)
