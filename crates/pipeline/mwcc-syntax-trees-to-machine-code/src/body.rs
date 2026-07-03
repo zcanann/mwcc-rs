@@ -1815,6 +1815,9 @@ impl Generator {
         if self.try_align_diamond(function)? {
             return Ok(());
         }
+        if self.try_writeback_norm(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -8490,6 +8493,141 @@ impl Generator {
         self.bind_label(join_label);
         self.emit_branch_conditional_to(16, 0, body_label); // bdnz
         self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The WRITEBACK NORM (fire 432, e_fmod's normalize-output tail):
+    ///   hx = (hx - HI_BIT) | ((iy + K) << S);
+    ///   __HI(x) = hx | sx;  __LO(x) = lx;  return x;
+    /// Measured: `hx - HI_BIT` folds to `addis` (high-half subtract);
+    /// the stfd spill DELAYS into the int computation; the two punned
+    /// stores REORDER BY READINESS (the LO store's lx was ready before
+    /// the or-chain, so it emits first); the reload lfd feeds the
+    /// return; frame 16 for the one punned double.
+    fn try_writeback_norm(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let [p_x, p_hx, p_lx, p_iy, p_sx] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if p_x.parameter_type != Type::Double
+            || p_hx.parameter_type != Type::Int
+            || p_lx.parameter_type != Type::UnsignedInt
+            || p_iy.parameter_type != Type::Int
+            || p_sx.parameter_type != Type::Int
+        {
+            return Ok(false);
+        }
+        let (x, hx, lx, iy, sx) =
+            (p_x.name.as_str(), p_hx.name.as_str(), p_lx.name.as_str(), p_iy.name.as_str(), p_sx.name.as_str());
+        let [Statement::Assign { name: assign_name, value: assign_value }, Statement::Store { target: high_target, value: high_value }, Statement::Store { target: low_target, value: low_value }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if assign_name != hx {
+            return Ok(false);
+        }
+        // hx = (hx - HI_BIT) | ((iy + K) << S).
+        let Expression::Binary { operator: BinaryOperator::BitOr, left: base, right: shifted } = assign_value
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Subtract, left: sub_left, right: sub_right } =
+            base.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(sub_left.as_ref(), Expression::Variable(v) if v == hx) {
+            return Ok(false);
+        }
+        let Expression::IntegerLiteral(hi_bit) = sub_right.as_ref() else {
+            return Ok(false);
+        };
+        if *hi_bit & 0xffff != 0 {
+            return Ok(false);
+        }
+        let Ok(addis_immediate) = i16::try_from(-(*hi_bit >> 16)) else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: sum, right: shift_amount } =
+            shifted.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Add, left: add_left, right: add_right } =
+            sum.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(add_left.as_ref(), Expression::Variable(v) if v == iy) {
+            return Ok(false);
+        }
+        let Expression::IntegerLiteral(exponent_bias) = add_right.as_ref() else {
+            return Ok(false);
+        };
+        let Ok(exponent_bias) = i16::try_from(*exponent_bias) else {
+            return Ok(false);
+        };
+        let Expression::IntegerLiteral(shift_amount) = shift_amount.as_ref() else {
+            return Ok(false);
+        };
+        let Ok(shift_amount) = u8::try_from(*shift_amount) else {
+            return Ok(false);
+        };
+        if !(1..=31).contains(&shift_amount) {
+            return Ok(false);
+        }
+        // __HI(x) = hx | sx;  __LO(x) = lx;
+        if crate::frame::pun_word_offset_pub(high_target, x) != Some(0)
+            || crate::frame::pun_word_offset_pub(low_target, x) != Some(4)
+        {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::BitOr, left: or_left, right: or_right } = high_value
+        else {
+            return Ok(false);
+        };
+        if !matches!(or_left.as_ref(), Expression::Variable(v) if v == hx)
+            || !matches!(or_right.as_ref(), Expression::Variable(v) if v == sx)
+            || !matches!(low_value, Expression::Variable(v) if v == lx)
+            || !matches!(&function.return_expression, Some(Expression::Variable(v)) if v == x)
+        {
+            return Ok(false);
+        }
+        let (Some(hx_register), Some(lx_register), Some(iy_register), Some(sx_register)) = (
+            self.lookup_general(hx),
+            self.lookup_general(lx),
+            self.lookup_general(iy),
+            self.lookup_general(sx),
+        ) else {
+            return Ok(false);
+        };
+        // -- emit --
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: iy_register, immediate: exponent_bias });
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: hx_register, a: hx_register, immediate: addis_immediate });
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: 0, shift: shift_amount });
+        // The spill delays into the int computation.
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::Or { a: 0, s: hx_register, b: 0 });
+        self.output.instructions.push(Instruction::Or { a: 0, s: 0, b: sx_register });
+        // Stores reorder by readiness: lx first.
+        self.output.instructions.push(Instruction::StoreWord { s: lx_register, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // @N: measured via objprobe after implementation.
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }

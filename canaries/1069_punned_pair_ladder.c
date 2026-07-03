@@ -22,3 +22,15 @@ int pun_pair_ladder(double x, double y)
 	}
 	return 3;
 }
+/* Fire 432: the WRITEBACK NORM (e_fmod's normalize-output tail).
+   hx - HI_BIT folds to addis (high-half subtract); the stfd spill
+   DELAYS into the int computation; the two punned stores REORDER BY
+   READINESS (LO first — lx was ready before the or-chain); lfd
+   reloads for the return; frame 16. @N +0. */
+double wb_norm(double x, int hx, unsigned lx, int iy, int sx)
+{
+	hx = ((hx - 0x00100000) | ((iy + 1023) << 20));
+	*(int *)&x = hx | sx;
+	*(1 + (int *)&x) = lx;
+	return x;
+}
