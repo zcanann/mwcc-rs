@@ -748,6 +748,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], binding, 0, index_of(".text") as u16);
             let flags = if function.is_weak { 0x0e00_0000 } else { 0 };
             comment_values.push((4, flags)); // a function is 4-aligned; weak carries 0x0e
+            // A LATER function's call to this one resolves to the defined
+            // symbol (no UND duplicate — FILE_POS's fseek -> _fseek).
+            global_symbols.insert(function.name, function_symbols[index]);
         }
         emit_referenced!(implicit_ordered);
         // Initialized objects declared right after this (non-static) function

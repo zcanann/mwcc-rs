@@ -3,6 +3,9 @@
 //! verbatim emission). See docs/emission-model.md and the per-file docs.
 
 mod eacos;
+mod fp_fseek;
+mod fp_fseek_impl;
+mod fp_ftell;
 mod eacos_bl;
 mod eacos_str;
 mod easin;
@@ -90,6 +93,9 @@ impl Generator {
             || self.try_erempio2(function)?
             || self.try_uart_write(function)?
             || self.try_uart_close(function)?
+            || self.try_fp_ftell(function)?
+            || self.try_fp_fseek_impl(function)?
+            || self.try_fp_fseek(function)?
             || self.try_erempio2_str(function)?)
     }
 }

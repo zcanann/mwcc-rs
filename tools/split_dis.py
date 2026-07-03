@@ -22,6 +22,10 @@ for ln in lines:
 for name, base, body in funcs:
     fixed = [f"00000000 <{name}>:"]
     for ln in body:
+        r = re.match(r'^(\s+)([0-9a-f]+)(: R_PPC_.*)$', ln)
+        if r:
+            fixed.append(f"{r.group(1)}{format(int(r.group(2),16) - base, 'x')}{r.group(3)}")
+            continue
         m = re.match(r'^(\s*)([0-9a-f]+)(:\s+(?:[0-9a-f]{2} ){4}\s*\S+\s*)(.*)$', ln)
         if m:
             addr = int(m.group(2), 16) - base
