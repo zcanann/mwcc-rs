@@ -1797,6 +1797,9 @@ impl Generator {
         if self.try_ctr_pair_loop(function)? {
             return Ok(());
         }
+        if self.try_norm_loop(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -8326,6 +8329,154 @@ impl Generator {
         self.output.instructions.push(Instruction::Add { d: hx_register, a: hz_register, b: hx_register });
         self.bind_label(join_label);
         self.emit_branch_conditional_to(16, 0, body_label); // bdnz
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The NORMALIZE LOOP (fire 424, e_fmod's tail loop): a NON-counted
+    /// `while (hx < BIG) { hx = hx+hx+(lx>>31); lx = lx+lx; iy -= 1; }`
+    /// with `return hx + iy` — rotated form with the big bound hoisted
+    /// `lis r0, BIG>>16` BEFORE the loop. r0 stays OCCUPIED across the
+    /// body, so the carry temp takes the next free register after the
+    /// params; the iy decrement schedules INTO the add latency (between
+    /// `add rT,hx,rT` and `add hx,hx,rT`). Bound gated to lis-only
+    /// constants (low half zero, not a cmpwi immediate).
+    fn try_norm_loop(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::{LoopKind, Statement};
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let [p_hx, p_lx, p_iy] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if p_hx.parameter_type != Type::Int
+            || p_lx.parameter_type != Type::UnsignedInt
+            || p_iy.parameter_type != Type::Int
+        {
+            return Ok(false);
+        }
+        let (hx, lx, iy) = (p_hx.name.as_str(), p_lx.name.as_str(), p_iy.name.as_str());
+        if hx == lx || hx == iy || lx == iy {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // The condition: hx < BIG, BIG a lis-only constant (low half 0).
+        let Expression::Binary { operator: BinaryOperator::Less, left: test_left, right: test_right } =
+            condition
+        else {
+            return Ok(false);
+        };
+        if !matches!(test_left.as_ref(), Expression::Variable(v) if v == hx) {
+            return Ok(false);
+        }
+        let Expression::IntegerLiteral(bound) = test_right.as_ref() else {
+            return Ok(false);
+        };
+        let bound = *bound;
+        if bound & 0xffff != 0 {
+            return Ok(false);
+        }
+        let Ok(bound_high) = i16::try_from(bound >> 16) else {
+            return Ok(false);
+        };
+        // The body: [hx = hx+hx+(lx>>31)][lx = lx+lx][iy = iy-1].
+        let [Statement::Assign { name: high_name, value: high_value }, Statement::Assign { name: low_name, value: low_value }, Statement::Assign { name: dec_name, value: dec_value }] =
+            body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if high_name != hx || low_name != lx || dec_name != iy {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Add, left: sum, right: carry } = high_value
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Add, left: first, right: second } = sum.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: shifted, right: amount } =
+            carry.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(first.as_ref(), Expression::Variable(v) if v == hx)
+            || !matches!(second.as_ref(), Expression::Variable(v) if v == hx)
+            || !matches!(shifted.as_ref(), Expression::Variable(v) if v == lx)
+            || !matches!(amount.as_ref(), Expression::IntegerLiteral(31))
+        {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Add, left: low_first, right: low_second } =
+            low_value
+        else {
+            return Ok(false);
+        };
+        if !matches!(low_first.as_ref(), Expression::Variable(v) if v == lx)
+            || !matches!(low_second.as_ref(), Expression::Variable(v) if v == lx)
+        {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Subtract, left: dec_left, right: dec_right } =
+            dec_value
+        else {
+            return Ok(false);
+        };
+        if !matches!(dec_left.as_ref(), Expression::Variable(v) if v == iy)
+            || !matches!(dec_right.as_ref(), Expression::IntegerLiteral(1))
+        {
+            return Ok(false);
+        }
+        // The tail: return hx + iy.
+        let Some(Expression::Binary { operator: BinaryOperator::Add, left: ret_left, right: ret_right }) =
+            &function.return_expression
+        else {
+            return Ok(false);
+        };
+        if !matches!(ret_left.as_ref(), Expression::Variable(v) if v == hx)
+            || !matches!(ret_right.as_ref(), Expression::Variable(v) if v == iy)
+        {
+            return Ok(false);
+        }
+        let (Some(hx_register), Some(lx_register), Some(iy_register)) =
+            (self.lookup_general(hx), self.lookup_general(lx), self.lookup_general(iy))
+        else {
+            return Ok(false);
+        };
+        if hx_register != 3 {
+            return Ok(false);
+        }
+        // The carry temp: next free past the params (r0 holds the bound).
+        let temp = 3 + function.parameters.len() as u8;
+        if temp > 10 {
+            return Ok(false);
+        }
+        // -- emit --
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 0, immediate: bound_high });
+        let test_label = self.fresh_label();
+        self.emit_branch_to(test_label);
+        let body_label = self.fresh_label();
+        self.bind_label(body_label);
+        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: temp, s: lx_register, shift: 31 });
+        self.output.instructions.push(Instruction::Add { d: lx_register, a: lx_register, b: lx_register });
+        self.output.instructions.push(Instruction::Add { d: temp, a: hx_register, b: temp });
+        self.output.instructions.push(Instruction::AddImmediate { d: iy_register, a: iy_register, immediate: -1 });
+        self.output.instructions.push(Instruction::Add { d: hx_register, a: hx_register, b: temp });
+        self.bind_label(test_label);
+        self.output.instructions.push(Instruction::CompareWord { a: hx_register, b: 0 });
+        self.emit_branch_conditional_to(12, 0, body_label); // blt
+        self.output.instructions.push(Instruction::Add { d: 3, a: hx_register, b: iy_register });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 0;
         Ok(true)

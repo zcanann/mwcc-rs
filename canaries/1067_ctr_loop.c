@@ -110,3 +110,17 @@ int ctr_fmod_exit(int hx, unsigned lx, int hy, unsigned ly, int n)
 	}
 	return hx;
 }
+/* Fire 424: the NORMALIZE LOOP (e_fmod's tail) — non-counted rotated
+   pair-step walk. The big bound hoists lis r0 BEFORE the loop and r0
+   stays occupied across it, evicting the carry temp to the next free
+   register past the params; the iy decrement schedules into the add
+   latency. @N +0. */
+int norm_loop(int hx, unsigned lx, int iy)
+{
+	while (hx < 0x00100000) {
+		hx = hx + hx + (lx >> 31);
+		lx = lx + lx;
+		iy -= 1;
+	}
+	return hx + iy;
+}
