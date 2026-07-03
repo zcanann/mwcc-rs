@@ -139,3 +139,44 @@ double writeback_ladder(double x)
 	*(int *)&x = i0;
 	return x;
 }
+/* Fire 389: the DUAL-RETURN ARM (s_floor's middle arm). When BOTH arms
+   of an inner If leave, the else's b-epilogue folds into the skip
+   branch itself (bne EPI) and the then's trailing b join is omitted.
+   `return x+x` raises inexact/inf via fadd f1,f1,f1 before the
+   epilogue (f1 is never clobbered on walker paths). @N: +1 per
+   `return x+x` (its expression temp). */
+double writeback_dual_return(double x)
+{
+	int i0, j0;
+	i0 = *(int *)&x;
+	j0 = ((i0 >> 20) & 0x7ff) - 0x3ff;
+	if (j0 < 20) {
+		i0 = 0;
+	} else if (j0 > 51) {
+		if (j0 == 0x400)
+			return x + x;
+		else
+			return x;
+	} else {
+		i0 &= 0x7ff;
+	}
+	*(int *)&x = i0;
+	return x;
+}
+double writeback_midchain_fadd(double x)
+{
+	int i0, j0;
+	i0 = *(int *)&x;
+	j0 = ((i0 >> 20) & 0x7ff) - 0x3ff;
+	if (j0 < 20) {
+		i0 = 0;
+	} else if (j0 > 51) {
+		if (j0 == 0x400)
+			return x + x;
+		i0 = 5;
+	} else {
+		i0 &= 0x7ff;
+	}
+	*(int *)&x = i0;
+	return x;
+}

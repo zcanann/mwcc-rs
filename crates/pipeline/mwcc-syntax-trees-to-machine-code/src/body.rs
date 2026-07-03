@@ -3909,6 +3909,12 @@ impl Generator {
                         }
                     }
                     Statement::Return(Some(Expression::Variable(value))) if value == x => {}
+                    Statement::Return(Some(Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left,
+                        right,
+                    })) if matches!((left.as_ref(), right.as_ref()),
+                        (Expression::Variable(a), Expression::Variable(b)) if a == x && b == x) => {}
                     Statement::If { condition: _, then_body, else_body } => {
                         *conditions += 1;
                         if !validate_block(then_body, locals, x, mutated, conditions, arms) {
@@ -4340,12 +4346,30 @@ impl Generator {
         // local, two per inner condition, one per else arm (measured up to
         // the two-condition/one-arm forms; deeper shapes iterate). The
         // laddered outer costs one more (measured L1: @12 vs the +6
-        // formula's @11).
+        // formula's @11), and each `return x+x` costs one (its expression
+        // temp — measured M1 @16 and M4 @15 against the formula's -1).
+        fn count_fadd_returns(block: &[Statement]) -> u32 {
+            block
+                .iter()
+                .map(|statement| match statement {
+                    Statement::Return(Some(Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        ..
+                    })) => 1,
+                    Statement::If { then_body, else_body, .. } => {
+                        count_fadd_returns(then_body) + count_fadd_returns(else_body)
+                    }
+                    _ => 0,
+                })
+                .sum()
+        }
         self.output.anonymous_label_bump += 1
             + locals.len() as u32
             + 2 * inner_conditions as u32
             + else_arms as u32
-            + outer_laddered as u32;
+            + outer_laddered as u32
+            + count_fadd_returns(block)
+            + count_fadd_returns(else_body);
         Ok(true)
     }
 
@@ -4393,15 +4417,36 @@ impl Generator {
                         return Err(Diagnostic::error("writeback mutation beyond the walker (roadmap)"));
                     }
                 }
-                Statement::Return(Some(_)) => {
+                Statement::Return(Some(value)) => {
+                    // `return x+x` raises inexact/inf via fadd before the
+                    // epilogue (measured M1: fadd f1,f1,f1; b epi); f1 is
+                    // never clobbered on walker paths, so a plain return
+                    // is the bare branch.
+                    if let Expression::Binary { operator: BinaryOperator::Add, left, right } = value {
+                        if matches!((left.as_ref(), right.as_ref()),
+                            (Expression::Variable(a), Expression::Variable(b)) if a == b)
+                        {
+                            self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 1, b: 1 });
+                        }
+                    }
                     self.emit_branch_to(epilogue);
                 }
                 Statement::If { condition, then_body, else_body } => {
                     let (options, condition_bit) = self.emit_condition_test(condition)?;
                     if let [Statement::Return(Some(_))] = else_body.as_slice() {
-                        // The whole ELSE returns x: the branch INVERTS — the
+                        if matches!(then_body.last(), Some(Statement::Return(_))) {
+                            // BOTH arms leave: the else's b-epilogue folds
+                            // into the skip branch itself (measured M1:
+                            // cmpwi; bne EPI; fadd; b EPI).
+                            self.emit_branch_conditional_to(options, condition_bit, epilogue);
+                            self.emit_writeback_block(then_body, bindings, join, epilogue)?;
+                            index += 1;
+                            continue;
+                        }
+                        // The then FALLS to the join: the arms swap — the
                         // taken sense enters the then arm, the return lands
-                        // inline as b epilogue (measured: blt; b epi; muts).
+                        // inline as b epilogue (measured L2: blt; b epi;
+                        // muts).
                         let continuation = self.fresh_label();
                         self.emit_branch_conditional_to(options ^ 8, condition_bit, continuation);
                         self.emit_branch_to(epilogue);
@@ -4411,18 +4456,35 @@ impl Generator {
                         continue;
                     }
                     if !else_body.is_empty() {
-                        // if/ELSE-IF: branch over the then arm; b join after it.
+                        // if/ELSE-IF: branch over the then arm; b join after
+                        // it — omitted when every then path already leaves
+                        // (measured M1: fadd; b epi; ELSE with no b join).
+                        fn block_leaves(block: &[Statement]) -> bool {
+                            match block.last() {
+                                Some(Statement::Return(_)) => true,
+                                Some(Statement::If { then_body, else_body, .. }) => {
+                                    !else_body.is_empty()
+                                        && block_leaves(then_body)
+                                        && block_leaves(else_body)
+                                }
+                                _ => false,
+                            }
+                        }
                         let else_label = self.fresh_label();
                         self.emit_branch_conditional_to(options, condition_bit, else_label);
                         self.emit_writeback_block(then_body, bindings, join, epilogue)?;
-                        self.emit_branch_to(join);
+                        if !block_leaves(then_body) {
+                            self.emit_branch_to(join);
+                        }
                         self.bind_label(else_label);
                         self.emit_writeback_block(else_body, bindings, join, epilogue)?;
                     } else if let [Statement::Return(Some(_))] = then_body.as_slice() {
                         // The mid-chain return: skip to the continuation.
+                        // The recursion supplies the return emission (the
+                        // bare b epilogue, or fadd first for x+x).
                         let continuation = self.fresh_label();
                         self.emit_branch_conditional_to(options, condition_bit, continuation);
-                        self.emit_branch_to(epilogue);
+                        self.emit_writeback_block(then_body, bindings, join, epilogue)?;
                         self.bind_label(continuation);
                     } else if last {
                         // A tail guard chains to the block's join.
