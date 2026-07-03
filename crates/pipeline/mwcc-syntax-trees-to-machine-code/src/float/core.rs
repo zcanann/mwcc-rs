@@ -209,7 +209,10 @@ impl Generator {
                     return Ok(false);
                 }
             }
-            if kept_locals.len() > 1 {
+            // Multi-local table shapes: the SHALLOW class (z,w with at most
+            // three ariths in the folded return — one chain link per parity)
+            // is fitted; the deeper interleave (s_atan's full split) is not.
+            if kept_locals.len() > 2 || (kept_locals.len() == 2 && count_arith(&tree) > 3) {
                 return Ok(false);
             }
         }
@@ -697,19 +700,27 @@ impl Generator {
         // The TABLE BASE weave (measured: lis at slot 0 before the first
         // float op, addi at slot 2): lis+@ha up front; the low half lands
         // right after the first emitted float instruction.
+        // TWO kept locals (z, w): the base PAIR — lis and addi together —
+        // lands after the first float instruction (measured: the shallow
+        // and deep table shapes all open fmul z; lis; addi). A single
+        // local splits them around the first float op.
+        let table_pair_after_first = table_context.name.is_some() && kept_locals.len() >= 2;
         let mut table_addi_pending = false;
         if let Some(name) = &table_context.name {
-            self.emit_address_high(3, name);
-            table_addi_pending = true;
-            // Nothing schedulable before the first table read: the low half
-            // follows the lis directly (measured: the single-op claim).
-            if order
-                .first()
-                .is_some_and(|&node| matches!(ops[node], FloatOp::TableLoad(_)))
-            {
-                self.record_relocation(RelocationKind::Addr16Lo, name);
-                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
-                table_addi_pending = false;
+            if !table_pair_after_first {
+                self.emit_address_high(3, name);
+                table_addi_pending = true;
+                // Nothing schedulable before the first table read: the low
+                // half follows the lis directly (measured: the single-op
+                // claim).
+                if order
+                    .first()
+                    .is_some_and(|&node| matches!(ops[node], FloatOp::TableLoad(_)))
+                {
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                    self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                    table_addi_pending = false;
+                }
             }
         }
         let table_name = table_context.name.clone();
@@ -799,6 +810,12 @@ impl Generator {
                 );
                 self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
                 table_addi_pending = false;
+            }
+            if table_pair_after_first && emitted == 1 {
+                let name = table_name.as_deref().expect("pair implies a table");
+                self.emit_address_high(3, name);
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
             }
         }
         let _ = table_addi_pending;

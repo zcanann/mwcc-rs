@@ -1712,8 +1712,20 @@ pub fn assign_float_registers(
                     // holds it across this value's span (the d5 interleave's
                     // early-claimed f0 blocks chain1's MIN — measured).
                     let reusable = |register: u8, occupied: &Vec<(u8, usize, usize, usize)>| -> bool {
-                        occupied.iter().all(|&(taken, taken_start, taken_end, _)| {
-                            taken != register || taken_end <= start || taken_start > end
+                        occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
+                            if taken != register || taken_end <= start || taken_start > end {
+                                return true;
+                            }
+                            // The CONSUMER-BOUNDARY door: dying exactly into
+                            // the occupant that consumes this value passes
+                            // (measured: the shallow table's even chain joins
+                            // the return's f1 at its death).
+                            taken_start == end
+                                && owner != usize::MAX
+                                && nodes[node]
+                                    .writes
+                                    .first()
+                                    .is_some_and(|value| nodes[owner].reads.contains(value))
                         })
                     };
                     let min_dying: Option<u8> = nodes[node]
@@ -3226,6 +3238,47 @@ mod tests {
         }
         assert_eq!(order, expected_order, "t5 ORDER unfitted");
         assert_eq!(registers, expected, "t5 REGISTERS unfitted");
+    }
+
+    /// The SHALLOW multi-local table shape (fire 374): z,w + three
+    /// coefficients — plain descending loads, no interleave. Checks
+    /// whether the frozen machine already covers the V2 sub-class.
+    #[test]
+    #[ignore]
+    fn float_registers_frontier_t5_shallow() {
+        const FARITH: u32 = 3;
+        const FMUL_D: u32 = 4;
+        let nodes = vec![
+            DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[10]),
+            DagNode::new("fmul_w", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[10, 10]).writes(&[11]),
+            DagNode::new("lfd_t2", LOAD).writes(&[12]),
+            DagNode::new("lfd_t0", LOAD).writes(&[13]),
+            DagNode::new("lfd_t1", LOAD).writes(&[14]),
+            DagNode::new("even1", FARITH).hazard(HAZARD_FPU).reads(&[11, 12, 13]).writes(&[15]),
+            DagNode::new("mul_odd", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[11, 14]).writes(&[16]),
+            DagNode::new("root", FARITH).hazard(HAZARD_FPU).reads(&[10, 15, 16]).writes(&[17]),
+        ];
+        let order = linearize(&nodes);
+        let expected_order: Vec<usize> = vec![0, 2, 3, 1, 4, 5, 6, 7];
+        eprintln!("v2 order: got {order:?} want {expected_order:?}");
+        let registers = assign_float_registers(&nodes, &order, &[(1, 1)], FROZEN_FLOAT_REG);
+        let expected: Vec<Option<u8>> = vec![
+            Some(3),
+            Some(4),
+            Some(2),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
+        ];
+        for (index, (got, want)) in registers.iter().zip(&expected).enumerate() {
+            if got != want {
+                eprintln!("  v2 reg node {index}: got {got:?} want {want:?}");
+            }
+        }
+        assert_eq!(order, expected_order, "v2 ORDER unfitted");
+        assert_eq!(registers, expected, "v2 REGISTERS unfitted");
     }
 
     /// Diagnostic: score both float register machines across the model space.
