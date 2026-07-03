@@ -4218,6 +4218,7 @@ mod tests {
             LoadDiscarded,
             LoadSurviving,
             Shift,
+            ArmShift,
             /// The ladder scrutinee: read by multiple top-level branch
             /// conditions (the composed s_floor's j0).
             Scrutinee,
@@ -4305,12 +4306,13 @@ mod tests {
                 v(Shift, 8, 26, 7),
             ]},
             // The COMPOSED full s_floor (fire 401): the same arm's j0/i
-            // SWAP (i=r4, j0=r7) — j0 is the ladder SCRUTINEE here.
+            // SWAP (i=r4, j0=r7) — j0 is the ladder SCRUTINEE and the
+            // shifts are ARM-DEFINED (they join the death-asc pool).
             Fixture { name: "SFLOOR", values: &[
                 v(Temp, 4, 5, 3), v(Temp, 26, 40, 3), v(Mask, 52, 53, 3),
                 v(Mask, 69, 70, 3), v(Scrutinee, 5, 68, 7),
                 v(LoadSurviving, 2, 77, 5), v(LoadSurviving, 3, 78, 6),
-                v(Shift, 28, 42, 4), v(Shift, 53, 76, 4),
+                v(ArmShift, 28, 42, 4), v(ArmShift, 53, 76, 4),
             ]},
         ];
 
@@ -4333,10 +4335,12 @@ mod tests {
             match class {
                 Class::Temp => crate::int_alloc::Class::Temp,
                 Class::Mask => crate::int_alloc::Class::Mask,
-                Class::Computed | Class::Scrutinee => crate::int_alloc::Class::Computed,
+                Class::Computed => crate::int_alloc::Class::Computed,
                 Class::LoadDiscarded => crate::int_alloc::Class::LoadDiscarded,
                 Class::LoadSurviving => crate::int_alloc::Class::LoadSurviving,
                 Class::Shift => crate::int_alloc::Class::Shift,
+                Class::ArmShift => crate::int_alloc::Class::ArmShift,
+                Class::Scrutinee => crate::int_alloc::Class::Scrutinee,
             }
         }
 
@@ -4493,11 +4497,6 @@ mod tests {
     fn int_allocator_model_v2() {
         use int_alloc_fit::*;
         for fixture in FIXTURES {
-            // The composed-s_floor frontier fixture awaits the scrutinee
-            // dimension — the enumerator owns it until fitted.
-            if fixture.values.iter().any(|value| value.class == Class::Scrutinee) {
-                continue;
-            }
             let order = model_order(fixture);
             let chosen = assign(&order, fixture.values);
             for (index, value) in fixture.values.iter().enumerate() {
