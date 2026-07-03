@@ -509,7 +509,28 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                     // A lift already PICKED this cycle no longer defers
                     // anyone (measured: ksin_tail's v dual-issues with the
                     // final coefficient lift; z4's m1 follows its lift in the
-                    // same cycle).
+                    // same cycle). And a lift whose blockage is SELF-CAUSED —
+                    // every consumer's unissued non-load blocker is the
+                    // candidate or one of its transitive dependents — does
+                    // not hold the candidate back (measured: the s_atan w
+                    // issues over loads that only wait on w's own chains,
+                    // while k_sin's v still defers to lifts blocked by the
+                    // independent chain1).
+                    let depends_on_candidate = |node: usize, candidate: usize| -> bool {
+                        let mut stack = vec![node];
+                        let mut seen = vec![false; count];
+                        while let Some(current) = stack.pop() {
+                            if current == candidate {
+                                return true;
+                            }
+                            if seen[current] {
+                                continue;
+                            }
+                            seen[current] = true;
+                            stack.extend(deps[current].iter().copied());
+                        }
+                        false
+                    };
                     let lift_pending = ready.iter().any(|&other| {
                         other != candidate && !picked.contains(&other) && load_blocked(other, issued_at)
                     });
@@ -518,9 +539,29 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                     }
                     // A local depending only on params/LOADS (z = x*x, or
                     // z over the frame reload) leads the schedule and never
-                    // defers; a local depending on ARITH (v = z*x) yields.
+                    // defers; a local depending on ARITH (v = z*x) yields —
+                    // but ONLY to lifts blocked by something INDEPENDENT of
+                    // the local itself (k_sin's v yields to chain1-blocked
+                    // coefficient loads; the s_atan w issues straight over
+                    // loads that wait only on w's own chains). The one-cycle
+                    // fresh-arith deference below keeps self-caused lifts.
                     if nodes[candidate].local_home {
-                        return deps[candidate].iter().any(|&dep| nodes[dep].kind != OpKind::Load);
+                        let independent_lift = ready.iter().any(|&other| {
+                            if other == candidate || picked.contains(&other) || !load_blocked(other, issued_at) {
+                                return false;
+                            }
+                            (0..count).any(|consumer| {
+                                deps[consumer].contains(&other)
+                                    && deps[consumer].iter().any(|&dependency| {
+                                        issued_at[dependency].is_none()
+                                            && nodes[dependency].kind != OpKind::Load
+                                            && dependency != candidate
+                                            && !depends_on_candidate(dependency, candidate)
+                                    })
+                            })
+                        });
+                        return independent_lift
+                            && deps[candidate].iter().any(|&dep| nodes[dep].kind != OpKind::Load);
                     }
                     deps[candidate].iter().any(|&dep| nodes[dep].local_home) && fresh(candidate)
                 };
@@ -3132,6 +3173,61 @@ mod tests {
         assert_eq!(registers, expected, "kcos else REGISTERS unfitted");
     }
 
+    /// FRONTIER (fire 373, unfitted): the MULTI-LOCAL coefficient-table
+    /// tail — s_atan's even/odd split (`z*(aT0+w*(aT2+w*aT4)) +
+    /// w*(aT1+w*aT3)` with z=x*x, w=z*z). Two gaps against the frozen
+    /// models: (1) ORDER — the local-dep defer pushes w past ALL five
+    /// loads (slot 6); the real schedule interleaves w after TWO (slot 3):
+    /// the v-defers-fully rule from k_sin over-fires here; (2) REGISTERS —
+    /// the loads land f4,f3,f1,f0,f2 (aT0 takes the freed x slot LAST)
+    /// against plain descending. Real: z=f5 w=f6 (tier), chains
+    /// f3,f0,f1,f0, root f1. Run with --ignored to score candidates.
+    #[test]
+    #[ignore]
+    fn float_registers_frontier_t5_table() {
+        const FARITH: u32 = 3;
+        const FMUL_D: u32 = 4;
+        let nodes = vec![
+            DagNode::new("fmul_z", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[1, 1]).writes(&[10]),
+            DagNode::new("fmul_w", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).local_home().reads(&[10, 10]).writes(&[11]),
+            DagNode::new("lfd_t4", LOAD).writes(&[12]),
+            DagNode::new("lfd_t2", LOAD).writes(&[13]),
+            DagNode::new("lfd_t3", LOAD).writes(&[14]),
+            DagNode::new("lfd_t1", LOAD).writes(&[15]),
+            DagNode::new("lfd_t0", LOAD).writes(&[16]),
+            DagNode::new("even1", FARITH).hazard(HAZARD_FPU).reads(&[11, 12, 13]).writes(&[17]),
+            DagNode::new("odd1", FARITH).hazard(HAZARD_FPU).reads(&[11, 14, 15]).writes(&[18]),
+            DagNode::new("even2", FARITH).hazard(HAZARD_FPU).reads(&[11, 17, 16]).writes(&[19]),
+            DagNode::new("mul_odd", FARITH).gate(FMUL_D).hazard(HAZARD_FPU).reads(&[11, 18]).writes(&[20]),
+            DagNode::new("root", FARITH).hazard(HAZARD_FPU).reads(&[10, 19, 20]).writes(&[21]),
+        ];
+        let order = linearize(&nodes);
+        let expected_order: Vec<usize> = vec![0, 2, 3, 1, 4, 5, 6, 7, 8, 9, 10, 11];
+        eprintln!("t5 order: got {order:?} want {expected_order:?}");
+        let registers = assign_float_registers(&nodes, &order, &[(1, 1)], FROZEN_FLOAT_REG);
+        let expected: Vec<Option<u8>> = vec![
+            Some(5),
+            Some(6),
+            Some(4),
+            Some(3),
+            Some(1),
+            Some(0),
+            Some(2),
+            Some(3),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
+        ];
+        for (index, (got, want)) in registers.iter().zip(&expected).enumerate() {
+            if got != want {
+                eprintln!("  t5 reg node {index}: got {got:?} want {want:?}");
+            }
+        }
+        assert_eq!(order, expected_order, "t5 ORDER unfitted");
+        assert_eq!(registers, expected, "t5 REGISTERS unfitted");
+    }
+
     /// Diagnostic: score both float register machines across the model space.
     #[test]
     fn float_registers() {
@@ -3194,6 +3290,7 @@ mod tests {
                     local_top_tier: false,
                     window_floor: 0,
                     tier_position_desc: false,
+                    emission_over_tier: false,
                     tier_forward_descending: false,
                     dying_door_share: false,
                     order_by_death: false,
