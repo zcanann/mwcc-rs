@@ -48,6 +48,10 @@ enum FloatOp {
     Const(u64),
     /// x reloaded from its frame slot (no relocation).
     FrameLoad(i16),
+    /// A conditionally-defined local (the diamond's qx): allocates like a
+    /// window-top tier local but emits NOTHING — the diamond arms already
+    /// loaded it.
+    Phantom,
     Madd { a: Operand, c: Operand, b: Operand },
     Fnmsub { a: Operand, c: Operand, b: Operand },
     Fmsub { a: Operand, c: Operand, b: Operand },
@@ -199,6 +203,11 @@ impl Generator {
                 _ => return Ok(false),
             }
         }
+        if let Some(name) = &self.float_phantom_local {
+            // The diamond-defined local reads as value id 8 (the phantom
+            // node's write), the same convention as the reload's 9.
+            param_ids.push((name.clone(), 8));
+        }
         // Lower the expression to the contracted tree (or bail).
         let mut seen_literals: Vec<u64> = Vec::new();
         let local_names: Vec<(String, usize)> = kept_locals
@@ -290,9 +299,12 @@ impl Generator {
         // measured construction the frozen linearizer was fitted against.
         let mut arith_refs: Vec<(&Tree, u32)> = Vec::new();
         collect_arith(&tree, 0, &mut arith_refs);
-        if arith_refs.is_empty() || (arith_refs.len() < 2 && seen_literals.is_empty()) {
+        if arith_refs.is_empty()
+            || (arith_refs.len() < 2 && seen_literals.is_empty() && self.float_phantom_local.is_none())
+        {
             // A bare constant return and const-free single ops stay on the
-            // existing verified paths; a pooled-constant single op is ours.
+            // existing verified paths; a pooled-constant single op is ours —
+            // and a PHANTOM tail has no other path at any arity.
             return Ok(false);
         }
         arith_refs.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
@@ -311,6 +323,15 @@ impl Generator {
             reload_operand = Some(Operand::Node(index));
             let _ = reload_operand;
         }
+        let mut phantom_operand: Option<Operand> = None;
+        let mut phantom_index: Option<usize> = None;
+        if self.float_phantom_local.is_some() {
+            let index = nodes.len();
+            nodes.push(DagNode::new("phantom", 0).local_home().writes(&[8]));
+            ops.push(FloatOp::Phantom);
+            phantom_operand = Some(Operand::Node(index));
+            phantom_index = Some(index);
+        }
         // The locals' shared nodes, in declaration order (their arith emits
         // ahead of the loads: measured, z's fmul is slot 0).
         let mut local_operands: Vec<Operand> = Vec::new();
@@ -318,6 +339,7 @@ impl Generator {
             let resolve_leaf = |leaf: &Tree| -> Option<Operand> {
                 match leaf {
                     Tree::Param(9) => reload_operand,
+                    Tree::Param(8) if phantom_operand.is_some() => phantom_operand,
                     Tree::Param(value) => Some(Operand::Param(*value)),
                     Tree::LocalRef(local) => local_operands.get(*local).copied(),
                     _ => None,
@@ -395,6 +417,7 @@ impl Generator {
             let resolve = |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
                 match subtree {
                     Tree::Param(9) => reload_operand,
+                    Tree::Param(8) if phantom_operand.is_some() => phantom_operand,
                     Tree::Param(value) => Some(Operand::Param(*value)),
                     Tree::LocalRef(local) => local_operands.get(*local).copied(),
                     _ => built
@@ -508,6 +531,9 @@ impl Generator {
 
         let order = linearize(&nodes);
         let registers = assign_float_registers(&nodes, &order, &params, FROZEN_FLOAT_REG);
+        if let Some(index) = phantom_index {
+            self.float_phantom_register = registers[index];
+        }
         if registers.iter().any(|register| register.is_none()) {
             return Ok(false);
         }
@@ -562,6 +588,7 @@ impl Generator {
                 FloatOp::FrameLoad(offset) => {
                     self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 1, offset: *offset })
                 }
+                FloatOp::Phantom => {}
                 FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
                     d,
                     a: register_of(*a),
@@ -1782,6 +1809,117 @@ impl Generator {
             self.output.instructions.push(Instruction::BranchToLinkRegister);
         }
         self.float_pseudo_params.clear();
+        Ok(true)
+    }
+
+    /// The CONDITIONAL-LOCAL diamond (k_cos's qx, register form): a leading
+    /// `if (c) { qx = A; } else { qx = B; }` over one double local, then a
+    /// float return reading qx. Both arms load the SAME register — the one
+    /// the tail's DAG assigns qx as a window-top tier value (the PHANTOM
+    /// node) — and fall through the join into the tail (measured: the
+    /// four-tail register battery; `return qx` alone stays deferred).
+    pub(crate) fn try_conditional_local_float_return(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::Statement;
+        if function.return_type != Type::Double
+            || !function.guards.is_empty()
+            || function.statements.len() != 1
+            || function.locals.len() != 1
+        {
+            return Ok(false);
+        }
+        let Some(return_expression) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        let local = &function.locals[0];
+        if local.declared_type != Type::Double || local.initializer.is_some() || local.array_length.is_some() {
+            return Ok(false);
+        }
+        let qx = local.name.as_str();
+        if matches!(return_expression, Expression::Variable(_)) {
+            return Ok(false);
+        }
+        let Some(Statement::If { condition, then_body, else_body }) = function.statements.first() else {
+            return Ok(false);
+        };
+        let arm_literal = |body: &[Statement]| -> Option<u64> {
+            match body {
+                [Statement::Assign { name, value: Expression::FloatLiteral(value) }] if name == qx => {
+                    Some(value.to_bits())
+                }
+                _ => None,
+            }
+        };
+        let (Some(then_bits), Some(else_bits)) = (arm_literal(then_body), arm_literal(else_body)) else {
+            return Ok(false);
+        };
+        if then_bits == else_bits {
+            return Ok(false);
+        }
+        // The tail: qx free, no locals (a diamond alongside other locals is
+        // unmeasured).
+        let synthetic = Function {
+            return_type: function.return_type,
+            name: function.name.clone(),
+            is_static: function.is_static,
+            is_weak: function.is_weak,
+            parameters: function.parameters.clone(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(return_expression.clone()),
+        };
+        // Pool constants intern in SOURCE order: the arms' literals precede
+        // the tail's.
+        self.output.intern_constant(then_bits, 8);
+        self.output.intern_constant(else_bits, 8);
+        // PASS 1 (dry): learn qx's register from the tail's allocation.
+        let instructions_before = self.output.instructions.len();
+        let relocations_before = self.output.relocations.len();
+        let bump_before = self.output.anonymous_label_bump;
+        self.float_phantom_local = Some(qx.to_string());
+        self.float_phantom_register = None;
+        let dry = self.try_float_dag_return(&synthetic);
+        let register = self.float_phantom_register;
+        self.output.instructions.truncate(instructions_before);
+        self.output.relocations.truncate(relocations_before);
+        self.output.anonymous_label_bump = bump_before;
+        let (Ok(true), Some(register)) = (&dry, register) else {
+            self.float_phantom_local = None;
+            self.float_phantom_register = None;
+            return dry.map(|_| false);
+        };
+        // The diamond: test; skip to the else arm; then-load; join branch.
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let skip_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.load_double_constant(register, then_bits);
+        let join_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::Branch { target: 0 });
+        let else_start = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_index] {
+            *target = else_start;
+        }
+        self.load_double_constant(register, else_bits);
+        let join = self.output.instructions.len();
+        if let Instruction::Branch { target } = &mut self.output.instructions[join_index] {
+            *target = join;
+        }
+        // PASS 2 (real): the claim is deterministic — same register.
+        let claimed = self.try_float_dag_return(&synthetic);
+        self.float_phantom_local = None;
+        self.float_phantom_register = None;
+        match claimed {
+            Ok(true) => {}
+            other => {
+                self.output.instructions.truncate(instructions_before);
+                self.output.relocations.truncate(relocations_before);
+                self.output.anonymous_label_bump = bump_before;
+                return other.map(|_| false);
+            }
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The if pair + the join label (measured via objprobe).
+        self.output.anonymous_label_bump += 3;
         Ok(true)
     }
 }

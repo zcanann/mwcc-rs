@@ -1796,6 +1796,11 @@ impl Generator {
         if self.try_dual_tail_float_return(function)? {
             return Ok(());
         }
+        // The conditional-local diamond (`if (c) qx = A; else qx = B;` +
+        // float tail) — the k_cos qx form, register variant.
+        if self.try_conditional_local_float_return(function)? {
+            return Ok(());
+        }
         if self.try_frexp_family(function)? {
             return Ok(());
         }

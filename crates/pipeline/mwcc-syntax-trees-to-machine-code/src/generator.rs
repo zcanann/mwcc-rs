@@ -83,6 +83,12 @@ pub(crate) struct Generator {
     /// addi r0,r3,low` right after the x reload and `cmpw ix,r0` after the
     /// fourth shared load (measured at chain depths 3 and 4).
     pub(crate) float_dual_compare: Option<(i16, i16, u8)>,
+    /// A double local defined by a CONDITIONAL diamond ahead of the float
+    /// tail (k_cos's qx): the tail's DAG allocates it as a window-top tier
+    /// value (a PHANTOM node, value id 8, emitting nothing) and reports the
+    /// assigned register back so the diamond arms load into it.
+    pub(crate) float_phantom_local: Option<String>,
+    pub(crate) float_phantom_register: Option<u8>,
     /// The resolved codegen decisions for the configuration we are reproducing.
     /// Every version- or flag-varying choice is read from this one flat set,
     /// computed once from the build's profile and flags — never re-derived in
