@@ -137,3 +137,24 @@ Pass-3 plan: rebuild the fixture from ranges.py output as WEBS
 exclusive, rerun the class-order sweep. The 14/21 already-correct
 values under [LS, LD, RW, T, K, C, AT] suggest the class model is
 right and the remaining misses are range/path artifacts.
+
+## Fitting pass 3 (fire 438) — NEGATIVE; strategic pivot
+
+The corrected web ranges made the global class-order sweep WORSE (17
+misses; the long hy_raw [3,104] blocks every clean early order).
+Three negative passes establish that the whole-function assignment is
+not reproducible by any single-pass ordered scan over linear ranges —
+it likely reflects mwcc's internal IR-creation/coalescing order with
+path-sensitive liveness, which is Phase-D keystone (#20) territory.
+
+**PIVOT: the knit does not need the general allocator.** The register
+map is fully KNOWN (this document + ranges.py). Ship e_fmod as the
+largest exact-match template yet: match the fdlibm statement AST
+structurally (identical source across all five projects), emit the
+207 instructions with the known assignments. The AST match is the
+correctness guard; the oracle/objprobe gate is the byte guard.
+Automation: transcribe docs/efmod-knit-target.dis into Instruction::
+pushes with a script (dis2rust) rather than by hand — branch targets
+become labels, the two Zero relocs and the @N bump are the only
+non-mechanical pieces. The general allocator resumes AFTER more
+whole-function captures exist to fit against.
