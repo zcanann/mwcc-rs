@@ -481,6 +481,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let static_forward = |object: &DataObject| {
         !is_zero_section(object.name) || (data_section[object.name] == ".sbss" && object.is_explicit_zero)
     };
+    // A `.rodata` base ANCHOR: when codegen addresses the read-only tables
+    // through one section-relative base (s_atan's atanhi/atanlo/aT off a
+    // single lis/addi pair), mwcc emits a zero-size LOCAL `STT_NOTYPE`
+    // symbol named `...rodata.0` at `.rodata`+0 — created right after the
+    // FIRST rodata object's symbol — and binds the ADDR16 relocations to
+    // it. Only emitted when a relocation actually targets that name.
+    let rodata_anchor_needed = input.functions.iter().any(|function| {
+        function.relocations.iter().any(|relocation| {
+            matches!(&relocation.target, RelocationTarget::External(name) if name == "...rodata.0")
+        })
+    });
+    let mut rodata_anchor_emitted = false;
     for object in &input.data_objects {
         if object.is_static
             && static_forward(object)
@@ -491,6 +503,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
             comment_values.push((data_aligns[object.name], 0));
+            if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
+                local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
+                // .comment record (1, 0x00100000) — measured; the flag bit marks
+                // the section-anchor entry.
+                comment_values.push((1, 0x0010_0000));
+                rodata_anchor_emitted = true;
+            }
         }
     }
     // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`), REVERSE order.
