@@ -8,6 +8,7 @@ mod easin;
 mod easin_bl;
 mod eatan2_ac;
 mod eatan2_pik;
+mod eatan2_sun;
 mod eatan2_ww;
 mod efmod;
 mod epow;
@@ -17,6 +18,7 @@ mod ktan;
 mod ktan_ww;
 mod satan;
 mod satan_pik;
+mod satan_sun;
 mod sldexp;
 
 use crate::generator::Generator;
@@ -49,9 +51,20 @@ impl Generator {
     /// Try every capture in registration order; the AST-hash + context gates
     /// make the order irrelevant for correctness.
     pub(crate) fn try_captures(&mut self, function: &Function) -> Compilation<bool> {
+        // MWCC_CAPTURE_DEBUG=1: print every function's identity triple so a
+        // census can spot hash-matched TUs whose context isn't registered.
+        if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+            eprintln!(
+                "capture-census: {} hash={:#x} ctx={:#x}",
+                function.name,
+                ast_hash(function),
+                skipped_context_fingerprint(&self.skipped_inline_names)
+            );
+        }
         Ok(self.try_efmod(function)?
             || self.try_satan(function)?
             || self.try_satan_pik(function)?
+            || self.try_satan_sun(function)?
             || self.try_ktan(function)?
             || self.try_ktan_ww(function)?
             || self.try_easin(function)?
@@ -60,6 +73,7 @@ impl Generator {
             || self.try_eacos_bl(function)?
             || self.try_eatan2_pik(function)?
             || self.try_eatan2_ac(function)?
+            || self.try_eatan2_sun(function)?
             || self.try_eatan2_ww(function)?
             || self.try_epow(function)?
             || self.try_epow_ww(function)?
