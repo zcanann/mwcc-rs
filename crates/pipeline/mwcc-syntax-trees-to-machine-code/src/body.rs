@@ -3573,6 +3573,39 @@ impl Generator {
                 return Ok(false);
             }
         }
+        // The FLOAT-compare guard: `HUGE + x > 0.0` (the static const
+        // folded to a literal upstream) — measured: lfd huge BEFORE the
+        // spill, fadd clobbering f1 (x is spilled), the pooled 0.0, the
+        // loads woven before the fcmpo, ble skip.
+        let float_guard: Option<(u64, u64)> = match condition {
+            Expression::Binary { operator: BinaryOperator::Greater, left, right } => {
+                let zero = match right.as_ref() {
+                    Expression::FloatLiteral(value) => Some(value.to_bits()),
+                    _ => None,
+                };
+                let huge = match left.as_ref() {
+                    Expression::Binary { operator: BinaryOperator::Add, left: huge, right: xvar } => {
+                        if matches!(xvar.as_ref(), Expression::Variable(name) if name == x) {
+                            match huge.as_ref() {
+                                Expression::FloatLiteral(value) => Some(value.to_bits()),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                match (huge, zero) {
+                    (Some(huge), Some(zero)) if f64::from_bits(zero) == 0.0 => Some((huge, zero)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if float_guard.is_some() && guard_local.is_some() {
+            return Ok(false);
+        }
         // The guard-local condition: `j0 < C` only (measured), with j0
         // read nowhere else in the function.
         let mut guard_compare: Option<(i16, i64)> = None;
@@ -3662,17 +3695,33 @@ impl Generator {
         // -- commit --
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        let hoisted = if guard_local.is_none() {
+        let hoisted = if guard_local.is_none() && float_guard.is_none() {
             Some(self.emit_condition_test(condition)?)
         } else {
             None
         };
+        if let Some((huge, _)) = float_guard {
+            // The huge pool load precedes the spill (measured).
+            self.load_double_constant(0, huge);
+        }
         self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        if let Some((_, zero)) = float_guard {
+            // fadd f1,f0,f1 clobbers x's register — the spill covers the
+            // tail's reload; the pooled 0.0 loads before the int reads.
+            self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 0, b: 1 });
+            self.load_double_constant(0, zero);
+        }
         for (index, &(_, offset)) in locals.iter().enumerate() {
             self.output.instructions.push(Instruction::LoadWord { d: registers[index], a: 1, offset: 8 + offset });
         }
+        if float_guard.is_some() {
+            // No has_float_branch bump: the writeback's fcmpo+ble counts
+            // only the arm's own labels (measured: pool @50 vs +3's @53).
+            self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+        }
         let (options, condition_bit) = match hoisted {
             Some(encoding) => encoding,
+            None if float_guard.is_some() => (4, 1), // ble — the > 0.0 skip
             None => {
                 // The guard local computes AFTER the loads: the fused
                 // shift+mask (rlwinm) or plain srawi into its home, the

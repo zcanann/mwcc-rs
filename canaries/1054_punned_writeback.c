@@ -70,3 +70,17 @@ double writeback_shift_guard(double x)
 	*(int *)&x = i0;
 	return x;
 }
+
+static const double huge = 1.0e300;
+
+double writeback_float_guard(double x)
+{
+	int i0;
+
+	i0 = *(int *)&x;
+	if (huge + x > 0.0) {
+		i0 = 0;
+	}
+	*(int *)&x = i0;
+	return x;
+}
