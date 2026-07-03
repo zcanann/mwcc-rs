@@ -1786,6 +1786,9 @@ impl Generator {
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
+        if self.try_rotated_loop(function)? {
+            return Ok(());
+        }
         // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
         // folds to the direct `gf();` (identical bytes: the pointer loads at the call).
         if let Some(folded) = inline_first_call_target_alias(function) {
@@ -7684,6 +7687,300 @@ impl Generator {
     /// order — the LAST live parameter gets r31, the next r30, and so on — and the
     /// body/return then read the values from those registers. Returns whether it
     /// applied. (Locals, floats, and values passed to a call still defer.)
+    /// The ROTATED LOOP (fire 413, the e_fmod ilogb family): mwcc emits
+    /// non-counted loops as `init; b TEST; BODY: [step][body]; TEST:
+    /// cond; b<positive> BODY; [mr]` with NO unrolling (counted loops
+    /// take the ctr/unroll machinery instead — deferred). Registers per
+    /// the captures: params in place; a condition-only computed value
+    /// takes r0 (even across the backward branch); the returned local
+    /// takes a param home freed during init, else the next free.
+    fn try_rotated_loop(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::{LoopKind, Statement};
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind, initializer, condition: Some(condition), step, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Some(Expression::Variable(returned)) = &function.return_expression else {
+            return Ok(false);
+        };
+        // Homes: params in their registers.
+        let mut homes: Vec<(String, u8)> = Vec::new();
+        for parameter in &function.parameters {
+            if parameter.parameter_type != Type::Int {
+                return Ok(false);
+            }
+            let Some(register) = self.lookup_general(&parameter.name) else {
+                return Ok(false);
+            };
+            homes.push((parameter.name.clone(), register));
+        }
+        let home_of = |homes: &[(String, u8)], name: &str| {
+            homes.iter().find(|(n, _)| n == name).map(|&(_, r)| r)
+        };
+        // The init list: `a = C`, `a = param`, or `a = param << K` — a
+        // param read by its LAST init use frees its home.
+        enum Init {
+            Constant { register: u8, value: i16 },
+            ShiftOfParam { register: u8, source: u8, amount: u8 },
+        }
+        let mut init_plan: Vec<Init> = Vec::new();
+        if let Some(init) = initializer {
+            // Flatten the comma list.
+            let mut elements: Vec<&Expression> = Vec::new();
+            let mut cursor = init;
+            loop {
+                match cursor {
+                    Expression::Comma { left, right } => {
+                        elements.push(right.as_ref());
+                        cursor = left.as_ref();
+                    }
+                    other => {
+                        elements.push(other);
+                        break;
+                    }
+                }
+            }
+            elements.reverse();
+            // First pass: aliases (i = param) rename in place; param-reads
+            // mark freed homes.
+            let mut freed: Vec<u8> = Vec::new();
+            let mut pending: Vec<(&str, &Expression)> = Vec::new();
+            for element in &elements {
+                let Expression::Assign { target, value } = element else {
+                    return Ok(false);
+                };
+                let Expression::Variable(name) = target.as_ref() else {
+                    return Ok(false);
+                };
+                match value.as_ref() {
+                    Expression::Variable(source) => {
+                        // An alias: the local IS the param, renamed.
+                        let Some(register) = home_of(&homes, source) else {
+                            return Ok(false);
+                        };
+                        homes.push((name.clone(), register));
+                    }
+                    Expression::Binary { operator: BinaryOperator::ShiftLeft, left, right } => {
+                        let Expression::Variable(source) = left.as_ref() else {
+                            return Ok(false);
+                        };
+                        let Some(source_register) = home_of(&homes, source) else {
+                            return Ok(false);
+                        };
+                        let Some(amount) =
+                            crate::analysis::constant_value(right).and_then(|k| u8::try_from(k).ok())
+                        else {
+                            return Ok(false);
+                        };
+                        // A condition-only computed value lives in r0.
+                        init_plan.push(Init::ShiftOfParam {
+                            register: 0,
+                            source: source_register,
+                            amount,
+                        });
+                        homes.push((name.clone(), 0));
+                        freed.push(source_register);
+                    }
+                    other if crate::analysis::constant_value(other).is_some() => {
+                        pending.push((name.as_str(), other));
+                    }
+                    _ => return Ok(false),
+                }
+            }
+            // Second pass: constants take a freed param home, else the next
+            // free register after the params.
+            for (name, value) in pending {
+                let constant = crate::analysis::constant_value(value).expect("checked");
+                let Ok(small) = i16::try_from(constant) else {
+                    return Ok(false);
+                };
+                let register = if let Some(register) = freed.pop() {
+                    register
+                } else {
+                    let top = homes.iter().map(|&(_, r)| r).filter(|&r| r != 0).max().unwrap_or(2);
+                    top + 1
+                };
+                init_plan.push(Init::Constant { register, value: small });
+                homes.push((name.to_string(), register));
+            }
+        }
+        // The condition: var OP const.
+        let Expression::Binary { operator: cond_op, left: cond_left, right: cond_right } = condition
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(cond_var) = cond_left.as_ref() else {
+            return Ok(false);
+        };
+        let Some(cond_register) = home_of(&homes, cond_var) else {
+            return Ok(false);
+        };
+        let Some(cond_constant) = crate::analysis::constant_value(cond_right) else {
+            return Ok(false);
+        };
+        // bgt for `> K`, blt for `< K` (the POSITIVE sense branches back).
+        let back_branch = match cond_op {
+            BinaryOperator::Greater => (12u8, 1u8),
+            BinaryOperator::Less => (12u8, 0u8),
+            _ => return Ok(false),
+        };
+        let big_bound = i16::try_from(cond_constant).is_err();
+        if big_bound && cond_constant & 0xffff != 0 {
+            return Ok(false); // lis-only bounds measured
+        }
+        // Body + step ops: compound self-ops on homed locals.
+        enum LoopOp {
+            AddImmediate { register: u8, value: i16 },
+            SelfAdd { register: u8 },
+            ShiftLeft { register: u8, amount: u8 },
+        }
+        let parse_op = |homes: &[(String, u8)], statement: &Statement| -> Option<LoopOp> {
+            let Statement::Assign { name, value } = statement else { return None };
+            let register = home_of(homes, name)?;
+            let Expression::Binary { operator, left, right } = value else { return None };
+            if !matches!(left.as_ref(), Expression::Variable(v) if v == name) {
+                return None;
+            }
+            match operator {
+                BinaryOperator::Add if matches!(right.as_ref(), Expression::Variable(v) if v == name) => {
+                    Some(LoopOp::SelfAdd { register })
+                }
+                BinaryOperator::Add => {
+                    let value = i16::try_from(crate::analysis::constant_value(right)?).ok()?;
+                    Some(LoopOp::AddImmediate { register, value })
+                }
+                BinaryOperator::Subtract => {
+                    let value = i16::try_from(-crate::analysis::constant_value(right)?).ok()?;
+                    Some(LoopOp::AddImmediate { register, value })
+                }
+                BinaryOperator::ShiftLeft => {
+                    let amount = u8::try_from(crate::analysis::constant_value(right)?).ok()?;
+                    Some(LoopOp::ShiftLeft { register, amount })
+                }
+                _ => None,
+            }
+        };
+        // Loop ops in emission order: the STEP first (it feeds the
+        // condition — measured), then the body statements in source order.
+        let mut loop_ops: Vec<LoopOp> = Vec::new();
+        match kind {
+            LoopKind::For => {
+                let Some(step) = step else { return Ok(false) };
+                let step_statement = Statement::Assign {
+                    name: match step {
+                        Expression::Assign { target, .. } => match target.as_ref() {
+                            Expression::Variable(name) => name.clone(),
+                            _ => return Ok(false),
+                        },
+                        _ => return Ok(false),
+                    },
+                    value: match step {
+                        Expression::Assign { value, .. } => value.as_ref().clone(),
+                        _ => return Ok(false),
+                    },
+                };
+                let Some(op) = parse_op(&homes, &step_statement) else {
+                    return Ok(false);
+                };
+                loop_ops.push(op);
+            }
+            LoopKind::While => {
+                if step.is_some() {
+                    return Ok(false);
+                }
+            }
+            LoopKind::DoWhile => return Ok(false), // unmeasured
+        }
+        for statement in body {
+            let Some(op) = parse_op(&homes, statement) else {
+                return Ok(false);
+            };
+            loop_ops.push(op);
+        }
+        if loop_ops.is_empty() {
+            return Ok(false);
+        }
+        let Some(return_register) = home_of(&homes, returned) else {
+            return Ok(false);
+        };
+        // -- emit --
+        // Init: param-reading shifts first, then constants (the freed-home
+        // order); a big bound hoists to r0 before the loop.
+        for init in &init_plan {
+            match init {
+                Init::ShiftOfParam { register, source, amount } => {
+                    self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                        a: *register,
+                        s: *source,
+                        shift: *amount,
+                    });
+                }
+                Init::Constant { register, value } => {
+                    self.output.instructions.push(Instruction::load_immediate(*register, *value));
+                }
+            }
+        }
+        if big_bound {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(0, (cond_constant >> 16) as i16));
+        }
+        let body_at = self.fresh_label();
+        let test_at = self.fresh_label();
+        self.emit_branch_to(test_at);
+        self.bind_label(body_at);
+        for op in &loop_ops {
+            match op {
+                LoopOp::AddImmediate { register, value } => {
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: *register,
+                        a: *register,
+                        immediate: *value,
+                    });
+                }
+                LoopOp::SelfAdd { register } => {
+                    self.output.instructions.push(Instruction::Add {
+                        d: *register,
+                        a: *register,
+                        b: *register,
+                    });
+                }
+                LoopOp::ShiftLeft { register, amount } => {
+                    self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                        a: *register,
+                        s: *register,
+                        shift: *amount,
+                    });
+                }
+            }
+        }
+        self.bind_label(test_at);
+        if big_bound {
+            self.output.instructions.push(Instruction::CompareWord { a: cond_register, b: 0 });
+        } else {
+            self.output.instructions.push(Instruction::CompareWordImmediate {
+                a: cond_register,
+                immediate: cond_constant as i16,
+            });
+        }
+        self.emit_branch_conditional_to(back_branch.0, back_branch.1, body_at);
+        if return_register != 3 {
+            self.output.instructions.push(Instruction::move_register(3, return_register));
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // @N: measured after implementation (objprobe) — placeholder 0.
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
     /// The FPCLASSIFY SWITCH (fire 411, fminmaxdim's __fpclassifyd): a
     /// two-case-plus-default switch on `pun(x) & BIGMASK` whose arms are
     /// short-circuit || diamonds over the pun words. Measured: hx loads
