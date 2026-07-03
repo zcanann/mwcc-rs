@@ -1791,6 +1791,9 @@ impl Generator {
         if self.try_pipelined_copy(function)? {
             return Ok(());
         }
+        if self.try_ctr_loop(function)? {
+            return Ok(());
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }
@@ -7775,6 +7778,178 @@ impl Generator {
         self.emit_branch_conditional_to(4, 2, loop_at); // bne
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         // @N: measured after implementation (objprobe) — placeholder 0.
+        self.output.anonymous_label_bump += 0;
+        Ok(true)
+    }
+
+    /// The CTR LOOP (fire 419, e_fmod's `while(n--)` walker): a counted
+    /// loop whose body BRANCHES escapes the ×8 unroll entirely — mwcc
+    /// emits `mtctr n; cmpwi n,0; beq(lr); BODY; bdnz BODY`. The skip
+    /// branch mirrors the entry test exactly: `while(n--)` skips only on
+    /// n==0 (a negative n runs 2^32 times, and the unsigned CTR does
+    /// too — faithful). Captured micro-shape: `hz = hx - K` fuses into
+    /// `addic. r0` (the condition-only computed rides r0 through the
+    /// arm), the diamond writes the param home directly in both arms,
+    /// and post-loop code takes `beq END` instead of `beqlr`. The
+    /// `for(i<n)` variant if-converts its diamond differently (eager
+    /// else + `mr` join) and is NOT claimed here; straight-line bodies
+    /// take the ×8 unroll machinery (deferred, the counted gate).
+    fn try_ctr_loop(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::{LoopKind, Statement};
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // The condition: a bare `n--` of an int parameter.
+        let Expression::PostStep { target, operator: BinaryOperator::Subtract } = condition else {
+            return Ok(false);
+        };
+        let Expression::Variable(count) = target.as_ref() else {
+            return Ok(false);
+        };
+        if !function
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == *count && parameter.parameter_type == Type::Int)
+        {
+            return Ok(false);
+        }
+        // The body: `hz = hx - K; if (hz < 0) hx = hx + hx; else hx = hz + hz;`
+        let [Statement::Assign { name: hz, value: hz_value }, Statement::If { condition: test, then_body, else_body }] =
+            body.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = hz_value else {
+            return Ok(false);
+        };
+        let (Expression::Variable(hx), Expression::IntegerLiteral(k)) = (left.as_ref(), right.as_ref())
+        else {
+            return Ok(false);
+        };
+        let Ok(negated_k) = i16::try_from(-*k) else {
+            return Ok(false);
+        };
+        if hx == hz || hx == count || hz == count {
+            return Ok(false);
+        }
+        // hx: an int parameter sitting in r3 (every capture); hz: an int
+        // local or a dead-on-entry int parameter (its home is never
+        // touched — the value rides r0).
+        if !function
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == *hx && parameter.parameter_type == Type::Int)
+        {
+            return Ok(false);
+        }
+        let hz_is_local = function
+            .locals
+            .iter()
+            .any(|local| local.name == *hz && local.declared_type == Type::Int && local.initializer.is_none());
+        let hz_is_dead_parameter = function
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == *hz && parameter.parameter_type == Type::Int);
+        if !hz_is_local && !hz_is_dead_parameter {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Less, left: test_left, right: test_right } = test
+        else {
+            return Ok(false);
+        };
+        if !matches!(test_left.as_ref(), Expression::Variable(v) if v == hz)
+            || !matches!(test_right.as_ref(), Expression::IntegerLiteral(0))
+        {
+            return Ok(false);
+        }
+        let arm_doubles = |statements: &[Statement], doubled: &str| -> bool {
+            let [Statement::Assign { name, value }] = statements else {
+                return false;
+            };
+            if name != hx {
+                return false;
+            }
+            let Expression::Binary { operator: BinaryOperator::Add, left, right } = value else {
+                return false;
+            };
+            matches!(left.as_ref(), Expression::Variable(v) if v == doubled)
+                && matches!(right.as_ref(), Expression::Variable(v) if v == doubled)
+        };
+        if !arm_doubles(then_body, hx) || !arm_doubles(else_body, hz) {
+            return Ok(false);
+        }
+        // The tail: `return hx` (skip = beqlr) or `return hx + K2` (skip =
+        // beq END). Both captured with hx in r3.
+        enum Tail {
+            Home,
+            AddImmediate(i16),
+        }
+        let tail = match &function.return_expression {
+            Some(Expression::Variable(v)) if v == hx => Tail::Home,
+            Some(Expression::Binary { operator: BinaryOperator::Add, left, right })
+                if matches!(left.as_ref(), Expression::Variable(v) if v == hx) =>
+            {
+                let Expression::IntegerLiteral(k2) = right.as_ref() else {
+                    return Ok(false);
+                };
+                let Ok(k2) = i16::try_from(*k2) else {
+                    return Ok(false);
+                };
+                Tail::AddImmediate(k2)
+            }
+            _ => return Ok(false),
+        };
+        let Some(hx_register) = self.lookup_general(hx) else {
+            return Ok(false);
+        };
+        if hx_register != 3 {
+            return Ok(false);
+        }
+        let Some(count_register) = self.lookup_general(count) else {
+            return Ok(false);
+        };
+        // -- emit --
+        self.output.instructions.push(Instruction::MoveToCountRegister { s: count_register });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: count_register, immediate: 0 });
+        let end_label = self.fresh_label();
+        match tail {
+            Tail::Home => self
+                .output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }),
+            Tail::AddImmediate(_) => self.emit_branch_conditional_to(12, 2, end_label),
+        }
+        let body_label = self.fresh_label();
+        self.bind_label(body_label);
+        self.output.instructions.push(Instruction::AddImmediateCarryingRecord {
+            d: 0,
+            a: hx_register,
+            immediate: negated_k,
+        });
+        let else_label = self.fresh_label();
+        self.emit_branch_conditional_to(4, 0, else_label); // bge
+        self.output.instructions.push(Instruction::Add { d: hx_register, a: hx_register, b: hx_register });
+        let join_label = self.fresh_label();
+        self.emit_branch_to(join_label);
+        self.bind_label(else_label);
+        self.output.instructions.push(Instruction::Add { d: hx_register, a: 0, b: 0 });
+        self.bind_label(join_label);
+        self.emit_branch_conditional_to(16, 0, body_label); // bdnz
+        if let Tail::AddImmediate(k2) = tail {
+            self.bind_label(end_label);
+            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: hx_register, immediate: k2 });
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // @N: measured via objprobe after implementation.
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }
