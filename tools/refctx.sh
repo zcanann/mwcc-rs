@@ -63,10 +63,13 @@ else
   # outside include/ (BfBB: src/PowerPC_EABI_Support/include) — add any
   # directory holding stddef.h so `#include <stddef.h>` resolves. Skip vendored
   # originals and build outputs.
+  # fdlibm.h marks the MSL math include root — wind_waker keeps it in
+  # Math/Include with none of the other markers, leaving __LO/__HI
+  # unresolved (the real compiler then fails on `__LO(w) = 0`).
   while IFS= read -r sysroot; do
     rel="${sysroot#"$project"/}"
     [[ "$rel" == include ]] || include_dirs+=("$rel")
-  done < <(find "$project" -maxdepth 8 \( -name stddef.h -o -name errno.h -o -name __va_arg.h \) \
+  done < <(find "$project" -maxdepth 8 \( -name stddef.h -o -name errno.h -o -name __va_arg.h -o -name fdlibm.h \) \
              -not -path "*/orig/*" -not -path "*/build/*" -not -path "*/tools/*" 2>/dev/null \
            | xargs -n1 dirname | sort -u)
 fi
