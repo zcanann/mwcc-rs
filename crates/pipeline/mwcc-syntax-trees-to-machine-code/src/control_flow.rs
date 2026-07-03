@@ -1164,6 +1164,21 @@ impl Generator {
             return Ok((4, 2)); // bne — skip when x != 0
         }
         if let Expression::Binary { operator, left, right } = condition {
+            // `(a | b) == 0` — the record-form OR sets cr0 in one op
+            // (measured: or. r0,r3,r4; bne — the s_floor integral test).
+            if matches!(operator, BinaryOperator::Equal) && constant_value(right) == Some(0) {
+                if let Expression::Binary { operator: BinaryOperator::BitOr, left: or_left, right: or_right } =
+                    left.as_ref()
+                {
+                    if let (Some(a), Some(b)) = (
+                        leaf_name(or_left).and_then(|name| self.lookup_general(name)),
+                        leaf_name(or_right).and_then(|name| self.lookup_general(name)),
+                    ) {
+                        self.output.instructions.push(Instruction::OrRecord { a: GENERAL_SCRATCH, s: a, b });
+                        return Ok((4, 2)); // bne — skip when the OR is non-zero
+                    }
+                }
+            }
             if is_comparison(*operator) {
                 // A floating-point comparison branches off `fcmpo`/`fcmpu`, not `cmpw`.
                 // Either side being a float value (leaf, global, or member) selects it.

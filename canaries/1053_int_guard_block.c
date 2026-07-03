@@ -36,3 +36,43 @@ int guard_block_deep(int i0, int i1, int j0, int c)
 	}
 	return i0 + i1;
 }
+
+int guard_block_lis(int i0, int i1, int c)
+{
+	if (c) {
+		i0 = 0xbff00000;
+		i1 = 0;
+	}
+	return i0 | i1;
+}
+
+int guard_block_leaf(int i0, int i1, int c)
+{
+	if (c) {
+		i0 = i1 + 1;
+		i1 = 0;
+	}
+	return i0 | i1;
+}
+
+int guard_block_early_const(int i0, int i1, int j0)
+{
+	if (j0 < 20) {
+		if ((i0 | i1) == 0) {
+			return 7;
+		}
+		i1 = 0;
+	}
+	return i0 | i1;
+}
+
+int guard_block_early_fold(int i0, int i1, int j0)
+{
+	if (j0 < 20) {
+		if ((i0 | i1) == 0) {
+			return i0;
+		}
+		i1 = 0;
+	}
+	return i0 | i1;
+}
