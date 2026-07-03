@@ -10,7 +10,9 @@ mod efmod;
 mod epow;
 mod erempio2;
 mod ktan;
+mod ktan_ww;
 mod satan;
+mod satan_pik;
 mod sldexp;
 
 use crate::generator::Generator;
@@ -45,7 +47,9 @@ impl Generator {
     pub(crate) fn try_captures(&mut self, function: &Function) -> Compilation<bool> {
         Ok(self.try_efmod(function)?
             || self.try_satan(function)?
+            || self.try_satan_pik(function)?
             || self.try_ktan(function)?
+            || self.try_ktan_ww(function)?
             || self.try_easin(function)?
             || self.try_easin_bl(function)?
             || self.try_eacos(function)?
