@@ -7719,8 +7719,21 @@ impl Generator {
         // statements (the parser FLATTENS the else-if returns):
         // ix = pun(x); ix &= 0x7fffffff; if (ix<=K1) return call;
         // if (ix>=K2) return x-x; n = rem(x,y); switch (n&3) {...}.
-        let [Statement::Assign { name: ix1, value: pun }, Statement::Assign { name: ix2, value: mask }, Statement::If { condition: small, then_body: small_arm, else_body: small_else }, Statement::If { condition: huge_cond, then_body: huge_arm, else_body: huge_else }, Statement::Assign { name: n_name, value: rem_call }, Statement::Switch { scrutinee, arms, default }] =
-            function.statements.as_slice()
+        // Two tails: the four-way SWITCH of kernels (sin/cos), or the
+        // direct parity call `return kernel(y0,y1,1-((n&1)<<1))` (tan) —
+        // the latter arrives as the function's trailing return.
+        let (head, switch_tail, return_tail): (&[Statement], Option<(&Expression, &Vec<mwcc_syntax_trees::SwitchArm>, &Option<Expression>)>, Option<&Expression>) =
+            match function.statements.as_slice() {
+                [head @ .., Statement::Switch { scrutinee, arms, default }] if head.len() == 5 => {
+                    (head, Some((scrutinee, arms, default)), None)
+                }
+                [head @ .., Statement::Return(Some(value))] if head.len() == 5 => {
+                    (head, None, Some(value))
+                }
+                _ => return Ok(false),
+            };
+        let [Statement::Assign { name: ix1, value: pun }, Statement::Assign { name: ix2, value: mask }, Statement::If { condition: small, then_body: small_arm, else_body: small_else }, Statement::If { condition: huge_cond, then_body: huge_arm, else_body: huge_else }, Statement::Assign { name: n_name, value: rem_call }] =
+            head
         else {
             return Ok(false);
         };
@@ -7795,11 +7808,38 @@ impl Generator {
         {
             return Ok(false);
         }
-        if !matches!(scrutinee, Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
-            if matches!(left.as_ref(), Expression::Variable(v) if v == n_name.as_str())
-                && crate::analysis::constant_value(right) == Some(3))
-        {
-            return Ok(false);
+        // The tan tail: return kernel(y[0], y[1], 1 - ((n & 1) << 1)).
+        let parity_tail: Option<String> = if switch_tail.is_none() {
+            let Some(Expression::Call { name, arguments }) = return_tail else {
+                return Ok(false);
+            };
+            let ok = matches!(arguments.as_slice(),
+                [Expression::Index { base, index: i0 }, Expression::Index { base: b1, index: i1 }, parity]
+                    if matches!(base.as_ref(), Expression::Variable(v) if v == array)
+                        && matches!(b1.as_ref(), Expression::Variable(v) if v == array)
+                        && crate::analysis::constant_value(i0) == Some(0)
+                        && crate::analysis::constant_value(i1) == Some(1)
+                        && matches!(parity, Expression::Binary { operator: BinaryOperator::Subtract, left: one, right: shifted }
+                            if crate::analysis::constant_value(one) == Some(1)
+                                && matches!(shifted.as_ref(), Expression::Binary { operator: BinaryOperator::ShiftLeft, left: masked, right: by_one }
+                                    if crate::analysis::constant_value(by_one) == Some(1)
+                                        && matches!(masked.as_ref(), Expression::Binary { operator: BinaryOperator::BitAnd, left: nv, right: m1 }
+                                            if matches!(nv.as_ref(), Expression::Variable(v) if v == n_name.as_str())
+                                                && crate::analysis::constant_value(m1) == Some(1)))));
+            if !ok {
+                return Ok(false);
+            }
+            Some(name.clone())
+        } else {
+            None
+        };
+        if let Some((scrutinee, _, _)) = &switch_tail {
+            if !matches!(*scrutinee, Expression::Binary { operator: BinaryOperator::BitAnd, left, right }
+                if matches!(left.as_ref(), Expression::Variable(v) if v == n_name.as_str())
+                    && crate::analysis::constant_value(right) == Some(3))
+            {
+                return Ok(false);
+            }
         }
         // The four arms: (callee, int arg, negated) per quadrant 0..3.
         struct Quadrant {
@@ -7838,20 +7878,22 @@ impl Generator {
             Some(Quadrant { callee: name.clone(), int_argument, negated })
         };
         let mut quadrants: Vec<Option<Quadrant>> = vec![None, None, None, None];
-        for arm in arms {
-            let index = arm.value;
-            if !(0..3).contains(&index) {
+        if let Some((_, arms, default)) = &switch_tail {
+            for arm in arms.iter() {
+                let index = arm.value;
+                if !(0..3).contains(&index) {
+                    return Ok(false);
+                }
+                quadrants[index as usize] = parse_quadrant(&arm.result);
+            }
+            let Some(default_result) = default else {
+                return Ok(false);
+            };
+            quadrants[3] = parse_quadrant(default_result);
+            if quadrants.iter().any(|quadrant| quadrant.is_none()) {
                 return Ok(false);
             }
-            quadrants[index as usize] = parse_quadrant(&arm.result);
         }
-        let Some(default_result) = default else {
-            return Ok(false);
-        };
-        quadrants[3] = parse_quadrant(default_result);
-        let [Some(q0), Some(q1), Some(q2), Some(q3)] = &quadrants[..] else {
-            return Ok(false);
-        };
         // -- emit --
         self.non_leaf = true;
         self.frame_size = 32;
@@ -7889,6 +7931,24 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 16 });
         self.record_relocation(RelocationKind::Rel24, rem_callee);
         self.output.instructions.push(Instruction::BranchAndLink { target: rem_callee.clone() });
+        if let Some(parity_callee) = &parity_tail {
+            // tan: rlwinm r0,r3,1,30,30 ((n&1)<<1 fused); lfd f1/f2;
+            // subfic r3,r0,1 between the loads and the call; fall to EPI.
+            self.output.instructions.push(Instruction::RotateAndMask { a: 0, s: 3, shift: 1, begin: 30, end: 30 });
+            self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 16 });
+            self.output.instructions.push(Instruction::LoadFloatDouble { d: 2, a: 1, offset: 24 });
+            self.output.instructions.push(Instruction::SubtractFromImmediate { d: 3, a: 0, immediate: 1 });
+            self.record_relocation(RelocationKind::Rel24, parity_callee);
+            self.output.instructions.push(Instruction::BranchAndLink { target: parity_callee.clone() });
+            self.bind_label(epilogue);
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            // Pre-pool labels (measure via objprobe on the tan object).
+            self.output.anonymous_label_bump += 8;
+            return Ok(true);
+        }
         self.output.instructions.push(Instruction::RotateAndMask { a: 0, s: 3, shift: 0, begin: 30, end: 31 });
         let case0 = self.fresh_label();
         let case1 = self.fresh_label();
@@ -7924,6 +7984,9 @@ impl Generator {
             if !falls {
                 generator.emit_branch_to(epilogue);
             }
+        };
+        let [Some(q0), Some(q1), Some(q2), Some(q3)] = &quadrants[..] else {
+            unreachable!("validated above");
         };
         emit_arm(self, q0, case0, false);
         emit_arm(self, q1, case1, false);
