@@ -95,3 +95,5 @@ float_dual_shared_zvw	(dual z+v+w probe 4)
 float_ksin_else	double f(double x, double y, double v, double r, double z) { return x - ((z*(0.5*y - v*r) - y) - v*1.5); }
 float_ksin_dual	double f(double x, double y, int iy) { double z, v, r; z = x*x; v = z*x; r = 1.5 + z*(2.5 + z*(3.5 + z*4.5)); if (iy == 0) return x + v*(5.5 + z*r); else return x - ((z*(0.5*y - v*r) - y) - v*6.5); }
 float_dual_zv_deep	double f(double x, int c) { double z, v; z = x*x; v = z*x; if (c == 0) return x + v*(1.5 + z*(2.5 + z*3.5)); else return x - v*(4.5 + z*5.5); }
+float_dual_short_chain	(matrix probe A: 2 pre-branch loads, v STILL prefix-tier v=f6 top)
+float_dual_zvw	(matrix probe B: 3 products, def-asc w=f5 top)

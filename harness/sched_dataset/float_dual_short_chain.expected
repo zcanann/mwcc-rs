@@ -1,0 +1,8 @@
+fmul f5,f1,f1
+lfd f3,0(0)
+lfd f0,0(0)
+cmpwi r3,0
+fmul f6,f5,f1
+fmadd f3,f3,f5,f0
+bne 2c
+(tails)

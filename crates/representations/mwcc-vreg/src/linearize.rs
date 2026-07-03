@@ -1283,6 +1283,11 @@ pub struct FloatRegModel {
     /// allocate before L15 at slot 4 because it dies later; horner4's
     /// "anomalous" second load falls out naturally under this order).
     pub order_by_death: bool,
+    /// DUAL-TAIL shapes order the prefix tier by DEFINITION descending
+    /// (the LAST-defined local takes the top: w > v > z — measured across
+    /// the fire-350/354 dual matrix; single-tail shapes keep death-asc).
+    /// Set per-call by the dual composition arm.
+    pub tier_position_desc: bool,
     /// TIER shapes run a FORWARD machine instead of the reverse one:
     /// non-tier values allocate in EMISSION order — loads descending
     /// first-fit from the window top, arith reusing the MINIMUM dying
@@ -1347,6 +1352,7 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     share_f0_only: false,
     share_blocked_by_pending_arith: true,
     local_top_tier: true,
+    tier_position_desc: false,
     tier_forward_descending: true,
     dying_door_share: true,
     order_by_death: true,
@@ -1489,9 +1495,29 @@ pub fn assign_float_registers(
                     inside_arith >= 2
                 })
                 .collect();
-            // Death ASCENDING (position tiebreak): the reload slots BETWEEN
-            // the locals (z f7, XR f6, v f5 in the real k_sin).
-            tier.sort_by_key(|&node| (value_end(node), position[node]));
+            // PREFIX membership: a local scheduled past the first chain
+            // arith (the dual v deferred behind the coefficient lifts) is
+            // NOT tier — it flows serially (measured: ksin_dual's v = f5,
+            // L45's dead register).
+            if model.tier_position_desc {
+                let first_chain_arith = (0..count)
+                    .filter(|&other| {
+                        is_value(other) && nodes[other].kind != OpKind::Load && !nodes[other].local_home
+                    })
+                    .map(|other| position[other])
+                    .min();
+                if let Some(first_arith) = first_chain_arith {
+                    tier.retain(|&node| !nodes[node].local_home || position[node] < first_arith);
+                }
+            }
+            if model.tier_position_desc {
+                // Duals: definition DESC — the last-defined local tops.
+                tier.sort_by_key(|&node| std::cmp::Reverse(position[node]));
+            } else {
+                // Death ASCENDING (position tiebreak): the reload slots BETWEEN
+                // the locals (z f7, XR f6, v f5 in the real k_sin).
+                tier.sort_by_key(|&node| (value_end(node), position[node]));
+            }
             let tier_members: Vec<usize> = tier.clone();
             let mut next_top = window.saturating_sub(1);
             for node in tier {
@@ -1560,8 +1586,28 @@ pub fn assign_float_registers(
                         && nodes[node].writes.first().is_some_and(|value| {
                             tier_members.iter().any(|&member| nodes[member].reads.contains(value))
                         });
+                    // An ESCAPING chain root (its value read by a trailing
+                    // STORE sink — it lives across the dual's branch) takes
+                    // its C-operand's dying register over the minimum
+                    // (measured: ksin_dual's r = m2's f3, not L15's f0).
+                    let escapes = nodes[node].writes.first().is_some_and(|value| {
+                        (0..count).any(|reader| {
+                            nodes[reader].kind == OpKind::Store && nodes[reader].reads.contains(value)
+                        })
+                    });
+                    let c_dying: Option<u8> = if escapes && nodes[node].reads.len() >= 2 {
+                        let c_value = nodes[node].reads[1];
+                        (0..count)
+                            .rev()
+                            .find(|&writer| nodes[writer].writes.contains(&c_value))
+                            .and_then(|writer| {
+                                (value_end(writer) == position[node]).then(|| result[writer]).flatten()
+                            })
+                    } else {
+                        None
+                    };
                     let register = if nodes[node].kind != OpKind::Load {
-                        match min_dying {
+                        match c_dying.or(min_dying) {
                             Some(register) => register,
                             None => match (0..window).rev().find(|&register| free(register, &occupied)) {
                                 Some(register) => register,
@@ -2879,6 +2925,7 @@ mod tests {
                                                             share_f0_only,
                                                             share_blocked_by_pending_arith,
                                                             local_top_tier,
+                                                            tier_position_desc: false,
                                                             tier_forward_descending,
                                                             dying_door_share,
                                                             order_by_death,
@@ -2909,6 +2956,7 @@ mod tests {
                     share_f0_only: false,
                     share_blocked_by_pending_arith: false,
                     local_top_tier: false,
+                    tier_position_desc: false,
                     tier_forward_descending: false,
                     dying_door_share: false,
                     order_by_death: false,
