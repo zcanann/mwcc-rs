@@ -1381,10 +1381,14 @@ impl Generator {
                 has_const(local_tree, &mut literals);
                 literals
             };
-            // A const-bearing shared chain shallower than 3 ariths is an
-            // unmeasured placement regime (probed DIFF at depth 1 and 2;
-            // k_sin's r at depth 3 matches) — defer.
-            if !tree_literals.is_empty() && refs.len() < 3 {
+            // A const-bearing shared chain claims ONLY at the measured
+            // depths: standalone exactly 3 ariths, in-frame 3..=4 (probed:
+            // depth 1-2 DIFF both ways; standalone depth 4 DIFF; in-frame
+            // depth 5 DIFF — the deeper schedules interleave the chain to
+            // cap the live window, which the frozen order model does not
+            // reproduce yet).
+            let max_chain = if in_frame { 4 } else { 3 };
+            if !tree_literals.is_empty() && (refs.len() < 3 || refs.len() > max_chain) {
                 return Ok(false);
             }
             let is_product = refs.len() == 1
