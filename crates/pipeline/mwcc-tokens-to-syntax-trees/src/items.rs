@@ -76,6 +76,77 @@ fn type_alignment(declared: Type) -> u16 {
     }
 }
 
+/// Whether an expression tree contains a call to any of `names`
+/// (the inline-materialization and skipped-inline checks share this walk).
+    fn expression_calls(expression: &Expression, names: &std::collections::HashSet<String>) -> bool {
+        match expression {
+            Expression::Call { name, arguments } => {
+                names.contains(name) || arguments.iter().any(|argument| expression_calls(argument, names))
+            }
+            Expression::Binary { left, right, .. } => {
+                expression_calls(left, names) || expression_calls(right, names)
+            }
+            Expression::Unary { operand, .. }
+            | Expression::Cast { operand, .. }
+            | Expression::AddressOf { operand } => expression_calls(operand, names),
+            Expression::Dereference { pointer } => expression_calls(pointer, names),
+            Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => expression_calls(base, names),
+            Expression::Index { base, index } => {
+                expression_calls(base, names) || expression_calls(index, names)
+            }
+            Expression::Assign { target, value } => {
+                expression_calls(target, names) || expression_calls(value, names)
+            }
+            Expression::Conditional { condition, when_true, when_false } => {
+                expression_calls(condition, names)
+                    || expression_calls(when_true, names)
+                    || expression_calls(when_false, names)
+            }
+            _ => false,
+        }
+    }
+    fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
+        match statement {
+            Statement::Store { target, value } => {
+                expression_calls(target, names) || expression_calls(value, names)
+            }
+            Statement::Assign { value, .. } => expression_calls(value, names),
+            Statement::Expression(expression) => expression_calls(expression, names),
+            Statement::If { condition, then_body, else_body } => {
+                expression_calls(condition, names)
+                    || then_body.iter().any(|inner| statement_calls(inner, names))
+                    || else_body.iter().any(|inner| statement_calls(inner, names))
+            }
+            Statement::Switch { scrutinee, arms, default } => {
+                expression_calls(scrutinee, names)
+                    || arms.iter().any(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Return(result) => expression_calls(result, names),
+                mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                    statements.iter().any(|statement| statement_calls(statement, names))
+                }
+            })
+                    || default.as_ref().is_some_and(|body| match body {
+                        mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                            statements.iter().any(|statement| statement_calls(statement, names))
+                        }
+                    })
+            }
+            Statement::Return(Some(expression)) => expression_calls(expression, names),
+            Statement::Loop { initializer, condition, step, body, .. } => {
+                initializer.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                    || condition.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                    || step.as_ref().is_some_and(|expression| expression_calls(expression, names))
+                    || body.iter().any(|inner| statement_calls(inner, names))
+            }
+            _ => false,
+        }
+    }
+    // A call to a skipped inline is recorded on the unit — codegen
+    // defers such functions AFTER the exact-match templates get a
+    // claim (a whole-function capture already has the inline
+    // flattened into its body).
+
 impl Parser {
     /// Consume an identifier token if it matches `word` (used for the `long` and
     /// `signed`/`unsigned` specifier words that aren't dedicated keywords).
@@ -1620,80 +1691,6 @@ impl Parser {
             }
 
         }
-        // A CALL to a skipped inline definition would need mwcc's inline
-        // expansion (mwcc inlines the body; a bl to an undefined local symbol
-        // is wrong bytes) — defer the unit honestly.
-        if !self.skipped_inline_names.is_empty() {
-            fn expression_calls(expression: &Expression, names: &std::collections::HashSet<String>) -> bool {
-                match expression {
-                    Expression::Call { name, arguments } => {
-                        names.contains(name) || arguments.iter().any(|argument| expression_calls(argument, names))
-                    }
-                    Expression::Binary { left, right, .. } => {
-                        expression_calls(left, names) || expression_calls(right, names)
-                    }
-                    Expression::Unary { operand, .. }
-                    | Expression::Cast { operand, .. }
-                    | Expression::AddressOf { operand } => expression_calls(operand, names),
-                    Expression::Dereference { pointer } => expression_calls(pointer, names),
-                    Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => expression_calls(base, names),
-                    Expression::Index { base, index } => {
-                        expression_calls(base, names) || expression_calls(index, names)
-                    }
-                    Expression::Assign { target, value } => {
-                        expression_calls(target, names) || expression_calls(value, names)
-                    }
-                    Expression::Conditional { condition, when_true, when_false } => {
-                        expression_calls(condition, names)
-                            || expression_calls(when_true, names)
-                            || expression_calls(when_false, names)
-                    }
-                    _ => false,
-                }
-            }
-            fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
-                match statement {
-                    Statement::Store { target, value } => {
-                        expression_calls(target, names) || expression_calls(value, names)
-                    }
-                    Statement::Assign { value, .. } => expression_calls(value, names),
-                    Statement::Expression(expression) => expression_calls(expression, names),
-                    Statement::If { condition, then_body, else_body } => {
-                        expression_calls(condition, names)
-                            || then_body.iter().any(|inner| statement_calls(inner, names))
-                            || else_body.iter().any(|inner| statement_calls(inner, names))
-                    }
-                    Statement::Switch { scrutinee, arms, default } => {
-                        expression_calls(scrutinee, names)
-                            || arms.iter().any(|arm| match &arm.body {
-                        mwcc_syntax_trees::ArmBody::Return(result) => expression_calls(result, names),
-                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
-                            statements.iter().any(|statement| statement_calls(statement, names))
-                        }
-                    })
-                            || default.as_ref().is_some_and(|body| match body {
-                                mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
-                                mwcc_syntax_trees::ArmBody::Statements(statements) => {
-                                    statements.iter().any(|statement| statement_calls(statement, names))
-                                }
-                            })
-                    }
-                    Statement::Return(Some(expression)) => expression_calls(expression, names),
-                    Statement::Loop { initializer, condition, step, body, .. } => {
-                        initializer.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                            || condition.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                            || step.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                            || body.iter().any(|inner| statement_calls(inner, names))
-                    }
-                    _ => false,
-                }
-            }
-            // A call to a skipped inline is recorded on the unit — codegen
-            // defers such functions AFTER the exact-match templates get a
-            // claim (a whole-function capture already has the inline
-            // flattened into its body).
-            let _ = (statement_calls, expression_calls);
-        }
         Ok(TranslationUnit {
             globals,
             functions,
@@ -2125,10 +2122,12 @@ impl Parser {
             let mut is_extern = false;
             let mut is_static = false;
             let mut is_weak = false;
+            let mut is_inline = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
                     "extern" => is_extern = true,
                     "static" => is_static = true,
+                    "inline" | "__inline" => is_inline = true,
                     // `__declspec(weak)` marks the declared symbol WEAK — on a
                     // prototype it applies to the later definition too.
                     "__declspec" => {
@@ -2633,6 +2632,28 @@ impl Parser {
             // above is fine; only a definition reaches here.)
             if is_variadic {
                 return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
+            }
+            // A `static inline` DEFINITION is normally skipped-and-inlined (the
+            // mp4 shape — the error routes it to the skip machinery). But with a
+            // PRIOR PROTOTYPE the call sites precede the body, so mwcc cannot
+            // inline it: it MATERIALIZES out-of-line as a local function at the
+            // definition's source position (measured: AC/ww/sunshine uart).
+            if is_inline && is_static {
+                // Referenced EARLIER (a prototype, or a call already parsed into a
+                // previous function — uart_8's IMPLICIT-declaration shape) means the
+                // call sites precede the body: mwcc cannot inline and MATERIALIZES.
+                let name_set: std::collections::HashSet<String> = std::iter::once(name.clone()).collect();
+                let referenced_earlier = prototypes.iter().any(|(prototype_name, _, _)| *prototype_name == name)
+                    || functions.iter().any(|earlier| {
+                        earlier.statements.iter().any(|statement| statement_calls(statement, &name_set))
+                            || earlier.guards.iter().any(|guard| expression_calls(&guard.condition, &name_set))
+                            || earlier.return_expression.as_ref().is_some_and(|expression| expression_calls(expression, &name_set))
+                    });
+                if !referenced_earlier {
+                    return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
+                }
+            } else if is_inline {
+                return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
             }
             let function_is_weak = is_weak || self.weak_functions.contains(&name);
             if self.defer_codegen {

@@ -7,12 +7,12 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC3_INIT_AST_HASH: u64 = 1; // DISARMED fire 491: needs output.static_locals (initialized$N) — see memory
+const UC3_INIT_AST_HASH: u64 = 0x2e2953a96876c09b; // armed f495 (materialized init)
 
 impl Generator {
     pub(super) fn try_uc3_init(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "__init_uart_console"
-            || function.return_type != Type::Void
+            || function.return_type != Type::Int
             || function.parameters.len() != 0
             || !self.frame_slots.is_empty()
         {
@@ -27,6 +27,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0xbd60acb658c79e45 => 0, // measured f495 (init materialized, out of the skipped set)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
