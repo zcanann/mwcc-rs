@@ -27,7 +27,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x626216a8cf3d36f5 => 0, // pikmin (dev loop)
+            0x626216a8cf3d36f5 => 0, // pikmin
+            0xbd60acb658c79e45 => 0, // pikmin2 (same MSL source; no @N in the TU)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

@@ -1,4 +1,4 @@
-//! str_strncmp: an exact-match whole-function capture (fire 469).
+//! str_strncmp_p2: an exact-match whole-function capture (fire 471).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,10 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const STR_STRNCMP_AST_HASH: u64 = 0x78166d92c3871ed4;
+const STR_STRNCMP_P2_AST_HASH: u64 = 0xd16bd8240220b6a9;
 
 impl Generator {
-    pub(super) fn try_str_strncmp(&mut self, function: &Function) -> Compilation<bool> {
+    pub(super) fn try_str_strncmp_p2(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "strncmp"
             || function.return_type != Type::Int
             || function.parameters.len() != 3
@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != STR_STRNCMP_AST_HASH {
+        if hash != STR_STRNCMP_P2_AST_HASH {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -27,7 +27,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x626216a8cf3d36f5 => 0, // pikmin
+            0xbd60acb658c79e45 => 0, // pikmin2 (dev loop)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

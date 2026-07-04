@@ -58,6 +58,11 @@ mod str_strcpy;
 mod str_strlen;
 mod str_strncmp;
 mod str_strncpy;
+mod str_strcmp_p2;
+mod str_strcpy_p2;
+mod str_strncmp_p2;
+mod str_strncpy_p2;
+mod str_strrchr;
 mod str_strstr;
 mod sld_strtod;
 mod sld_strtold;
@@ -134,6 +139,11 @@ impl Generator {
             || self.try_str_strcmp(function)?
             || self.try_str_strncmp(function)?
             || self.try_str_strchr(function)?
+            || self.try_str_strrchr(function)?
+            || self.try_str_strcpy_p2(function)?
+            || self.try_str_strncpy_p2(function)?
+            || self.try_str_strcmp_p2(function)?
+            || self.try_str_strncmp_p2(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
