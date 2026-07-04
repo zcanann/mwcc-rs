@@ -874,7 +874,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         function_symbols[forward] = (symtab.len() / SYMBOL_SIZE) as u32;
                         let binding = if functions[forward].is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
                         write_symbol(&mut symtab, strtab.add(name), function_offset[forward], function_size[forward], binding, 0, index_of(".text") as u16);
-                        let flags = if functions[forward].is_weak { 0x0e00_0000 } else { 0 };
+                        let flags = if functions[forward].is_weak {
+                            if functions[forward].weak_inline { 0x0d00_0000 } else { 0x0e00_0000 }
+                        } else {
+                            0
+                        };
                         comment_values.push((4, flags));
                         continue;
                     }
@@ -904,8 +908,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
             let binding = if function.is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
             write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], binding, 0, index_of(".text") as u16);
-            let flags = if function.is_weak { 0x0e00_0000 } else { 0 };
-            comment_values.push((4, flags)); // a function is 4-aligned; weak carries 0x0e
+            // A declspec-weak function carries 0x0e; a WEAK-MATERIALIZED plain
+            // inline carries the weak-OBJECT flag 0x0d (measured: strikers mbstowcs).
+            let flags = if function.is_weak {
+                if function.weak_inline { 0x0d00_0000 } else { 0x0e00_0000 }
+            } else {
+                0
+            };
+            comment_values.push((4, flags)); // a function is 4-aligned
             // A LATER function's call to this one resolves to the defined
             // symbol (no UND duplicate — FILE_POS's fseek -> _fseek). A
             // FORWARD-referenced function already emitted at its first

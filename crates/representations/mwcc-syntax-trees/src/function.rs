@@ -215,6 +215,9 @@ pub struct TranslationUnit {
     /// declaration): calls bind the surviving UND ghost; the local FUNC symbol
     /// trails its own static locals.
     pub implicitly_materialized: Vec<String>,
+    /// PLAIN-inline materializations — weak FUNC symbols carrying the
+    /// weak-OBJECT 0x0d comment flag (not declspec-weak's 0x0e).
+    pub weak_materialized: Vec<String>,
     /// The skipped inline functions' NAMES: a body that calls one must defer
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.

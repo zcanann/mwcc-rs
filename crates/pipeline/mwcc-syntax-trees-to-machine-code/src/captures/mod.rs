@@ -88,6 +88,15 @@ mod suac_impl_bfbb;
 mod suac_impl64_bfbb;
 mod suac_stub_atoi;
 mod suac_stub_atol;
+mod mbs_wcstombs_pik;
+mod mbs_wctomb_stub;
+mod mbs_mblen_stub;
+mod mbs_mbtowc_pik;
+mod mbs_mbstowcs_stub;
+mod mbs_wcstombs_str;
+mod mbs_mbtowc_str;
+mod mbs_mbstowcs_str;
+mod mbs_is_utf8;
 mod suac_strtoul_pub;
 mod su_strtol;
 mod su_strtoul_impl;
@@ -323,6 +332,15 @@ impl Generator {
             || self.try_suac_impl64_bfbb(function)?
             || self.try_suac_stub_atoi(function)?
             || self.try_suac_stub_atol(function)?
+            || self.try_mbs_wcstombs_pik(function)?
+            || self.try_mbs_wctomb_stub(function)?
+            || self.try_mbs_mblen_stub(function)?
+            || self.try_mbs_mbtowc_pik(function)?
+            || self.try_mbs_mbstowcs_stub(function)?
+            || self.try_mbs_wcstombs_str(function)?
+            || self.try_mbs_mbtowc_str(function)?
+            || self.try_mbs_mbstowcs_str(function)?
+            || self.try_mbs_is_utf8(function)?
             || self.try_suac_strtoul_pub(function)?
             || self.try_suac_strtol(function)?
             || self.try_suac_atoi_mel(function)?

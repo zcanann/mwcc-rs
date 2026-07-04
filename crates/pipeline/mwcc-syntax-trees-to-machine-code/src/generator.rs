@@ -352,6 +352,15 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 });
     }
 
+    /// Emit a load of a pooled WORD constant from `.sdata2`: `lwz rD, 0(r0)`
+    /// with the SDA21 relocation (an integer constant mwcc pooled rather than
+    /// materialized — measured: strikers wcstombs' surrogate mask).
+    pub(crate) fn load_word_constant(&mut self, destination: u8, bits: u32) {
+        let index = self.output.intern_constant(bits as u64, 4);
+        self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
+        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 0, offset: 0 });
+    }
+
     /// Emit a load of a double-precision constant from `.sdata2`: `lfd fD, 0(r0)`
     /// with the SDA21 relocation the pooled value needs.
     pub(crate) fn load_double_constant(&mut self, destination: u8, bits: u64) {

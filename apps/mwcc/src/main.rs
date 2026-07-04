@@ -243,6 +243,9 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         if unit.implicitly_materialized.iter().any(|name| *name == function.name) {
             function.implicit_materialized = true;
         }
+        if unit.weak_materialized.iter().any(|name| *name == function.name) {
+            function.weak_inline = true;
+        }
     }
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let total_inline_bump = unit.skipped_inline_functions as i64;

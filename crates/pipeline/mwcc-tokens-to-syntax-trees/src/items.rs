@@ -1699,6 +1699,7 @@ impl Parser {
             skipped_inline_functions: self.skipped_inline_functions,
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
+            weak_materialized: std::mem::take(&mut self.weak_materialized),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
         })
@@ -2639,7 +2640,7 @@ impl Parser {
             // PRIOR PROTOTYPE the call sites precede the body, so mwcc cannot
             // inline it: it MATERIALIZES out-of-line as a local function at the
             // definition's source position (measured: AC/ww/sunshine uart).
-            if is_inline && is_static {
+            if is_inline {
                 // Referenced EARLIER (a prototype, or a call already parsed into a
                 // previous function — uart_8's IMPLICIT-declaration shape) means the
                 // call sites precede the body: mwcc cannot inline and MATERIALIZES.
@@ -2650,17 +2651,26 @@ impl Parser {
                         || earlier.guards.iter().any(|guard| expression_calls(&guard.condition, &name_set))
                         || earlier.return_expression.as_ref().is_some_and(|expression| expression_calls(expression, &name_set))
                 });
-                if !had_prototype && !had_call {
+                // The trigger is a CALL compiled before the definition — a
+                // prototype alone does NOT materialize (p2's wctomb: prototyped,
+                // defined, THEN called — mwcc inlines it at the later call).
+                if !had_call {
                     return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
                 }
-                // Implicit-declaration materialization (no prototype): the call
-                // relocations bind the surviving UND ghost, and the local FUNC
-                // symbol trails its own static locals (measured: ww uart).
-                if !had_prototype {
-                    self.implicitly_materialized.push(name.clone());
+                if is_static {
+                    // Implicit-declaration materialization (no prototype): the call
+                    // relocations bind the surviving UND ghost, and the local FUNC
+                    // symbol trails its own static locals (measured: ww uart).
+                    if !had_prototype {
+                        self.implicitly_materialized.push(name.clone());
+                    }
+                } else {
+                    // A PLAIN inline materializes as a WEAK global (measured:
+                    // strikers mbstring's `inline int mbstowcs` — FUNC WEAK,
+                    // with the weak-OBJECT 0x0d comment flag, not declspec's 0x0e).
+                    is_weak = true;
+                    self.weak_materialized.push(name.clone());
                 }
-            } else if is_inline {
-                return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
             }
             let function_is_weak = is_weak || self.weak_functions.contains(&name);
             if self.defer_codegen {

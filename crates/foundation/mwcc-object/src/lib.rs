@@ -111,6 +111,8 @@ pub struct FunctionObject<'a> {
     /// LOCAL symbol emits after its own static locals (not in the early static
     /// run), and call relocations bind the surviving UNDEFINED global ghost.
     pub implicit_local: bool,
+    /// A WEAK function materialized from a PLAIN inline — comment flag 0x0d.
+    pub weak_inline: bool,
     /// Mid-pool `@N` gaps applied while numbering constants: (constant index,
     /// extra numbers consumed before it).
     pub constant_number_gaps: Vec<(usize, u32)>,

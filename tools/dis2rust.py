@@ -48,6 +48,9 @@ for idx, mn, ops in instrs:
         if mn == "lfd" and rl[1] in POOL:
             out.append(f"        self.load_double_constant({ops[0][1:]}, 0x{POOL[rl[1]]});")
             continue
+        if mn == "lwz" and rl[1] in POOL:
+            out.append(f"        self.load_word_constant({R(ops[0])}, 0x{POOL[rl[1]][:8]});")
+            continue
         # an SDA21 access to a NAMED small-data global (errno, a kept const
         # scalar): the reloc carries the symbol; base 0, offset 0.
         if mn == "lfd" and not rl[1].startswith("@"):

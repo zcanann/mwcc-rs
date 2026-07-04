@@ -111,6 +111,8 @@ pub(crate) struct Parser {
     /// implicit-declaration shape): their call relocations bind the surviving
     /// UNDEFINED global ghost, and their local symbols order differently.
     pub(crate) implicitly_materialized: Vec<String>,
+    /// PLAIN-inline materializations (WEAK globals with the 0x0d comment flag).
+    pub(crate) weak_materialized: Vec<String>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
     pub(crate) weak_functions: std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
