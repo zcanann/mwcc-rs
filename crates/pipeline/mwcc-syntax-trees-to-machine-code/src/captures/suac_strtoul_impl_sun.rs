@@ -29,6 +29,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xa7487b5a674d669a => 0, // sunshine (f505)
+            0xa605ebc1c79b708d => 0, // melee (f506, same stream+hash)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
