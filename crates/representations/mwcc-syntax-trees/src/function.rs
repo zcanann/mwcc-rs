@@ -211,6 +211,10 @@ pub struct TranslationUnit {
     /// point (the parser's positional sample) — statics number off the
     /// anonymous counter as of that position, not the owner's whole pre-bump.
     pub static_local_prebumps: std::collections::HashMap<String, usize>,
+    /// Materialized static-inline functions with NO prior prototype (implicit
+    /// declaration): calls bind the surviving UND ghost; the local FUNC symbol
+    /// trails its own static locals.
+    pub implicitly_materialized: Vec<String>,
     /// The skipped inline functions' NAMES: a body that calls one must defer
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.

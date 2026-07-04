@@ -107,6 +107,10 @@ pub(crate) struct Parser {
     /// Token positions of anonymous-`enum` bodies already counted into the
     /// anonymous-`@N` pre-bump (guards speculative re-parses from double-counting).
     pub(crate) counted_enum_positions: std::collections::HashSet<usize>,
+    /// Materialized static-inline functions with NO prior prototype (the
+    /// implicit-declaration shape): their call relocations bind the surviving
+    /// UNDEFINED global ghost, and their local symbols order differently.
+    pub(crate) implicitly_materialized: Vec<String>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
     pub(crate) weak_functions: std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.

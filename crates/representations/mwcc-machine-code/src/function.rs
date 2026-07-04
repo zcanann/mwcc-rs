@@ -64,6 +64,10 @@ pub struct MachineFunction {
     /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol
     /// rather than a global one.
     pub is_static: bool,
+    /// A static function MATERIALIZED from an implicitly-declared inline: its
+    /// call relocations bind the UND ghost and its local symbol trails its
+    /// static locals (ww uart).
+    pub implicit_materialized: bool,
     pub is_weak: bool,
     /// The function's STATIC LOCALS: (name, byte image or None for zero,
     /// byte size, alignment, is_const). Emitted as `name$K` LOCAL objects,
@@ -139,6 +143,7 @@ impl MachineFunction {
             new_string_count: 0,
             new_string_names: Vec::new(),
             is_static: false,
+            implicit_materialized: false,
             is_weak: false,
             static_locals: Vec::new(),
             has_conversion: false,

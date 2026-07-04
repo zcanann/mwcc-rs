@@ -627,7 +627,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
     let mut local_function_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     for (index, function) in functions.iter().enumerate() {
-        if function.is_static {
+        // An IMPLICIT-declaration materialization emits its local symbol later
+        // (after its own static locals), and calls bind the UND ghost instead —
+        // it never enters `local_function_symbols` (measured: ww uart).
+        if function.is_static && !function.implicit_local {
             let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
             function_symbols[index] = symbol;
             local_function_symbols.insert(function.name, symbol);
@@ -658,6 +661,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 write_symbol(&mut symtab, display, data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
                 comment_values.push((data_aligns[object.name], 0));
             }
+        }
+        // The implicit-materialization's LOCAL FUNC symbol trails its own
+        // static locals (mwcc created the fn symbol at the late definition,
+        // after compiling the body that declared them). Recorded for the
+        // `.mwcats` relocation, NOT for call resolution (calls bind the ghost).
+        if function.implicit_local {
+            function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(".text") as u16);
+            comment_values.push((4, 0)); // a function is 4-aligned
         }
         // This function's NEW strings sit at the FRONT of its `@N` block, before its constants and
         // unwind entries. Each `@N` name already has a laid-out data object (`.sdata`/`.data`); emit

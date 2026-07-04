@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC7_WRITE_AST_HASH: u64 = 1; // DISARMED f495: numbering incomplete — uc7 needs measured bumps ($33); uc8 needs the implicit-decl UND ghost + static-before-fn local order; real hash 0xdadcaf865a7513d7, ctx 0xbd60acb658c79e45
+const UC7_WRITE_AST_HASH: u64 = 0xdadcaf865a7513d7; // re-armed f496 (measured bumps)
 
 impl Generator {
     pub(super) fn try_uc7_write(&mut self, function: &Function) -> Compilation<bool> {
@@ -27,7 +27,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0xbd60acb658c79e45 => 0, // f495: init materialized; bump measured below
+            0xbd60acb658c79e45 => 4, // f496 prefix-probe: body labels beyond the generic +4 base
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

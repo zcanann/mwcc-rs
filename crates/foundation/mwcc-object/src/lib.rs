@@ -107,6 +107,10 @@ pub struct FunctionObject<'a> {
     /// conditional branch. mwcceppc consumes these counter slots for the
     /// function's internal labels.
     pub anonymous_bump: u32,
+    /// A static function materialized from an IMPLICITLY-declared inline: its
+    /// LOCAL symbol emits after its own static locals (not in the early static
+    /// run), and call relocations bind the surviving UNDEFINED global ghost.
+    pub implicit_local: bool,
     /// Mid-pool `@N` gaps applied while numbering constants: (constant index,
     /// extra numbers consumed before it).
     pub constant_number_gaps: Vec<(usize, u32)>,

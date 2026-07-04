@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC8_WRITE_AST_HASH: u64 = 1; // DISARMED f495: numbering incomplete — uc7 needs measured bumps ($33); uc8 needs the implicit-decl UND ghost + static-before-fn local order; real hash 0xc51d9395ae1fdd74, ctx 0xbd60acb658c79e45
+const UC8_WRITE_AST_HASH: u64 = 0xc51d9395ae1fdd74; // re-armed f496 (implicit-materialization writer support)
 
 impl Generator {
     pub(super) fn try_uc8_write(&mut self, function: &Function) -> Compilation<bool> {

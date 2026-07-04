@@ -172,6 +172,18 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             (function.name.clone(), function.parameters.iter().map(|parameter| parameter.parameter_type).collect())
         }))
         .collect();
+    // An IMPLICITLY-materialized inline (ww uart) was unknown at its call
+    // sites: mwcc compiled those calls under the K&R implicit-int rule and
+    // classified the callee as an implicit external (the UND ghost). Drop the
+    // definition from the callable maps so the lowering sees what mwcc saw.
+    let call_return_types: std::collections::HashMap<_, _> = call_return_types
+        .into_iter()
+        .filter(|(name, _)| !unit.implicitly_materialized.iter().any(|materialized| materialized == name))
+        .collect();
+    let call_parameter_types: std::collections::HashMap<_, _> = call_parameter_types
+        .into_iter()
+        .filter(|(name, _)| !unit.implicitly_materialized.iter().any(|materialized| materialized == name))
+        .collect();
     // Lower every function definition in source order; they share one object.
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
         .functions
@@ -222,6 +234,11 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // Real functions' STATIC LOCALS become LOCAL data objects keyed by their
     // raw names; the writer numbers each off its owner's @N sequence and
     // displays `name$K`.
+    for function in machine_functions.iter_mut() {
+        if unit.implicitly_materialized.iter().any(|name| *name == function.name) {
+            function.implicit_materialized = true;
+        }
+    }
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let total_inline_bump = unit.skipped_inline_functions as i64;
     for (function_index, function) in machine_functions.iter().enumerate() {

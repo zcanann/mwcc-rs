@@ -1698,6 +1698,7 @@ impl Parser {
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             skipped_inline_functions: self.skipped_inline_functions,
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
+            implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
         })
@@ -2643,14 +2644,20 @@ impl Parser {
                 // previous function — uart_8's IMPLICIT-declaration shape) means the
                 // call sites precede the body: mwcc cannot inline and MATERIALIZES.
                 let name_set: std::collections::HashSet<String> = std::iter::once(name.clone()).collect();
-                let referenced_earlier = prototypes.iter().any(|(prototype_name, _, _)| *prototype_name == name)
-                    || functions.iter().any(|earlier| {
-                        earlier.statements.iter().any(|statement| statement_calls(statement, &name_set))
-                            || earlier.guards.iter().any(|guard| expression_calls(&guard.condition, &name_set))
-                            || earlier.return_expression.as_ref().is_some_and(|expression| expression_calls(expression, &name_set))
-                    });
-                if !referenced_earlier {
+                let had_prototype = prototypes.iter().any(|(prototype_name, _, _)| *prototype_name == name);
+                let had_call = functions.iter().any(|earlier| {
+                    earlier.statements.iter().any(|statement| statement_calls(statement, &name_set))
+                        || earlier.guards.iter().any(|guard| expression_calls(&guard.condition, &name_set))
+                        || earlier.return_expression.as_ref().is_some_and(|expression| expression_calls(expression, &name_set))
+                });
+                if !had_prototype && !had_call {
                     return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
+                }
+                // Implicit-declaration materialization (no prototype): the call
+                // relocations bind the surviving UND ghost, and the local FUNC
+                // symbol trails its own static locals (measured: ww uart).
+                if !had_prototype {
+                    self.implicitly_materialized.push(name.clone());
                 }
             } else if is_inline {
                 return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
