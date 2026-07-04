@@ -67,6 +67,13 @@ pub enum Expression {
         offset: u16,
         element: Pointee,
     },
+    /// `target(arguments)` where the callee is an EXPRESSION (a function-
+    /// pointer struct member — `file->writeFunc(...)`): an indirect call
+    /// through a computed address. General codegen defers (captures only).
+    CallThrough {
+        target: Box<Expression>,
+        arguments: Vec<Expression>,
+    },
     /// `name(arguments)` — a direct call.
     Call {
         name: String,

@@ -1215,6 +1215,12 @@ fn walk_statement(statement: &Statement, names: &mut HashSet<String>) {
 /// Record `&variable` occurrences within `expression`.
 fn walk(expression: &Expression, names: &mut HashSet<String>) {
     match expression {
+        Expression::CallThrough { target, arguments } => {
+            walk(target, names);
+            for argument in arguments {
+                walk(argument, names);
+            }
+        }
         Expression::AggregateLiteral(_) => {}
         Expression::PostStep { target, .. } => walk(target, names),
         // A string literal takes no `&variable` of its own.

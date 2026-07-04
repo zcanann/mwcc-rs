@@ -544,6 +544,33 @@ impl Parser {
                     self.expect(Token::ParenClose)?;
                     expression = Expression::Call { name, arguments };
                 }
+                // `base->fp(args)` / `base.fp(args)` — an indirect call through
+                // a function-pointer MEMBER (buffer_io's writeFunc). Also the
+                // `(*s->fp)(args)` spelling, which parses to Dereference(Member).
+                Token::ParenOpen
+                    if matches!(&expression, Expression::Member { .. })
+                        || matches!(&expression, Expression::Dereference { pointer }
+                            if matches!(pointer.as_ref(), Expression::Member { .. })) =>
+                {
+                    let target = match expression {
+                        Expression::Dereference { pointer } => pointer,
+                        other => Box::new(other),
+                    };
+                    self.advance(); // `(`
+                    let mut arguments = Vec::new();
+                    if *self.peek() != Token::ParenClose {
+                        loop {
+                            arguments.push(self.expression()?);
+                            if *self.peek() == Token::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Token::ParenClose)?;
+                    expression = Expression::CallThrough { target, arguments };
+                }
                 Token::BracketOpen => {
                     self.advance();
                     let index = self.expression()?;

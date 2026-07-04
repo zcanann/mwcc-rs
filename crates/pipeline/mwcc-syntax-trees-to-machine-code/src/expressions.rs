@@ -237,6 +237,9 @@ impl Generator {
             return Err(Diagnostic::error("a commutative op with a constant-shift left operand orders operands differently (roadmap)"));
         }
         match expression {
+            Expression::CallThrough { .. } => Err(Diagnostic::error(
+                "an indirect call through a member function pointer is not supported here (captures only)",
+            )),
             Expression::AggregateLiteral(_) => Err(Diagnostic::error("an aggregate initializer is not supported here (captures only)")),
             Expression::PostStep { .. } => Err(Diagnostic::error(
                 "a postfix step used as a value is not supported yet (roadmap)",

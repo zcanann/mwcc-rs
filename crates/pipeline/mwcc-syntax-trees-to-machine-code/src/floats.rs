@@ -12,6 +12,9 @@ impl Generator {
     /// Evaluate a float expression into float register `destination`.
     pub(crate) fn evaluate_float(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         match expression {
+            Expression::CallThrough { .. } => Err(Diagnostic::error(
+                "an indirect call through a member function pointer is not supported here (captures only)",
+            )),
             Expression::AggregateLiteral(_) => Err(Diagnostic::error("an aggregate initializer is not supported here (captures only)")),
             Expression::PostStep { .. } => Err(Diagnostic::error(
                 "a postfix step used as a float value is not supported yet (roadmap)",
