@@ -403,6 +403,14 @@ impl Parser {
         if *self.peek() == Token::Ampersand {
             self.advance();
             let name = self.parse_identifier()?;
+            // `&g[0]` addresses the first element — the same relocation as `&g`
+            // (ansi_files' `FILE* p = &__files[0];`). A nonzero index needs an
+            // addend model on PointerElement; defer until measured.
+            if *self.peek() == Token::BracketOpen && self.peek_at(1) == &Token::IntegerLiteral(0) && self.peek_at(2) == &Token::BracketClose {
+                self.advance();
+                self.advance();
+                self.advance();
+            }
             if matches!(self.peek(), Token::BracketOpen | Token::Dot | Token::Arrow) {
                 return Err(Diagnostic::error("a pointer initializer with an offset is not supported yet (roadmap)"));
             }
