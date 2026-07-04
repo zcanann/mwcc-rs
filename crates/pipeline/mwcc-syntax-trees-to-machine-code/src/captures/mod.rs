@@ -44,6 +44,7 @@ mod sup2_strtoul_impl;
 mod sup2_strtoul_pub;
 mod sup2_strtoull_impl;
 mod suac_strtoul_impl;
+mod suac_strtoul_impl_sun;
 mod suac_strtoul_pub;
 mod su_strtol;
 mod su_strtoul_impl;
@@ -82,7 +83,9 @@ mod str_strcat_mp4;
 mod str_strchr;
 mod str_strchr_ac;
 mod str_strcmp;
+mod str_strcmp_sun;
 mod str_strcpy;
+mod str_strcpy_sun;
 mod str_strlen;
 mod str_strncmp;
 mod str_strncpy;
@@ -190,9 +193,11 @@ impl Generator {
             || self.try_mf_copy_al_mel(function)?
             || self.try_str_strlen(function)?
             || self.try_str_strcpy(function)?
+            || self.try_str_strcpy_sun(function)?
             || self.try_str_strncpy(function)?
             || self.try_str_strcat(function)?
             || self.try_str_strcmp(function)?
+            || self.try_str_strcmp_sun(function)?
             || self.try_str_strncmp(function)?
             || self.try_str_strchr(function)?
             || self.try_str_strrchr(function)?
@@ -264,6 +269,7 @@ impl Generator {
             || self.try_su_strtol(function)?
             || self.try_su_atoi(function)?
             || self.try_suac_strtoul_impl(function)?
+            || self.try_suac_strtoul_impl_sun(function)?
             || self.try_suac_strtoul_pub(function)?
             || self.try_suac_strtol(function)?
             || self.try_sup2_strtoul_impl(function)?
