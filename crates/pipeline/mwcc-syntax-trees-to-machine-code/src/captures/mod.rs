@@ -9,6 +9,11 @@ mod fp_ftell;
 mod eacos_bl;
 mod eacos_str;
 mod abex_abort;
+mod abexb_abort;
+mod abexb_exit;
+mod abexm_exit;
+mod abexp2_exit;
+mod abexs_exit;
 mod abex_exit;
 mod easin;
 mod easin_bl;
@@ -186,6 +191,11 @@ impl Generator {
             || self.try_wc_fwide_p2(function)?
             || self.try_abex_abort(function)?
             || self.try_abex_exit(function)?
+            || self.try_abexm_exit(function)?
+            || self.try_abexs_exit(function)?
+            || self.try_abexb_abort(function)?
+            || self.try_abexb_exit(function)?
+            || self.try_abexp2_exit(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
