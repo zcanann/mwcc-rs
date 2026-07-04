@@ -129,6 +129,7 @@ for idx, mn, ops in instrs:
     elif mn=="bnelr": push("BranchConditionalToLinkRegister { options: 4, condition_bit: 2 }")
     elif mn=="blelr": push("BranchConditionalToLinkRegister { options: 4, condition_bit: 1 }")
     elif mn=="addic.": push(f"AddImmediateCarryingRecord {{ d: {R(ops[0])}, a: {R(ops[1])}, immediate: {ops[2]} }}")
+    elif mn=="and": push(f"And {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="and.": push(f"AndRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="extsb": push(f"ExtendSignByte {{ a: {R(ops[0])}, s: {R(ops[1])} }}")
     elif mn=="extsb.": push(f"ExtendSignByteRecord {{ a: {R(ops[0])}, s: {R(ops[1])} }}")

@@ -53,6 +53,15 @@ mod dio_fwrite_mid;
 mod dio_fwrite_impl;
 mod dio_fread_stub;
 mod dio_fread_impl_stub;
+mod bio_flush_a;
+mod bio_flush_b;
+mod bio_flush_pik;
+mod bio_prep_a;
+mod bio_prep_b;
+mod bio_conv_from;
+mod bio_conv_to;
+mod bio_setbuf_stub;
+mod bio_setvbuf_stub;
 mod sup2_atoi;
 mod sup2_strtol;
 mod sup2_strtoul_impl;
@@ -302,6 +311,15 @@ impl Generator {
             || self.try_dio_fwrite_impl(function)?
             || self.try_dio_fread_stub(function)?
             || self.try_dio_fread_impl_stub(function)?
+            || self.try_bio_flush_a(function)?
+            || self.try_bio_flush_b(function)?
+            || self.try_bio_flush_pik(function)?
+            || self.try_bio_prep_a(function)?
+            || self.try_bio_prep_b(function)?
+            || self.try_bio_conv_from(function)?
+            || self.try_bio_conv_to(function)?
+            || self.try_bio_setbuf_stub(function)?
+            || self.try_bio_setvbuf_stub(function)?
             || self.try_sup2_strtoul_impl(function)?
             || self.try_sup2_strtoull_impl(function)?
             || self.try_sup2_strtoul_pub(function)?
