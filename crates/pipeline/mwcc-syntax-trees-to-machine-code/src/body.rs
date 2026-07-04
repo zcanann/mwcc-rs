@@ -2499,6 +2499,12 @@ impl Generator {
             if self.try_callee_saved_result_param_combine(function)? {
                 return Ok(());
             }
+            // `int x = g(a); return x + a + b;` / `int x = g(a); int y = g(x);
+            // return y + a + x;` — a call result added to TWO saved values: mwcc
+            // reassociates, parking the result in r0 and combining the homes first.
+            if self.try_callee_saved_result_park_combine(function)? {
+                return Ok(());
+            }
             // `*p = g();` — a call's result stored through a pointer parameter saved in r31.
             if self.try_store_call_through_pointer(function)? {
                 return Ok(());
@@ -12154,6 +12160,146 @@ impl Generator {
         self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
         self.emit_epilogue_and_return();
         Ok(true)
+    }
+
+    /// A call-result local added to TWO call-crossing saved values (measured
+    /// fire 498/499 probes): `int x = g(a); return x + a + b;` (both parameters
+    /// cross) and `int x = g(a); int y = g(x); return y + a + x;` (the first
+    /// result crosses the second call). mwcc REASSOCIATES `(res + s1) + s2` into
+    /// `res + (s1 + s2)`: the fresh result parks in r0 (`mr r0,r3`), the two
+    /// callee-saved homes combine first (`add r3,r30,r31` — creation order), and
+    /// the parked value adds last. Adds only — the reassociation is unmeasured
+    /// for the other operators.
+    fn try_callee_saved_result_park_combine(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // The return is ((result + saved1) + saved2), left-associated adds.
+        let Some(Expression::Binary { operator: BinaryOperator::Add, left: outer_left, right: outer_right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right } = outer_left.as_ref() else {
+            return Ok(false);
+        };
+        let (Expression::Variable(result_name), Expression::Variable(saved1), Expression::Variable(saved2)) =
+            (inner_left.as_ref(), inner_right.as_ref(), outer_right.as_ref())
+        else {
+            return Ok(false);
+        };
+        let all_int = |declared: Type| matches!(declared, Type::Int | Type::UnsignedInt);
+        match (function.parameters.len(), function.locals.len()) {
+            // `int x = g(a); return x + a + b;` — saved1 = a (param 0 -> r30),
+            // saved2 = b (param 1 -> r31), the result local dies in r3.
+            (2, 1) => {
+                let local = &function.locals[0];
+                if !all_int(local.declared_type)
+                    || result_name != &local.name
+                    || saved1 != &function.parameters[0].name
+                    || saved2 != &function.parameters[1].name
+                {
+                    return Ok(false);
+                }
+                let Some(Expression::Call { name, arguments }) = local.initializer.as_ref() else {
+                    return Ok(false);
+                };
+                match arguments.as_slice() {
+                    [] => {}
+                    [Expression::Variable(argument)] if argument == &function.parameters[0].name => {}
+                    _ => return Ok(false),
+                }
+                let mut incoming = Vec::new();
+                for parameter in &function.parameters {
+                    match self.locations.get(&parameter.name) {
+                        Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                        _ => return Ok(false),
+                    }
+                }
+                self.non_leaf = true;
+                self.frame_size = 16;
+                // Reverse creation order: the LAST-created saved value takes r31.
+                let homes: Vec<u8> = (0..2).map(|_| self.fresh_virtual_general()).collect();
+                self.callee_saved = homes.clone();
+                let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+                debug_assert_eq!(plan.frame_size, 16);
+                // Interleaved save+fill pairs, r31 (param 1) first.
+                let incoming_ordered: Vec<u8> = incoming.iter().rev().copied().collect();
+                self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+                // The call reads the STILL-LIVE incoming register (no move).
+                self.emit_call(name, arguments, None, false)?;
+                self.emit_park_and_combine(homes[1], homes[0]);
+                self.emit_epilogue_and_return();
+                Ok(true)
+            }
+            // `int x = g(a); int y = g(x); return y + a + x;` — saved1 = a
+            // (created first -> r30), saved2 = x (-> r31), y dies in r3.
+            (1, 2) => {
+                let (first, second) = (&function.locals[0], &function.locals[1]);
+                if !all_int(first.declared_type)
+                    || !all_int(second.declared_type)
+                    || result_name != &second.name
+                    || saved1 != &function.parameters[0].name
+                    || saved2 != &first.name
+                {
+                    return Ok(false);
+                }
+                let Some(Expression::Call { name: call1, arguments: arguments1 }) = first.initializer.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(Expression::Call { name: call2, arguments: arguments2 }) = second.initializer.as_ref() else {
+                    return Ok(false);
+                };
+                // Call 1 forwards the parameter (or nothing); call 2 passes the
+                // FRESH first result — both read a still-live r3, no moves.
+                match arguments1.as_slice() {
+                    [] => {}
+                    [Expression::Variable(argument)] if argument == &function.parameters[0].name => {}
+                    _ => return Ok(false),
+                }
+                if !matches!(arguments2.as_slice(), [Expression::Variable(argument)] if argument == &first.name) {
+                    return Ok(false);
+                }
+                let incoming = match self.locations.get(&function.parameters[0].name) {
+                    Some(location) if location.class == ValueClass::General => location.register,
+                    _ => return Ok(false),
+                };
+                self.non_leaf = true;
+                self.frame_size = 16;
+                let homes: Vec<u8> = (0..2).map(|_| self.fresh_virtual_general()).collect();
+                self.callee_saved = homes.clone();
+                let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+                debug_assert_eq!(plan.frame_size, 16);
+                // Batched saves; the parameter's fill follows (its def is the
+                // prologue), the first result's fill lands after its call.
+                self.output.instructions.extend(plan.prologue());
+                self.output.instructions.push(Instruction::Or { a: homes[1], s: incoming, b: incoming });
+                self.emit_call(call1, arguments1, None, false)?;
+                self.output.instructions.push(Instruction::Or { a: homes[0], s: 3, b: 3 });
+                // The second call reads the first result from the STILL-LIVE r3
+                // (its home copy exists but no argument move is emitted).
+                let signed = !matches!(first.declared_type, Type::UnsignedInt);
+                self.locations.insert(
+                    first.name.clone(),
+                    Location { class: ValueClass::General, register: 3, signed, width: 32, pointee: None, stride: None },
+                );
+                self.emit_call(call2, arguments2, None, false)?;
+                self.emit_park_and_combine(homes[1], homes[0]);
+                self.emit_epilogue_and_return();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// The measured reassociation tail: park the fresh call result in r0,
+    /// combine the two callee-saved homes (creation order: lower home first),
+    /// then add the parked value into the return register.
+    fn emit_park_and_combine(&mut self, home_low: u8, home_high: u8) {
+        self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+        self.output.instructions.push(Instruction::Add { d: 3, a: home_low, b: home_high });
+        self.output.instructions.push(Instruction::Add { d: 3, a: 0, b: 3 });
     }
 
     /// One or two locals that are CALL RESULTS, live across later calls, then returned:
