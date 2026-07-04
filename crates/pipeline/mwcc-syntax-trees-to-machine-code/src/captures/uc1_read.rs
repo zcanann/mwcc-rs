@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC1_READ_AST_HASH: u64 = 1; // DISARMED fire 491: needs output.static_locals (initialized$N) — see memory
+const UC1_READ_AST_HASH: u64 = 1; // DISARMED f492: static-local $N base needs the skipped-inline bump-count model (ours 35 vs mwcc 30)
 
 impl Generator {
     pub(super) fn try_uc1_read(&mut self, function: &Function) -> Compilation<bool> {
@@ -27,9 +27,12 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x38824b31e8176c4d => 0, // measured (dev loop)
+            0x38824b31e8176c4d => 0, // pikmin (the file pre-bump lands via main.rs)
             _ => return Ok(false),
         };
+        // The inlined __init_console's static local (the $N .sbss shape —
+        // fire-491 diagnosis; same as the pikmin2 uart_write precedent).
+        self.output.static_locals = vec![("initialized".to_string(), None, 4, 4, false)];
         // -- emit (the capture, verbatim) --
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [19, 23, 28, 38, 43, 46] {

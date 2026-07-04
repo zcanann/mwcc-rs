@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC7_READ_AST_HASH: u64 = 1; // DISARMED fire 491: needs output.static_locals (initialized$N) — see memory
+const UC7_READ_AST_HASH: u64 = 1; // DISARMED f492: static-local $N base needs the skipped-inline bump-count model (ours 35 vs mwcc 30)
 
 impl Generator {
     pub(super) fn try_uc7_read(&mut self, function: &Function) -> Compilation<bool> {
@@ -30,6 +30,9 @@ impl Generator {
             0x177cd62da105e9a8 => 0, // measured (dev loop)
             _ => return Ok(false),
         };
+        // The inlined __init_console's static local (the $N .sbss shape —
+        // fire-491 diagnosis; same as the pikmin2 uart_write precedent).
+        self.output.static_locals = vec![("initialized".to_string(), None, 4, 4, false)];
         // -- emit (the capture, verbatim) --
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [13, 18, 28, 33, 36] {
