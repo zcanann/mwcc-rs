@@ -188,8 +188,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut bss_size = 0u32;
     let mut placed_bss: std::collections::HashSet<&'a str> = std::collections::HashSet::new();
     for function in &input.functions {
-        for name in &function.symbol_order {
-            if let Some(object) = input.data_objects.iter().find(|object| object.name == name.as_str() && section_of(object) == ".bss") {
+        // A capture-emitted function has an EMPTY symbol_order — its `.text`
+        // relocations carry the reference order instead (measured: wind_waker
+        // abort_exit, whose __atexit_funcs places by first reference).
+        let relocation_names = function.relocations.iter().filter_map(|relocation| match &relocation.target {
+            RelocationTarget::External(name) => Some(name.as_str()),
+            _ => None,
+        });
+        for name in function.symbol_order.iter().map(|name| name.as_str()).chain(relocation_names) {
+            if let Some(object) = input.data_objects.iter().find(|object| object.name == name && section_of(object) == ".bss") {
                 if placed_bss.insert(object.name) {
                     place(object, ".bss", &mut bss_size);
                 }
@@ -546,13 +553,36 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
-    // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`), REVERSE order.
-    for object in input.data_objects.iter().rev() {
-        if object.is_static
+    // Then the remaining zero statics (uninitialized `.sbss`, or any `.bss`):
+    // REFERENCED ones first, in first-reference order across the functions
+    // (their symbol_order, falling back to relocation order — measured:
+    // wind_waker abort_exit interleaves __atexit_funcs by its first use),
+    // then any unreferenced ones in REVERSE declaration order.
+    let is_pending_zero_static = |object: &DataObject| {
+        object.is_static
             && is_zero_section(object.name)
             && !static_forward(object)
             && object.static_local_owner.is_none()
-        {
+    };
+    let mut emitted_zero_static: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for function in functions {
+        let relocation_names = function.relocations.iter().filter_map(|relocation| match &relocation.target {
+            RelocationTarget::External(name) => Some(name.as_str()),
+            _ => None,
+        });
+        for name in function.symbol_order.iter().map(|name| name.as_str()).chain(relocation_names) {
+            if let Some(object) = input.data_objects.iter().find(|object| object.name == name && is_pending_zero_static(object)) {
+                if emitted_zero_static.insert(object.name) {
+                    local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                    let section = index_of(data_section[object.name]) as u16;
+                    write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                    comment_values.push((data_aligns[object.name], 0));
+                }
+            }
+        }
+    }
+    for object in input.data_objects.iter().rev() {
+        if is_pending_zero_static(object) && !emitted_zero_static.contains(object.name) {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);

@@ -8,6 +8,8 @@ mod fp_fseek_impl;
 mod fp_ftell;
 mod eacos_bl;
 mod eacos_str;
+mod abex_abort;
+mod abex_exit;
 mod easin;
 mod easin_bl;
 mod easin_str;
@@ -128,7 +130,7 @@ impl Generator {
                 skipped_context_fingerprint(&self.skipped_inline_names)
             );
         }
-        Ok(self.try_efmod(function)?
+        let fired = self.try_efmod(function)?
             || self.try_satan(function)?
             || self.try_satan_pik(function)?
             || self.try_satan_sun(function)?
@@ -182,6 +184,8 @@ impl Generator {
             || self.try_wc_fwide(function)?
             || self.try_wc_fwide_mel(function)?
             || self.try_wc_fwide_p2(function)?
+            || self.try_abex_abort(function)?
+            || self.try_abex_exit(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
@@ -212,6 +216,14 @@ impl Generator {
             || self.try_p2_elog(function)?
             || self.try_p2_elog10(function)?
             || self.try_p2_esqrt(function)?
-            || self.try_p2_erempio2(function)?)
+            || self.try_p2_erempio2(function)?;
+        if fired && self.output.symbol_order.is_empty() {
+            // mwcc emits referenced-symbol runs in AST-TRAVERSAL order (NOT
+            // .text/reloc order — measured: wind_waker abort_exit's zero
+            // statics). A capture bypasses AST emission, so derive the order
+            // from the function tree unless the template overrode it.
+            self.output.symbol_order = crate::symbol_order::referenced_names(function);
+        }
+        Ok(fired)
     }
 }
