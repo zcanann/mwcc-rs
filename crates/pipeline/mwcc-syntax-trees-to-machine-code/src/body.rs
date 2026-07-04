@@ -1834,6 +1834,16 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        // An INITIALIZED AUTOMATIC local array needs the frame copy-in
+        // sequence natively — only a capture claim emits it byte-exactly, so
+        // an unclaimed function with one defers here (after the templates).
+        if function
+            .locals
+            .iter()
+            .any(|local| !local.is_static && local.array_length.is_some() && local.data_bytes.is_some())
+        {
+            return Err(Diagnostic::error("an initialized automatic local array is not supported yet (roadmap)"));
+        }
         // An EMPTY body — `T f(args) { }` (MSL's "UNUSED FUNCTION" stubs) —
         // is a single `blr` regardless of return type (measured: pikmin
         // string.c's ten stubs; a non-void return is simply garbage).

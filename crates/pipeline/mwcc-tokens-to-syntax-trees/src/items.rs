@@ -3081,9 +3081,10 @@ impl Parser {
                         return Err(Diagnostic::error("a multi-dimensional local array is not supported yet (roadmap)"));
                     }
                     if *self.peek() == Token::Equals {
-                        if !is_static {
-                            return Err(Diagnostic::error("an initialized automatic local array is not supported yet (roadmap)"));
-                        }
+                        // An AUTOMATIC initialized array parses like the static
+                        // form (its byte image on the local); NATIVE codegen for
+                        // the frame copy-in is unmodeled, so the GENERATOR defers
+                        // it AFTER the exact-match templates get a claim.
                         self.advance();
                         self.expect(Token::BraceOpen)?;
                         let mut bytes = Vec::new();
@@ -3116,6 +3117,14 @@ impl Parser {
                                 (Token::IntegerLiteral(value), Type::Int | Type::UnsignedInt) => {
                                     let value = if negative { -value } else { value };
                                     bytes.extend_from_slice(&(value as i32).to_be_bytes());
+                                }
+                                (Token::IntegerLiteral(value), Type::Char | Type::UnsignedChar) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.push(value as u8);
+                                }
+                                (Token::IntegerLiteral(value), Type::Short | Type::UnsignedShort) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as i16).to_be_bytes());
                                 }
                                 _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
                             }

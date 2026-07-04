@@ -1,4 +1,4 @@
-//! mbs_mblen_stub: an exact-match whole-function capture (fire 514).
+//! mbs_mbsrtowcs_stub: an exact-match whole-function capture (fire 516).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,20 +7,20 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MBS_MBLEN_STUB_AST_HASH: u64 = 0;
+const MBS_MBSRTOWCS_STUB_AST_HASH: u64 = 0;
 
 impl Generator {
-    pub(super) fn try_mbs_mblen_stub(&mut self, function: &Function) -> Compilation<bool> {
-        // Gate on the NAME only — the pik variant is int(const char*, size_t),
-        // BfBB's decompiled shell is void(void); the hash decides.
-        if function.name != "mblen"
+    pub(super) fn try_mbs_mbsrtowcs_stub(&mut self, function: &Function) -> Compilation<bool> {
+        if function.name != "mbsrtowcs"
+            || function.return_type != Type::Void
+            || function.parameters.len() != 0
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != MBS_MBLEN_STUB_AST_HASH {
-            eprintln!("mbs_mblen_stub hash candidate: {hash:#x}");
+        if hash != MBS_MBSRTOWCS_STUB_AST_HASH {
+            eprintln!("mbs_mbsrtowcs_stub hash candidate: {hash:#x}");
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -29,7 +29,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             _ => {
-                eprintln!("mbs_mblen_stub context candidate: {context:#x}");
+                eprintln!("mbs_mbsrtowcs_stub context candidate: {context:#x}");
                 return Ok(false);
             }
         };

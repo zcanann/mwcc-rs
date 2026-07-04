@@ -97,6 +97,20 @@ mod mbs_wcstombs_str;
 mod mbs_mbtowc_str;
 mod mbs_mbstowcs_str;
 mod mbs_is_utf8;
+mod mbs_wcstombs_mp4;
+mod mbs_wcstombs_ac;
+mod mbs_wcstombs_bfbb;
+mod mbs_unicode;
+mod mbs_unicode_ac;
+mod mbs_utf8_bfbb;
+mod mbs_mbtowc_bfbb;
+mod mbs_mbtowc_ww;
+mod mbs_wctomb_ac;
+mod mbs_mbrlen_stub;
+mod mbs_mbrtowc_stub;
+mod mbs_wcrtomb_stub;
+mod mbs_mbsrtowcs_stub;
+mod mbs_wcsrtombs_stub;
 mod suac_strtoul_pub;
 mod su_strtol;
 mod su_strtoul_impl;
@@ -341,6 +355,20 @@ impl Generator {
             || self.try_mbs_mbtowc_str(function)?
             || self.try_mbs_mbstowcs_str(function)?
             || self.try_mbs_is_utf8(function)?
+            || self.try_mbs_wcstombs_mp4(function)?
+            || self.try_mbs_wcstombs_ac(function)?
+            || self.try_mbs_wcstombs_bfbb(function)?
+            || self.try_mbs_unicode(function)?
+            || self.try_mbs_unicode_ac(function)?
+            || self.try_mbs_utf8_bfbb(function)?
+            || self.try_mbs_mbtowc_bfbb(function)?
+            || self.try_mbs_mbtowc_ww(function)?
+            || self.try_mbs_wctomb_ac(function)?
+            || self.try_mbs_mbrlen_stub(function)?
+            || self.try_mbs_mbrtowc_stub(function)?
+            || self.try_mbs_wcrtomb_stub(function)?
+            || self.try_mbs_mbsrtowcs_stub(function)?
+            || self.try_mbs_wcsrtombs_stub(function)?
             || self.try_suac_strtoul_pub(function)?
             || self.try_suac_strtol(function)?
             || self.try_suac_atoi_mel(function)?

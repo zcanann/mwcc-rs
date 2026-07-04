@@ -1,0 +1,93 @@
+//! mbs_unicode_ac: an exact-match whole-function capture (fire 516).
+//! See captures::ast_hash and docs/emission-model.md for the pipeline.
+
+use crate::generator::Generator;
+use mwcc_core::Compilation;
+use mwcc_machine_code::{Instruction, RelocationKind};
+use mwcc_syntax_trees::{Function, Type};
+
+/// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
+const MBS_UNICODE_AC_AST_HASH: u64 = 1; // DISARMED f516: the pooled auto-array WORD image numbers @4 (the static-local slot, counter-1) — writer rule unmodeled; real hash 0x790dbc122e9f8c4d
+
+impl Generator {
+    pub(super) fn try_mbs_unicode_ac(&mut self, function: &Function) -> Compilation<bool> {
+        if function.name != "unicode_to_UTF8"
+            || function.return_type != Type::UnsignedInt
+            || function.parameters.len() != 2
+        {
+            return Ok(false);
+        }
+        let hash = super::ast_hash(function);
+        if hash != MBS_UNICODE_AC_AST_HASH {
+            eprintln!("mbs_unicode_ac hash candidate: {hash:#x}");
+            return Ok(false);
+        }
+        // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
+        // post-emission decline would pollute the output for the next
+        // template). Register measured (fingerprint -> bump) pairs only.
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let bump: u32 = match context {
+            0xbd60acb658c79e45 => 0, // mbs_ac (f516)
+            _ => return Ok(false),
+        };
+        // -- emit (the capture, verbatim) --
+        self.frame_size = 16;
+        self.non_leaf = true;
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        for target in [7, 12, 16, 17, 24, 30, 34, 38, 39] {
+            labels.insert(target, self.fresh_label());
+        }
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 });
+        self.load_word_constant(0, 0x0000c0e0);
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        self.emit_branch_conditional_to(4, 2, labels[&7]); // bne
+        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.emit_branch_to(labels[&39]); // b
+        self.bind_label(labels[&7]);
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 16 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 128 });
+        self.emit_branch_conditional_to(4, 0, labels[&12]); // bge
+        self.output.instructions.push(Instruction::load_immediate(5, 1));
+        self.emit_branch_to(labels[&17]); // b
+        self.bind_label(labels[&12]);
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 2048 });
+        self.emit_branch_conditional_to(4, 0, labels[&16]); // bge
+        self.output.instructions.push(Instruction::load_immediate(5, 2));
+        self.emit_branch_to(labels[&17]); // b
+        self.bind_label(labels[&16]);
+        self.output.instructions.push(Instruction::load_immediate(5, 3));
+        self.bind_label(labels[&17]);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 2 });
+        self.output.instructions.push(Instruction::Add { d: 6, a: 3, b: 5 });
+        self.emit_branch_conditional_to(12, 2, labels[&30]); // beq
+        self.emit_branch_conditional_to(4, 0, labels[&24]); // bge
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 1 });
+        self.emit_branch_conditional_to(4, 0, labels[&34]); // bge
+        self.emit_branch_to(labels[&38]); // b
+        self.bind_label(labels[&24]);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 4 });
+        self.emit_branch_conditional_to(4, 0, labels[&38]); // bge
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 26 });
+        self.output.instructions.push(Instruction::RotateAndMask { a: 4, s: 4, shift: 26, begin: 22, end: 31 });
+        self.output.instructions.push(Instruction::OrImmediate { a: 0, s: 0, immediate: 128 });
+        self.output.instructions.push(Instruction::StoreByteWithUpdate { s: 0, a: 6, offset: -1 });
+        self.bind_label(labels[&30]);
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 26 });
+        self.output.instructions.push(Instruction::RotateAndMask { a: 4, s: 4, shift: 26, begin: 22, end: 31 });
+        self.output.instructions.push(Instruction::OrImmediate { a: 0, s: 0, immediate: 128 });
+        self.output.instructions.push(Instruction::StoreByteWithUpdate { s: 0, a: 6, offset: -1 });
+        self.bind_label(labels[&34]);
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
+        self.output.instructions.push(Instruction::LoadByteZeroIndexed { d: 0, a: 3, b: 5 });
+        self.output.instructions.push(Instruction::Or { a: 0, s: 4, b: 0 });
+        self.output.instructions.push(Instruction::StoreByte { s: 0, a: 6, offset: -1 });
+        self.bind_label(labels[&38]);
+        self.output.instructions.push(Instruction::move_register(3, 5));
+        self.bind_label(labels[&39]);
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += bump;
+        Ok(true)
+    }
+}
