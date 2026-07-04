@@ -550,7 +550,10 @@ impl Parser {
             if let Some((bit_offset, width)) = bit_field {
                 let value = self.parse_scalar_constant(Type::UnsignedInt)?;
                 pack_bit_field(image, field_base, bit_offset, width, value as u64);
-            } else if let Some(nested) = nested_tag {
+            } else if let (Some(nested), Type::Struct { .. }) = (nested_tag.as_ref(), member_type) {
+                // Only a struct VALUE field descends — a struct POINTER carries
+                // the tag too (for member resolution) but is a 4-byte address.
+                let nested = nested.clone();
                 if *self.peek() == Token::BraceOpen {
                     self.advance();
                     self.fill_struct_fields(&nested, image, field_base, absolute_field, relocations)?;
@@ -657,6 +660,44 @@ impl Parser {
                     let name = name.clone();
                     self.position += 2;
                     return Ok(Some((name, 0)));
+                }
+            }
+        }
+        // `&global.member[.member…]` — a (possibly nested) member address in a
+        // STRUCT-typed global (`&__files._stdout`, `&__files._stdin.char_buffer`);
+        // each step's offset comes from the successive layouts.
+        if *self.peek() == Token::Ampersand {
+            if let (Some(Token::Identifier(global)), Some(Token::Dot)) =
+                (self.tokens.get(self.position + 1), self.tokens.get(self.position + 2))
+            {
+                if let Some(outer_tag) = self.global_structs.get(global) {
+                    let global = global.clone();
+                    let mut current_tag = outer_tag.clone();
+                    let mut addend: i32 = 0;
+                    let mut cursor = self.position + 2;
+                    loop {
+                        if self.tokens.get(cursor) != Some(&Token::Dot) {
+                            break;
+                        }
+                        let Some(Token::Identifier(member)) = self.tokens.get(cursor + 1) else {
+                            break;
+                        };
+                        let layout = self.structs.get(&current_tag).ok_or_else(|| Diagnostic::error(format!("struct '{current_tag}' is not declared")))?;
+                        let Some(field) = layout.fields.get(member) else {
+                            break;
+                        };
+                        addend += field.offset as i32;
+                        let next_tag = field.struct_tag.clone();
+                        cursor += 2;
+                        if matches!(self.tokens.get(cursor), Some(Token::Comma) | Some(Token::BraceClose)) {
+                            self.position = cursor;
+                            return Ok(Some((global, addend)));
+                        }
+                        match next_tag {
+                            Some(tag) => current_tag = tag,
+                            None => break,
+                        }
+                    }
                 }
             }
         }
@@ -2287,6 +2328,9 @@ impl Parser {
                 // resolve the member layout. Codegen handles the struct-pointer base
                 // and defers the value/array bases (no miscompile).
                 let global_struct_tag = self.last_struct_tag.clone();
+                if let Some(tag) = &global_struct_tag {
+                    self.global_structs.insert(name.clone(), tag.clone());
+                }
                 let mut declarator_name = name;
                 loop {
                     // Array dimensions `[A][B]…`: each `[N]` is an explicit length,

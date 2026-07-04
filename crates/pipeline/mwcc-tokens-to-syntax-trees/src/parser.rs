@@ -44,6 +44,9 @@ pub(crate) struct Parser {
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
     pub(crate) variable_structs: HashMap<String, String>,
+    /// Struct-typed GLOBALS by name -> struct tag (`extern FILE_TABLE __files;`),
+    /// so `&__files._stdout` in an initializer resolves its member offset.
+    pub(crate) global_structs: HashMap<String, String>,
     /// In-scope variables (parameters and scalar locals) mapped to their declared type, so
     /// `sizeof(var)` folds to a constant. Cleared per function in `function_body`.
     pub(crate) variable_types: HashMap<String, Type>,
