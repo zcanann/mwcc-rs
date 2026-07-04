@@ -212,6 +212,17 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     if config.flags.inline_deferred {
         machine_functions.reverse();
     }
+    // `#pragma defer_codegen on` defers the covered functions the same way:
+    // they emit LAST, in REVERSE definition order (measured: melee mem_funcs,
+    // where the pragma precedes every function and the whole .text reverses).
+    if !unit.deferred_function_names.is_empty() {
+        let (kept, mut deferred): (Vec<_>, Vec<_>) = machine_functions
+            .drain(..)
+            .partition(|function| !unit.deferred_function_names.iter().any(|name| *name == function.name));
+        deferred.reverse();
+        machine_functions = kept;
+        machine_functions.extend(deferred);
+    }
     // File-scope variables defined here (not `extern`/`static`). A writable global
     // lands in `.sdata` (initialized) or `.sbss` (zero); a `const` one is read-only
     // and lands in `.sdata2` (≤ 8 bytes) or `.rodata` (larger). Declaration order is

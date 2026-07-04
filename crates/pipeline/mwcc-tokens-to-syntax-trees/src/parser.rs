@@ -83,6 +83,12 @@ pub(crate) struct Parser {
     pub(crate) block_renames: Vec<(String, String)>,
     /// Monotonic counter feeding shadow-rename internal names.
     pub(crate) rename_counter: usize,
+    /// `#pragma defer_codegen on` is active: functions defined under it are
+    /// code-generated LAST, in reverse definition order (measured: melee
+    /// mem_funcs — the whole TU's .text is reversed).
+    pub(crate) defer_codegen: bool,
+    /// Names of functions defined while defer_codegen was on, in definition order.
+    pub(crate) deferred_function_names: Vec<String>,
     /// Names of skipped `static inline` functions with an inline `asm {}` body, in
     /// declaration order; mwcc emits a local undefined symbol for each.
     pub(crate) inline_asm_symbols: Vec<String>,

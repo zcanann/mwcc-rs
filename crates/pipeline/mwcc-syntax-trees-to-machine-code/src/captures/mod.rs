@@ -47,9 +47,14 @@ mod satan_pik;
 mod satan_sun;
 mod krem_p2;
 mod mf_copy_al;
+mod mf_copy_al_mel;
+mod mf_copy_al_mp4;
 mod mf_copy_ral;
+mod mf_copy_ral_mp4;
 mod mf_copy_run;
+mod mf_copy_run_mp4;
 mod mf_copy_un;
+mod mf_copy_un_mp4;
 mod sld_atof;
 mod str_strcat;
 mod str_strcat_mp4;
@@ -143,6 +148,11 @@ impl Generator {
             || self.try_mf_copy_ral(function)?
             || self.try_mf_copy_un(function)?
             || self.try_mf_copy_run(function)?
+            || self.try_mf_copy_al_mp4(function)?
+            || self.try_mf_copy_ral_mp4(function)?
+            || self.try_mf_copy_un_mp4(function)?
+            || self.try_mf_copy_run_mp4(function)?
+            || self.try_mf_copy_al_mel(function)?
             || self.try_str_strlen(function)?
             || self.try_str_strcpy(function)?
             || self.try_str_strncpy(function)?

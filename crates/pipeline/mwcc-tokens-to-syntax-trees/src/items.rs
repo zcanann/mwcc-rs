@@ -1389,6 +1389,7 @@ impl Parser {
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             skipped_inline_functions: self.skipped_inline_functions,
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
+            deferred_function_names: std::mem::take(&mut self.deferred_function_names),
         })
     }
 
@@ -1802,6 +1803,8 @@ impl Parser {
                     "pop" => self.cplusplus = self.cplusplus_stack.pop().unwrap_or(false),
                     "cplusplus on" => self.cplusplus = true,
                     "cplusplus off" => self.cplusplus = false,
+                    "defer_codegen on" => self.defer_codegen = true,
+                    "defer_codegen off" => self.defer_codegen = false,
                     _ => {}
                 }
                 self.advance();
@@ -2290,6 +2293,9 @@ impl Parser {
                 return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
             }
             let function_is_weak = is_weak || self.weak_functions.contains(&name);
+            if self.defer_codegen {
+                self.deferred_function_names.push(name.clone());
+            }
             let mut function = self.function_body(return_type, name, is_static, parameters)?;
             function.is_weak = function_is_weak;
             functions.push(function);

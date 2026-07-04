@@ -1,4 +1,4 @@
-//! mf_copy_ral: an exact-match whole-function capture (fire 470).
+//! mf_copy_ral_mp4: an exact-match whole-function capture (fire 474).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,10 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MF_COPY_RAL_AST_HASH: u64 = 0x75ebfa29bf25c3e6;
+const MF_COPY_RAL_MP4_AST_HASH: u64 = 0x7ce68ebd1364d60f;
 
 impl Generator {
-    pub(super) fn try_mf_copy_ral(&mut self, function: &Function) -> Compilation<bool> {
+    pub(super) fn try_mf_copy_ral_mp4(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "__copy_longs_rev_aligned"
             || function.return_type != Type::Void
             || function.parameters.len() != 3
@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != MF_COPY_RAL_AST_HASH {
+        if hash != MF_COPY_RAL_MP4_AST_HASH {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -27,8 +27,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x626216a8cf3d36f5 => 0, // pikmin
-            0xbd60acb658c79e45 => 0, // pikmin2 + BfBB (+ melee's shared bodies) — same source
+            0xbd60acb658c79e45 => 0, // marioparty4 + AC
+            0xa605ebc1c79b708d => 0, // melee (same source; no @N in the TU)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

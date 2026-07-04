@@ -207,6 +207,11 @@ pub struct TranslationUnit {
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.
     pub skipped_inline_names: std::collections::HashSet<String>,
+    /// Functions defined under `#pragma defer_codegen on`, in definition order.
+    /// mwcc code-generates these LAST, in REVERSE definition order (measured:
+    /// melee mem_funcs — its whole .text is reversed). The unit assembly
+    /// reorders `functions` accordingly before the writer runs.
+    pub deferred_function_names: Vec<String>,
     /// Names of `static inline` functions whose body contains an inline `asm {}`
     /// block, in declaration order. mwcc keeps each as a deferred function and
     /// emits a local *undefined* symbol for it even when unused (it cannot inline
