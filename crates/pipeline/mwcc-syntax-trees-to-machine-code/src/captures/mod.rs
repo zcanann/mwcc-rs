@@ -84,6 +84,10 @@ mod suac_atoi_str;
 mod suac_strtol_str;
 mod suac_stub_strtoll;
 mod suac_stub_strtoull;
+mod suac_impl_bfbb;
+mod suac_impl64_bfbb;
+mod suac_stub_atoi;
+mod suac_stub_atol;
 mod suac_strtoul_pub;
 mod su_strtol;
 mod su_strtoul_impl;
@@ -315,6 +319,10 @@ impl Generator {
             || self.try_suac_strtol_str(function)?
             || self.try_suac_stub_strtoll(function)?
             || self.try_suac_stub_strtoull(function)?
+            || self.try_suac_impl_bfbb(function)?
+            || self.try_suac_impl64_bfbb(function)?
+            || self.try_suac_stub_atoi(function)?
+            || self.try_suac_stub_atol(function)?
             || self.try_suac_strtoul_pub(function)?
             || self.try_suac_strtol(function)?
             || self.try_suac_atoi_mel(function)?
