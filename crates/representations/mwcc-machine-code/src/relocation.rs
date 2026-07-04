@@ -51,6 +51,8 @@ pub enum RelocationTarget {
     /// This function's own jump table — the anonymous `@N` object the writer
     /// materializes in `.data` for a dense `switch` (its `lis`/`addi` address load).
     JumpTable,
+    /// This function's anonymous `.rodata` blob (`MachineFunction::anonymous_rodata`).
+    AnonymousRodata,
 }
 
 /// A relocation against `.text`, located by the instruction it patches (byte

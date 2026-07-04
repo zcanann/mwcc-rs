@@ -13,6 +13,6 @@ mod instruction;
 mod relocation;
 
 pub use frame::FrameInfo;
-pub use function::{JumpTable, MachineFunction, PoolConstant};
+pub use function::{AnonymousRodata, JumpTable, MachineFunction, PoolConstant};
 pub use instruction::Instruction;
 pub use relocation::{Relocation, RelocationKind, RelocationTarget};

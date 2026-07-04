@@ -125,6 +125,10 @@ pub struct FunctionObject<'a> {
     /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
     /// function, and resolves this function's `JumpTable` `.text` relocations.
     pub jump_table: Option<JumpTable>,
+    /// An anonymous `.rodata` blob (`@N` via ADDR16_HA/LO): raw bytes plus the
+    /// blob's offset past the function's running `@N` counter (numbered BEFORE
+    /// the pool constants — measured on __strtold: table @26, pool @147).
+    pub anonymous_rodata: Option<(Vec<u8>, i32)>,
     /// The names this function references (globals/callees) in mwcc's symbol-table
     /// order — an AST traversal, not `.text` reference order. The writer assigns
     /// this function's external/global symbols in this order, with a relocation-
@@ -151,6 +155,8 @@ pub enum RelocationTarget {
     Constant(usize),
     /// This function's own jump table (the anonymous `@N` object in `.data`).
     JumpTable,
+    /// This function's anonymous `.rodata` blob (`FunctionObject::anonymous_rodata`).
+    AnonymousRodata,
 }
 
 /// A `.text` relocation: a byte offset, the ELF relocation type, and its target.

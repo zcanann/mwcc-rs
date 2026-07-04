@@ -45,6 +45,9 @@ mod uart_close;
 mod uart_write;
 mod satan_pik;
 mod satan_sun;
+mod sld_atof;
+mod sld_strtod;
+mod sld_strtold;
 mod sldexp;
 mod sldexp_str;
 
@@ -106,6 +109,9 @@ impl Generator {
             || self.try_eatan2_ww(function)?
             || self.try_epow(function)?
             || self.try_epow_ww(function)?
+            || self.try_sld_strtold(function)?
+            || self.try_sld_strtod(function)?
+            || self.try_sld_atof(function)?
             || self.try_sldexp(function)?
             || self.try_sldexp_str(function)?
             || self.try_erempio2(function)?

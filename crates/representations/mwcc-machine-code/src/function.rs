@@ -12,6 +12,17 @@ pub struct PoolConstant {
     pub byte_width: u8,
 }
 
+/// An anonymous `.rodata` blob (`@N`): raw bytes the writer materializes as a
+/// LOCAL object, addressed by the function via `R_PPC_ADDR16_HA`/`_LO`.
+#[derive(Debug, Clone)]
+pub struct AnonymousRodata {
+    pub bytes: Vec<u8>,
+    /// How far past the function's running anonymous-`@N` counter the blob's
+    /// number sits (measured; signed — __strtold's table lands at counter-1,
+    /// like a static local).
+    pub anonymous_offset: i32,
+}
+
 /// A dense `switch`'s jump table (the writer materializes it as an anonymous `@N`
 /// object in `.data`).
 #[derive(Debug, Clone)]
@@ -92,6 +103,11 @@ pub struct MachineFunction {
     /// A dense `switch`'s jump table; `None` unless the function dispatches through
     /// one. The writer materializes it as an anonymous `@N` object in `.data`.
     pub jump_table: Option<JumpTable>,
+    /// An anonymous read-only data BLOB this function references (`@N` in
+    /// `.rodata` via ADDR16_HA/LO — e.g. __strtold's 42-byte zero table).
+    /// Numbered like the jump table: `anonymous_offset` past the function's
+    /// running `@N` counter, BEFORE its pool constants.
+    pub anonymous_rodata: Option<AnonymousRodata>,
     /// Referenced symbol names (globals and callees) in mwcc's symbol-table order —
     /// an AST traversal, NOT `.text` reference order. The writer assigns this
     /// function's external/global symbol indices in this order (see the codegen's
@@ -129,6 +145,7 @@ impl MachineFunction {
             pre_scheduled: false,
             frame: None,
             jump_table: None,
+            anonymous_rodata: None,
             symbol_order: Vec::new(),
             implicit_external_callees: Vec::new(),
         }

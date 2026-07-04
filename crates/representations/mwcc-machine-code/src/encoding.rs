@@ -127,6 +127,7 @@ impl Instruction {
             Instruction::StoreWordWithUpdate { s, a, offset } => d_form(37, s, a, offset as u16),
             Instruction::LoadWord { d, a, offset } => d_form(32, d, a, offset as u16),
             Instruction::LoadWordWithUpdate { d, a, offset } => d_form(33, d, a, offset as u16),
+            Instruction::LoadByteZeroWithUpdate { d, a, offset } => d_form(35, d, a, offset as u16),
             Instruction::LoadByteZero { d, a, offset } => d_form(34, d, a, offset as u16),
             Instruction::LoadHalfwordZero { d, a, offset } => d_form(40, d, a, offset as u16),
             Instruction::LoadHalfwordAlgebraic { d, a, offset } => d_form(42, d, a, offset as u16),

@@ -71,6 +71,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                         MachineTarget::External(symbol) => RelocationTarget::External(symbol.clone()),
                         MachineTarget::Constant(index) => RelocationTarget::Constant(*index),
                         MachineTarget::JumpTable => RelocationTarget::JumpTable,
+                        MachineTarget::AnonymousRodata => RelocationTarget::AnonymousRodata,
                     },
                 })
                 .collect(),
@@ -98,6 +99,10 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 entries: table.entries.clone(),
                 anonymous_offset: table.anonymous_offset,
             }),
+            anonymous_rodata: function
+                .anonymous_rodata
+                .as_ref()
+                .map(|blob| (blob.bytes.clone(), blob.anonymous_offset)),
             symbol_order: function.symbol_order.clone(),
             implicit_external_callees: function.implicit_external_callees.clone(),
         })

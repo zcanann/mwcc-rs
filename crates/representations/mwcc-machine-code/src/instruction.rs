@@ -206,6 +206,9 @@ pub enum Instruction {
     StoreWordWithUpdate { s: u8, a: u8, offset: i16 },
     /// `lwz rD, offset(rA)` — load word.
     LoadWord { d: u8, a: u8, offset: i16 },
+    /// `lbzu` — load byte (zero-extended) AND update the base register with
+    /// the effective address (op 35).
+    LoadByteZeroWithUpdate { d: u8, a: u8, offset: i16 },
     /// `lwzu` — load word AND update the base register with the effective
     /// address, folding a pre-decremented element access into one instruction.
     LoadWordWithUpdate { d: u8, a: u8, offset: i16 },

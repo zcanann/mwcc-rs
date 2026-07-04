@@ -135,7 +135,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     };
     let has_sdata = input.data_objects.iter().any(|object| section_of(object) == ".sdata");
     let has_sbss = input.data_objects.iter().any(|object| section_of(object) == ".sbss");
-    let has_rodata = input.data_objects.iter().any(|object| section_of(object) == ".rodata");
+    let has_rodata = input.data_objects.iter().any(|object| section_of(object) == ".rodata")
+        || input.functions.iter().any(|function| function.anonymous_rodata.is_some());
     let has_const_sdata2 = input.data_objects.iter().any(|object| section_of(object) == ".sdata2");
     let has_file_data = input.data_objects.iter().any(|object| section_of(object) == ".data");
     let has_bss = input.data_objects.iter().any(|object| section_of(object) == ".bss");
@@ -162,6 +163,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut rodata_size = 0u32;
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".rodata") {
         place(object, ".rodata", &mut rodata_size);
+    }
+    // Anonymous `.rodata` blobs follow the named const objects, 8-aligned.
+    let mut rodata_blob_offset: Vec<Option<u32>> = Vec::new();
+    for function in &input.functions {
+        if let Some((bytes, _)) = &function.anonymous_rodata {
+            rodata_size = rodata_size.div_ceil(8) * 8;
+            rodata_blob_offset.push(Some(rodata_size));
+            rodata_size += bytes.len() as u32;
+        } else {
+            rodata_blob_offset.push(None);
+        }
     }
     // Large initialized `.data` is laid out FORWARD (declaration order).
     let mut file_data_size = 0u32;
@@ -218,6 +230,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 ".data" => file_data[offset..offset + bytes.len()].copy_from_slice(bytes),
                 _ => {}
             }
+        }
+    }
+    for (function_index, function) in input.functions.iter().enumerate() {
+        if let Some((bytes, _)) = &function.anonymous_rodata {
+            let offset = rodata_blob_offset[function_index].unwrap() as usize;
+            rodata[offset..offset + bytes.len()].copy_from_slice(bytes);
         }
     }
 
@@ -290,6 +308,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut constant_numbers: Vec<Vec<u32>> = Vec::new();
     let mut frame_numbers: Vec<Option<FrameNumbers>> = Vec::new();
     let mut jump_table_numbers: Vec<Option<u32>> = Vec::new();
+    let mut rodata_blob_numbers: Vec<Option<u32>> = Vec::new();
     let mut extab_payload_offset = 0u32;
     let mut extabindex_payload_offset = 0u32;
     // The functions' anonymous `@N` numbering starts at 5, past any FILE-SCOPE anonymous objects
@@ -320,6 +339,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         let mut number = counter + owned_statics.len() as u32 + function.anonymous_bump;
         // This function's own strings sit at the front of its `@N` block, before its constants.
         number += function.string_count;
+        // The anonymous rodata blob numbers BEFORE the pool constants
+        // (measured: __strtold's table @26 precedes its pool double @147).
+        if let Some((_, anonymous_offset)) = &function.anonymous_rodata {
+            let number_of_blob = (number as i64 + *anonymous_offset as i64) as u32;
+            number = number_of_blob + 1;
+            rodata_blob_numbers.push(Some(number_of_blob));
+        } else {
+            rodata_blob_numbers.push(None);
+        }
         let mut numbers = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
             for (gap_index, gap) in &function.constant_number_gaps {
@@ -552,6 +580,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
     let mut jump_table_symbols: Vec<u32> = Vec::new();
+    let mut rodata_blob_symbols: Vec<u32> = Vec::new();
     // One `.sdata2` symbol per distinct constant: a deduped reuse points at the
     // symbol the first function emitted (its `@N` and offset already shared above).
     let mut constant_symbol: HashMap<(u64, u8), u32> = HashMap::new();
@@ -579,6 +608,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let section = index_of(data_section[name.as_str()]) as u16;
             write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
             comment_values.push((data_aligns[name.as_str()], 0));
+        }
+        // The anonymous rodata blob's LOCAL `@N` symbol precedes the pool
+        // constants' (symtab order measured on __strtold: @26 then @147).
+        if let Some(number) = rodata_blob_numbers[index] {
+            rodata_blob_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
+            let name = strtab.add(&format!("@{}", number));
+            let size = function.anonymous_rodata.as_ref().unwrap().0.len() as u32;
+            write_symbol(&mut symtab, name, rodata_blob_offset[index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".rodata") as u16);
+            // The blob's `.comment` alignment record is 4 (measured on __strtold's @26).
+            comment_values.push((4, 0));
+        } else {
+            rodata_blob_symbols.push(0);
         }
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
@@ -808,6 +849,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     .unwrap_or_else(|| &global_symbols[name.as_str()]),
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
                 RelocationTarget::JumpTable => jump_table_symbols[index],
+                RelocationTarget::AnonymousRodata => rodata_blob_symbols[index],
             };
             write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, 0);
         }

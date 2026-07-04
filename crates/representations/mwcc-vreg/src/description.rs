@@ -114,7 +114,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         }
         // The update form reads AND rewrites the base; the Use keeps the base's
         // range open (its post-update value extends through later uses anyway).
-        LoadWordWithUpdate { d, a, .. } => {
+        LoadWordWithUpdate { d, a, .. } | LoadByteZeroWithUpdate { d, a, .. } => {
             visit(D, G, d);
             visit(U, G, a);
             visit(D, G, a);
