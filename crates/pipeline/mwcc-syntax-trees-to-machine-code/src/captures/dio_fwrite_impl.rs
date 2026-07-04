@@ -9,7 +9,7 @@ use mwcc_syntax_trees::{Function, Type};
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const DIO_FWRITE_IMPL_AST_HASH: u64 = 0x8fcab973f47ccfd4; // mp4 (f509); +ww
 /// Cosmetic AST variants with IDENTICAL instruction streams (@N-normalized).
-const DIO_FWRITE_IMPL_AST_HASHES: &[u64] = &[DIO_FWRITE_IMPL_AST_HASH, 0x41fc9ad59fd2bb74, 0x23eb744fffd0e8c4, 0x32cd1b78e0cb7486];
+const DIO_FWRITE_IMPL_AST_HASHES: &[u64] = &[DIO_FWRITE_IMPL_AST_HASH, 0x41fc9ad59fd2bb74, 0x23eb744fffd0e8c4, 0x32cd1b78e0cb7486, 0x41589299a1b0fa0b];
 
 impl Generator {
     pub(super) fn try_dio_fwrite_impl(&mut self, function: &Function) -> Compilation<bool> {
@@ -31,6 +31,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xbd60acb658c79e45 => 0, // the MSL-common fingerprint (f509)
+            0x626216a8cf3d36f5 => 0, // strikers (f511)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

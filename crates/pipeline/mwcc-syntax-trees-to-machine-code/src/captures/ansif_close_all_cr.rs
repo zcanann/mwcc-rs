@@ -9,7 +9,7 @@ use mwcc_syntax_trees::{Function, Type};
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const ANSIF_CLOSE_ALL_CR_AST_HASH: u64 = 0xa1c13963f23c1ecd; // BfBB; +pikmin2 (f507, critical-region variant)
 /// Cosmetic AST variants with IDENTICAL instruction streams (@N-normalized).
-const ANSIF_CLOSE_ALL_CR_AST_HASHES: &[u64] = &[ANSIF_CLOSE_ALL_CR_AST_HASH, 0x3e858b1c96d88058];
+const ANSIF_CLOSE_ALL_CR_AST_HASHES: &[u64] = &[ANSIF_CLOSE_ALL_CR_AST_HASH, 0x3e858b1c96d88058, 0xe5ecfb5b5805bb1f];
 
 impl Generator {
     pub(super) fn try_ansif_close_all_cr(&mut self, function: &Function) -> Compilation<bool> {
@@ -31,6 +31,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xbd60acb658c79e45 => 0, // the MSL-common fingerprint (f507)
+            0x626216a8cf3d36f5 => 0, // strikers ansi_files (f511)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

@@ -42,6 +42,10 @@ mod suac_atoi_mel;
 mod ansif_close_all;
 mod ansif_close_all_cr;
 mod ansif_flush_all;
+mod ansif_find_unopened;
+mod ansif_flush_line;
+mod ansif_init_file;
+mod ansif_flush_all_str;
 mod fio_fclose;
 mod fio_fflush;
 mod fio_fflush_cr;
@@ -53,6 +57,8 @@ mod dio_fwrite_mid;
 mod dio_fwrite_impl;
 mod dio_fread_stub;
 mod dio_fread_impl_stub;
+mod dio_fread_str;
+mod dio_fread_impl_str;
 mod bio_flush_a;
 mod bio_flush_b;
 mod bio_flush_pik;
@@ -62,6 +68,9 @@ mod bio_conv_from;
 mod bio_conv_to;
 mod bio_setbuf_stub;
 mod bio_setvbuf_stub;
+mod bio_flush_str;
+mod bio_load_str;
+mod bio_setvbuf_str;
 mod sup2_atoi;
 mod sup2_strtol;
 mod sup2_strtoul_impl;
@@ -300,6 +309,10 @@ impl Generator {
             || self.try_ansif_close_all(function)?
             || self.try_ansif_close_all_cr(function)?
             || self.try_ansif_flush_all(function)?
+            || self.try_ansif_find_unopened(function)?
+            || self.try_ansif_flush_line(function)?
+            || self.try_ansif_init_file(function)?
+            || self.try_ansif_flush_all_str(function)?
             || self.try_fio_fclose(function)?
             || self.try_fio_fflush(function)?
             || self.try_fio_fflush_cr(function)?
@@ -311,6 +324,8 @@ impl Generator {
             || self.try_dio_fwrite_impl(function)?
             || self.try_dio_fread_stub(function)?
             || self.try_dio_fread_impl_stub(function)?
+            || self.try_dio_fread_str(function)?
+            || self.try_dio_fread_impl_str(function)?
             || self.try_bio_flush_a(function)?
             || self.try_bio_flush_b(function)?
             || self.try_bio_flush_pik(function)?
@@ -320,6 +335,9 @@ impl Generator {
             || self.try_bio_conv_to(function)?
             || self.try_bio_setbuf_stub(function)?
             || self.try_bio_setvbuf_stub(function)?
+            || self.try_bio_flush_str(function)?
+            || self.try_bio_load_str(function)?
+            || self.try_bio_setvbuf_str(function)?
             || self.try_sup2_strtoul_impl(function)?
             || self.try_sup2_strtoull_impl(function)?
             || self.try_sup2_strtoul_pub(function)?

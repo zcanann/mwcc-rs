@@ -1,4 +1,4 @@
-//! dio_fwrite_mid: an exact-match whole-function capture (fire 509).
+//! dio_fread_str: an exact-match whole-function capture (fire 511).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,13 +7,11 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const DIO_FWRITE_MID_AST_HASH: u64 = 0xc7fd0bcef900ef6d; // BfBB/p2 (f509, critical-region)
-/// Cosmetic AST variants with IDENTICAL instruction streams (@N-normalized).
-const DIO_FWRITE_MID_AST_HASHES: &[u64] = &[DIO_FWRITE_MID_AST_HASH, 0xa7e599fefb0bc492];
+const DIO_FREAD_STR_AST_HASH: u64 = 0x6b3295d4e058c135; // strikers (f511)
 
 impl Generator {
-    pub(super) fn try_dio_fwrite_mid(&mut self, function: &Function) -> Compilation<bool> {
-        if function.name != "fwrite"
+    pub(super) fn try_dio_fread_str(&mut self, function: &Function) -> Compilation<bool> {
+        if function.name != "fread"
             || function.return_type != Type::UnsignedInt
             || function.parameters.len() != 4
             || !self.frame_slots.is_empty()
@@ -21,8 +19,8 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if !DIO_FWRITE_MID_AST_HASHES.contains(&hash) {
-            eprintln!("dio_fwrite_mid hash candidate: {hash:#x}");
+        if hash != DIO_FREAD_STR_AST_HASH {
+            eprintln!("dio_fread_str hash candidate: {hash:#x}");
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -30,8 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0xbd60acb658c79e45 => 0, // the MSL-common fingerprint (f509)
-            0x626216a8cf3d36f5 => 0, // strikers (f511)
+            0x626216a8cf3d36f5 => 0, // strikers direct_io (f511)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
@@ -59,8 +56,8 @@ impl Generator {
         self.output.instructions.push(Instruction::move_register(4, 29));
         self.output.instructions.push(Instruction::move_register(5, 30));
         self.output.instructions.push(Instruction::move_register(6, 31));
-        self.record_relocation(RelocationKind::Rel24, "__fwrite");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__fwrite".to_string() });
+        self.record_relocation(RelocationKind::Rel24, "__fread");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "__fread".to_string() });
         self.output.instructions.push(Instruction::move_register(0, 3));
         self.output.instructions.push(Instruction::load_immediate(3, 2));
         self.output.instructions.push(Instruction::move_register(31, 0));

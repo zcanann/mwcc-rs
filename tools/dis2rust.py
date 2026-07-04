@@ -188,6 +188,7 @@ for idx, mn, ops in instrs:
     elif mn=="subfe": push(f"SubtractFromExtended {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="lbzx": push(f"LoadByteZeroIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="lwzx": push(f"LoadWordIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="lhzx": push(f"LoadHalfwordZeroIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="stwx": push(f"StoreWordIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="stbx": push(f"StoreByteIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="ori": push(f"OrImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")

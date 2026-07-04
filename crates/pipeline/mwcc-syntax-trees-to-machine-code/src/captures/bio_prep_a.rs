@@ -31,6 +31,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xbd60acb658c79e45 => 0, // the MSL-common fingerprint (f510)
+            0xcd0e7af815097794 => 0, // strikers buffer_io (f511)
             0x626216a8cf3d36f5 => 0, // pikmin (f510)
             0x071cd740dac1b53c => 0, // ww (f510)
             _ => return Ok(false),
