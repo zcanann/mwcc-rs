@@ -53,12 +53,14 @@ mod mf_copy_un;
 mod sld_atof;
 mod str_strcat;
 mod str_strchr;
+mod str_strchr_ac;
 mod str_strcmp;
 mod str_strcpy;
 mod str_strlen;
 mod str_strncmp;
 mod str_strncpy;
 mod str_strcmp_p2;
+mod str_strcpy_ac;
 mod strm_strchr;
 mod strm_strcmp;
 mod strm_strcpy;
@@ -69,6 +71,7 @@ mod str_strcpy_p2;
 mod str_strncmp_p2;
 mod str_strncpy_p2;
 mod str_strrchr;
+mod str_strstr_ac;
 mod str_strstr;
 mod sld_strtod;
 mod sld_strtold;
@@ -156,6 +159,9 @@ impl Generator {
             || self.try_strm_strncmp(function)?
             || self.try_strm_strchr(function)?
             || self.try_strm_stringread(function)?
+            || self.try_str_strcpy_ac(function)?
+            || self.try_str_strstr_ac(function)?
+            || self.try_str_strchr_ac(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
