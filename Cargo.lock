@@ -15,6 +15,7 @@ dependencies = [
  "mwcc-tokens",
  "mwcc-tokens-to-syntax-trees",
  "mwcc-versions",
+ "mwcc-vreg",
 ]
 
 [[package]]

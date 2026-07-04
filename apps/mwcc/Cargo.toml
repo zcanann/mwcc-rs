@@ -9,6 +9,7 @@ name = "mwcc"
 path = "src/main.rs"
 
 [dependencies]
+mwcc-vreg = { path = "../../crates/representations/mwcc-vreg" }
 mwcc-core.workspace = true
 mwcc-versions.workspace = true
 mwcc-tokens.workspace = true

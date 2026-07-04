@@ -178,6 +178,43 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         .iter()
         .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, &unit.skipped_inline_names, config))
         .collect::<Compilation<_>>()?;
+    // MWCC_DUMP_FIXTURES=<dir>: serialize every lowered function's register
+    // structure (per-instruction define/use operands via the vreg machine
+    // description) — the FIT CORPUS for the keystone allocator (#20). Each
+    // byte-verified function is a known-good whole-function register map.
+    if let Some(directory) = std::env::var_os("MWCC_DUMP_FIXTURES") {
+        let directory = std::path::PathBuf::from(directory);
+        let _ = std::fs::create_dir_all(&directory);
+        for function in &machine_functions {
+            let mut out = String::new();
+            out.push_str(&format!("fn {} instrs={}
+", function.name, function.instructions.len()));
+            for (index, instruction) in function.instructions.iter().enumerate() {
+                let mut clone = instruction.clone();
+                let debug = format!("{instruction:?}");
+                let mnemonic = debug.split([' ', '{']).next().unwrap_or("?");
+                let mut operands = Vec::new();
+                mwcc_vreg::for_each_register(&mut clone, |role, class, register| {
+                    let role = match role { mwcc_vreg::RegisterRole::Define => "D", mwcc_vreg::RegisterRole::Use => "U" };
+                    let class = match class { mwcc_vreg::Class::General => "G", mwcc_vreg::Class::Float => "F" };
+                    operands.push(format!("{role} {class} {register}"));
+                });
+                let call = matches!(instruction, mwcc_machine_code::Instruction::BranchAndLink { .. } | mwcc_machine_code::Instruction::BranchToCountRegisterAndLink);
+                out.push_str(&format!("{index} {mnemonic}{} | {}
+", if call { " CALL" } else { "" }, operands.join(" | ")));
+            }
+            // Same-named variants across projects carry different bodies —
+            // key the file by a content hash so none clobber.
+            let digest = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                out.hash(&mut hasher);
+                hasher.finish()
+            };
+            let file = directory.join(format!("{}_{digest:016x}.fixture", function.name.replace(['/', ':'], "_")));
+            let _ = std::fs::write(file, out);
+        }
+    }
     // Each SKIPPED inline function definition advanced mwcc's `@N` counter by 3
     // (compiled, then dropped) before the real functions were numbered — pre-bump
     // the first function's block (measured: math.h's fabs helper shifts s_frexp's
