@@ -10,6 +10,14 @@ use crate::relocation::Relocation;
 pub struct PoolConstant {
     pub bits: u64,
     pub byte_width: u8,
+    /// Numbered at the function's STATIC-LOCAL slot (`counter - 1`) instead of
+    /// the pool block — mwcc pools an initialized AUTO array's word image there
+    /// (measured: mbstring's first_byte_mark -> @4).
+    pub static_slot: bool,
+    /// An initialized AUTO array's pooled word image: its `.sdata2` SYMBOL
+    /// leads the owning static function's FUNC symbol regardless of where it
+    /// NUMBERS (mp4 @4 static-slot; ww @47 pool-block — both lead).
+    pub image: bool,
 }
 
 /// An anonymous `.rodata` blob (`@N`): raw bytes the writer materializes as a
@@ -170,7 +178,23 @@ impl MachineFunction {
     /// Intern a pool constant, returning its index. Equal constants share one slot
     /// (mwcc pools identical constants).
     pub fn intern_constant(&mut self, bits: u64, byte_width: u8) -> usize {
-        let constant = PoolConstant { bits, byte_width };
+        self.intern_constant_slotted(bits, byte_width, false, false)
+    }
+
+    /// Intern a constant that numbers at the function's STATIC-LOCAL slot
+    /// (an initialized auto array's pooled word image).
+    pub fn intern_constant_static_slot(&mut self, bits: u64, byte_width: u8) -> usize {
+        self.intern_constant_slotted(bits, byte_width, true, true)
+    }
+
+    /// Intern an auto-array image that numbers in the POOL BLOCK but whose
+    /// symbol still leads the owning static function (ww's variant).
+    pub fn intern_constant_image(&mut self, bits: u64, byte_width: u8) -> usize {
+        self.intern_constant_slotted(bits, byte_width, false, true)
+    }
+
+    fn intern_constant_slotted(&mut self, bits: u64, byte_width: u8, static_slot: bool, image: bool) -> usize {
+        let constant = PoolConstant { bits, byte_width, static_slot, image };
         if let Some(index) = self.constants.iter().position(|existing| *existing == constant) {
             return index;
         }

@@ -7,13 +7,13 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MBS_MBTOWC_WW_AST_HASH: u64 = 0;
+const MBS_MBTOWC_WW_AST_HASH: u64 = 0x9d1b8b7778ca353c; // ww (f517)
+// NOTE: the HASH is shared with BfBB (same source text) but ww's stream is a
+// bare blr (the empty static callee inlined away) — the ctx arm disambiguates.
 
 impl Generator {
     pub(super) fn try_mbs_mbtowc_ww(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "mbtowc"
-            || function.return_type != Type::Int
-            || function.parameters.len() != 3
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
@@ -28,10 +28,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            _ => {
-                eprintln!("mbs_mbtowc_ww context candidate: {context:#x}");
-                return Ok(false);
-            }
+            0x6e7a972c5b9ab3cb => 0, // ww mbstring (f517)
+            _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();

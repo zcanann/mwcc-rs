@@ -1863,6 +1863,12 @@ impl Generator {
         if !self.skipped_inline_names.is_empty() && function_calls_any(function, &self.skipped_inline_names) {
             return Err(Diagnostic::error("a call to a skipped inline function needs inline expansion (roadmap)"));
         }
+        // A NATIVE caller of a WEAK-MATERIALIZED plain inline defers the same
+        // way: mwcc may have re-inlined a trivial body at this call site
+        // (measured: ww's mbtowc folds to `blr`), so only a capture claim is safe.
+        if !self.weak_materialized_names.is_empty() && function_calls_any(function, &self.weak_materialized_names) {
+            return Err(Diagnostic::error("a call to a weak-materialized inline needs its measured call-site form (roadmap)"));
+        }
         if self.try_fpclassify_switch(function)? {
             return Ok(());
         }

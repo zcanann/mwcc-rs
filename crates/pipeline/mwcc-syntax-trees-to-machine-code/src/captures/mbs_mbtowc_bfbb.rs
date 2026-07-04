@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MBS_MBTOWC_BFBB_AST_HASH: u64 = 0;
+const MBS_MBTOWC_BFBB_AST_HASH: u64 = 0x9d1b8b7778ca353c; // BfBB (f517, mbstowcs inlined into the wrapper)
 
 impl Generator {
     pub(super) fn try_mbs_mbtowc_bfbb(&mut self, function: &Function) -> Compilation<bool> {
@@ -28,10 +28,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            _ => {
-                eprintln!("mbs_mbtowc_bfbb context candidate: {context:#x}");
-                return Ok(false);
-            }
+            0xc1eb9a856a0f8258 => 0, // BfBB mbstring (f517)
+            _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();

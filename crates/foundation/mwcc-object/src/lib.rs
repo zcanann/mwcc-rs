@@ -182,6 +182,11 @@ pub struct TextRelocation {
 pub struct Sdata2Constant {
     pub bits: u64,
     pub byte_width: u8,
+    /// Numbered at the function's static-local slot (`counter - 1`), not the
+    /// pool block (an initialized auto array's pooled word image).
+    pub static_slot: bool,
+    /// The symbol leads the owning static function's FUNC symbol.
+    pub image: bool,
 }
 
 /// The `extab`/`extabindex` unwind tables a stack-frame function carries. The

@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MBS_UNICODE_AC_AST_HASH: u64 = 1; // DISARMED f516: the pooled auto-array WORD image numbers @4 (the static-local slot, counter-1) — writer rule unmodeled; real hash 0x790dbc122e9f8c4d
+const MBS_UNICODE_AC_AST_HASH: u64 = 0x790dbc122e9f8c4d; // re-armed f517 (the @4 static-slot pooled image)
 
 impl Generator {
     pub(super) fn try_mbs_unicode_ac(&mut self, function: &Function) -> Compilation<bool> {
@@ -39,7 +39,7 @@ impl Generator {
         }
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 });
-        self.load_word_constant(0, 0x0000c0e0);
+        self.load_word_constant_static_slot(0, 0x0000c0e0);
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
         self.emit_branch_conditional_to(4, 2, labels[&7]); // bne
         self.output.instructions.push(Instruction::load_immediate(3, 0));

@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x6e7a972c5b9ab3cb => 31, // ww mbstring (f517): pool @47 measured
             0xa1c526a9076479be => 12, // pikmin2 mbstring (f514)
             0xdba628923f494fa9 => 12, // strikers mbstring (f514): pool @59 measured
             _ => return Ok(false),

@@ -157,6 +157,11 @@ pub(crate) struct Generator {
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
+    /// PLAIN-inline functions our parser MATERIALIZED as weak globals. mwcc may
+    /// instead re-inline a trivial one at its call sites (ww's mbstowcs folds
+    /// callers to `blr`), so a NATIVE caller defers — only a capture claim
+    /// knows the real bytes.
+    pub(crate) weak_materialized_names: std::collections::HashSet<String>,
     /// Parameter types of each callable name, so a call places each argument in the
     /// register its parameter requires (a float parameter takes f1.., an integer
     /// takes r3..) and a type mismatch is detected rather than silently mis-passed.
@@ -350,6 +355,23 @@ impl Generator {
         let index = self.output.intern_constant(value.to_bits() as u64, 4);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
         self.output.instructions.push(Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 });
+    }
+
+    /// Emit a load of an auto-array's pooled WORD IMAGE: like
+    /// [`Self::load_word_constant`] but the entry numbers at the function's
+    /// STATIC-LOCAL slot (measured: mbstring's first_byte_mark at `@4`).
+    pub(crate) fn load_word_constant_static_slot(&mut self, destination: u8, bits: u32) {
+        let index = self.output.intern_constant_static_slot(bits as u64, 4);
+        self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
+        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 0, offset: 0 });
+    }
+
+    /// Emit an auto-array image load that numbers in the POOL BLOCK but whose
+    /// symbol leads the owning static function (ww's mbstring variant).
+    pub(crate) fn load_word_constant_image(&mut self, destination: u8, bits: u32) {
+        let index = self.output.intern_constant_image(bits as u64, 4);
+        self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
+        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 0, offset: 0 });
     }
 
     /// Emit a load of a pooled WORD constant from `.sdata2`: `lwz rD, 0(r0)`

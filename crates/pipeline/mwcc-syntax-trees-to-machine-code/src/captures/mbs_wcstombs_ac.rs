@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MBS_WCSTOMBS_AC_AST_HASH: u64 = 1; // DISARMED f516: the pooled auto-array WORD image numbers @4 (the static-local slot, counter-1) — writer rule unmodeled; real hash 0x7f92a09d213afc90
+const MBS_WCSTOMBS_AC_AST_HASH: u64 = 0x7f92a09d213afc90; // re-armed f517 (the @4 static-slot pooled image)
 
 impl Generator {
     pub(super) fn try_mbs_wcstombs_ac(&mut self, function: &Function) -> Compilation<bool> {

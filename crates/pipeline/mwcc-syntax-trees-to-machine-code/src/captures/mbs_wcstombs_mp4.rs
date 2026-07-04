@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MBS_WCSTOMBS_MP4_AST_HASH: u64 = 1; // DISARMED f516: the pooled auto-array WORD image numbers @4 (the static-local slot, counter-1) — writer rule unmodeled; real hash 0x1c4a4ee6315422f4
+const MBS_WCSTOMBS_MP4_AST_HASH: u64 = 0x1c4a4ee6315422f4; // re-armed f517 (the @4 static-slot pooled image)
 
 impl Generator {
     pub(super) fn try_mbs_wcstombs_mp4(&mut self, function: &Function) -> Compilation<bool> {
@@ -64,7 +64,7 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreByteIndexed { s: 0, a: 28, b: 31 });
         self.emit_branch_to(labels[&66]); // b
         self.bind_label(labels[&21]);
-        self.load_word_constant(0, 0x0000c0e0);
+        self.load_word_constant_static_slot(0, 0x0000c0e0);
         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 6, immediate: 128 });
         self.output.instructions.push(Instruction::AddImmediate { d: 30, a: 30, immediate: 2 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });

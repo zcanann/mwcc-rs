@@ -83,7 +83,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             constants: function
                 .constants
                 .iter()
-                .map(|constant| Sdata2Constant { bits: constant.bits, byte_width: constant.byte_width })
+                .map(|constant| Sdata2Constant { bits: constant.bits, byte_width: constant.byte_width, static_slot: constant.static_slot, image: constant.image })
                 .collect(),
             frame: function.frame.map(|frame| FrameLayout { extab_header: frame.extab_header() }),
             // The anonymous-`@N` counter is bumped by one for an int<->float

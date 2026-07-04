@@ -330,6 +330,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // function got — a deduped reuse consumes no new number, so the reusing
     // function's subsequent unwind `@N` shift down accordingly.
     let mut numbered_constant: HashMap<(u64, u8), u32> = HashMap::new();
+    // STATIC-SLOT pooled images (auto-array word images at `counter - 1`) dedup
+    // across functions like ordinary pool constants.
+    let mut numbered_static_slot: HashMap<(u64, u8), u32> = HashMap::new();
     // Real functions' STATIC LOCALS: numbered at counter-1+i (measured: the
     // first function's static is $4 against the base-5 counter), and the
     // owner's constants shift by the static count.
@@ -364,7 +367,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             rodata_blob_numbers.push(None);
         }
         let mut numbers = Vec::new();
+        let mut static_slot_seen = 0u32;
         for (constant_index, constant) in function.constants.iter().enumerate() {
+            // An initialized auto array's pooled WORD IMAGE numbers at the
+            // function's STATIC-LOCAL slot (`counter - 1`, past any owned
+            // statics), outside the pool block and consuming no pool number
+            // (measured: mbstring's first_byte_mark -> @4). A LATER function
+            // reusing the image binds the first one's number (wcstombs -> @4).
+            if constant.static_slot {
+                match numbered_static_slot.get(&(constant.bits, constant.byte_width)) {
+                    Some(&existing) => numbers.push(existing),
+                    None => {
+                        let number_of_slot = counter + owned_statics.len() as u32 + static_slot_seen - 1;
+                        numbered_static_slot.insert((constant.bits, constant.byte_width), number_of_slot);
+                        numbers.push(number_of_slot);
+                        static_slot_seen += 1;
+                    }
+                }
+                continue;
+            }
             for (gap_index, gap) in &function.constant_number_gaps {
                 if *gap_index == constant_index {
                     number += gap;
@@ -626,11 +647,26 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // the local symbol; the global run below skips them.
     let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
     let mut local_function_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut static_slot_symbols: HashMap<(usize, usize), u32> = HashMap::new();
+    let mut static_slot_symbol_by_value: HashMap<(u64, u8), u32> = HashMap::new();
     for (index, function) in functions.iter().enumerate() {
         // An IMPLICIT-declaration materialization emits its local symbol later
         // (after its own static locals), and calls bind the UND ghost instead —
         // it never enters `local_function_symbols` (measured: ww uart).
         if function.is_static && !function.implicit_local {
+            // A STATIC-SLOT pooled constant (an auto array's word image) leads
+            // its owning STATIC function's symbol (measured: mbstring's @4
+            // before unicode_to_UTF8's FUNC).
+            for (constant_index, constant) in function.constants.iter().enumerate() {
+                if constant.image && !static_slot_symbol_by_value.contains_key(&(constant.bits, constant.byte_width)) {
+                    let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                    static_slot_symbols.insert((index, constant_index), symbol);
+                    static_slot_symbol_by_value.insert((constant.bits, constant.byte_width), symbol);
+                    let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
+                    write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
+                    comment_values.push((constant.byte_width as u32, 0));
+                }
+            }
             let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
             function_symbols[index] = symbol;
             local_function_symbols.insert(function.name, symbol);
@@ -695,6 +731,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
+            // An IMAGE constant's symbol already emitted ahead of its owning
+            // static function — a later function reusing it binds the same
+            // symbol.
+            if constant.image {
+                if let Some(&early) = static_slot_symbol_by_value.get(&(constant.bits, constant.byte_width)) {
+                    symbols.push(early);
+                    continue;
+                }
+            }
             match constant_symbol.get(&(constant.bits, constant.byte_width)) {
                 Some(&existing) => symbols.push(existing),
                 None => {

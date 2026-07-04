@@ -7,7 +7,9 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MBS_WCSTOMBS_BFBB_AST_HASH: u64 = 0;
+const MBS_WCSTOMBS_BFBB_AST_HASH: u64 = 0x797c9420ac5fa333; // BfBB (f517)
+// NOTE: the HASH is shared with strikers/ww (same source) but the STREAM
+// differs — the ctx arm disambiguates.
 
 impl Generator {
     pub(super) fn try_mbs_wcstombs_bfbb(&mut self, function: &Function) -> Compilation<bool> {
@@ -27,10 +29,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            _ => {
-                eprintln!("mbs_wcstombs_bfbb context candidate: {context:#x}");
-                return Ok(false);
-            }
+            0xc1eb9a856a0f8258 => 72, // BfBB mbstring (f517): pool @131 measured
+            _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 48;
