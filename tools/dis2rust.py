@@ -132,6 +132,7 @@ for idx, mn, ops in instrs:
     elif mn=="and.": push(f"AndRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="extsb": push(f"ExtendSignByte {{ a: {R(ops[0])}, s: {R(ops[1])} }}")
     elif mn=="extsb.": push(f"ExtendSignByteRecord {{ a: {R(ops[0])}, s: {R(ops[1])} }}")
+    elif mn=="cntlzw": push(f"CountLeadingZeros {{ a: {R(ops[0])}, s: {R(ops[1])} }}")
     elif mn=="stbu": push(f"StoreByteWithUpdate {{ s: {R(ops[0])}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="beqlr": push("BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }")
     elif mn=="bctrl": push("BranchToCountRegisterAndLink")

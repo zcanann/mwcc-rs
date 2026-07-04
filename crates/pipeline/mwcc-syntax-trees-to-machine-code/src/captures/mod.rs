@@ -57,6 +57,16 @@ mod uart_write;
 mod satan_pik;
 mod satan_sun;
 mod krem_p2;
+mod mem_memchr;
+mod mem_memchr_mel;
+mod mem_memchr_mp4;
+mod mem_memcmp;
+mod mem_memmove;
+mod mem_memmove_mp4;
+mod mem_memcmp_mel;
+mod mem_memcmp_mp4;
+mod mem_memrchr;
+mod mem_memrchr_mp4;
 mod mf_copy_al;
 mod mf_copy_al_mel;
 mod mf_copy_al_mp4;
@@ -198,6 +208,16 @@ impl Generator {
             || self.try_abexb_exit(function)?
             || self.try_abexp2_exit(function)?
             || self.try_abexpik_exit(function)?
+            || self.try_mem_memmove(function)?
+            || self.try_mem_memchr(function)?
+            || self.try_mem_memcmp(function)?
+            || self.try_mem_memmove_mp4(function)?
+            || self.try_mem_memrchr(function)?
+            || self.try_mem_memchr_mp4(function)?
+            || self.try_mem_memchr_mel(function)?
+            || self.try_mem_memrchr_mp4(function)?
+            || self.try_mem_memcmp_mel(function)?
+            || self.try_mem_memcmp_mp4(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
