@@ -8,6 +8,9 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const MEM_MEMCMP_AST_HASH: u64 = 0x724c3c0c0d6ba0ab;
+/// Cosmetic AST variants with IDENTICAL instruction streams (content-diffed
+/// against the captured split): BfBB (fire 501).
+const MEM_MEMCMP_AST_HASHES: &[u64] = &[MEM_MEMCMP_AST_HASH, 0x4f6b41fe5af53bc2];
 
 impl Generator {
     pub(super) fn try_mem_memcmp(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != MEM_MEMCMP_AST_HASH {
+        if !MEM_MEMCMP_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
