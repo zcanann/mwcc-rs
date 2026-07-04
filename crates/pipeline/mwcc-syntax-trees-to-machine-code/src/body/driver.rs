@@ -1,0 +1,1833 @@
+//! Core drive: parameter assignment, evaluate_body, statement/expression emission, the return tail.
+
+#[allow(unused_imports)]
+use super::*;
+
+impl Generator {
+    pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
+        self.known_locals = function.locals.iter().map(|local| local.name.clone()).collect();
+        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
+        let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        for parameter in &function.parameters {
+            let class = class_of(parameter.parameter_type)?;
+            let register = match class {
+                ValueClass::General => {
+                    let register = next_general;
+                    next_general += 1;
+                    register
+                }
+                ValueClass::Float => {
+                    let register = next_float;
+                    next_float += 1;
+                    register
+                }
+            };
+            let signed = self.signed_of(parameter.parameter_type);
+            let pointee = match parameter.parameter_type {
+                Type::Pointer(pointee) => Some(pointee),
+                _ => None,
+            };
+            let stride = pointer_stride(parameter.parameter_type);
+            self.locations.insert(
+                parameter.name.clone(),
+                Location { class, register, signed, width: parameter.parameter_type.width(), pointee, stride },
+            );
+        }
+        Ok(())
+    }
+
+    /// Emit a function involving a long long (64-bit) value, held in a general-register PAIR
+    /// (`r3:r4` = high:low). Only a narrow set of shapes is modeled; the rest defer rather than
+    /// fall through to the 32-bit codegen (which emits a single-register result for a 64-bit value).
+    pub(crate) fn emit_long_long(&mut self, function: &Function) -> Compilation<()> {
+        // Long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
+        if !function.locals.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+            return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
+        }
+        let high = Eabi::general_result().number; // r3 — the result HIGH word
+        let low = high + 1; //                       r4 — the result LOW word
+        let return_expression = function
+            .return_expression
+            .as_ref()
+            .ok_or_else(|| Diagnostic::error("a non-void long long function needs a return value"))?;
+        let any_long_long_parameter = function
+            .parameters
+            .iter()
+            .any(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong));
+
+        // ===== No long-long PARAMETERS: a long-long RETURN from a constant or a widened 32-bit value.
+        if !any_long_long_parameter {
+            if !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong) {
+                return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
+            }
+            // (a) A 64-bit integer CONSTANT — `li low,LOW ; li high,HIGH` (LOW word first, as mwcc
+            // emits it). Restricted to words that load with a single `li`.
+            if let Some(value) = crate::analysis::constant_value(return_expression) {
+                let low_word = value as i32 as i64;
+                let high_word = value >> 32;
+                if i16::try_from(low_word).is_err() || i16::try_from(high_word).is_err() {
+                    return Err(Diagnostic::error("a wide long long constant needs lis/ori (roadmap)"));
+                }
+                self.load_integer_constant(low, low_word);
+                self.load_integer_constant(high, high_word);
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+            // (b) Widen a 32-bit int/unsigned FIRST PARAMETER. It arrives in r3 (= result HIGH), so
+            // copy it to LOW, then fill HIGH with its sign (`srawi`) or zero (`li`). A NARROW source
+            // (short/char) re-extends differently and defers.
+            if let Expression::Variable(name) = return_expression {
+                if function.parameters.first().is_some_and(|parameter| &parameter.name == name) {
+                    let parameter_type = function.parameters[0].parameter_type;
+                    if matches!(parameter_type, Type::Int | Type::UnsignedInt) {
+                        self.output.instructions.push(Instruction::move_register(low, high));
+                        if parameter_type.is_signed() {
+                            self.output
+                                .instructions
+                                .push(Instruction::ShiftRightAlgebraicImmediate { a: high, s: high, shift: 31 });
+                        } else {
+                            self.load_integer_constant(high, 0);
+                        }
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
+            return Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"));
+        }
+
+        // ===== Long-long PARAMETERS present. Allocate GPR argument registers per the EABI: each
+        // int-like param takes one GPR; each long-long param an odd-start GPR pair (aligning up if
+        // the next GPR is even), so `f(int x, long long a)` puts x in r3 and a in r5:r6. A float/
+        // double/struct param alongside a long long (FPRs or aggregates) and an argument list that
+        // overflows r3..r10 both defer.
+        const LAST_GENERAL_ARGUMENT: u8 = Eabi::FIRST_GENERAL_ARGUMENT + 7; // r10
+        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
+        let mut param_pair: std::collections::HashMap<&str, (u8, Option<u8>)> = std::collections::HashMap::new();
+        for parameter in &function.parameters {
+            match parameter.parameter_type {
+                Type::LongLong | Type::UnsignedLongLong => {
+                    if next_general % 2 == 0 {
+                        next_general += 1; // a long-long pair starts on an odd register
+                    }
+                    if next_general + 1 > LAST_GENERAL_ARGUMENT {
+                        return Err(Diagnostic::error("a long-long argument that overflows to the stack is not modeled yet (roadmap)"));
+                    }
+                    param_pair.insert(parameter.name.as_str(), (next_general, Some(next_general + 1)));
+                    next_general += 2;
+                }
+                Type::Int | Type::UnsignedInt | Type::Short | Type::UnsignedShort | Type::Char | Type::UnsignedChar
+                | Type::Pointer(_) | Type::StructPointer { .. } => {
+                    if next_general > LAST_GENERAL_ARGUMENT {
+                        return Err(Diagnostic::error("an integer argument that overflows to the stack is not modeled yet (roadmap)"));
+                    }
+                    param_pair.insert(parameter.name.as_str(), (next_general, None));
+                    next_general += 1;
+                }
+                _ => return Err(Diagnostic::error("a float/double/struct parameter alongside a long long is not modeled yet (roadmap)")),
+            }
+        }
+
+        // (c) TRUNCATE a long-long param to int/unsigned — `(int)a` or implicit — is its LOW word:
+        // `mr r3, low(a)`.
+        if matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            let truncated = match return_expression {
+                Expression::Cast { target_type: Type::Int | Type::UnsignedInt, operand } => operand.as_ref(),
+                other => other,
+            };
+            if let Expression::Variable(name) = truncated {
+                if let Some(&(_, Some(low_register))) = param_pair.get(name.as_str()) {
+                    self.output.instructions.push(Instruction::move_register(high, low_register));
+                    self.emit_epilogue_and_return();
+                    return Ok(());
+                }
+            }
+            return Err(Diagnostic::error("this long long truncation is not modeled yet (roadmap)"));
+        }
+        if !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong) {
+            return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
+        }
+
+        // (d) RETURN a long-long param: move its pair into the result pair (a bare `blr` when it is
+        // already there — the first parameter). mwcc moves LOW then HIGH (`mr r4,r6 ; mr r3,r5`).
+        if let Expression::Variable(name) = return_expression {
+            if let Some(&(parameter_high, Some(parameter_low))) = param_pair.get(name.as_str()) {
+                if parameter_high != high {
+                    self.output.instructions.push(Instruction::move_register(low, parameter_low));
+                    self.output.instructions.push(Instruction::move_register(high, parameter_high));
+                }
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+        }
+
+        // (e) ADD / SUBTRACT two long-long params into the result pair; the LOW word carries into
+        // HIGH: `addc r4,r4,r6 ; adde r3,r3,r5` or `subfc r4,r6,r4 ; subfe r3,r5,r3`.
+        if let Expression::Binary { operator, left, right } = return_expression {
+            if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
+                if let (Some(&(left_high, Some(left_low))), Some(&(right_high, Some(right_low)))) =
+                    (param_pair.get(left_name.as_str()), param_pair.get(right_name.as_str()))
+                {
+                    match operator {
+                        BinaryOperator::Add => {
+                            self.output.instructions.push(Instruction::AddCarrying { d: low, a: left_low, b: right_low });
+                            self.output.instructions.push(Instruction::AddExtended { d: high, a: left_high, b: right_high });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        // subfc rD,rA,rB = rB - rA, so the minuend (left) is `b` and subtrahend (right) is `a`.
+                        BinaryOperator::Subtract => {
+                            self.output.instructions.push(Instruction::SubtractFromCarrying { d: low, a: right_low, b: left_low });
+                            self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: right_high, b: left_high });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // (f) ADD/SUBTRACT a small CONSTANT to a single long-long parameter. mwcc materializes the
+        // 64-bit constant — its LOW word into the next free GPR (r5) and its HIGH word into r0, or
+        // just r0 when both words are equal — then `addc`/`adde`. `a - C` lowers as `a + (-C)`.
+        // Restricted to a single long-long parameter (so a == result == r3:r4 and r5 is free) and
+        // li-sized constant words; a wider constant or a second parameter (dead-register reuse)
+        // defers.
+        if function.parameters.len() == 1 {
+            if let Expression::Binary { operator, left, right } = return_expression {
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) {
+                    if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), crate::analysis::constant_value(right)) {
+                        if param_pair.get(name.as_str()).is_some_and(|&(_, low_word)| low_word.is_some()) {
+                            let value = if *operator == BinaryOperator::Subtract { constant.wrapping_neg() } else { constant };
+                            let low_word = value as i32 as i64;
+                            let high_word = value >> 32;
+                            if i16::try_from(low_word).is_ok() && i16::try_from(high_word).is_ok() {
+                                if low_word == high_word {
+                                    self.load_integer_constant(GENERAL_SCRATCH, low_word);
+                                    self.output.instructions.push(Instruction::AddCarrying { d: low, a: low, b: GENERAL_SCRATCH });
+                                    self.output.instructions.push(Instruction::AddExtended { d: high, a: high, b: GENERAL_SCRATCH });
+                                } else {
+                                    let low_constant_register = high + 2; // r5 — the next free GPR after r3:r4
+                                    self.load_integer_constant(low_constant_register, low_word);
+                                    self.load_integer_constant(GENERAL_SCRATCH, high_word);
+                                    self.output.instructions.push(Instruction::AddCarrying { d: low, a: low, b: low_constant_register });
+                                    self.output.instructions.push(Instruction::AddExtended { d: high, a: high, b: GENERAL_SCRATCH });
+                                }
+                                self.emit_epilogue_and_return();
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"))
+    }
+
+    pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
+        // emits nothing for them — then recompile the cleaned function.
+        if let Some(cleaned) = remove_dead_locals(function) {
+            return self.evaluate_body(&cleaned);
+        }
+        // A body that CONTINUES past an early-return guard parses the guard into the ordered
+        // statement list (`if (c) return v; b = b + 1; return b;` → statements [If, Assign]).
+        // When the guard reads only names the rest never writes, guard-first and guard-last
+        // emission read the same registers — mwcc compiles both orders identically — so hoist
+        // it back into `guards` and let the trailing-guard machinery emit it. A tail that
+        // still reads the result register's parameter does NOT fold (mwcc branches in the
+        // ordered source but folds through a temp in the flat one — order matters), so it
+        // stays ordered for try_ordered_early_return_branch.
+        if let Some(hoisted) = self.hoist_order_independent_leading_guards(function) {
+            return self.evaluate_body(&hoisted);
+        }
+        // C89 fdlibm locals (`double z; z = x*x;`) normalize into
+        // initializers for the float paths, alternating with the guard
+        // hoist through this recursion.
+        if let Some(cleaned) = normalize_leading_local_assigns(function) {
+            return self.evaluate_body(&cleaned);
+        }
+        // The TRIG DISPATCHER template claims before the general statement
+        // walkers (its leading Assigns would otherwise hit the value-tracking
+        // defer).
+        if self.try_trig_dispatcher(function)? {
+            return Ok(());
+        }
+        // The ROTATED LOOP likewise (initialized locals route into value
+        // tracking otherwise).
+        if self.try_rotated_loop(function)? {
+            return Ok(());
+        }
+        if self.try_pipelined_copy(function)? {
+            return Ok(());
+        }
+        if self.try_ctr_loop(function)? {
+            return Ok(());
+        }
+        if self.try_ctr_pair_loop(function)? {
+            return Ok(());
+        }
+        if self.try_norm_loop(function)? {
+            return Ok(());
+        }
+        if self.try_ilogb_diamond(function)? {
+            return Ok(());
+        }
+        if self.try_early_ladder(function)? {
+            return Ok(());
+        }
+        if self.try_indexed_double_return(function)? {
+            return Ok(());
+        }
+        if self.try_punned_pair_ladder(function)? {
+            return Ok(());
+        }
+        if self.try_align_diamond(function)? {
+            return Ok(());
+        }
+        if self.try_writeback_norm(function)? {
+            return Ok(());
+        }
+        // The exact-match whole-function captures (src/captures/).
+        if self.try_captures(function)? {
+            return Ok(());
+        }
+        // An INITIALIZED AUTOMATIC local array needs the frame copy-in
+        // sequence natively — only a capture claim emits it byte-exactly, so
+        // an unclaimed function with one defers here (after the templates).
+        if function
+            .locals
+            .iter()
+            .any(|local| !local.is_static && local.array_length.is_some() && local.data_bytes.is_some())
+        {
+            return Err(Diagnostic::error("an initialized automatic local array is not supported yet (roadmap)"));
+        }
+        // An EMPTY body — `T f(args) { }` (MSL's "UNUSED FUNCTION" stubs) —
+        // is a single `blr` regardless of return type (measured: pikmin
+        // string.c's ten stubs; a non-void return is simply garbage).
+        if function.statements.is_empty()
+            && function.guards.is_empty()
+            && function.return_expression.is_none()
+            && function.locals.is_empty()
+            && self.frame_slots.is_empty()
+        {
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(());
+        }
+        // A body calling a SKIPPED INLINE defers here — after the exact-match
+        // templates (a whole-function capture has the inline flattened into
+        // its body); the general paths must never emit a bl to the undefined
+        // local (wrong bytes — mwcc inlines it).
+        if !self.skipped_inline_names.is_empty() && function_calls_any(function, &self.skipped_inline_names) {
+            return Err(Diagnostic::error("a call to a skipped inline function needs inline expansion (roadmap)"));
+        }
+        // A NATIVE caller of a WEAK-MATERIALIZED plain inline defers the same
+        // way: mwcc may have re-inlined a trivial body at this call site
+        // (measured: ww's mbtowc folds to `blr`), so only a capture claim is safe.
+        if !self.weak_materialized_names.is_empty() && function_calls_any(function, &self.weak_materialized_names) {
+            return Err(Diagnostic::error("a call to a weak-materialized inline needs its measured call-site form (roadmap)"));
+        }
+        if self.try_fpclassify_switch(function)? {
+            return Ok(());
+        }
+        // `F t = gf; t();` — a pure fn-pointer alias feeding only the first call's target
+        // folds to the direct `gf();` (identical bytes: the pointer loads at the call).
+        if let Some(folded) = inline_first_call_target_alias(function) {
+            return self.evaluate_body(&folded);
+        }
+        // Returning a struct BY VALUE (`struct S f(...) { return s; }`) uses the struct-return
+        // ABI — a small struct in r3:r4, a larger one via a hidden pointer argument — which is
+        // not modeled. Defer rather than emit a bare `blr` that drops the result (a miscompile:
+        // the caller would read the input pointer / stale registers as the returned struct).
+        if matches!(function.return_type, Type::Struct { .. }) {
+            return Err(Diagnostic::error("returning a struct by value is not supported yet (roadmap)"));
+        }
+        // A store to a global AGGREGATE that addresses through a base register (a struct value's
+        // non-offset-0 or large field, or any array element) alongside ANOTHER store: mwcc materializes
+        // that base (`li rB,g@sda21` / `lis rB,g@ha`) AHEAD of all the stores; our program-order
+        // materialization emits it between the stores, so the bytes differ. Defer when such a
+        // base-addressed aggregate store is present and the function has two-plus stores of any kind —
+        // a lone store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, and scalar
+        // globals (no base register) stay byte-exact.
+        {
+            let mut total_store_count = 0u32;
+            let mut has_base_addressed_aggregate_store = false;
+            for statement in &function.statements {
+                let Statement::Store { target, .. } = statement else { continue };
+                total_store_count += 1;
+                match target {
+                    // A struct VALUE global's field: offset 0 of a SMALL struct is a direct SDA21 store
+                    // (no base register); a non-zero offset or a LARGE (ADDR16) struct needs the base.
+                    Expression::Member { base, offset, .. } => {
+                        if let Expression::Variable(name) = base.as_ref() {
+                            if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()) {
+                                if *offset != 0 || *size > 8 {
+                                    has_base_addressed_aggregate_store = true;
+                                }
+                            }
+                        }
+                    }
+                    // An array global's element always addresses through a base register (a pointer base
+                    // is register-resident already, so it is excluded here).
+                    Expression::Index { base, .. } => {
+                        if let Expression::Variable(name) = base.as_ref() {
+                            if self.global_array_sizes.contains_key(name.as_str()) {
+                                has_base_addressed_aggregate_store = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if has_base_addressed_aggregate_store && total_store_count >= 2 {
+                return Err(Diagnostic::error("a base-addressed global-aggregate store alongside another store needs the shared-base schedule (roadmap)"));
+            }
+        }
+        // `if (gi) f(gi);` — a global read in BOTH an if-condition and its then-body. mwcc loads the
+        // global ONCE into the argument register, tests it there, and reuses it for the guarded call
+        // (`lwz r3,gi; cmpwi r3,0; beq; bl f`); our codegen loads it into the scratch for the test, then
+        // RELOADS it for the body — wrong bytes. Defer until that value is reused across the branch. (A
+        // parameter condition, or a body that does not read the condition's global, stays byte-exact.)
+        for statement in &function.statements {
+            if let Statement::If { condition, then_body, .. } = statement {
+                let condition_globals: Vec<&str> = self
+                    .globals
+                    .keys()
+                    .filter(|global| expression_reads_name(condition, global))
+                    .map(String::as_str)
+                    .collect();
+                let body_reads_condition_global = then_body.iter().any(|body_statement| match body_statement {
+                    Statement::Expression(expression) => condition_globals.iter().any(|global| expression_reads_name(expression, global)),
+                    Statement::Store { value, .. } => condition_globals.iter().any(|global| expression_reads_name(value, global)),
+                    _ => false,
+                });
+                if body_reads_condition_global {
+                    return Err(Diagnostic::error("a global read in both an if-condition and its body needs value reuse across the branch (roadmap)"));
+                }
+            }
+        }
+        // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
+        // every long-long-involved function to the dedicated handler so none falls through to the
+        // 32-bit codegen (which would emit a single-register result for a 64-bit value — wrong
+        // bytes). The handler models a narrow set of shapes and defers the rest.
+        if matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong)
+            || function.parameters.iter().any(|parameter| matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong))
+            || function.locals.iter().any(|local| matches!(local.declared_type, Type::LongLong | Type::UnsignedLongLong))
+        {
+            return self.emit_long_long(function);
+        }
+        // `loc = …; return loc` where `loc` is a VARIABLE-INDEXED access (`p[i]`) or a GLOBAL —
+        // mwcc reuses the scaled index it already computed (`slwi` once) or the just-stored value,
+        // but ours recomputes the index (`slwi` twice) or reloads the global, a byte-different
+        // sequence. Defer. (A deref `*p`, a member `s->x`, a const index `p[0]`, and a
+        // register param/local are byte-exact and unaffected.)
+        if let Some(return_expression) = &function.return_expression {
+            for statement in &function.statements {
+                if let Statement::Store { target, .. } = statement {
+                    if structurally_equal(target, return_expression) {
+                        let recomputes_address = matches!(target, Expression::Index { index, .. } if constant_value(index).is_none())
+                            || matches!(target, Expression::Variable(name) if self.globals.contains_key(name.as_str()));
+                        if recomputes_address {
+                            return Err(Diagnostic::error("storing to a variable-indexed or global location then returning it recomputes the address (roadmap)"));
+                        }
+                    }
+                }
+            }
+        }
+        // `global = const; return <const or global>` — mwcc's scheduler computes the return value
+        // (a `li` for a constant, an SDA `lwz` for a global) BEFORE the global constant store; ours
+        // emits the store first. A param return (already in r3) or a deref/index return is
+        // byte-exact and unaffected, as is a non-constant or non-global store.
+        if let Some(return_expression) = &function.return_expression {
+            let return_is_const_or_global = constant_value(return_expression).is_some()
+                || matches!(return_expression, Expression::Variable(name) if self.globals.contains_key(name.as_str()));
+            if return_is_const_or_global {
+                for statement in &function.statements {
+                    if let Statement::Store { target, value } = statement {
+                        if constant_value(value).is_some()
+                            && matches!(target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
+                        {
+                            return Err(Diagnostic::error("a global constant store scheduled around a const/global return is not modeled (roadmap)"));
+                        }
+                    }
+                }
+            }
+        }
+        // A function that takes the address of a variable lowers it to a stack
+        // slot (frame-resident); this takes over the whole body. Checked first,
+        // since an address-taken variable cannot be value-tracked in a register.
+        // The frexp family (locals REASSIGNED across a writeback diamond) runs
+        // before the inline pass, which cannot fold reassigned locals.
+        // The PUNNED-BITS guard + float-tail composition (the k_sin prefix)
+        // claims ahead of the frame families: its x-spill frame form and the
+        // float DAG tail are one measured unit.
+        if self.try_punned_guard_float_return(function)? {
+            return Ok(());
+        }
+        // The DUAL-TAIL float return (`if (c) return A; else return B;`) —
+        // two independent float DAGs behind one compare.
+        if self.try_dual_tail_float_return(function)? {
+            return Ok(());
+        }
+        // The conditional-local diamond (`if (c) qx = A; else qx = B;` +
+        // float tail) — the k_cos qx form, register variant.
+        if self.try_conditional_local_float_return(function)? {
+            return Ok(());
+        }
+        if self.try_frexp_family(function)? {
+            return Ok(());
+        }
+        // THE COMPOSER: the full three-arm s_floor ladder.
+        if self.try_punned_ladder_writeback(function)? {
+            return Ok(());
+        }
+        // THE MODF LADDER: pointer stores + integral/fraction returns.
+        if self.try_punned_modf_ladder(function)? {
+            return Ok(());
+        }
+        // The SHIFT-WRITEBACK family (s_floor arm2's core) parses the
+        // un-normalized leading assigns itself — its mutations reassign
+        // punned locals, which the initializer normalizer refuses.
+        if self.try_punned_shift_writeback(function)? {
+            return Ok(());
+        }
+        // The punned-guard WRITEBACK (the s_floor tail) binds its punned
+        // locals to scratch registers — ahead of the inline-away pass that
+        // would dissolve them into repeated frame reads.
+        if self.try_punned_guard_writeback(function)? {
+            return Ok(());
+        }
+        // The raise family (a fn-pointer local live across calls) likewise.
+        if self.try_raise_family(function)? {
+            return Ok(());
+        }
+        // Register locals feeding a frame-resident body (`int hx = *(int*)&x; return
+        // f(hx);`) inline away first: the frame path cannot bind them, and once
+        // substituted the body is the proven direct form (`return f(*(int*)&x);`).
+        if let Some(inlined) = inline_frame_feeding_locals(function) {
+            return self.evaluate_body(&inlined);
+        }
+        if self.try_frame_resident(function)? {
+            return Ok(());
+        }
+        // A counting `for (i = 0; i < bound; i++)` loop owns its single local
+        // counter, so it is checked before the value-tracking path claims it.
+        if self.try_for_counter(function)? {
+            return Ok(());
+        }
+        // A leaf non-counting `while`/`do-while` whose body is pure in-place increments
+        // (`while (*p) p++;`) lowers to the rotated form; claimed before value-tracking since the
+        // loop-carried increment must emit in place.
+        if self.try_emit_increment_while(function)? {
+            return Ok(());
+        }
+        // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
+        // local, so the whole body is the select `return (c) ? A : B`.
+        if self.try_conditional_assign(function)? {
+            return Ok(());
+        }
+        // `T y = INIT; if (c) y = NEW; return y;` (no else) where INIT is a variable ALREADY
+        // resident in the result register (the common param-0 case): the clean in-place branch
+        // form `<test c>; b<!c>lr; <NEW into result>; blr` (min/max/abs/clamp). NEW may be any
+        // evaluable expression (neg/mr/li/add/…), unlike the leaf-only initialized handler below.
+        if self.try_conditional_overwrite_inplace(function)? {
+            return Ok(());
+        }
+        // `T y = INIT; if (c) y = NEW; return y;` (no else), constant arms — mwcc lowers the
+        // conditional ASSIGN as an early-return branch form (NOT the select/branchless idiom).
+        if self.try_conditional_assign_initialized(function)? {
+            return Ok(());
+        }
+        // `if (c) { [g = w;] [v = NEW;] } return v;` over a PARAMETER — the in-place
+        // diamond with the merge `mr r3,v`, folding to a conditional return when v is r3.
+        if self.try_guard_block_mutations(function)? {
+            return Ok(());
+        }
+        if self.try_conditional_reassign_return(function)? {
+            return Ok(());
+        }
+        // A function's value-tracked locals are folded into its stores and trailing return,
+        // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
+        // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths
+        // (or the un-schedulable-store deferral) own the cleaned body. Checked before the
+        // value-tracking path, which cannot fold a void function's store-feeding locals.
+        if let Some(inlined) = inline_store_bearing_locals(function) {
+            return self.evaluate_body(&inlined);
+        }
+        // `int x = foo(...); gi = x;` / `int x = foo(...); return x;` — a single-use call
+        // result stored directly or returned. The result lives in r3 and is not live across
+        // another call, so both are byte-exact; inline the local. A second call or use
+        // defers to the callee-saved allocator.
+        if let Some(inlined) = inline_single_call_result(function) {
+            return self.evaluate_body(&inlined);
+        }
+        // Value-tracked locals (reassignment, multiple locals) are inlined into the
+        // return expression and compiled there; this takes over the whole body when
+        // it applies, leaving the straight-line paths below byte-identical.
+        // A single ordered early-return guard over a value-tracked continuation, where the
+        // constant fold does not apply — the real forward-branch form.
+        if self.try_ordered_early_return_branch(function)? {
+            return Ok(());
+        }
+        // The FLOAT DAG arm claims double multiply-add trees with named
+        // double locals BEFORE value tracking and the int-oriented folds:
+        // folding a single-use float local (v = z*x) duplicates the shared z
+        // subterm, while mwcc keeps locals as window-top-tier shared
+        // registers.
+        if self.try_float_dag_return(function)? {
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(());
+        }
+        if self.try_float_param_reassign(function)? {
+            return Ok(());
+        }
+        if self.try_live_across_branches(function)? {
+            return Ok(());
+        }
+        if self.try_value_tracking(function)? {
+            return Ok(());
+        }
+        // Fold single-assignment, return-only locals (no call in their initializers)
+        // into the return, then recompile — `int z = x + 1; g(); return z;` becomes the
+        // equivalent `g(); return x + 1;`, which the parameter-preservation path emits.
+        if let Some(inlined) = inline_return_only_locals(function) {
+            return self.evaluate_body(&inlined);
+        }
+        // A value-tracked local feeding a single switch's scrutinee/arms inlines into the switch and
+        // recompiles, so `int m = n + 1; switch(m)` lowers like the direct `switch(n + 1)`.
+        if let Some(inlined) = inline_switch_scrutinee_locals(function) {
+            return self.evaluate_body(&inlined);
+        }
+        // A leaf void body that is purely constant stores of one repeated value
+        // (struct/array zeroing) materializes the value once and reuses it.
+        if self.try_constant_store_fill(function)? {
+            return Ok(());
+        }
+        // A whole-body `if (c) { <constant run> } else { <constant run> }`: branch over the then-arm
+        // to the else, each arm the batched constant store run then its own `blr`.
+        if self.try_constant_store_if_else(function)? {
+            return Ok(());
+        }
+        // Two computed-value stores to distinct SDA globals: mwcc overlaps the two value
+        // computations (both into registers, then both stores), which the sequential path
+        // does not. The allocator places the first value off the scratch (live across the
+        // second), the second into r0.
+        if self.try_computed_store_fill(function)? {
+            return Ok(());
+        }
+        // The same overlap with one computed value and one register-leaf value (`gi=a+1;
+        // gj=b;`): the leaf is stored first (ready), the computed second.
+        if self.try_mixed_store_fill(function)? {
+            return Ok(());
+        }
+        // Three+ stores of register leaves with a single constant interspersed (`gi=a;
+        // gj=b; gk=5;`): the constant's `li` is hoisted and the stores keep source order
+        // (a leading constant swaps off the latency slot).
+        if self.try_leaf_constant_fill(function)? {
+            return Ok(());
+        }
+        // Leaf multi-store bodies of COMPUTED int values through the measured
+        // models — the DAG emitter (linearize + assign_registers). Runs after
+        // the proven store-fill arms, catching what they defer.
+        if self.try_dag_store_fill(function)? {
+            return Ok(());
+        }
+        // Multiple stores where a value loads a float/double global reschedule the loads
+        // (mwcc loads the global once and reuses it across the stores); not modeled, so
+        // DEFER rather than emit a redundant load per store. A single such store (`gf =
+        // gg;`) needs no scheduling and stays byte-exact.
+        if function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && function.statements.len() >= 2
+        {
+            let loads_float_global = |generator: &Self, value: &Expression| {
+                matches!(value, Expression::Variable(name)
+                    if !generator.locations.contains_key(name.as_str())
+                        && matches!(generator.globals.get(name.as_str()), Some(Type::Float | Type::Double)))
+            };
+            let all_stores = function.statements.iter().all(|statement| matches!(statement, Statement::Store { .. }));
+            let any_float_global = function
+                .statements
+                .iter()
+                .any(|statement| matches!(statement, Statement::Store { value, .. } if loads_float_global(self, value)));
+            if all_stores && any_float_global {
+                return Err(Diagnostic::error("multiple stores loading a float global need the load scheduler (roadmap)"));
+            }
+        }
+        // Un-schedulable multi-store: a body whose statements are 2+ stores to SDA integer
+        // globals that the fills above did not absorb (a trailing return, if any, is
+        // separate). mwcc latency-schedules these (load/computation hoisting, constant-`li`
+        // slot fill); the normal sequential emission would not reproduce that, so DEFER
+        // rather than ship wrong bytes. Only an all-distinct-leaf run (no computation to
+        // schedule, no dead store) stays byte-exact on the normal path, so let that through.
+        if function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && function.statements.len() >= 2
+            && self.behavior.global_addressing == GlobalAddressing::SmallData
+        {
+            let mut targets = Vec::new();
+            let mut all_leaves = true;
+            let mut all_sda_integer_stores = true;
+            for statement in &function.statements {
+                let Statement::Store { target: Expression::Variable(name), value } = statement else {
+                    all_sda_integer_stores = false;
+                    break;
+                };
+                match self.globals.get(name.as_str()) {
+                    Some(global_type) if !matches!(global_type, Type::Float | Type::Double) => targets.push(name.as_str()),
+                    _ => {
+                        all_sda_integer_stores = false;
+                        break;
+                    }
+                }
+                if !matches!(value, Expression::Variable(leaf) if !self.globals.contains_key(leaf.as_str())) {
+                    all_leaves = false;
+                }
+            }
+            if all_sda_integer_stores {
+                let distinct = {
+                    let mut sorted = targets.clone();
+                    sorted.sort_unstable();
+                    sorted.dedup();
+                    sorted.len() == targets.len()
+                };
+                if !all_leaves || !distinct {
+                    return Err(Diagnostic::error("a run of stores that mwcc latency-schedules needs the scheduler (roadmap)"));
+                }
+            }
+        }
+        // A single COMPUTED store to an SDA integer global plus an int return that
+        // does NOT read the stored global: mwcc's DAG scheduler interleaves the
+        // return-value computation with the store chain; sequential emission
+        // diverges. try_dag_store_fill (above) claims every such shape it has
+        // vocabulary for, so what reaches here (a division, an unsigned shift)
+        // would fall through to the sequential emitter — defer. A return that
+        // reads the just-stored global (rand.c) is data-dependent, so mwcc is
+        // sequential too — byte-exact on the normal path; let it through.
+        if function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && self.behavior.global_addressing == GlobalAddressing::SmallData
+            && !matches!(function.return_type, Type::Void | Type::Float | Type::Double)
+        {
+            if let (Some(return_expression), [Statement::Store { target: Expression::Variable(name), value }]) =
+                (&function.return_expression, function.statements.as_slice())
+            {
+                let sda_integer_global = matches!(self.globals.get(name.as_str()), Some(global_type) if !matches!(global_type, Type::Float | Type::Double));
+                let leaf_value = constant_value(value).is_some()
+                    || matches!(value, Expression::Variable(leaf) if !self.globals.contains_key(leaf.as_str()));
+                if sda_integer_global && !leaf_value && count_name_occurrences(return_expression, name) == 0 {
+                    return Err(Diagnostic::error("a computed store scheduled against an independent return needs the DAG scheduler (roadmap)"));
+                }
+            }
+        }
+        // A `do { …calls… } while (--counter);` loop: the counter goes in r31
+        // (callee-saved), the body branches back, and the decrement-and-test is a
+        // single `addic.`/`bne`.
+        if self.try_do_while_counter(function)? {
+            return Ok(());
+        }
+        // A function whose body is a single `switch` lowers to the dispatch tree:
+        // the comparisons, then the case bodies, then the default (the `default:`
+        // arm if present, else the function's trailing `return`). The cases and
+        // default each end in their own `blr`, so this owns the whole body.
+        if let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() {
+            let statement_bodied_default =
+                matches!(default, Some(body) if body.return_expression().is_none());
+            if function.guards.is_empty()
+                && function.locals.is_empty()
+                && !function_makes_call(function)
+                && !statement_bodied_default
+            {
+                let default_expression = default
+                    .as_ref()
+                    .and_then(|body| body.return_expression())
+                    .or(function.return_expression.as_ref())
+                    .ok_or_else(|| Diagnostic::error("a switch with no default needs a trailing return"))?;
+                let result = match function.return_type {
+                    Type::Float | Type::Double => return Err(Diagnostic::error("a floating-point switch result is not supported yet (roadmap)")),
+                    Type::Void => return Err(Diagnostic::error("a void switch is not supported yet (roadmap)")),
+                    _ => Eabi::general_result().number,
+                };
+                return self.emit_switch(scrutinee, arms, default_expression, default.is_some(), function.return_type, result);
+            }
+        }
+        // A non-leaf function whose whole body is `if (c) <call>;`: mwcc schedules
+        // the condition test (`cmpwi`) into the prologue, between `mflr` and the LR
+        // store, then branches forward over the body to the epilogue when false.
+        if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
+            if function_makes_call(function)
+                && function.return_type == Type::Void
+                && function.guards.is_empty()
+                && else_body.is_empty()
+                && !then_body.is_empty()
+                // A straight-line body (calls/stores, no nested control flow); a value
+                // read across one of its calls would need callee-saving, so defer it.
+                && then_body.iter().all(|statement| matches!(statement, Statement::Store { .. } | Statement::Expression(_) | Statement::Assign { .. }))
+                && !reads_value_across_call(function)
+            {
+                self.non_leaf = true;
+                self.frame_size = 16;
+                // The if's join label advances mwcc's anonymous-`@N` counter by 2.
+                self.output.anonymous_label_bump = 2;
+                self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+                self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+                let condition_start = self.output.instructions.len();
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                // mwcc fills the mflr->LR-store latency slot with the condition test only
+                // when it is a bare compare (a register operand). A member/complex
+                // condition loads into r0, which would clobber the just-saved LR, so the
+                // LR store must come first — otherwise it would save the loaded value, not
+                // the return address.
+                // mwcc fills the mflr->LR-store latency slot with the FIRST condition
+                // instruction when it does not write r0 (a compare, or a float load/
+                // compare targeting cr/FP), issuing the LR store right after it (e.g.
+                // `lfs f0; stw r0,20; fcmpo`). An integer load / rlwinm. / extsb. into r0
+                // would clobber the saved LR, so the store precedes the whole condition.
+                let first_writes_r0 = self.output.instructions.get(condition_start).map_or(false, |instruction| {
+                    match instruction {
+                        // Compares and float/cr ops write cr0/an FPR, not a GPR.
+                        Instruction::CompareWord { .. }
+                        | Instruction::CompareWordImmediate { .. }
+                        | Instruction::CompareLogicalWord { .. }
+                        | Instruction::CompareLogicalWordImmediate { .. }
+                        | Instruction::FloatCompareOrdered { .. }
+                        | Instruction::FloatCompareUnordered { .. }
+                        | Instruction::LoadFloatSingle { .. }
+                        | Instruction::LoadFloatSingleIndexed { .. }
+                        | Instruction::LoadFloatDouble { .. }
+                        | Instruction::LoadFloatDoubleIndexed { .. }
+                        | Instruction::ConditionRegisterOr { .. } => false,
+                        // A narrow extension into a non-r0 GPR — `extsh r3,r3`, the first
+                        // operand of a two-operand narrow compare — leaves the saved LR in r0
+                        // intact, so the store still fills the slot after it. Extending into
+                        // r0 (a narrow leaf against a constant) clobbers it: store first.
+                        Instruction::ExtendSignByte { a, .. }
+                        | Instruction::ExtendSignByteRecord { a, .. }
+                        | Instruction::ExtendSignHalfword { a, .. }
+                        | Instruction::ExtendSignHalfwordRecord { a, .. }
+                        | Instruction::ClearLeftImmediate { a, .. }
+                        | Instruction::ClearLeftImmediateRecord { a, .. } => *a == 0,
+                        // Any other first instruction writes a GPR (a load into r0, rlwinm.).
+                        _ => true,
+                    }
+                });
+                let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
+                self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                // The insert shifts the condition instructions at/after it down by one, so
+                // their relocations (a global condition's SDA21 reloc) must shift too.
+                for relocation in &mut self.output.relocations {
+                    if relocation.instruction_index >= lr_position {
+                        relocation.instruction_index += 1;
+                    }
+                }
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                for statement in then_body {
+                    self.emit_statement(statement)?;
+                }
+                let label = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = label;
+                }
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+        }
+        // A non-leaf `if (c) { then } else { else }` with straight-line bodies: the
+        // condition test schedules into the prologue, `beq` jumps to the else body,
+        // the then body falls through to an unconditional `b` over the else body to
+        // the shared epilogue.
+        if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
+            if function_makes_call(function)
+                && function.return_type == Type::Void
+                && function.guards.is_empty()
+                && !then_body.is_empty()
+                && !else_body.is_empty()
+                && then_body.iter().chain(else_body).all(|statement| matches!(statement, Statement::Store { .. } | Statement::Expression(_) | Statement::Assign { .. }))
+                && !reads_value_across_call(function)
+            {
+                self.non_leaf = true;
+                self.frame_size = 16;
+                // The else branch and join label advance mwcc's anonymous-`@N` counter.
+                self.output.anonymous_label_bump = 3;
+                self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+                self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+                let condition_start = self.output.instructions.len();
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                // mwcc fills the mflr->LR-store latency slot with the condition test only
+                // when it is a bare compare (a register operand). A member/complex
+                // condition loads into r0, which would clobber the just-saved LR, so the
+                // LR store must come first — otherwise it would save the loaded value, not
+                // the return address.
+                // mwcc fills the mflr->LR-store latency slot with the FIRST condition
+                // instruction when it does not write r0 (a compare, or a float load/
+                // compare targeting cr/FP), issuing the LR store right after it (e.g.
+                // `lfs f0; stw r0,20; fcmpo`). An integer load / rlwinm. / extsb. into r0
+                // would clobber the saved LR, so the store precedes the whole condition.
+                let first_writes_r0 = self.output.instructions.get(condition_start).map_or(false, |instruction| {
+                    match instruction {
+                        // Compares and float/cr ops write cr0/an FPR, not a GPR.
+                        Instruction::CompareWord { .. }
+                        | Instruction::CompareWordImmediate { .. }
+                        | Instruction::CompareLogicalWord { .. }
+                        | Instruction::CompareLogicalWordImmediate { .. }
+                        | Instruction::FloatCompareOrdered { .. }
+                        | Instruction::FloatCompareUnordered { .. }
+                        | Instruction::LoadFloatSingle { .. }
+                        | Instruction::LoadFloatSingleIndexed { .. }
+                        | Instruction::LoadFloatDouble { .. }
+                        | Instruction::LoadFloatDoubleIndexed { .. }
+                        | Instruction::ConditionRegisterOr { .. } => false,
+                        // A narrow extension into a non-r0 GPR — `extsh r3,r3`, the first
+                        // operand of a two-operand narrow compare — leaves the saved LR in r0
+                        // intact, so the store still fills the slot after it. Extending into
+                        // r0 (a narrow leaf against a constant) clobbers it: store first.
+                        Instruction::ExtendSignByte { a, .. }
+                        | Instruction::ExtendSignByteRecord { a, .. }
+                        | Instruction::ExtendSignHalfword { a, .. }
+                        | Instruction::ExtendSignHalfwordRecord { a, .. }
+                        | Instruction::ClearLeftImmediate { a, .. }
+                        | Instruction::ClearLeftImmediateRecord { a, .. } => *a == 0,
+                        // Any other first instruction writes a GPR (a load into r0, rlwinm.).
+                        _ => true,
+                    }
+                });
+                let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
+                self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                // The insert shifts the condition instructions at/after it down by one, so
+                // their relocations (a global condition's SDA21 reloc) must shift too.
+                for relocation in &mut self.output.relocations {
+                    if relocation.instruction_index >= lr_position {
+                        relocation.instruction_index += 1;
+                    }
+                }
+                let branch_to_else = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                for statement in then_body {
+                    self.emit_statement(statement)?;
+                }
+                let branch_to_join = self.output.instructions.len();
+                self.output.instructions.push(Instruction::Branch { target: 0 });
+                let else_label = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
+                    *target = else_label;
+                }
+                for statement in else_body {
+                    self.emit_statement(statement)?;
+                }
+                let join_label = self.output.instructions.len();
+                if let Instruction::Branch { target } = &mut self.output.instructions[branch_to_join] {
+                    *target = join_label;
+                }
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+        }
+        // A non-leaf function led by `if (c) { …calls…; return X; }` with a
+        // continuation that supplies the other exit: mwcc schedules the condition
+        // test into the prologue, the early return materializes X and branches to a
+        // SHARED epilogue, and the continuation falls into that same epilogue.
+        if self.try_non_leaf_if_first_early_return(function)? {
+            return Ok(());
+        }
+        // A function that calls is non-leaf: save the link register around a 16-byte
+        // frame before doing anything else.
+        let mut lr_store_index: Option<usize> = None;
+        if function_makes_call(function) {
+            if !function.guards.is_empty() {
+                return Err(Diagnostic::error("calls combined with guards not yet supported"));
+            }
+            // `*a = g(); *b = h();` — 2–4 output pointers saved in r31/r30/… across their calls.
+            // Runs before the general callee-saved path, which would otherwise emit the stores
+            // through the raw (clobbered) argument registers and defer/miscompile.
+            if self.try_stores_through_pointers(function)? {
+                return Ok(());
+            }
+            // `int t = gi; g(); return t;` — a memory-loaded local carried across calls in r31.
+            if self.try_callee_saved_memory_local(function)? {
+                return Ok(());
+            }
+            // `F t = gf; if (!t) return; t();` — a guarded call through a global fn-pointer.
+            if self.try_guarded_global_pointer_call(function)? {
+                return Ok(());
+            }
+            // Parameters live across the call go in callee-saved registers (r31
+            // descending), saved in the prologue and reloaded in the epilogue.
+            if self.try_frsqrte_sqrt(function)? {
+                return Ok(());
+            }
+            if self.try_float_callee_saved(function)? {
+                return Ok(());
+            }
+            if self.try_callee_saved(function)? {
+                return Ok(());
+            }
+            if self.try_callee_saved_call_result(function)? {
+                return Ok(());
+            }
+            // `int x = g(a); return x OP a;` — a call-result local combined with the
+            // parameter that crossed the call.
+            if self.try_callee_saved_result_param_combine(function)? {
+                return Ok(());
+            }
+            // `int x = g(a); return x + a + b;` / `int x = g(a); int y = g(x);
+            // return y + a + x;` — a call result added to TWO saved values: mwcc
+            // reassociates, parking the result in r0 and combining the homes first.
+            if self.try_callee_saved_result_park_combine(function)? {
+                return Ok(());
+            }
+            // `int x = <expr>; int y = g(x); return y OP x;` — a computed local
+            // crossing the call that consumes it, combined with the result.
+            if self.try_callee_saved_computed_then_call(function)? {
+                return Ok(());
+            }
+            // `*p = g();` — a call's result stored through a pointer parameter saved in r31.
+            if self.try_store_call_through_pointer(function)? {
+                return Ok(());
+            }
+            if self.try_callee_saved_computed_local(function)? {
+                return Ok(());
+            }
+            // A parameter passed to several calls in turn (`g(x); h(x);`) — saved in r31,
+            // the first call uses the incoming register, later calls restore from r31.
+            if self.try_callee_saved_call_args(function)? {
+                return Ok(());
+            }
+            // `return f(...) + x;` — a live parameter combined with a call's result in the return.
+            if self.try_callee_saved_call_combine(function)? {
+                return Ok(());
+            }
+            // `p(x); q(y);` — two params passed to two calls in turn; the later param is preserved.
+            if self.try_callee_saved_call_sequence(function)? {
+                return Ok(());
+            }
+            // `g(x); return x OP y;` — two params both live across one call, combined in the return.
+            if self.try_callee_saved_param_pair_combine(function)? {
+                return Ok(());
+            }
+            // `return f() OP g();` — two call results combined in the return.
+            if self.try_callee_saved_two_call_combine(function)? {
+                return Ok(());
+            }
+            // Byte-exact-or-defer: a value (parameter or register local) read after a
+            // call is read from a register the call clobbered. mwcc preserves it in a
+            // callee-saved register (r31…) — multi-value/local cases are the next
+            // step; until then DEFER rather than emit a read of the clobbered register.
+            if reads_value_across_call(function) {
+                return Err(Diagnostic::error("a value live across a call needs the callee-saved register allocator (roadmap)"));
+            }
+            self.non_leaf = true;
+            self.frame_size = 16;
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            lr_store_index = Some(self.output.instructions.len() - 1);
+        }
+
+        // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
+        // scheduler: it hoists the if's condition test as early as possible — into the leading
+        // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the
+        // front. The sequential emission below instead emits the store fully, then the test — a
+        // DIFFERS — so defer this shape. (A whole-body store run, or a whole-body trailing `if`,
+        // are handled byte-exactly by the store-fill matchers above.)
+        if let [leading @ .., Statement::If { .. }] = function.statements.as_slice() {
+            if !leading.is_empty() && leading.iter().all(|statement| matches!(statement, Statement::Store { .. })) {
+                return Err(Diagnostic::error("a leading store before a trailing if needs the cross-statement scheduler (roadmap)"));
+            }
+        }
+
+        // A leading early-return if whose continuation MATERIALIZES store values (a
+        // constant/computed value, or several stores) schedules the return value between
+        // the materialization and the store (`li r0,5; li r3,0; stw r0`), or interleaves
+        // a store batch — the sequential emission below would emit the store first, a
+        // byte-DIFF. The verified single-constant-store form is handled by
+        // try_ordered_early_return_branch; everything else here defers. (A store of a
+        // plain register value needs no materialization and stays — verified.)
+        if let [Statement::If { then_body, .. }, continuation @ ..] = function.statements.as_slice() {
+            if matches!(then_body.as_slice(), [Statement::Return(_)]) {
+                let store_count = continuation
+                    .iter()
+                    .filter(|statement| matches!(statement, Statement::Store { .. }))
+                    .count();
+                let materializing_store = continuation.iter().any(|statement| {
+                    matches!(statement, Statement::Store { value, .. }
+                        if !matches!(value, Expression::Variable(name) if self.locations.contains_key(name.as_str())))
+                });
+                // A computed-index GLOBAL-ARRAY target materializes its ADDRESS
+                // (lis/slwi/addi) even for a register value — with a live return, mwcc
+                // keeps the base out of the index register and interleaves the return
+                // (`addi r5,r5; li r3,0; stwx r4,r5,r0`), which the sequential emission
+                // below does not model. (A pointer-parameter target needs no address
+                // build and stays — verified.)
+                let address_materializing_store = continuation.iter().any(|statement| {
+                    matches!(statement, Statement::Store { target: Expression::Index { base, index }, .. }
+                        if matches!(base.as_ref(), Expression::Variable(name) if self.globals.contains_key(name.as_str()))
+                            && constant_value(index).is_none())
+                });
+                if store_count >= 2 || materializing_store || address_materializing_store {
+                    return Err(Diagnostic::error(
+                        "an early-return continuation that materializes store values needs the store/return scheduler (roadmap)",
+                    ));
+                }
+            }
+        }
+
+        // Body statements (stores, calls) run first.
+        let statement_count = function.statements.len();
+        for (index, statement) in function.statements.iter().enumerate() {
+            // A trailing `if (c) { body }` in a leaf void function: the false path
+            // is the function exit, so it is a conditional return, then the body,
+            // then the normal `blr`. (Non-leaf needs a forward branch to the
+            // epilogue, and a non-final if needs to skip forward — both deferred.)
+            if let Statement::If { condition, then_body, else_body } = statement {
+                // A leaf if whose then-body is at most one statement then an early
+                // `return`, with a continuation after it (more statements or the
+                // trailing return): forward-branch over the body, the return is an
+                // exit, and the branch lands on the continuation. Two or more
+                // leading statements (constant stores mwcc would interleave) need
+                // the scheduler. With no continuation (a trailing void if) the
+                // false path is the immediate exit, which is a `beqlr` form — that
+                // and the multi-statement case defer.
+                let has_continuation = index + 1 < statement_count || function.return_expression.is_some();
+                // A trailing void `if (c) { stmt; return; }` (nothing after): the
+                // `return;` coincides with the function exit, so drop it and use
+                // the conditional-return (`beqlr`) form of a plain trailing if.
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && !has_continuation
+                    && function.return_type == Type::Void
+                    && then_body.len() == 2
+                    && matches!(then_body.last(), Some(Statement::Return(None)))
+                {
+                    self.emit_trailing_if(condition, &then_body[..1], else_body)?;
+                    continue;
+                }
+                // A trailing-void, no-else if-BLOCK of two-plus REGISTER-VALUED stores (each value
+                // already in a register — nothing to materialize or schedule): the conditional
+                // return then the stores in source order. A constant/global/computed value needs the
+                // batch scheduler, so emit_trailing_if defers those.
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && index + 1 == statement_count
+                    && function.return_type == Type::Void
+                    && then_body.len() >= 2
+                    && then_body.iter().all(|inner| matches!(inner,
+                        Statement::Store { value: Expression::Variable(name), .. } if self.locations.contains_key(name.as_str())))
+                {
+                    self.emit_trailing_if(condition, then_body, else_body)?;
+                    continue;
+                }
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && then_body.len() <= 2
+                    && has_continuation
+                    && matches!(then_body.last(), Some(Statement::Return(_)))
+                    // A store before a VALUE return must be INTERLEAVED with the return-value
+                    // computation the way mwcc's scheduler does (`li r0,V; li r3,R; stw r0`, not
+                    // `li r0,V; stw r0; li r3,R`) — that needs the keystone scheduler (#20), so
+                    // defer it. A valueless `return;` has no value to interleave (store + bare
+                    // epilogue is byte-exact), and a value-tracked Assign emits nothing here, so
+                    // both of those stay byte-exact.
+                    && (matches!(then_body.last(), Some(Statement::Return(None)))
+                        || then_body[..then_body.len() - 1].iter().all(|statement| matches!(statement, Statement::Assign { .. })))
+                {
+                    self.emit_if_early_return(condition, then_body, function.return_type)?;
+                    continue;
+                }
+                // Single-statement leaf if-blocks. A multi-statement body needs the
+                // instruction scheduler, and a non-leaf if needs the cmpwi scheduled
+                // into the prologue — both defer for now.
+                if then_body.len() == 1 && !function_makes_call(function) {
+                    let trailing_void = index + 1 == statement_count && function.return_type == Type::Void;
+                    if trailing_void {
+                        // The false path is the function exit (or the else / else-if):
+                        // a conditional return, or a branch into the else chain.
+                        self.emit_trailing_if(condition, then_body, else_body)?;
+                        continue;
+                    }
+                    if else_body.is_empty() {
+                        // A conditional store to a global that the very NEXT statement
+                        // unconditionally overwrites is a DEAD store: mwcc drops the whole `if`
+                        // (the condition has no side effect here — this branch is call-free) and
+                        // emits only the final store. We do not do that dead-store elimination, so
+                        // emitting both stores faithfully would diverge — defer instead.
+                        fn store_target(statement: &Statement) -> Option<&str> {
+                            match statement {
+                                Statement::Store { target: Expression::Variable(name), .. } => Some(name.as_str()),
+                                _ => None,
+                            }
+                        }
+                        if let Some(dead) = store_target(&then_body[0]) {
+                            if function.statements.get(index + 1).and_then(store_target) == Some(dead) {
+                                return Err(Diagnostic::error("a dead conditional store (overwritten by the next statement) needs dead-store elimination (roadmap)"));
+                            }
+                        }
+                        // The false path skips the body: forward branch.
+                        self.emit_if_forward(condition, then_body)?;
+                        continue;
+                    }
+                }
+                // A non-trailing multi-store if-BLOCK that is the FIRST statement of a void body and
+                // is followed by exactly one trailing store: `cmpwi; beq cont; <then run>; cont:
+                // <trailing store>; blr`. The if-first restriction avoids the leading-store-before-if
+                // scheduler; the single trailing store is what the loop emits byte-exactly next. A
+                // register-valued then-run stores sequentially, a constant one materializes batched.
+                if !function_makes_call(function)
+                    && else_body.is_empty()
+                    && function.return_type == Type::Void
+                    && index == 0
+                    && statement_count == 2
+                    && matches!(function.statements.get(1), Some(Statement::Store { .. }))
+                    && then_body.len() >= 2
+                {
+                    let then_plan = self.constant_store_run_plan(then_body);
+                    if then_plan.is_some() || self.store_run_arm_registers(then_body) {
+                        let (options, condition_bit) = self.emit_condition_test(condition)?;
+                        let branch_index = self.output.instructions.len();
+                        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                        match then_plan {
+                            Some(plan) => self.emit_constant_store_run(then_body, plan)?,
+                            None => for statement in then_body { self.emit_statement(statement)?; },
+                        }
+                        let label = self.output.instructions.len();
+                        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                            *target = label;
+                        }
+                        continue;
+                    }
+                }
+            }
+            self.emit_statement(statement)?;
+        }
+
+        // Hoist a leading register move from the body's statements (a call's argument
+        // setup) into the prologue's mflr->LR-store slot.
+        self.hoist_leading_arg_moves(lr_store_index);
+
+        // A `void` function ends after its statements.
+        if function.return_type == Type::Void {
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
+
+        let result = match function.return_type {
+            Type::Float | Type::Double => Eabi::float_result().number,
+            _ => Eabi::general_result().number,
+        };
+        let return_expression = function
+            .return_expression
+            .as_ref()
+            .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
+
+        if !function.guards.is_empty() {
+            // Guard + single value-tracked local, zero-select: `int x = a+1; if (c) return 0;
+            // return x;` (or `if (c) return x; return 0;`). mwcc materializes the local in
+            // the result register but SCHEDULES the materialization into the select's
+            // neg->or latency slot — `neg r0,c; addi r3,a,1; or r0,r0,c; srawi r0,31; and/
+            // andc r3,r3,r0` (the addi AFTER the leading neg). Emit that interleave directly:
+            // leading neg, the local, then the mask combine. Restricted to a single-op
+            // integer local, a leaf condition, no statements, and exactly one arm the
+            // constant 0 (the other the local).
+            if let ([local], [guard]) = (function.locals.as_slice(), function.guards.as_slice()) {
+                let zero_is_then = matches!(guard.value, Expression::IntegerLiteral(0));
+                let zero_is_else = matches!(return_expression, Expression::IntegerLiteral(0));
+                let local_is_other = (zero_is_then && matches!(return_expression, Expression::Variable(name) if *name == local.name))
+                    || (zero_is_else && matches!(&guard.value, Expression::Variable(name) if *name == local.name));
+                let condition_register = leaf_name(&guard.condition).and_then(|name| self.lookup_general(name));
+                let initializer = local.initializer.as_ref();
+                if local_is_other
+                    && function.statements.is_empty()
+                    && initializer.is_some_and(|init| self.is_single_op_register_value(init))
+                    && class_of(local.declared_type)? == ValueClass::General
+                {
+                    if let (Some(condition_register), Some(initializer)) = (condition_register, initializer) {
+                        self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
+                        self.evaluate(initializer, local.declared_type, result)?;
+                        self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                        self.output.instructions.push(if zero_is_then {
+                            Instruction::AndComplement { a: result, s: result, b: GENERAL_SCRATCH }
+                        } else {
+                            Instruction::And { a: result, s: result, b: GENERAL_SCRATCH }
+                        });
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                }
+            }
+            if !function.locals.is_empty() {
+                return Err(Diagnostic::error("locals combined with guards not yet supported"));
+            }
+            // mwcc lowers a single guard as a select (working-register form) but a
+            // chain of guards as separate return blocks.
+            if let [guard] = function.guards.as_slice() {
+                // A logical (&&/||) condition short-circuits straight into the two return
+                // blocks rather than computing the operator as a 0/1 value.
+                if self.try_emit_short_circuit_guard(&guard.condition, &guard.value, return_expression, result)? {
+                    return Ok(());
+                }
+                // `if (c) return X; return X` is degenerate: both paths return the same
+                // value, and mwcc keeps the dead condition test then a single `blr`. Defer
+                // rather than emit a spurious conditional return for the matching arms.
+                if let (Expression::Variable(value_name), Expression::Variable(return_name)) = (&guard.value, return_expression) {
+                    if value_name == return_name {
+                        return Err(Diagnostic::error("a guard whose value equals the fall-through return is degenerate (roadmap)"));
+                    }
+                }
+                // A guard condition that is a FLOAT comparison against a float CONSTANT (`if (a > 0.0f)
+                // return 1; return 0;`) folds to the branchless `(a OP k) ? v : w` — the .text is
+                // byte-exact — but mwcc allocates the if's (folded-away) branch labels BEFORE the pooled
+                // float constant, so the constant's anonymous `@N` symbol number is offset by 2 from
+                // ours. Modeling that counter is the low-value @N seam, so defer rather than emit a
+                // mismatched `@N` symbol. (A non-guard `return a > 0.0f;` has no phantom labels and
+                // matches; a two-variable float compare `a < b` pools no constant and is unaffected.)
+                if matches!(&guard.condition, Expression::Binary { operator, left, right }
+                    if crate::analysis::is_comparison(*operator)
+                        && (matches!(left.as_ref(), Expression::FloatLiteral(_)) || matches!(right.as_ref(), Expression::FloatLiteral(_))))
+                {
+                    return Err(Diagnostic::error("a float-constant guard condition's pooled @N symbol is offset by mwcc's folded branch labels (roadmap)"));
+                }
+                // A null-guarded dereference (`if (!p) return CONST; return *p;` or the mirror
+                // `if (p) return *p; return CONST;`) cannot fold branchless — dereferencing null is
+                // unsafe — so mwcc branches on `p == 0` to the cold constant with the access in the
+                // fall-through: `cmplwi p,0; beq COLD; <hot access>; blr; COLD: li CONST; blr`.
+                if let Some((pointer, hot, cold)) = guarded_null_dereference(&guard.condition, &guard.value, return_expression, function.return_type) {
+                    if let Some(pointer_register) = self.lookup_general(pointer) {
+                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: pointer_register, immediate: 0 });
+                        let branch_index = self.output.instructions.len();
+                        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
+                        self.evaluate_tail(hot, function.return_type, result)?;
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        let cold_label = self.output.instructions.len();
+                        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                            *target = cold_label;
+                        }
+                        self.evaluate_tail(cold, function.return_type, result)?;
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                }
+                let select = guard_select(&guard.condition, &guard.value, return_expression);
+                // ATTEMPT the select; a fall-through outside its vocabulary (a
+                // table load, a cast) uses mwcc's early-return BRANCH instead
+                // (measured) — roll back and take the guard-sequence path.
+                let instructions_before = self.output.instructions.len();
+                let relocations_before = self.output.relocations.len();
+                let virtuals_before = self.next_virtual;
+                let bump_before = self.output.anonymous_label_bump;
+                match self.evaluate_tail(&select, function.return_type, result) {
+                    Ok(()) => {
+                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        self.output.instructions.truncate(instructions_before);
+                        self.output.relocations.truncate(relocations_before);
+                        self.next_virtual = virtuals_before;
+                        self.output.anonymous_label_bump = bump_before;
+                    }
+                }
+            }
+            return self.emit_guard_sequence(&function.guards, return_expression, function.return_type, result);
+        }
+
+        // The FLOAT DAG arm claims double multiply-add trees (including
+        // named double locals — the window-top tier) for the frozen float
+        // models before the single-scratch evaluator paths.
+        if !self.try_float_dag_return(function)? {
+            match function.locals.as_slice() {
+                [] => self.evaluate_tail(return_expression, function.return_type, result)?,
+                [local] => self.evaluate_single_local(local, return_expression, function.return_type, result)?,
+                _ => return Err(Diagnostic::error("multiple locals need the full register allocator (roadmap M1)")),
+            }
+        }
+        // A return value that is itself a call (`return h(p->a, p->b);`) emits its
+        // argument setup here, after the body loop's hoist ran — so hoist again now.
+        self.hoist_leading_arg_moves(lr_store_index);
+        // A `float` function returning a double-precision value rounds to single
+        // (`frsp`) before returning, as mwcc does.
+        if function.return_type == Type::Float && self.is_double_value(return_expression) {
+            self.output.instructions.push(Instruction::RoundToSingle { d: result, b: result });
+        }
+        self.emit_epilogue_and_return();
+        Ok(())
+    }
+
+    /// mwcc fills the non-leaf prologue's `mflr`->LR-store latency with the leading
+    /// run of register-ALU argument setup — parameter copies / derivations ready at
+    /// entry: `stwu; mflr r0; mr r4,r3; mr r5,r3; stw r0,20(r1)`. A register move
+    /// (`mr`/logical) or a register `addi` qualifies; an immediate load (`li`,
+    /// `addi rD,0,imm`) and memory loads do not, and nothing touching r0 (which the
+    /// LR store needs). The slot holds at most two, so the rest stay after the store.
+    /// `lr_store_index` is the LR-store's position (only the general non-leaf path
+    /// sets it; other paths pass `None` and this is a no-op).
+    pub(crate) fn hoist_leading_arg_moves(&mut self, lr_store_index: Option<usize>) {
+        let Some(store) = lr_store_index else { return };
+        let mut run = 0;
+        // A `li`-form argument (`addi rD,0,n`, `a == 0`) is hoisted by the saved-LR-store
+        // scheduler when it leads — but once a register move (the indirect-call `mr
+        // r12,fp`) has been hoisted ahead of the save, that scheduler can no longer find
+        // the save at `mflr+1`, so the `li` must come along here. Allow it only after a
+        // move, leaving the lone-`li` direct-call case to the other pass unchanged.
+        let mut saw_move = false;
+        // mwcc hoists at most the first TWO leading argument-setup instructions into the mflr->LR-store
+        // gap (three moves, `sink3(a,b,c)`, keep the third after the store), so the run is capped at 2.
+        while run < 2 {
+            let Some(instruction) = self.output.instructions.get(store + 1 + run) else { break };
+            let hoistable = match *instruction {
+                Instruction::Or { a, s, b } => {
+                    let movable = a != 0 && s != 0 && b != 0;
+                    saw_move |= movable;
+                    movable
+                }
+                Instruction::AddImmediate { d, a, .. } => d != 0 && (a != 0 || saw_move),
+                // Any other single-cycle ALU arg-compute (`add`, `mullw`, `subf`, `and`, `xor`, shifts,
+                // `neg`) leading a call's argument setup is hoisted the same way (`g(a+b)` ->
+                // `add r3,r3,r4; stw r0`). A LOAD arg (`g(*p)`) is NOT hoisted — it stays after the LR
+                // save — so this is an ALU whitelist; the no-r0-operand check keeps the hoisted compute
+                // independent of the saved-LR store (which reads r0).
+                ref other
+                    if matches!(other,
+                        Instruction::Add { .. } | Instruction::MultiplyLow { .. } | Instruction::SubtractFrom { .. }
+                        | Instruction::And { .. } | Instruction::Xor { .. } | Instruction::ShiftLeftWord { .. }
+                        | Instruction::ShiftRightWord { .. } | Instruction::ShiftRightAlgebraicWord { .. }
+                        | Instruction::Negate { .. } | Instruction::ShiftLeftImmediate { .. }
+                        | Instruction::ShiftRightAlgebraicImmediate { .. } | Instruction::ShiftRightLogicalImmediate { .. }
+                        | Instruction::ClearLeftImmediate { .. } | Instruction::AndContiguousMask { .. }
+                        | Instruction::RotateAndMask { .. } | Instruction::OrImmediate { .. }) =>
+                {
+                    let movable = mwcc_vreg::register_operands(other).iter().all(|operand| operand.register != 0);
+                    saw_move |= movable;
+                    movable
+                }
+                _ => false,
+            };
+            if !hoistable {
+                break;
+            }
+            run += 1;
+        }
+        if run > 0 {
+            self.output.instructions[store..=store + run].rotate_left(1);
+        }
+    }
+
+    pub(crate) fn emit_epilogue_and_return(&mut self) {
+        let reload_saved_gprs = |generator: &mut Self| {
+            for (index, &register) in generator.callee_saved.iter().enumerate() {
+                let offset = generator.frame_size - 4 * (index as i16 + 1);
+                generator.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+            }
+        };
+        if self.epilogue_lr_before_gprs && self.non_leaf {
+            // Multi-pointer store sink: the saved LR reloads FIRST, then every callee-saved
+            // GPR highest-first, then `mtlr` (`lwz r0,20; lwz r31,12; lwz r30,8; mtlr`).
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+            reload_saved_gprs(self);
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        } else if self.epilogue_lr_first && self.non_leaf {
+            // Store-sink callee-saved: mwcc reloads all saved GPRs except the LOWEST, then
+            // the saved LR, then the lowest GPR (count==1: `lwz r0; lwz r31`; count==2: `lwz
+            // r31; lwz r0; lwz r30`). A register-death schedule this reproduces for one or
+            // two saved values; three or more reschedule it (the sink restricts to <= 2).
+            let last = self.callee_saved.len().saturating_sub(1);
+            for (index, &register) in self.callee_saved.iter().enumerate() {
+                if index == last {
+                    continue;
+                }
+                let offset = self.frame_size - 4 * (index as i16 + 1);
+                self.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+            }
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+            if let Some(&register) = self.callee_saved.last() {
+                let offset = self.frame_size - 4 * (last as i16 + 1);
+                self.output.instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+            }
+            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            // Reload callee-saved registers (highest first, from the top of the frame)
+            // before the saved-LR reload, so that reload stays directly before `mtlr`
+            // where the hoist pass finds it and issues it right after the last call.
+            reload_saved_gprs(self);
+            if self.non_leaf {
+                self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+                self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+            }
+        }
+        if self.frame_size != 0 {
+            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+    }
+
+    /// Emit a body statement.
+    pub(crate) fn emit_statement(&mut self, statement: &Statement) -> Compilation<()> {
+        match statement {
+            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
+                Err(Diagnostic::error("a break/continue/goto/label statement is not lowered here yet (captures only)"))
+            }
+            Statement::Store { target, value } => self.emit_store(target, value),
+            Statement::Expression(Expression::Call { name, arguments }) => {
+                self.emit_call(name, arguments, None, false)
+            }
+            Statement::Expression(_) => Err(Diagnostic::error("only a call may be a bare statement (roadmap)")),
+            // Reassignment is handled by value tracking; reaching here means it was
+            // mixed with stores/calls, which that path defers.
+            Statement::Assign { .. } => Err(Diagnostic::error("local reassignment mixed with stores/calls is not supported yet (roadmap)")),
+            // The binary-search dispatch codegen is the next piece; switches parse
+            // but defer for now (never miscompile).
+            Statement::Switch { .. } => Err(Diagnostic::error("switch dispatch codegen is not implemented yet (roadmap)")),
+            // A general if-statement (non-trailing, non-leaf, or with an else) needs
+            // forward branches and basic-block scheduling — deferred for now.
+            Statement::If { .. } => Err(Diagnostic::error("general if-statement codegen is not implemented yet (roadmap)")),
+            // An early `return` inside the body needs early-return codegen (blr for
+            // a leaf, a forward branch to the shared epilogue otherwise) — the
+            // parser now models it, but the codegen is the next piece.
+            Statement::Return(_) => Err(Diagnostic::error("early-return codegen is not implemented yet (roadmap)")),
+            // Loops (while/do-while/for) parse but defer until the loop codegen
+            // (backward branch + the callee-saved counter) lands.
+            Statement::Loop { .. } => Err(Diagnostic::error("loop codegen is not implemented yet (roadmap)")),
+        }
+    }
+
+    /// evaluate() with the live-local homes visible as locations (a
+    /// reassignment reads its own or a sibling's home).
+    pub(crate) fn evaluate_with_live_locals(&mut self, value: &Expression, destination: u8, homes: &[(String, u8)]) -> Compilation<()> {
+        for (name, register) in homes {
+            self.locations.entry(name.clone()).or_insert(crate::generator::Location {
+                class: crate::generator::ValueClass::General,
+                register: *register,
+                signed: true,
+                width: 32,
+                pointee: None,
+                stride: None,
+            });
+        }
+        self.evaluate(value, Type::Int, destination)
+    }
+
+    /// Evaluate the function result. A conditional in this tail position can use a
+    /// conditional return when one of its values already sits in the result register.
+    pub(crate) fn evaluate_tail(&mut self, expression: &Expression, value_type: Type, result: u8) -> Compilation<()> {
+        match expression {
+            Expression::Conditional { condition, when_true, when_false } => match value_type {
+                Type::Float | Type::Double => self.emit_float_conditional(condition, when_true, when_false, result, true),
+                _ => {
+                    // ATTEMPT the select; a false-arm outside its vocabulary
+                    // (a table load) uses mwcc's early-return BRANCH — the
+                    // ternary is the guard form `if (cond) return T; return F`
+                    // (measured on the ctype tolower shape).
+                    let instructions_before = self.output.instructions.len();
+                    let relocations_before = self.output.relocations.len();
+                    let virtuals_before = self.next_virtual;
+                    let bump_before = self.output.anonymous_label_bump;
+                    match self.emit_conditional(condition, when_true, when_false, result, true) {
+                        Ok(()) => Ok(()),
+                        Err(error) => {
+                            self.output.instructions.truncate(instructions_before);
+                            self.output.relocations.truncate(relocations_before);
+                            self.next_virtual = virtuals_before;
+                            self.output.anonymous_label_bump = bump_before;
+                            // Emit the branch form DIRECTLY (a nested-ternary
+                            // fall-through would recurse through the same
+                            // fallback forever — defer that).
+                            let Some(constant) = constant_value(when_true) else { return Err(error) };
+                            if matches!(when_false.as_ref(), Expression::Conditional { .. }) {
+                                return Err(error);
+                            }
+                            let (options, condition_bit) = self.emit_condition_test(condition)?;
+                            let branch_index = self.output.instructions.len();
+                            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                            self.load_integer_constant(result, constant);
+                            self.output.instructions.push(Instruction::BranchToLinkRegister);
+                            let next = self.output.instructions.len();
+                            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                                *target = next;
+                            }
+                            self.evaluate_tail(when_false, value_type, result)
+                        }
+                    }
+                }
+            },
+            Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), left, right } => {
+                self.emit_short_circuit(*operator, left, right, result)
+            }
+            // De Morgan: `return !(X && Y)` is `!X || !Y` and `!(X || Y)` is `!X && !Y` —
+            // mwcc folds the negation into the short-circuit exits rather than computing the
+            // operator into a register and inverting it (cntlzw/srwi). Single level only;
+            // a nested logical operand defers to the general path.
+            Expression::Unary { operator: UnaryOperator::LogicalNot, operand }
+                if matches!(operand.as_ref(), Expression::Binary { operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr, .. }) =>
+            {
+                let Expression::Binary { operator: inner, left, right } = operand.as_ref() else { unreachable!() };
+                let is_logical = |expression: &Expression| {
+                    matches!(expression, Expression::Binary { operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr, .. })
+                };
+                if is_logical(left.as_ref()) || is_logical(right.as_ref()) {
+                    return Err(Diagnostic::error("a nested negated logical needs the general short-circuit (roadmap)"));
+                }
+                let flipped = if *inner == BinaryOperator::LogicalAnd { BinaryOperator::LogicalOr } else { BinaryOperator::LogicalAnd };
+                let not_left = Expression::Unary { operator: UnaryOperator::LogicalNot, operand: Box::new(left.as_ref().clone()) };
+                let not_right = Expression::Unary { operator: UnaryOperator::LogicalNot, operand: Box::new(right.as_ref().clone()) };
+                self.emit_short_circuit(flipped, &not_left, &not_right, result)
+            }
+            // A narrow return type truncates the returned value. A `(type)` cast
+            // expression already yields the narrow type, so it falls through to the
+            // normal path; everything else is coerced here.
+            other if is_narrow_int(value_type) && !matches!(other, Expression::Cast { .. }) => {
+                self.evaluate_narrow_return(other, value_type, result)
+            }
+            other => self.evaluate(other, value_type, result),
+        }
+    }
+
+    pub(crate) fn evaluate_single_local(
+        &mut self,
+        local: &LocalDeclaration,
+        return_expression: &Expression,
+        return_type: Type,
+        result: u8,
+    ) -> Compilation<()> {
+        let class = class_of(local.declared_type)?;
+        // The single-local straight-line path needs the local's initializer; an
+        // uninitialized local (its value comes from an assignment) is value-tracked.
+        let initializer = local
+            .initializer
+            .as_ref()
+            .ok_or_else(|| Diagnostic::error("an uninitialized single local is not supported here (roadmap)"))?;
+
+        // `return x;` — the local is the result, so compute its initializer
+        // straight into the result register.
+        if matches!(return_expression, Expression::Variable(name) if *name == local.name) {
+            // A signed narrow local (char/short) returned at a wider type must be
+            // sign-extended — `char c = *s; return c;` is `lbz; extsb` like the direct
+            // `return *s`. Evaluating the initializer at the local's own narrow type drops
+            // that widening, and whether the value is already extended depends on the
+            // initializer (a global narrow load appends extsb/lha; a char* deref's `lbz`
+            // and a parameter leave the raw byte). Defer the not-already-extended cases
+            // rather than return a zero-extended byte where a sign-extended char is meant.
+            if self.signed_of(local.declared_type)
+                && local.declared_type.width() < return_type.width()
+                && local.declared_type.width() < 32
+            {
+                let initializer_extends = match initializer {
+                    // A global signed-narrow load appends the extension (lbz+extsb / lha).
+                    Expression::Variable(name) => self.globals.contains_key(name.as_str()),
+                    // `lha` sign-extends a halfword; `lbz` does not extend a byte.
+                    Expression::Dereference { .. } | Expression::Index { .. } | Expression::Member { .. } => {
+                        local.declared_type.width() >= 16
+                    }
+                    _ => false,
+                };
+                if !initializer_extends {
+                    return Err(Diagnostic::error("a signed narrow local returned at a wider type needs a widening coercion (roadmap)"));
+                }
+            }
+            // A NARROWING leaf initializer — `char c = a;` for a wider `a` — truncates to the
+            // narrow type. Inlining it into the return drops that truncation (and the char
+            // return's sign-extension): mwcc emits `extsb r3,r3` for `char f(int a){ char c =
+            // a; return c; }`, ours returned the raw int. Defer the narrowing.
+            if local.declared_type.width() < 32 {
+                if let Ok((_, init_width, _)) = self.leaf_info(initializer) {
+                    if init_width as u32 > local.declared_type.width() as u32 {
+                        return Err(Diagnostic::error("a narrowing narrow local (char/short from a wider value) returned is not supported yet (roadmap)"));
+                    }
+                }
+            }
+            return self.evaluate(initializer, local.declared_type, result);
+        }
+
+        // An additively-defined local used as an operand of an addition
+        // (`int t = a + b; return t + c;`) is one mwcc keeps in a register and
+        // mutates in place (`add r3,r3,r4; add r3,r3,r5`); our leaf-in-scratch
+        // lowering would instead reassociate it like a direct sum. Defer that exact
+        // shape (a `+`-init local feeding a `+`); the allocator will later make it
+        // byte-exact. Other shapes (`*` init, or a `*`/`-` use) already match.
+        fn feeds_an_addition(name: &str, expression: &Expression) -> bool {
+            let is_local = |operand: &Expression| matches!(operand, Expression::Variable(variable) if variable == name);
+            match expression {
+                Expression::CallThrough { target, arguments } => {
+                    feeds_an_addition(name, target)
+                        || arguments.iter().any(|argument| feeds_an_addition(name, argument))
+                }
+                Expression::AggregateLiteral(_) => false,
+                Expression::PostStep { target, .. } => feeds_an_addition(name, target),
+                Expression::Binary { operator, left, right } => {
+                    (*operator == BinaryOperator::Add && (is_local(left) || is_local(right)))
+                        || feeds_an_addition(name, left)
+                        || feeds_an_addition(name, right)
+                }
+                Expression::Unary { operand, .. } | Expression::Cast { operand, .. } | Expression::AddressOf { operand } => feeds_an_addition(name, operand),
+                Expression::Conditional { condition, when_true, when_false } => {
+                    feeds_an_addition(name, condition) || feeds_an_addition(name, when_true) || feeds_an_addition(name, when_false)
+                }
+                Expression::Dereference { pointer } => feeds_an_addition(name, pointer),
+                Expression::Index { base, index } => feeds_an_addition(name, base) || feeds_an_addition(name, index),
+                Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => feeds_an_addition(name, base),
+                Expression::Assign { target, value } => feeds_an_addition(name, target) || feeds_an_addition(name, value),
+                Expression::Comma { left, right } => feeds_an_addition(name, left) || feeds_an_addition(name, right),
+                Expression::Call { arguments, .. } => arguments.iter().any(|argument| feeds_an_addition(name, argument)),
+                Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+            }
+        }
+        if matches!(initializer, Expression::Binary { operator: BinaryOperator::Add, .. })
+            && feeds_an_addition(&local.name, return_expression)
+        {
+            return Err(Diagnostic::error("an additively-defined local used in a sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
+        }
+
+        // Otherwise the local lives in the scratch register and is used as a leaf.
+        // That only works if the result expression does not itself need the scratch.
+        if needs_scratch(return_expression) {
+            return Err(Diagnostic::error("local reused inside a scratch-needing expression (roadmap M1)"));
+        }
+        let scratch = match class {
+            ValueClass::General => GENERAL_SCRATCH,
+            ValueClass::Float => FLOAT_SCRATCH,
+        };
+        self.evaluate(initializer, local.declared_type, scratch)?;
+        let signed = self.signed_of(local.declared_type);
+        let pointee = match local.declared_type {
+            Type::Pointer(pointee) => Some(pointee),
+            _ => None,
+        };
+        let stride = pointer_stride(local.declared_type);
+        self.locations.insert(local.name.clone(), Location { class, register: scratch, signed, width: local.declared_type.width(), pointee, stride });
+        self.evaluate(return_expression, return_type, result)
+    }
+
+    pub(crate) fn evaluate(&mut self, expression: &Expression, value_type: Type, destination: u8) -> Compilation<()> {
+        // An `(int)` cast of an UNSIGNED-narrow or int-typed operand is a no-op
+        // (the lbz/lhz load already zero-extends): unwrap it. A signed-narrow
+        // operand keeps the cast (its widening is the extsb/extsh the inner
+        // paths model).
+        if let (Type::Int | Type::UnsignedInt, Expression::Cast { target_type: Type::Int | Type::UnsignedInt, operand }) =
+            (value_type, expression)
+        {
+            let element = match operand.as_ref() {
+                Expression::Index { base, .. } => match base.as_ref() {
+                    Expression::Variable(name) => self.globals.get(name.as_str()).copied(),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match element {
+                // An UNSIGNED narrow (or int) element zero-extends in its own
+                // load (lbzx/lhzx): the cast is a no-op.
+                Some(Type::UnsignedChar | Type::UnsignedShort | Type::Int | Type::UnsignedInt) => {
+                    return self.evaluate(operand, value_type, destination);
+                }
+                // A SIGNED narrow element's widening (lbzx then extsb) is the
+                // Index path's own job — the cast is a no-op wrapper here too.
+                Some(Type::Char | Type::Short) => {
+                    return self.evaluate(operand, value_type, destination);
+                }
+                _ => {}
+            }
+            if matches!(operand.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::Binary { .. }) {
+                return self.evaluate(operand, value_type, destination);
+            }
+        }
+        match value_type {
+            // A `double` shares the FPR file with `float`; the float path picks the
+            // double-precision instructions via is_double_value. An integer leaf in
+            // a float context is an implicit int->float conversion (the same magic-
+            // constant sequence as the explicit `(float)`/`(double)` cast).
+            Type::Float | Type::Double => {
+                // A bare float literal materializes at the CONTEXT precision: an 8-byte
+                // pooled `lfd` for a double, the rounded 4-byte `lfs` for a float.
+                // evaluate_float cannot know the context and always picked single,
+                // which mis-typed every double-constant return (`return 0.0;`).
+                if let Expression::FloatLiteral(value) = expression {
+                    self.load_float_literal(destination, *value, value_type == Type::Double);
+                    return Ok(());
+                }
+                if self.is_integer_leaf(expression) {
+                    return self.emit_cast_to_float(expression, destination, value_type == Type::Double);
+                }
+                // A call returning int — or an implicitly-declared callee (defaults to int),
+                // the libm `w_*` wrappers `double acos(double x){ return __ieee754_acos(x); }`
+                // — leaves its result in r3. Convert it to the CONTEXT precision (this branch
+                // knows `value_type`, which evaluate_float does not) via the magic-bias
+                // sequence, reusing the non-leaf call prologue's frame (no second stwu). mwcc
+                // schedules the call-result conversion value-store-first: the call->xoris->stw
+                // value chain is the critical path, so the independent bias load fills the slot
+                // after. An intrinsic (`__fabs`) is not a real call and is left to evaluate_float.
+                if let Expression::Call { name, arguments } = expression {
+                    if !is_intrinsic_call(name) && !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+                        let source = Eabi::general_result().number;
+                        self.emit_call(name, arguments, None, false)?;
+                        let bias_register = if destination != FLOAT_SCRATCH { destination } else { Eabi::float_result().number };
+                        self.emit_int_to_float_body(source, destination, value_type == Type::Double, true, bias_register, true);
+                        return Ok(());
+                    }
+                }
+                // An integer memory load (`*p`, `a[i]`, `s.member` of integer type) in a
+                // float context needs the loaded value run through the int->float conversion.
+                // That path is not wired, so defer rather than hand it to evaluate_float,
+                // which would mis-evaluate the integer as a float and load it into the GPR
+                // whose NUMBER matches the float destination (f1 -> r1, clobbering the stack
+                // pointer). Float-typed loads fall through to evaluate_float as before.
+                // A deref/index of a leaf-variable base (int pointer, int global array) whose
+                // loaded value is not float, or a direct integer struct member. Member-based
+                // bases (`*p->fq`, `p->e[i]`) are left to evaluate_float — is_float_value
+                // cannot resolve them, and those float loads are already byte-exact.
+                let integer_memory_load = match expression {
+                    Expression::Dereference { pointer } => {
+                        matches!(pointer.as_ref(), Expression::Variable(_)) && !self.is_float_value(expression)
+                    }
+                    Expression::Index { base, .. } => {
+                        matches!(base.as_ref(), Expression::Variable(_)) && !self.is_float_value(expression)
+                    }
+                    Expression::Member { member_type, .. } => !matches!(member_type, Type::Float | Type::Double),
+                    // A plain file-scope global of INT (non-float) type read in a float context —
+                    // `double f(){ return gi; }` — is an integer memory load too. Without this,
+                    // evaluate_float treats it as a float global and loads it (`lwz`) into the GPR
+                    // whose number matches the float destination: f1 -> r1, CLOBBERING the stack
+                    // pointer. A local/param is not a memory load (excluded via `locations`).
+                    Expression::Variable(name) => {
+                        !self.locations.contains_key(name.as_str())
+                            && matches!(self.globals.get(name.as_str()), Some(global_type) if !matches!(global_type, Type::Float | Type::Double))
+                    }
+                    _ => false,
+                };
+                if integer_memory_load {
+                    return Err(Diagnostic::error("an integer memory load in a float context needs an int->float conversion (roadmap)"));
+                }
+                self.evaluate_float(expression, destination)
+            }
+            Type::Void => Err(Diagnostic::error("cannot evaluate a void expression")),
+            // A float leaf in an integer context is an implicit float->int conversion
+            // (the same `fctiwz` + frame bounce as the explicit `(int)` cast).
+            _ => {
+                if self.is_float_value(expression) {
+                    return self.emit_cast_to_integer(value_type, expression, destination);
+                }
+                // A whole signed-`char` load promoted to `int` sign-extends the
+                // loaded byte: `lbz d,…; extsb d,d`. (`lbz` zero-extends, so the
+                // promotion needs the trailing `extsb`; the narrow-return path
+                // calls `evaluate_general` directly and so keeps the bare `lbz`.)
+                if matches!(value_type, Type::Int | Type::UnsignedInt) && self.is_signed_byte_load(expression)? {
+                    self.evaluate_general(expression, destination)?;
+                    self.emit_widen(destination, destination, 8, true);
+                    return Ok(());
+                }
+                self.evaluate_general(expression, destination)
+            }
+        }
+    }
+
+    /// Whether `expression` is a full-width integer leaf variable (an int/unsigned
+    /// in a GPR, not a pointer or a narrow type) — the operand an implicit
+    /// int->float conversion accepts.
+    pub(crate) fn is_integer_leaf(&self, expression: &Expression) -> bool {
+        matches!(expression, Expression::Variable(name)
+            if self.locations.get(name.as_str())
+                .is_some_and(|location| location.class == ValueClass::General && location.width == 32 && location.pointee.is_none()))
+    }
+}
