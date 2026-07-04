@@ -327,6 +327,9 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // the running `@N` counter — deduplicated across the unit (mwcc `-str reuse`).
     let mut string_pool: std::collections::HashMap<Vec<u8>, String> = std::collections::HashMap::new();
     let mut string_counter: u32 = 0;
+    // Strings pooled from STRUCT-member relocations collect here per global (the
+    // enclosing push borrows `defined_globals`), then append after it.
+    let mut pooled_string_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     for global in &unit.globals {
         // `extern T g[] = {...}` — extern WITH an initializer — is a DEFINITION
         // (ansi_files' FILE table); only an initializer-less extern is a pure
@@ -539,13 +542,44 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             relocations: global
                 .data_relocations
                 .iter()
-                .map(|(offset, target, addend)| mwcc_machine_code_to_object::DataRelocation {
-                    offset: *offset,
-                    target: target.clone(),
-                    addend: *addend,
+                .map(|(offset, target, addend)| {
+                    // A STRING-LITERAL struct member arrives as a \u{1}-marked
+                    // target from the parser: pool it like an address-initializer
+                    // string (an anonymous `@N` `.sdata` object, first-appearance
+                    // numbering, deduplicated under `-str reuse` — locale's lconv).
+                    let target = match target.strip_prefix('\u{1}') {
+                        Some(literal) => {
+                            let string_bytes: Vec<u8> = literal.as_bytes().to_vec();
+                            string_pool.get(string_bytes.as_slice()).cloned().unwrap_or_else(|| {
+                                string_counter += 1;
+                                let name = format!("@{string_counter}");
+                                string_pool.insert(string_bytes.clone(), name.clone());
+                                let mut object_bytes = string_bytes.clone();
+                                object_bytes.push(0);
+                                pooled_string_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
+                                    name: name.clone(),
+                                    size: object_bytes.len() as u32,
+                                    alignment: 4,
+                                    initial_bytes: Some(object_bytes),
+                                    is_const: false,
+                                    is_static: true,
+                                    is_explicit_zero: false,
+                                    relocations: Vec::new(),
+                                });
+                                name
+                            })
+                        }
+                        None => target.clone(),
+                    };
+                    mwcc_machine_code_to_object::DataRelocation {
+                        offset: *offset,
+                        target,
+                        addend: *addend,
+                    }
                 })
                 .collect(),
         });
+        defined_globals.extend(pooled_string_globals.drain(..));
     }
     // Resolve each function's pooled string literals to anonymous `@N` `.sdata` objects, numbered at
     // the FRONT of that function's per-function `@N` block (before its constants and unwind entries),

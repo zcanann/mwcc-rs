@@ -660,6 +660,20 @@ impl Parser {
                 }
                 continue; // the comma after an unbraced array's last element is consumed above
             } else if matches!(member_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                // A pointer field initialized with a STRING LITERAL pools the
+                // string as an anonymous `@N` `.sdata` object (locale's lconv:
+                // `{".", "", ...}` — main.rs assigns the numbers in first-
+                // appearance order, deduplicated under `-str reuse`). The
+                // marker prefix routes it through the symbol-relocation tuple.
+                if let Token::StringLiteral(string_bytes) = self.peek() {
+                    let marker = format!("\u{1}{}", String::from_utf8_lossy(string_bytes));
+                    self.advance();
+                    relocations.push((absolute_field, marker, 0));
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 // A pointer field: a relocated address (`__read_console`, a cast
                 // `&member` chain into a struct array) or a constant (NULL).
                 if let Some((target, addend)) = self.parse_address_element(tag)? {
@@ -721,6 +735,20 @@ impl Parser {
                 let name = name.clone();
                 self.advance();
                 return Ok(Some((name, 0)));
+            }
+        }
+        // `name + K` — an address with a byte addend into a known global array
+        // (pikmin's locale: `stringBase0 + 2` indexes the packed string table).
+        if let (Token::Identifier(name), Some(Token::Plus), Some(Token::IntegerLiteral(addend))) =
+            (self.peek(), self.tokens.get(self.position + 1), self.tokens.get(self.position + 2))
+        {
+            if self.global_sizes.contains_key(name)
+                && matches!(self.tokens.get(self.position + 3), Some(Token::Comma) | Some(Token::BraceClose))
+            {
+                let name = name.clone();
+                let addend = *addend as i32;
+                self.position += 3;
+                return Ok(Some((name, addend)));
             }
         }
         // `&name` — an explicit address-of a function/global (mp4's
@@ -2518,7 +2546,12 @@ impl Parser {
                     let total_bytes = element_bytes * array_length.map_or(1, u32::from);
                     let array_element = array_length.map(|_| element_bytes);
                     self.global_sizes.insert(declarator_name.clone(), (total_bytes, array_element));
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations) });
+                    // For a POINTER declarator, a LEADING `const` binds the
+                    // POINTEE (`const char* dummy = "C"` is a WRITABLE pointer
+                    // in `.sdata` — measured: locale) — the object itself is
+                    // not const.
+                    let object_is_const = is_const && !matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations) });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type
