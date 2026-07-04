@@ -860,6 +860,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     if global_symbols.contains_key(name) || local_data_symbols.contains_key(name) || local_function_symbols.contains_key(name) {
                         continue;
                     }
+                    // A call to a function defined LATER in this unit emits
+                    // the DEFINED symbol at the first-reference position — in
+                    // the caller's EXPLICIT run when prototyped (mp4 file_io:
+                    // fflush FUNC before fclose's own symbol) or its IMPLICIT
+                    // run when not (AC: [fclose, fflush FUNC, free UND]) — the
+                    // definition's own position run then skips it.
+                    if let Some(forward) = functions
+                        .iter()
+                        .position(|later| !later.is_static && !later.implicit_local && later.name == name)
+                    {
+                        global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+                        function_symbols[forward] = (symtab.len() / SYMBOL_SIZE) as u32;
+                        let binding = if functions[forward].is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
+                        write_symbol(&mut symtab, strtab.add(name), function_offset[forward], function_size[forward], binding, 0, index_of(".text") as u16);
+                        let flags = if functions[forward].is_weak { 0x0e00_0000 } else { 0 };
+                        comment_values.push((4, flags));
+                        continue;
+                    }
                     global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                     if let Some(&offset) = data_offsets.get(name) {
                         let section = index_of(data_section[name]) as u16;
@@ -882,14 +900,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         emit_referenced!(helper_ordered);
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
-        if !function.is_static {
+        if !function.is_static && !global_symbols.contains_key(function.name) {
             function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
             let binding = if function.is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
             write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], binding, 0, index_of(".text") as u16);
             let flags = if function.is_weak { 0x0e00_0000 } else { 0 };
             comment_values.push((4, flags)); // a function is 4-aligned; weak carries 0x0e
             // A LATER function's call to this one resolves to the defined
-            // symbol (no UND duplicate — FILE_POS's fseek -> _fseek).
+            // symbol (no UND duplicate — FILE_POS's fseek -> _fseek). A
+            // FORWARD-referenced function already emitted at its first
+            // reference (the contains_key guard above).
             global_symbols.insert(function.name, function_symbols[index]);
         }
         emit_referenced!(implicit_ordered);

@@ -42,6 +42,11 @@ mod suac_atoi_mel;
 mod ansif_close_all;
 mod ansif_close_all_cr;
 mod ansif_flush_all;
+mod fio_fclose;
+mod fio_fflush;
+mod fio_fflush_cr;
+mod fio_strnicmp_sv;
+mod fio_strnicmp_leaf;
 mod sup2_atoi;
 mod sup2_strtol;
 mod sup2_strtoul_impl;
@@ -280,6 +285,11 @@ impl Generator {
             || self.try_ansif_close_all(function)?
             || self.try_ansif_close_all_cr(function)?
             || self.try_ansif_flush_all(function)?
+            || self.try_fio_fclose(function)?
+            || self.try_fio_fflush(function)?
+            || self.try_fio_fflush_cr(function)?
+            || self.try_fio_strnicmp_sv(function)?
+            || self.try_fio_strnicmp_leaf(function)?
             || self.try_sup2_strtoul_impl(function)?
             || self.try_sup2_strtoull_impl(function)?
             || self.try_sup2_strtoul_pub(function)?

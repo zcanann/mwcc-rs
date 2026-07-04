@@ -184,11 +184,16 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         .into_iter()
         .filter(|(name, _)| !unit.implicitly_materialized.iter().any(|materialized| materialized == name))
         .collect();
+    // Prototype-only names (file-scope declarations, NOT definitions) — the
+    // implicit-callee classifier keys on these: a call with no prototype is
+    // implicit even when the unit defines the callee later.
+    let prototyped_names: std::collections::HashSet<String> =
+        unit.prototypes.iter().map(|(name, _, _)| name.clone()).collect();
     // Lower every function definition in source order; they share one object.
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
         .functions
         .iter()
-        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, &unit.skipped_inline_names, config))
+        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, &unit.skipped_inline_names, &prototyped_names, config))
         .collect::<Compilation<_>>()?;
     // MWCC_DUMP_FIXTURES=<dir>: serialize every lowered function's register
     // structure (per-instruction define/use operands via the vreg machine
