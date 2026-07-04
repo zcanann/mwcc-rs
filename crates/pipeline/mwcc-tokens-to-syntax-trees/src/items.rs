@@ -1891,19 +1891,28 @@ impl Parser {
                     && matches!(self.tokens.get(self.position + 1), Some(Token::Identifier(_)))
                     && matches!(
                         (self.tokens.get(self.position + 2), self.tokens.get(self.position + 3)),
-                        (Some(Token::Identifier(_)), Some(Token::Semicolon)) | (Some(Token::Star), Some(Token::Identifier(_)))
+                        (Some(Token::Identifier(_)), Some(Token::Semicolon))
+                            | (Some(Token::Identifier(_)), Some(Token::Comma))
+                            | (Some(Token::Star), Some(Token::Identifier(_)))
                     )
                 {
                     self.advance(); // `struct` / `union`
                     let tag = self.parse_identifier()?;
-                    let is_pointer = self.eat_keyword(Token::Star);
-                    let alias = self.parse_identifier()?;
-                    self.expect(Token::Semicolon)?;
-                    if is_pointer {
-                        self.struct_pointer_typedefs.insert(alias, tag);
-                    } else {
-                        self.struct_typedefs.insert(alias, tag);
+                    // One or more declarators: `Alias`, `*AliasPtr`, comma-
+                    // separated (`typedef struct _IO_FILE _IO_FILE, *P_IO_FILE;`).
+                    loop {
+                        let is_pointer = self.eat_keyword(Token::Star);
+                        let alias = self.parse_identifier()?;
+                        if is_pointer {
+                            self.struct_pointer_typedefs.insert(alias, tag.clone());
+                        } else {
+                            self.struct_typedefs.insert(alias, tag.clone());
+                        }
+                        if !self.eat_keyword(Token::Comma) {
+                            break;
+                        }
                     }
+                    self.expect(Token::Semicolon)?;
                     return Ok(());
                 }
                 let aliased = self.parse_type()?;

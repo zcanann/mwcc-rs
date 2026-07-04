@@ -44,6 +44,7 @@ mod su_strtoull_impl;
 mod uart_close;
 mod wc_fwide;
 mod wc_fwide_mel;
+mod wc_fwide_p2;
 mod uart_write;
 mod satan_pik;
 mod satan_sun;
@@ -180,6 +181,7 @@ impl Generator {
             || self.try_str_strrchr_mp4(function)?
             || self.try_wc_fwide(function)?
             || self.try_wc_fwide_mel(function)?
+            || self.try_wc_fwide_p2(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
