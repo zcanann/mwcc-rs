@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC1_WRITE_AST_HASH: u64 = 1; // DISARMED f492: static-local $N base needs the skipped-inline bump-count model (ours 35 vs mwcc 30)
+const UC1_WRITE_AST_HASH: u64 = 1; // DISARMED f493: static $N base rule conditional (see writer note + memory)
 
 impl Generator {
     pub(super) fn try_uc1_write(&mut self, function: &Function) -> Compilation<bool> {

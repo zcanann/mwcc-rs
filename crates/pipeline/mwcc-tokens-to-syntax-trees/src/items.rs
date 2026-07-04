@@ -2718,8 +2718,23 @@ impl Parser {
                     // Scan the body braces, summing the measured label weights.
                     let mut bump = if saw_static { 3usize } else { 0 };
                     let mut brace_depth = 0i32;
+                    // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
+                    // value-position short-circuits add nothing).
+                    let mut condition_pending = false;
+                    let mut condition_depth = 0i32;
                     while let Some(token) = self.tokens.get(index) {
                         match token {
+                            Token::ParenOpen => {
+                                if condition_pending || condition_depth > 0 {
+                                    condition_depth += 1;
+                                    condition_pending = false;
+                                }
+                            }
+                            Token::ParenClose => {
+                                if condition_depth > 0 {
+                                    condition_depth -= 1;
+                                }
+                            }
                             Token::BraceOpen => brace_depth += 1,
                             Token::BraceClose => {
                                 brace_depth -= 1;
@@ -2727,20 +2742,28 @@ impl Parser {
                                     return Ok(Some(bump));
                                 }
                             }
-                            Token::KeywordIf => bump += 2,
+                            Token::KeywordIf => {
+                                bump += 2;
+                                condition_pending = true;
+                            }
                             Token::Identifier(word) if word == "else" => bump += 1,
                             Token::Identifier(word) if word == "switch" => bump += 1,
                             Token::Identifier(word) if word == "case" => bump += 1,
                             Token::Identifier(word) if word == "default" => bump += 1,
-                            Token::PipePipe | Token::AmpersandAmpersand => bump += 1,
-                            Token::KeywordWhile => bump += 4,
-                            Token::KeywordFor => bump += 5,
-                            Token::KeywordDo => {
-                                return Err(Diagnostic::error("a skipped inline function with a do-loop has an unmeasured @N bump (roadmap)"));
+                            Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => bump += 1,
+                            Token::KeywordWhile => {
+                                bump += 4;
+                                condition_pending = true;
                             }
-                            Token::Identifier(word) if word == "goto" => {
-                                return Err(Diagnostic::error("a skipped inline function with goto has an unmeasured @N bump (roadmap)"));
+                            Token::KeywordFor => {
+                                bump += 5;
+                                condition_pending = true;
                             }
+                            // A do-while contributes +4 TOTAL (measured fire 493)
+                            // — its `while` token below carries the count, so the
+                            // `do` itself is transparent.
+                            Token::KeywordDo => {}
+                            Token::Identifier(word) if word == "goto" => bump += 1, // measured: goto+label = +1
                             Token::EndOfFile => return Ok(None),
                             _ => {}
                         }
