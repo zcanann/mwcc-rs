@@ -523,6 +523,10 @@ impl Parser {
                 Expression::Variable(name) => self.variable_structs.get(name).cloned(),
                 _ => self.expression_struct_tag.take(),
             },
+            // `(chain->member)->field` / `(a[i])->field`: the parenthesized base is a
+            // completed member/index chain — its final tag was recorded when the inner
+            // factor finished (alloc.c's block_->client_size_ chains).
+            Expression::Member { .. } | Expression::Index { .. } => self.expression_struct_tag.take(),
             _ => None,
         };
         loop {

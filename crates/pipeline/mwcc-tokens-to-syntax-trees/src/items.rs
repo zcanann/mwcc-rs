@@ -3653,11 +3653,24 @@ impl Parser {
         Ok(Statement::Return(value))
     }
 
+    /// A condition expression that may use the top-level comma operator
+    /// (`if ((a = x), test)` — alloc.c's link/merge macros). Each left
+    /// operand runs for side effects; the last operand is the value.
+    fn parse_comma_expression(&mut self) -> Compilation<Expression> {
+        let mut expression = self.expression()?;
+        while *self.peek() == Token::Comma {
+            self.advance();
+            let right = self.expression()?;
+            expression = Expression::Comma { left: Box::new(expression), right: Box::new(right) };
+        }
+        Ok(expression)
+    }
+
     /// `if (condition) <block-or-statement> [else <block-or-statement> | else if]`.
     fn parse_if_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
         self.expect(Token::KeywordIf)?;
         self.expect(Token::ParenOpen)?;
-        let condition = self.expression()?;
+        let condition = self.parse_comma_expression()?;
         self.expect(Token::ParenClose)?;
         let then_body = self.parse_block_or_statement(local_names, block_locals)?;
         let else_body = if self.eat_word("else") {
