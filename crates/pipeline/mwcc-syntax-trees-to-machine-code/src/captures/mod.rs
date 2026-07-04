@@ -78,6 +78,12 @@ mod sup2_strtoul_pub;
 mod sup2_strtoull_impl;
 mod suac_strtoul_impl;
 mod suac_strtoul_impl_sun;
+mod suac_impl_str;
+mod suac_impl64_str;
+mod suac_atoi_str;
+mod suac_strtol_str;
+mod suac_stub_strtoll;
+mod suac_stub_strtoull;
 mod suac_strtoul_pub;
 mod su_strtol;
 mod su_strtoul_impl;
@@ -303,6 +309,12 @@ impl Generator {
             || self.try_su_atoi(function)?
             || self.try_suac_strtoul_impl(function)?
             || self.try_suac_strtoul_impl_sun(function)?
+            || self.try_suac_impl_str(function)?
+            || self.try_suac_impl64_str(function)?
+            || self.try_suac_atoi_str(function)?
+            || self.try_suac_strtol_str(function)?
+            || self.try_suac_stub_strtoll(function)?
+            || self.try_suac_stub_strtoull(function)?
             || self.try_suac_strtoul_pub(function)?
             || self.try_suac_strtol(function)?
             || self.try_suac_atoi_mel(function)?

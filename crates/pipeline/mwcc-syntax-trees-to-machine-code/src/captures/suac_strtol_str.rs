@@ -1,4 +1,4 @@
-//! suac_strtol: an exact-match whole-function capture (fire 462).
+//! suac_strtol_str: an exact-match whole-function capture (fire 512).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,12 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const SUAC_STRTOL_AST_HASH: u64 = 0xaf260e73d37979c1;
-/// Cosmetic AST variants with IDENTICAL instruction streams (content-diffed): ww f503.
-const SUAC_STRTOL_AST_HASHES: &[u64] = &[SUAC_STRTOL_AST_HASH, 0xf270082e9abf1bc6];
+const SUAC_STRTOL_STR_AST_HASH: u64 = 0xf270082e9abf1bc6; // strikers (f512)
 
 impl Generator {
-    pub(super) fn try_suac_strtol(&mut self, function: &Function) -> Compilation<bool> {
+    pub(super) fn try_suac_strtol_str(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "strtol"
             || function.return_type != Type::Int
             || function.parameters.len() != 3
@@ -21,7 +19,8 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if !SUAC_STRTOL_AST_HASHES.contains(&hash) {
+        if hash != SUAC_STRTOL_STR_AST_HASH {
+            eprintln!("suac_strtol_str hash candidate: {hash:#x}");
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -29,17 +28,12 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x4dc5812f6e4177a3 => 0, // strikers f512
-            0xf8b1cd38c2b39c70 => 0, // AC (dev loop)
-            0xa33472769b752957 => 0, // ww f503
-            0xa7487b5a674d669a => 0, // sunshine f505
-            0xa605ebc1c79b708d => 0, // melee f506
+            0x4dc5812f6e4177a3 => 0, // strikers strtoul (f512)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 48;
         self.non_leaf = true;
-        self.callee_saved = vec![30, 31];
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [26, 36, 41, 51, 54] {
             labels.insert(target, self.fresh_label());

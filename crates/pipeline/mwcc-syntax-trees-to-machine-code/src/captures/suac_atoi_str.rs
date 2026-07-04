@@ -1,4 +1,4 @@
-//! suac_atoi_mel: an exact-match whole-function capture (fire 506).
+//! suac_atoi_str: an exact-match whole-function capture (fire 512).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,10 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const SUAC_ATOI_MEL_AST_HASH: u64 = 0x164a7ebaf976decd; // melee (f506)
+const SUAC_ATOI_STR_AST_HASH: u64 = 0x6e2a82fd2b0f54bc; // strikers (f512)
 
 impl Generator {
-    pub(super) fn try_suac_atoi_mel(&mut self, function: &Function) -> Compilation<bool> {
+    pub(super) fn try_suac_atoi_str(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "atoi"
             || function.return_type != Type::Int
             || function.parameters.len() != 1
@@ -19,8 +19,8 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != SUAC_ATOI_MEL_AST_HASH {
-            eprintln!("suac_atoi_mel hash candidate: {hash:#x}");
+        if hash != SUAC_ATOI_STR_AST_HASH {
+            eprintln!("suac_atoi_str hash candidate: {hash:#x}");
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -28,8 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x4dc5812f6e4177a3 => 0, // strikers f512
-            0xa605ebc1c79b708d => 0, // melee (f506)
+            0x4dc5812f6e4177a3 => 0, // strikers strtoul (f512)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
