@@ -129,6 +129,8 @@ pub struct FunctionObject<'a> {
     /// blob's offset past the function's running `@N` counter (numbered BEFORE
     /// the pool constants — measured on __strtold: table @26, pool @147).
     pub anonymous_rodata: Option<(Vec<u8>, i32)>,
+    /// Callees emitting LOCAL UND symbols in the explicit extern run.
+    pub local_undefined_callees: Vec<String>,
     /// The names this function references (globals/callees) in mwcc's symbol-table
     /// order — an AST traversal, not `.text` reference order. The writer assigns
     /// this function's external/global symbols in this order, with a relocation-

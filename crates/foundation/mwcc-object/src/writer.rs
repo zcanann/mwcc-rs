@@ -494,7 +494,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // `static inline` asm helpers (e.g. OSFastCast.h) — a local undefined symbol
     // each, in declaration order, right after the section symbols. `info = 0` is
     // STB_LOCAL | STT_NOTYPE; an undefined symbol has `.comment` alignment 0.
+    // A helper a function actually CALLS (a capture's bl — pikmin s_ldexp's
+    // __fpclassifyd__Fd) instead emits inside that function's referenced-extern
+    // run, at its reference position, still LOCAL (measured: after the pool
+    // constants, before copysign).
+    let referenced_inline_asm: std::collections::HashSet<&str> = input
+        .functions
+        .iter()
+        .flat_map(|function| function.relocations.iter())
+        .filter_map(|relocation| match &relocation.target {
+            RelocationTarget::External(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .filter(|name| input.inline_asm_symbols.iter().any(|symbol| symbol == name))
+        .collect();
     for name in input.inline_asm_symbols {
+        if referenced_inline_asm.contains(name.as_str()) {
+            continue;
+        }
         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
         comment_values.push((0, 0));
     }
@@ -791,7 +808,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // An IMPLICITLY-declared callee's symbol is created by mwcc at its call site inside
         // the body, so it is emitted AFTER the function symbol; an explicitly-declared
         // (prototyped) external precedes it. Partition preserving order within each group.
-        let implicit: std::collections::HashSet<&str> = function.implicit_external_callees.iter().map(|name| name.as_str()).collect();
+        // A CALLED inline-asm helper (static inline, skipped) was DECLARED
+        // before the function — mwcc orders it with the prototyped externals,
+        // not the implicit call-site run (measured: pikmin s_ldexp).
+        let local_callees: std::collections::HashSet<&str> =
+            function.local_undefined_callees.iter().map(|name| name.as_str()).collect();
+        let implicit: std::collections::HashSet<&str> = function
+            .implicit_external_callees
+            .iter()
+            .map(|name| name.as_str())
+            .filter(|name| !referenced_inline_asm.contains(name) && !local_callees.contains(name))
+            .collect();
         let (implicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = ordered.into_iter().partition(|name| implicit.contains(name));
         // The register save/restore HELPERS (_savegpr_N/_restgpr_N) are created
         // while mwcc compiles the PROLOGUE/EPILOGUE — before the function's
@@ -818,6 +845,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         let section = index_of(data_section[name]) as u16;
                         write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name], STB_GLOBAL_OBJECT, 0, section);
                         comment_values.push((data_aligns[name], 0));
+                    } else if referenced_inline_asm.contains(name) {
+                        // a CALLED static-inline asm helper stays LOCAL (info 0).
+                        write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
+                        comment_values.push((0, 0));
                     } else {
                         write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
                         comment_values.push((0, 0)); // an undefined external has no alignment

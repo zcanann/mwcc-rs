@@ -108,6 +108,12 @@ pub struct MachineFunction {
     /// Numbered like the jump table: `anonymous_offset` past the function's
     /// running `@N` counter, BEFORE its pool constants.
     pub anonymous_rodata: Option<AnonymousRodata>,
+    /// Callees that order with the PROTOTYPED externals despite being
+    /// unprototyped in OUR model: a `#pragma cplusplus` inline helper called
+    /// under its MANGLED name (pikmin s_ldexp's __fpclassifyd__Fd) — its
+    /// dropped definition preceded the function, so mwcc's symbol is NOT
+    /// implicit-at-call-site. Binding stays GLOBAL UND.
+    pub local_undefined_callees: Vec<String>,
     /// Referenced symbol names (globals and callees) in mwcc's symbol-table order —
     /// an AST traversal, NOT `.text` reference order. The writer assigns this
     /// function's external/global symbol indices in this order (see the codegen's
@@ -146,6 +152,7 @@ impl MachineFunction {
             frame: None,
             jump_table: None,
             anonymous_rodata: None,
+            local_undefined_callees: Vec::new(),
             symbol_order: Vec::new(),
             implicit_external_callees: Vec::new(),
         }

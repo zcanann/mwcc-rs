@@ -191,7 +191,11 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // The names this function references, in mwcc's symbol-table order (an AST
     // traversal); the writer assigns its external/global symbols in this order.
     if generator.output.symbol_order.is_empty() {
-        generator.output.symbol_order = symbol_order::referenced_names(function);
+        // A capture template may pin its own measured order (atof, pikmin
+        // s_ldexp) — only derive from the AST when it didn't.
+        if generator.output.symbol_order.is_empty() {
+            generator.output.symbol_order = symbol_order::referenced_names(function);
+        }
     }
     // A call target with no prototype/definition (absent from `call_return_types`) was
     // IMPLICITLY declared — K&R first-use. mwcc creates its symbol at the call site inside

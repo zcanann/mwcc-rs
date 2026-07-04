@@ -104,6 +104,9 @@ mod str_strstr;
 mod sld_strtod;
 mod sld_strtold;
 mod sldexp;
+mod sldx;
+mod sldx_ac;
+mod sldx_pik;
 mod sldexp_str;
 
 use crate::generator::Generator;
@@ -218,6 +221,9 @@ impl Generator {
             || self.try_mem_memrchr_mp4(function)?
             || self.try_mem_memcmp_mel(function)?
             || self.try_mem_memcmp_mp4(function)?
+            || self.try_sldx_pik(function)?
+            || self.try_sldx(function)?
+            || self.try_sldx_ac(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?

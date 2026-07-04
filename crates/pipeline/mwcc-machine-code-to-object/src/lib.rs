@@ -103,6 +103,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 .anonymous_rodata
                 .as_ref()
                 .map(|blob| (blob.bytes.clone(), blob.anonymous_offset)),
+            local_undefined_callees: function.local_undefined_callees.clone(),
             symbol_order: function.symbol_order.clone(),
             implicit_external_callees: function.implicit_external_callees.clone(),
         })
