@@ -12,7 +12,7 @@ const MBS_UNICODE_AST_HASH: u64 = 0x3a4a2a402936e876; // mp4, re-armed f517 (the
 /// ww's 0x1bb864ba9b9c82fd DEFERRED (f517): its image pools in the BLOCK (@47,
 /// bump 30, load_word_constant_image) but the @47 symbol/dedup interaction with
 /// wcstombs' reuse is unresolved — re-add once the writer models it.
-const MBS_UNICODE_AST_HASHES: &[u64] = &[MBS_UNICODE_AST_HASH];
+const MBS_UNICODE_AST_HASHES: &[u64] = &[MBS_UNICODE_AST_HASH, 0x1bb864ba9b9c82fd];
 
 impl Generator {
     pub(super) fn try_mbs_unicode(&mut self, function: &Function) -> Compilation<bool> {
