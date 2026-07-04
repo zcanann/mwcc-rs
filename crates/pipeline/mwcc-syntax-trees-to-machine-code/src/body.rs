@@ -2505,6 +2505,11 @@ impl Generator {
             if self.try_callee_saved_result_park_combine(function)? {
                 return Ok(());
             }
+            // `int x = <expr>; int y = g(x); return y OP x;` — a computed local
+            // crossing the call that consumes it, combined with the result.
+            if self.try_callee_saved_computed_then_call(function)? {
+                return Ok(());
+            }
             // `*p = g();` — a call's result stored through a pointer parameter saved in r31.
             if self.try_store_call_through_pointer(function)? {
                 return Ok(());
@@ -12291,6 +12296,115 @@ impl Generator {
             }
             _ => Ok(false),
         }
+    }
+
+    /// A local COMPUTED from the parameters, consumed by a call, and combined
+    /// with that call's result: `int x = a*5+2; int y = g(x); return y + x;`
+    /// (the fire-498 probe). The computation lands directly in the callee-saved
+    /// home (intermediates in place, the scheduler hoists them into the
+    /// prologue's latency gaps), the argument move `mr r3,r31` IS emitted (the
+    /// home is not the argument register), and the combine reads r3 and r31.
+    fn try_callee_saved_computed_then_call(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let [computed, result] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(computed.declared_type, Type::Int | Type::UnsignedInt)
+            || !matches!(result.declared_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        // The first local computes WITHOUT calling (its expression evaluates into
+        // the home); the second is a call passing exactly the first.
+        let Some(initializer) = computed.initializer.as_ref() else {
+            return Ok(false);
+        };
+        if crate::analysis::expression_has_call(initializer) {
+            return Ok(false);
+        }
+        let Some(Expression::Call { name, arguments }) = result.initializer.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == &computed.name) {
+            return Ok(false);
+        }
+        // The return combines the result and the computed local with one
+        // low-latency op, either order (evaluate_tail reproduces it).
+        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+            return Ok(false);
+        }
+        let reads = |expression: &Expression, name: &str| matches!(expression, Expression::Variable(variable) if variable == name);
+        if !((reads(left, &result.name) && reads(right, &computed.name))
+            || (reads(left, &computed.name) && reads(right, &result.name)))
+        {
+            return Ok(false);
+        }
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
+        // The computation's INTERMEDIATES stay in place on the dying source
+        // register; only the ROOT op lands in the callee-saved home (measured:
+        // `mulli r3,r3,5; addi r31,r3,2` — the in-place mulli carries no
+        // anti-dependence against the r31 save, so the scheduler may hoist it
+        // into the prologue's latency gap). Only the measured root shape —
+        // `<single-param subexpression> + <i16 literal>` — is emitted; other
+        // roots decline to the honest defer.
+        let (sub, literal) = match initializer {
+            Expression::Binary { operator: BinaryOperator::Add, left, right } => match right.as_ref() {
+                Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok() => (left.as_ref(), *value as i16),
+                _ => return Ok(false),
+            },
+            _ => return Ok(false),
+        };
+        // The subexpression must be the measured ONE-instruction in-place shape
+        // (`param * literal` -> mulli): the scheduler slot it fills — between
+        // mflr and the LR store — is only measured for a single instruction.
+        let (in_place_source, factor) = match sub {
+            Expression::Binary { operator: BinaryOperator::Multiply, left, right } => match (left.as_ref(), right.as_ref()) {
+                (Expression::Variable(source), Expression::IntegerLiteral(value)) if i16::try_from(*value).is_ok() => (source, *value as i16),
+                _ => return Ok(false),
+            },
+            _ => return Ok(false),
+        };
+        if !function.parameters.iter().any(|parameter| &parameter.name == in_place_source) {
+            return Ok(false);
+        }
+        let in_place = match self.locations.get(in_place_source.as_str()) {
+            Some(location) if location.class == ValueClass::General => location.register,
+            _ => return Ok(false),
+        };
+        // The prologue with the in-place multiply spliced into the mflr latency
+        // gap (measured: stwu; mflr; MULLI; stw r0; stw r31), then the root op
+        // landing in the home.
+        let prologue = mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue();
+        self.output.instructions.extend(prologue[..2].iter().cloned());
+        self.output.instructions.push(Instruction::MultiplyImmediate { d: in_place, a: in_place, immediate: factor });
+        self.output.instructions.extend(prologue[2..].iter().cloned());
+        self.output.instructions.push(Instruction::AddImmediate { d: saved, a: in_place, immediate: literal });
+        let signed = !matches!(computed.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            computed.name.clone(),
+            Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+        );
+        self.emit_call(name, arguments, None, false)?;
+        let result_signed = !matches!(result.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            result.name.clone(),
+            Location { class: ValueClass::General, register: 3, signed: result_signed, width: 32, pointee: None, stride: None },
+        );
+        let destination = Eabi::general_result().number;
+        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, destination)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
     }
 
     /// The measured reassociation tail: park the fresh call result in r0,
