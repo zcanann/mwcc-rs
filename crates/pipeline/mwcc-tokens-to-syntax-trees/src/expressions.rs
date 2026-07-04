@@ -152,6 +152,11 @@ impl Parser {
             let when_true = self.expression()?;
             self.expect(Token::Colon)?;
             let when_false = self.expression()?;
+            // NOTE (fire 504): folding a COMPILE-TIME-CONSTANT condition here
+            // (fdlibm's sizeof ternaries) RIPPLES the AST hashes of every
+            // captured fdlibm function — re-bake ALL affected captures before
+            // reintroducing (the strikers e_pow TU that motivated it also
+            // needs the address-taken `one` datum, so nothing is lost yet).
             return Ok(Expression::Conditional {
                 condition: Box::new(condition),
                 when_true: Box::new(when_true),
@@ -398,7 +403,7 @@ impl Parser {
             if let Some(bytes) = bytes {
                 return Ok(Expression::IntegerLiteral(bytes as i64));
             }
-            return Err(Diagnostic::error("sizeof of this expression is not supported yet (roadmap)"));
+            return Err(Diagnostic::error(format!("sizeof of this expression is not supported yet (roadmap): {operand:?}")));
         }
 
         // A `(struct S *)x` cast carries the struct tag (stashed by `parse_type` in
