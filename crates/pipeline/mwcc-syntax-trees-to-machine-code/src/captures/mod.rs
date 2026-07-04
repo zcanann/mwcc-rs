@@ -13,6 +13,7 @@ mod abexb_abort;
 mod abexb_exit;
 mod abexm_exit;
 mod abexp2_exit;
+mod abexpik_exit;
 mod abexs_exit;
 mod abex_exit;
 mod easin;
@@ -196,6 +197,7 @@ impl Generator {
             || self.try_abexb_abort(function)?
             || self.try_abexb_exit(function)?
             || self.try_abexp2_exit(function)?
+            || self.try_abexpik_exit(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?

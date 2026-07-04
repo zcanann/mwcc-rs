@@ -908,6 +908,11 @@ impl Parser {
                 self.advance();
                 if *self.peek() == Token::Star {
                     self.advance();
+                    // A star on an already-pointer typedef (`voidfunctionptr*`)
+                    // is a pointer-to-pointer: word element, inner untracked.
+                    if matches!(aliased, Type::Pointer(_) | Type::StructPointer { .. }) {
+                        return Ok(Type::Pointer(Pointee::Pointer));
+                    }
                     return Ok(Type::Pointer(pointee_of(aliased)?));
                 }
                 return Ok(aliased);
