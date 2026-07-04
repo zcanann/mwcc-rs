@@ -830,6 +830,12 @@ impl Parser {
             self.advance();
             let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
             self.last_struct_tag = Some(tag);
+            if *self.peek() == Token::Star {
+                // `S**` — a pointer to a struct pointer: a word-classed
+                // pointer whose element is itself a pointer.
+                self.advance();
+                return Ok(Type::Pointer(Pointee::Pointer));
+            }
             return Ok(Type::StructPointer { element_size });
         }
         // `union Name*` / `union Name` — a union is laid out like a struct with every member
@@ -850,6 +856,12 @@ impl Parser {
             self.advance();
             let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
             self.last_struct_tag = Some(tag);
+            if *self.peek() == Token::Star {
+                // `S**` — a pointer to a struct pointer: a word-classed
+                // pointer whose element is itself a pointer.
+                self.advance();
+                return Ok(Type::Pointer(Pointee::Pointer));
+            }
             return Ok(Type::StructPointer { element_size });
         }
         // A struct-pointer typedef (`VecPtr`) is itself a pointer to the struct —
@@ -859,6 +871,10 @@ impl Parser {
                 self.advance();
                 let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
                 self.last_struct_tag = Some(tag);
+                if *self.peek() == Token::Star {
+                    self.advance();
+                    return Ok(Type::Pointer(Pointee::Pointer));
+                }
                 return Ok(Type::StructPointer { element_size });
             }
         }
@@ -879,6 +895,10 @@ impl Parser {
                 self.advance();
                 let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
                 self.last_struct_tag = Some(tag);
+                if *self.peek() == Token::Star {
+                    self.advance();
+                    return Ok(Type::Pointer(Pointee::Pointer));
+                }
                 return Ok(Type::StructPointer { element_size });
             }
         }
@@ -2288,6 +2308,20 @@ impl Parser {
                 self.advance();
                 self.expect(Token::Star)?;
                 let pointer_name = self.parse_identifier()?;
+                // An ARRAY of function pointers: `void (*atexit_funcs[64])(void);`
+                // — `[N]` (or `[]` on an extern reference) between the name and
+                // the closing paren. Each element is a 4-byte address.
+                let mut pointer_array_length: Option<u16> = None;
+                if self.eat_keyword(Token::BracketOpen) {
+                    if let Token::IntegerLiteral(count) = self.peek() {
+                        pointer_array_length = Some(*count as u16);
+                        self.advance();
+                    }
+                    self.expect(Token::BracketClose)?;
+                    if pointer_array_length.is_none() && !is_extern {
+                        return Err(Diagnostic::error("a function-pointer array needs an explicit length (roadmap)"));
+                    }
+                }
                 self.expect(Token::ParenClose)?;
                 self.expect(Token::ParenOpen)?;
                 let mut depth = 1;
@@ -2309,7 +2343,7 @@ impl Parser {
                     None
                 };
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new() });
+                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new() });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -2889,6 +2923,33 @@ impl Parser {
             let struct_tag = self.last_struct_tag.take();
             // One or more comma-separated declarators, each optionally initialized.
             loop {
+                // `RET (*name)(params)` / `RET (**name)(params)` — a function-
+                // pointer (or pointer to one) LOCAL: a 4-byte word; the signature
+                // is skipped (abort_exit's `void (**var_r31)(void);`).
+                if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                    self.advance(); // `(`
+                    self.advance(); // `*`
+                    self.eat_keyword(Token::Star);
+                    let name = self.parse_identifier()?;
+                    self.expect(Token::ParenClose)?;
+                    self.expect(Token::ParenOpen)?;
+                    let mut depth = 1;
+                    while depth > 0 {
+                        match self.advance() {
+                            Token::ParenOpen => depth += 1,
+                            Token::ParenClose => depth -= 1,
+                            Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer local")),
+                            _ => {}
+                        }
+                    }
+                    let initializer = if self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
+                    locals.push(LocalDeclaration { declared_type: Type::Pointer(Pointee::Pointer), name, initializer, array_length: None, is_static: false, data_bytes: None, is_const: false });
+                    if self.eat_keyword(Token::Comma) {
+                        continue;
+                    }
+                    // The shared tail after the declarator loop consumes the `;`.
+                    break;
+                }
                 // `T *p, *q;` — the first declarator's `*` was consumed into the declared
                 // type; a later pointer declarator carries its own `*`, which mirrors it.
                 // A mixed list (`int *p, q;`) or multi-level (`int *p, **q;`) would need a
