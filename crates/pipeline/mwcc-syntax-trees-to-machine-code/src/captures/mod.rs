@@ -104,6 +104,8 @@ mod mbs_unicode;
 mod mbs_unicode_ac;
 mod mbs_utf8_bfbb;
 mod mbs_utf8_ww;
+mod wio_fwide;
+mod wio_fwide_sun;
 mod mbs_mbtowc_bfbb;
 mod mbs_mbtowc_ww;
 mod mbs_wctomb_ac;
@@ -363,6 +365,8 @@ impl Generator {
             || self.try_mbs_unicode_ac(function)?
             || self.try_mbs_utf8_bfbb(function)?
             || self.try_mbs_utf8_ww(function)?
+            || self.try_wio_fwide(function)?
+            || self.try_wio_fwide_sun(function)?
             || self.try_mbs_mbtowc_bfbb(function)?
             || self.try_mbs_mbtowc_ww(function)?
             || self.try_mbs_wctomb_ac(function)?
