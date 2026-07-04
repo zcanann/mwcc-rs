@@ -252,7 +252,14 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let mut string_pool: std::collections::HashMap<Vec<u8>, String> = std::collections::HashMap::new();
     let mut string_counter: u32 = 0;
     for global in &unit.globals {
-        if global.is_extern || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
+        // `extern T g[] = {...}` — extern WITH an initializer — is a DEFINITION
+        // (ansi_files' FILE table); only an initializer-less extern is a pure
+        // reference to a symbol defined elsewhere.
+        let extern_reference = global.is_extern
+            && global.initializer.is_none()
+            && global.data_bytes.is_none()
+            && global.address_initializer.is_none();
+        if extern_reference || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
             continue;
         }
         // A `static const` SCALAR is folded into its readers (or elided when unused),
@@ -453,7 +460,15 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             is_const: false,
             is_static: global.is_static,
             is_explicit_zero,
-            relocations: Vec::new(),
+            relocations: global
+                .data_relocations
+                .iter()
+                .map(|(offset, target, addend)| mwcc_machine_code_to_object::DataRelocation {
+                    offset: *offset,
+                    target: target.clone(),
+                    addend: *addend,
+                })
+                .collect(),
         });
     }
     // Resolve each function's pooled string literals to anonymous `@N` `.sdata` objects, numbered at

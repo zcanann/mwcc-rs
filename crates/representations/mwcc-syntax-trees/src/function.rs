@@ -172,6 +172,10 @@ pub struct GlobalDeclaration {
     /// these directly, bypassing the word-stride `initializer` path. `None` for a
     /// non-struct global.
     pub data_bytes: Option<Vec<u8>>,
+    /// `R_PPC_ADDR32` relocations the data image carries: (byte offset, target
+    /// symbol, addend) — a function pointer or a self-referential address in a
+    /// struct-array initializer (ansi_files' FILE table).
+    pub data_relocations: Vec<(u32, String, i32)>,
 }
 
 /// One element of a pointer global's initializer.
