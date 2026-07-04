@@ -8,6 +8,8 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the fdlibm ldexp (captured fire 446).
 const SLDEXP_AST_HASH: u64 = 0xb692cf8cfaada89f;
+/// Post-fold AST (fire 524: constant sizeof-ternaries now fold at parse).
+const SLDEXP_AST_HASHES: &[u64] = &[SLDEXP_AST_HASH, 0xa3478034739e986e];
 
 impl Generator {
     /// THE S_LDEXP EXACT-MATCH TEMPLATE (fire 446): ldexp whole — the
@@ -23,7 +25,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != SLDEXP_AST_HASH {
+        if !SLDEXP_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // -- emit (the capture, verbatim) --

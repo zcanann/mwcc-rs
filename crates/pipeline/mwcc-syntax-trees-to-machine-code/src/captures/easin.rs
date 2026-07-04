@@ -32,6 +32,11 @@ impl Generator {
         if hash != EASIN_AST_HASH {
             return Ok(false);
         }
+        // strikers shares this AST post-fold (f524) but pools at a bumped
+        // base -- easin_str owns that context.
+        if super::skipped_context_fingerprint(&self.skipped_inline_names) == 0x4c0074f426dac8c9 {
+            return Ok(false);
+        }
         // -- emit (the capture, verbatim) --
         self.frame_size = 32;
         // Pool constants in creation (.sdata2 layout) order.

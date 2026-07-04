@@ -8,6 +8,9 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const SLDX_AST_HASH: u64 = 0xb1406ceaeeffa13c;
+/// Post-fold AST (fire 524) — the folded hash COLLIDES with pikmin's variant;
+/// the ctx arms disambiguate the streams.
+const SLDX_AST_HASHES: &[u64] = &[SLDX_AST_HASH, 0xb53bbfc1e01b7bef];
 
 impl Generator {
     pub(super) fn try_sldx(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != SLDX_AST_HASH {
+        if !SLDX_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a

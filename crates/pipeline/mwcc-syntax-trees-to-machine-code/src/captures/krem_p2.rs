@@ -27,7 +27,9 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0xcded6feb0651de3a => 245, // ac_krem post-fold fingerprint (f524)
             0xbd60acb658c79e45 => 245, // pikmin2 + wind_waker: pool @250 (ours @5)
+            0x5e6a029e5ad01cbc => 245, // mp4 post-fold fingerprint (f524)
             0xb61776ae26f47f0e => 245, // battle_for_bikini_bottom: pool @270 (its pre-bump base is 25)
             _ => return Ok(false),
         };

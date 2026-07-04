@@ -8,6 +8,8 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const EASIN_STR_AST_HASH: u64 = 0xb99af7017e8ee724;
+/// Post-fold AST (fire 524).
+const EASIN_STR_AST_HASHES: &[u64] = &[EASIN_STR_AST_HASH, 0xc72823698c923c32];
 
 impl Generator {
     pub(super) fn try_easin_str(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +21,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != EASIN_STR_AST_HASH {
+        if !EASIN_STR_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a

@@ -152,11 +152,14 @@ impl Parser {
             let when_true = self.expression()?;
             self.expect(Token::Colon)?;
             let when_false = self.expression()?;
-            // NOTE (fire 504): folding a COMPILE-TIME-CONSTANT condition here
-            // (fdlibm's sizeof ternaries) RIPPLES the AST hashes of every
-            // captured fdlibm function — re-bake ALL affected captures before
-            // reintroducing (the strikers e_pow TU that motivated it also
-            // needs the address-taken `one` datum, so nothing is lost yet).
+            // A COMPILE-TIME-CONSTANT condition selects its branch at parse
+            // time — fdlibm's `(sizeof(x) == 8 ? *(1+(_INT32*)&x) : ...)`
+            // (the __HI/__LO macros) folds to the taken word access, which
+            // also makes the LVALUE form a plain dereference store target.
+            // (Fire 524: reintroduced WITH the coordinated capture re-bake.)
+            if let Ok(value) = fold_constant_expression(&condition) {
+                return Ok(if value != 0 { when_true } else { when_false });
+            }
             return Ok(Expression::Conditional {
                 condition: Box::new(condition),
                 when_true: Box::new(when_true),

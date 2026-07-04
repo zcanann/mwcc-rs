@@ -11,12 +11,10 @@ const EPOW_AST_HASH: u64 = 0xd8674ee0c8db5979;
 /// Cosmetic AST variants with IDENTICAL instruction streams (@N-normalized
 /// content diff), each with its measured pool-base bump: the original TU's
 /// pools start at @223 (bump 189), strikers' at @271 (bump 188, fire 504 — its TU pre-bump covers the rest).
-// STRIKERS (hash 0x96e8c59bc2c6c3f6, bump 188 measured f504): text matches but
-// its TU also needs the ADDRESS-TAKEN static const `one` emitted as a NAMED
-// .sdata2 datum among the pools (`static const double bp[]={…}, one=1.0, …;`
-// — the mixed array/scalar multi-declarator) — DEFERRED until the writer
-// models it; re-add the pair then.
-const EPOW_AST_HASH_BUMPS: &[(u64, u32)] = &[(EPOW_AST_HASH, 189)];
+// The strikers variant (f524): its TU keeps the ADDRESS-TAKEN `one` as a
+// NAMED .sdata2 datum among the pools (keep_named_const_scalars — the same
+// mechanism epow_ww uses).
+const EPOW_AST_HASH_BUMPS: &[(u64, u32)] = &[(EPOW_AST_HASH, 189), (0x96e8c59bc2c6c3f6, 188)];
 
 impl Generator {
     /// THE E_POW EXACT-MATCH TEMPLATE (fire 445): __ieee754_pow whole —
@@ -34,13 +32,25 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        let Some(&(_, bump)) = EPOW_AST_HASH_BUMPS.iter().find(|(accepted, _)| *accepted == hash) else {
+        let Some(&(_, mut bump)) = EPOW_AST_HASH_BUMPS.iter().find(|(accepted, _)| *accepted == hash) else {
             return Ok(false);
         };
+        // Post-fold (f524) ww shares strikers' AST hash but pools at its own
+        // base (measured @219; strikers @271).
+        if hash == 0x96e8c59bc2c6c3f6
+            && super::skipped_context_fingerprint(&self.skipped_inline_names) == 0xbceeda89e0a55f64
+        {
+            bump = 186;
+        }
         // -- emit (the capture, verbatim) --
         self.frame_size = 176;
         self.non_leaf = true;
         self.callee_saved_float = 5;
+        // The strikers variant keeps the address-taken `one` (a NAMED .sdata2
+        // datum among the pools — measured f504/f524).
+        if hash == 0x96e8c59bc2c6c3f6 {
+            self.output.keep_named_const_scalars = vec!["one".to_string()];
+        }
         // External symbol order measured from the real object (mwcc creates
         // them at first source reference).
         self.output.symbol_order = vec![

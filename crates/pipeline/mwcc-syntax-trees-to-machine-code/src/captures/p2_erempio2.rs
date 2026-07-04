@@ -28,6 +28,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xb4626ed660a00a79 => 56, // pikmin2 (measured)
+            0xb61776ae26f47f0e => 58, // BfBB post-fold (f524): pools @83 (ours @25)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

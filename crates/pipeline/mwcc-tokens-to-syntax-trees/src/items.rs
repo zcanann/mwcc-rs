@@ -3830,6 +3830,9 @@ impl Parser {
                     }
                     block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static: false, data_bytes: None, is_const: false });
                     local_names.insert(name.clone());
+                    // Register the type so `sizeof(s_h)` (fdlibm's __HI/__LO
+                    // macros inside e_pow's inner block) resolves at parse time.
+                    self.variable_types.insert(name.clone(), declared_type);
                     if self.eat_keyword(Token::Equals) {
                         let value = self.expression()?;
                         statements.push(Statement::Assign { name, value });
