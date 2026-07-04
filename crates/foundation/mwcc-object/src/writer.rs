@@ -763,7 +763,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // symbol — even though they are unprototyped (measured: strtoul).
         let (helper_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) = implicit_ordered
             .into_iter()
-            .partition(|name| name.starts_with("_savegpr_") || name.starts_with("_restgpr_"));
+            .partition(|name| {
+                name.starts_with("_savegpr_")
+                    || name.starts_with("_restgpr_")
+                    || name.starts_with("_savefpr_")
+                    || name.starts_with("_restfpr_")
+            });
         // Emit one external/global symbol (skipping a name that already resolves to an
         // existing global or LOCAL `static` symbol). A `macro_rules!` keeps the shared body
         // in one place while avoiding a closure over the many `&mut` writer collections.

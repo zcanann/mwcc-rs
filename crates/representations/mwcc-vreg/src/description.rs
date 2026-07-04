@@ -48,7 +48,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
 
     match instruction {
         // d = rA op rB / rA op SIMM — general destination, general sources.
-        Add { d, a, b } | SubtractFrom { d, a, b } | SubtractFromRecord { d, a, b } | SubtractFromCarrying { d, a, b } | AddExtended { d, a, b }
+        Add { d, a, b } | AddRecord { d, a, b } | SubtractFrom { d, a, b } | SubtractFromRecord { d, a, b } | SubtractFromCarrying { d, a, b } | AddExtended { d, a, b }
         | AddCarrying { d, a, b } | SubtractFromExtended { d, a, b }
         | MultiplyLow { d, a, b } | MultiplyHighWord { d, a, b } | MultiplyHighWordUnsigned { d, a, b }
         | DivideWord { d, a, b } | DivideWordUnsigned { d, a, b } => {
@@ -129,6 +129,17 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         LoadFloatSingle { d, a, .. } | LoadFloatDouble { d, a, .. } | PairedSingleQuantizedLoad { d, a, .. } => {
             visit(D, F, d);
             if *a != 0 { visit(U, G, a); }
+        }
+        // The update form reads AND rewrites the general base.
+        LoadFloatDoubleWithUpdate { d, a, .. } => {
+            visit(D, F, d);
+            visit(U, G, a);
+            visit(D, G, a);
+        }
+        StoreFloatDoubleWithUpdate { s, a, .. } => {
+            visit(U, F, s);
+            visit(U, G, a);
+            visit(D, G, a);
         }
         LoadFloatSingleIndexed { d, a, b } | LoadFloatDoubleIndexed { d, a, b } => {
             visit(D, F, d);

@@ -19,6 +19,8 @@ pub enum Instruction {
     OrImmediateShifted { a: u8, s: u8, immediate: u16 },
     /// `add rD, rA, rB`
     Add { d: u8, a: u8, b: u8 },
+    /// `add.` — add with the condition-record bit.
+    AddRecord { d: u8, a: u8, b: u8 },
     /// `subf rD, rA, rB` => rD = rB - rA.
     SubtractFrom { d: u8, a: u8, b: u8 },
     /// `subf. rD, rA, rB` => rD = rB - rA, recording in CR0 (the CTR-loop
@@ -128,6 +130,10 @@ pub enum Instruction {
     LoadFloatDoubleIndexed { d: u8, a: u8, b: u8 },
     /// `stfdx frS, rA, rB` — store float double indexed.
     StoreFloatDoubleIndexed { s: u8, a: u8, b: u8 },
+    /// `lfdu` — load float-double AND update the base register (op 51).
+    LoadFloatDoubleWithUpdate { d: u8, a: u8, offset: i16 },
+    /// `stfdu` — store float-double AND update the base register (op 55).
+    StoreFloatDoubleWithUpdate { s: u8, a: u8, offset: i16 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
     ClearLeftImmediate { a: u8, s: u8, clear: u8 },
     /// `clrlwi. rA, rS, n` — record form (`rlwinm.`): zero-extend a narrow unsigned
