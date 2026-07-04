@@ -106,6 +106,10 @@ mod mbs_utf8_bfbb;
 mod mbs_utf8_ww;
 mod wio_fwide;
 mod wio_fwide_sun;
+mod ucg_write_bfbb;
+mod ucg_write_str;
+mod ucg_write_p2;
+mod ucg_init_bfbb;
 mod mbs_mbtowc_bfbb;
 mod mbs_mbtowc_ww;
 mod mbs_wctomb_ac;
@@ -367,6 +371,10 @@ impl Generator {
             || self.try_mbs_utf8_ww(function)?
             || self.try_wio_fwide(function)?
             || self.try_wio_fwide_sun(function)?
+            || self.try_ucg_write_bfbb(function)?
+            || self.try_ucg_write_str(function)?
+            || self.try_ucg_write_p2(function)?
+            || self.try_ucg_init_bfbb(function)?
             || self.try_mbs_mbtowc_bfbb(function)?
             || self.try_mbs_mbtowc_ww(function)?
             || self.try_mbs_wctomb_ac(function)?
