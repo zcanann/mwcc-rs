@@ -8,6 +8,9 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const STR_STRSTR_AST_HASH: u64 = 0x9b1abab8cbdf82d0;
+/// Cosmetic AST variants with IDENTICAL instruction streams: BfBB (f502,
+/// refctx-verified against the base's pikmin stream).
+const STR_STRSTR_AST_HASHES: &[u64] = &[STR_STRSTR_AST_HASH, 0x7384c7f1ae02ca9e];
 
 impl Generator {
     pub(super) fn try_str_strstr(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != STR_STRSTR_AST_HASH {
+        if !STR_STRSTR_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -28,6 +31,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0x626216a8cf3d36f5 => 0, // pikmin (dev loop)
+            0xbd60acb658c79e45 => 0, // BfBB (f502)
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

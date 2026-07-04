@@ -8,6 +8,8 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const STR_STRCMP_P2_AST_HASH: u64 = 0xa4d9eeac0ae7017e;
+/// Cosmetic AST variants with IDENTICAL instruction streams (content-diffed): BfBB f502.
+const STR_STRCMP_P2_AST_HASHES: &[u64] = &[STR_STRCMP_P2_AST_HASH, 0x863cd0e0eb6c9e94];
 
 impl Generator {
     pub(super) fn try_str_strcmp_p2(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +21,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != STR_STRCMP_P2_AST_HASH {
+        if !STR_STRCMP_P2_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
