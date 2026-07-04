@@ -28,6 +28,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xf8b1cd38c2b39c70 => 0, // AC (dev loop)
+            0xa33472769b752957 => 0, // ww f503
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --

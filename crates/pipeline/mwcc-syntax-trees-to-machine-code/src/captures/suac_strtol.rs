@@ -8,6 +8,8 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const SUAC_STRTOL_AST_HASH: u64 = 0xaf260e73d37979c1;
+/// Cosmetic AST variants with IDENTICAL instruction streams (content-diffed): ww f503.
+const SUAC_STRTOL_AST_HASHES: &[u64] = &[SUAC_STRTOL_AST_HASH, 0xf270082e9abf1bc6];
 
 impl Generator {
     pub(super) fn try_suac_strtol(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +21,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != SUAC_STRTOL_AST_HASH {
+        if !SUAC_STRTOL_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -28,6 +30,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xf8b1cd38c2b39c70 => 0, // AC (dev loop)
+            0xa33472769b752957 => 0, // ww f503
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
