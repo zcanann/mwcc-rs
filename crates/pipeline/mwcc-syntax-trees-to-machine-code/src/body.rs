@@ -2494,6 +2494,11 @@ impl Generator {
             if self.try_callee_saved_call_result(function)? {
                 return Ok(());
             }
+            // `int x = g(a); return x OP a;` — a call-result local combined with the
+            // parameter that crossed the call.
+            if self.try_callee_saved_result_param_combine(function)? {
+                return Ok(());
+            }
             // `*p = g();` — a call's result stored through a pointer parameter saved in r31.
             if self.try_store_call_through_pointer(function)? {
                 return Ok(());
@@ -12067,6 +12072,84 @@ impl Generator {
         if let Some(location) = self.locations.get_mut(&function.parameters[0].name) {
             location.register = homes[1];
         }
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    /// A single local initialized by a call whose argument forwards the (single)
+    /// parameter, returned combined with that parameter:
+    /// `int x = g(a); return x + a;`. The parameter crosses the call: mwcc saves
+    /// it in r31 (interleaved save+move prologue), the call reads the STILL-LIVE
+    /// incoming register (no argument move), and the combine reads the result
+    /// from r3 and the parameter from r31 (measured: the fire-498 probe).
+    fn try_callee_saved_result_param_combine(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        if function.parameters.len() != 1 || function.locals.len() != 1 {
+            return Ok(false);
+        }
+        let parameter = &function.parameters[0];
+        let local = &function.locals[0];
+        if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // The initializer is a call forwarding the parameter in its natural
+        // register position (or no arguments) — no argument moves to schedule.
+        let Some(Expression::Call { name, arguments }) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        match arguments.as_slice() {
+            [] => {}
+            [Expression::Variable(argument)] if argument == &parameter.name => {}
+            _ => return Ok(false),
+        }
+        // The return combines the local and the parameter with one low-latency op
+        // (either operand order; evaluate_tail reproduces it). Multiply is excluded:
+        // its latency reschedules the epilogue restores.
+        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+            return Ok(false);
+        }
+        let reads = |expression: &Expression, name: &str| matches!(expression, Expression::Variable(variable) if variable == name);
+        if !((reads(left, &local.name) && reads(right, &parameter.name))
+            || (reads(left, &parameter.name) && reads(right, &local.name)))
+        {
+            return Ok(false);
+        }
+        let incoming = match self.locations.get(&parameter.name) {
+            Some(location) if location.class == ValueClass::General => location.register,
+            _ => return Ok(false),
+        };
+        // Prologue: a 16-byte frame saving the link register and r31, the
+        // parameter's save+move interleaved (stw r31; mr r31,r3).
+        let frame_size = 16i16;
+        self.non_leaf = true;
+        self.frame_size = frame_size;
+        let homes: Vec<u8> = vec![self.fresh_virtual_general()];
+        self.callee_saved = homes.clone();
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        debug_assert_eq!(plan.frame_size, frame_size);
+        self.output.instructions.extend(plan.prologue_interleaved(&[incoming]));
+        // The call reads the parameter from its STILL-LIVE incoming register (no
+        // move); only afterwards does the parameter read from its saved home.
+        self.emit_call(name, arguments, None, false)?;
+        if let Some(location) = self.locations.get_mut(&parameter.name) {
+            location.register = homes[0];
+        }
+        // The local IS the call result: it lives (and dies) in r3.
+        let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            local.name.clone(),
+            Location { class: ValueClass::General, register: 3, signed, width: 32, pointee: None, stride: None },
+        );
         let result = Eabi::general_result().number;
         self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
         self.emit_epilogue_and_return();
