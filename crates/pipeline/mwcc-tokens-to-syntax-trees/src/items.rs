@@ -2002,6 +2002,16 @@ impl Parser {
                 self.advance();
                 return Ok(());
             }
+            // A PARENTHESIZED function declarator — `size_t (strlen)(...)`, the
+            // MSL macro-protection form — is transparent: splice the parens out
+            // of the token stream and fall into the ordinary declarator path.
+            if *self.peek() == Token::ParenOpen
+                && matches!(self.peek_at(1), Token::Identifier(_))
+                && *self.peek_at(2) == Token::ParenClose
+            {
+                self.tokens.remove(self.position); // `(`
+                self.tokens.remove(self.position + 1); // `)` (the name shifted down)
+            }
             // Function-pointer declarator: `RET (*name)(params)` — a pointer-typed
             // global (a 4-byte address). The return/parameter types don't affect
             // codegen, so the signature is skipped.
@@ -2856,6 +2866,25 @@ impl Parser {
                     let Some(otherwise) = self.parse_guard_return()? else {
                         return Err(Diagnostic::error("a bare `return;` in an else branch is not supported yet (roadmap)"));
                     };
+                    // The body CONTINUES past the full-return diamond (a goto
+                    // label follows — melee string.c's `adjust:`): migrate the
+                    // pending guards and this if/else into the ordered list and
+                    // resume the statement loop.
+                    if *self.peek() != Token::BraceClose {
+                        for guard in guards.drain(..) {
+                            statements.push(Statement::If {
+                                condition: guard.condition,
+                                then_body: vec![Statement::Return(Some(guard.value))],
+                                else_body: Vec::new(),
+                            });
+                        }
+                        statements.push(Statement::If {
+                            condition,
+                            then_body: vec![Statement::Return(Some(value))],
+                            else_body: vec![Statement::Return(Some(otherwise))],
+                        });
+                        continue 'body;
+                    }
                     guards.push(GuardedReturn { condition, value });
                     conditional_return = Some(otherwise);
                     break;
@@ -3063,9 +3092,16 @@ impl Parser {
             let value = self.expression()?;
             self.expect(Token::Semicolon)?;
             Ok(store_or_assign(first, value, local_names))
-        } else {
-            self.expect(Token::Semicolon)?;
+        } else if *self.peek() == Token::Semicolon {
+            self.advance();
             Ok(Statement::Expression(first))
+        } else {
+            // A discarded BINARY expression statement (`t & w;` — dead code in
+            // MSL string.c): parse the full expression for a faithful AST; the
+            // pure discarded form has no lowering yet, so codegen defers.
+            let expression = self.binary_expression_from(first, 1)?;
+            self.expect(Token::Semicolon)?;
+            Ok(Statement::Expression(expression))
         }
     }
 
