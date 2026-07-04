@@ -78,7 +78,7 @@ for idx, mn, ops in instrs:
     def bc(o,b_):
         t = int(ops[-1],16)//4
         out.append(f"        self.emit_branch_conditional_to({o}, {b_}, labels[&{t}]); // {mn}")
-    if   mn=="stwu": push(f"StoreWordWithUpdate {{ s: {R(ops[0])}, a: 1, offset: {ops[1].split('(')[0]} }}")
+    if   mn=="stwu": push(f"StoreWordWithUpdate {{ s: {R(ops[0])}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="stfd": push(f"StoreFloatDouble {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="lfd":  push(f"LoadFloatDouble {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="fctiwz": push(f"ConvertToIntegerWordZero {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
@@ -127,6 +127,10 @@ for idx, mn, ops in instrs:
     elif mn=="bltlr": push("BranchConditionalToLinkRegister { options: 12, condition_bit: 0 }")
     elif mn=="bgelr": push("BranchConditionalToLinkRegister { options: 4, condition_bit: 0 }")
     elif mn=="bnelr": push("BranchConditionalToLinkRegister { options: 4, condition_bit: 2 }")
+    elif mn=="blelr": push("BranchConditionalToLinkRegister { options: 4, condition_bit: 1 }")
+    elif mn=="addic.": push(f"AddImmediateCarryingRecord {{ d: {R(ops[0])}, a: {R(ops[1])}, immediate: {ops[2]} }}")
+    elif mn=="and.": push(f"AndRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="stbu": push(f"StoreByteWithUpdate {{ s: {R(ops[0])}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="beqlr": push("BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }")
     elif mn=="bctrl": push("BranchToCountRegisterAndLink")
     elif mn=="bctr": push("BranchToCountRegister")

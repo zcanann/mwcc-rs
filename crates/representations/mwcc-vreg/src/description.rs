@@ -153,6 +153,12 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, s);
             if *a != 0 { visit(U, G, a); }
         }
+        // The byte store-with-update rewrites its base (a general register).
+        StoreByteWithUpdate { s, a, .. } => {
+            visit(U, G, s);
+            visit(U, G, a);
+            visit(D, G, a);
+        }
         StoreWordIndexed { s, a, b } | StoreByteIndexed { s, a, b } | StoreHalfwordIndexed { s, a, b } => {
             visit(U, G, s);
             if *a != 0 { visit(U, G, a); }

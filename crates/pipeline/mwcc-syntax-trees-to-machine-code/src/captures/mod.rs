@@ -47,6 +47,14 @@ mod satan_pik;
 mod satan_sun;
 mod krem_p2;
 mod sld_atof;
+mod str_strcat;
+mod str_strchr;
+mod str_strcmp;
+mod str_strcpy;
+mod str_strlen;
+mod str_strncmp;
+mod str_strncpy;
+mod str_strstr;
 mod sld_strtod;
 mod sld_strtold;
 mod sldexp;
@@ -111,6 +119,14 @@ impl Generator {
             || self.try_epow(function)?
             || self.try_epow_ww(function)?
             || self.try_krem_p2(function)?
+            || self.try_str_strlen(function)?
+            || self.try_str_strcpy(function)?
+            || self.try_str_strncpy(function)?
+            || self.try_str_strcat(function)?
+            || self.try_str_strcmp(function)?
+            || self.try_str_strncmp(function)?
+            || self.try_str_strchr(function)?
+            || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
             || self.try_sld_atof(function)?

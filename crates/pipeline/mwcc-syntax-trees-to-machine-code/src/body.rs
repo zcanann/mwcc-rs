@@ -1834,6 +1834,18 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        // An EMPTY body — `T f(args) { }` (MSL's "UNUSED FUNCTION" stubs) —
+        // is a single `blr` regardless of return type (measured: pikmin
+        // string.c's ten stubs; a non-void return is simply garbage).
+        if function.statements.is_empty()
+            && function.guards.is_empty()
+            && function.return_expression.is_none()
+            && function.locals.is_empty()
+            && self.frame_slots.is_empty()
+        {
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(());
+        }
         // A body calling a SKIPPED INLINE defers here — after the exact-match
         // templates (a whole-function capture has the inline flattened into
         // its body); the general paths must never emit a bl to the undefined
