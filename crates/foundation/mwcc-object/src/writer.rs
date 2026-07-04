@@ -341,12 +341,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .filter(|object| object.static_local_owner == Some(function_index))
             .collect();
         for (offset_index, object) in owned_statics.iter().enumerate() {
-            // NOTE (fire 493): a synthetic probe shows the static SHOULD ride
-            // the owner's pre-bump (s$4 -> s$7 after one inline), but applying
-            // that regresses an mp4 TU whose statics number LOW despite its
-            // pre-bump — the rule is conditional on something unmeasured.
-            // Base-counter numbering stays until both specimens are explained.
-            static_local_numbers.insert(object.name, counter - 1 + offset_index as u32);
+            // A static numbers at the counter AS OF ITS DECLARATION POINT
+            // (fire 494, measured: mp4 uart's initialized$4 declares inside the
+            // FIRST skipped inline — no bump has landed; pikmin's same static
+            // is $34 behind 30 counts of earlier header inlines; the probe
+            // matrix's s$4/s$7). `anonymous_adjust` carries that position.
+            static_local_numbers.insert(
+                object.name,
+                (counter as i64 - 1 + object.anonymous_adjust + offset_index as i64) as u32,
+            );
         }
         let mut number = counter + owned_statics.len() as u32 + function.anonymous_bump;
         // This function's own strings sit at the front of its `@N` block, before its constants.

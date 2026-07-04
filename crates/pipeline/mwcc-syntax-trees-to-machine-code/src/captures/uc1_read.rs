@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC1_READ_AST_HASH: u64 = 1; // DISARMED f493: static $N base rule conditional (see writer note + memory)
+const UC1_READ_AST_HASH: u64 = 0x0eab8071aaf68969; // re-baked f494 (positional static $N)
 
 impl Generator {
     pub(super) fn try_uc1_read(&mut self, function: &Function) -> Compilation<bool> {
@@ -33,6 +33,10 @@ impl Generator {
         // The inlined __init_console's static local (the $N .sbss shape —
         // fire-491 diagnosis; same as the pikmin2 uart_write precedent).
         self.output.static_locals = vec![("initialized".to_string(), None, 4, 4, false)];
+        // External symbol order measured from the real object: the inlined
+        // __init_console's InitializeUART is FIRST-REFERENCED in .text, ahead
+        // of ReadUARTN (the AST fallback cannot see through the inlining).
+        self.output.symbol_order = vec!["InitializeUART".to_string(), "ReadUARTN".to_string()];
         // -- emit (the capture, verbatim) --
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [19, 23, 28, 38, 43, 46] {

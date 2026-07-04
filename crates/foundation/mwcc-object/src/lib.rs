@@ -71,6 +71,9 @@ pub struct DataObject<'a> {
     pub is_weak: bool,
     /// A real function's static local: the owning function index (numbering).
     pub static_local_owner: Option<usize>,
+    /// Signed shift a static local's `$N` takes off the owner's base counter
+    /// (declaration-position part of the unit's inline pre-bump).
+    pub anonymous_adjust: i64,
 }
 
 /// An `R_PPC_ADDR32` relocation inside a data object: 4 bytes at `offset` resolve

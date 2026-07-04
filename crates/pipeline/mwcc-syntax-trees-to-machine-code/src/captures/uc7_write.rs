@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UC7_WRITE_AST_HASH: u64 = 1; // DISARMED f493: static $N base rule conditional (see writer note + memory)
+const UC7_WRITE_AST_HASH: u64 = 1; // DISARMED f494: TU incomplete — needs the MATERIALIZED __init_uart_console (prototype-then-call shape); real hash 0xdadcaf865a7513d7
 
 impl Generator {
     pub(super) fn try_uc7_write(&mut self, function: &Function) -> Compilation<bool> {

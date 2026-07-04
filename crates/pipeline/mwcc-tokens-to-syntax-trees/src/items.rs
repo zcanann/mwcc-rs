@@ -803,10 +803,19 @@ impl Parser {
         // its enumerators so a bare enumerator resolves to its value.
         if matches!(self.peek(), Token::Identifier(word) if word == "enum") {
             self.advance();
-            if matches!(self.peek(), Token::Identifier(_)) {
+            let tagged = matches!(self.peek(), Token::Identifier(_));
+            if tagged {
                 self.advance(); // the tag
             }
             if *self.peek() == Token::BraceOpen {
+                // An ANONYMOUS enum definition consumes one anonymous-`@N` number
+                // (measured fire 494: `typedef enum {…} E;` shifts the next pool
+                // constant by +1; a TAGGED enum adds nothing — pikmin's uart TU
+                // carries three such enums between its inlines and its statics).
+                // Keyed by token position so a speculative re-parse can't double-count.
+                if !tagged && self.counted_enum_positions.insert(self.position) {
+                    self.skipped_inline_functions += 1;
+                }
                 self.parse_enum_body()?;
             }
             return Ok(Type::Int);
@@ -1497,6 +1506,7 @@ impl Parser {
             let start = self.position;
             let functions_before = functions.len();
             let globals_before = globals.len();
+            let bump_before_item = self.skipped_inline_functions;
             if let Err(error) = self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes) {
                 // A declaration we can't parse (a typedef/struct/extern prototype or
                 // qualified type from a preprocessed header) is skipped so the
@@ -1535,6 +1545,11 @@ impl Parser {
                 if self.inline_function_has_static_local() {
                     let (function_name, is_static_inline, statics) = self.parse_skipped_inline_statics()?;
                     if is_static_inline {
+                        // Positional numbering: sample the running bump BEFORE this
+                        // inline's own counts apply — the static declares inside it.
+                        for local in &statics {
+                            self.static_local_prebumps.insert(local.name.clone(), self.skipped_inline_functions);
+                        }
                         self.skipped_inline_functions += statics.len();
                     } else {
                         for (slot, local) in statics.into_iter().enumerate() {
@@ -1560,6 +1575,13 @@ impl Parser {
                 // A skipped INLINE function definition still advances mwcc's `@N`
                 // counter by the labels its (compiled, then dropped) body uses.
                 if let Some(bump) = self.skipped_inline_label_bump()? {
+                    if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+                        eprintln!(
+                            "inline-bump: {} +{bump} (total {})",
+                            self.skipped_function_name().unwrap_or_default(),
+                            self.skipped_inline_functions + bump
+                        );
+                    }
                     self.skipped_inline_functions += bump;
                     // A SINGLE-RETURN body is recorded for call-site
                     // substitution (mwcc -inline auto inlines it); anything
@@ -1577,6 +1599,14 @@ impl Parser {
             }
             if functions.len() > functions_before {
                 seen_function = true;
+                // A real function's own static locals number positionally too:
+                // its body cannot add top-level inline definitions, so the bump
+                // at the definition covers every declaration inside it.
+                for function in &functions[functions_before..] {
+                    for local in function.locals.iter().filter(|local| local.is_static) {
+                        self.static_local_prebumps.insert(local.name.clone(), bump_before_item);
+                    }
+                }
             }
             // An emittable (non-`extern`, non-`const`) `static` global declared after
             // a function would need its local symbol interleaved among the functions'
@@ -1670,6 +1700,7 @@ impl Parser {
             prototypes,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             skipped_inline_functions: self.skipped_inline_functions,
+            static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
         })

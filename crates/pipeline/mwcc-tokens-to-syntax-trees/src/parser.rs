@@ -99,6 +99,14 @@ pub(crate) struct Parser {
     /// compiles-then-drops these, advancing the file's `@N` counter by 3 each
     /// (measured), so the writer pre-bumps the first function's numbering.
     pub(crate) skipped_inline_functions: usize,
+    /// Per static-local NAME, the skipped-inline bump total at its DECLARATION
+    /// point — a static numbers off the anonymous counter AS OF that position
+    /// (measured: mp4 uart's initialized$4 inside the FIRST inline vs pikmin's
+    /// $34 behind 30 counts of earlier header inlines).
+    pub(crate) static_local_prebumps: std::collections::HashMap<String, usize>,
+    /// Token positions of anonymous-`enum` bodies already counted into the
+    /// anonymous-`@N` pre-bump (guards speculative re-parses from double-counting).
+    pub(crate) counted_enum_positions: std::collections::HashSet<usize>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
     pub(crate) weak_functions: std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.

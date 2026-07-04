@@ -37,6 +37,9 @@ pub struct DefinedGlobal {
     /// A real function's STATIC LOCAL: the owning function's index. The writer
     /// numbers it off that function's @N sequence and displays `name$K`.
     pub static_local_owner: Option<usize>,
+    /// Signed shift a static local's `$N` takes off the owner's base counter —
+    /// the declaration-position part of the unit's inline pre-bump.
+    pub anonymous_adjust: i64,
 }
 
 /// Assemble a relocatable object from one or more lowered functions (in source
@@ -110,7 +113,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone(), non_static_functions_before: global.non_static_functions_before, is_weak: global.is_weak, static_local_owner: global.static_local_owner })
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone(), non_static_functions_before: global.non_static_functions_before, is_weak: global.is_weak, static_local_owner: global.static_local_owner, anonymous_adjust: global.anonymous_adjust })
         .collect();
     mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data, inline_asm_symbols })
 }

@@ -223,9 +223,21 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // raw names; the writer numbers each off its owner's @N sequence and
     // displays `name$K`.
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    let total_inline_bump = unit.skipped_inline_functions as i64;
     for (function_index, function) in machine_functions.iter().enumerate() {
         for (name, bytes, size, alignment, is_const) in &function.static_locals {
+            // A static numbers at the counter AS OF ITS DECLARATION (the parser's
+            // positional sample). The whole-unit pre-bump folds into the FIRST
+            // function's block below, so a first-function static shifts by its
+            // full prebump; a later owner's running counter already includes the
+            // total, leaving only the (typically zero) difference.
+            let anonymous_adjust = match unit.static_local_prebumps.get(name) {
+                Some(&prebump) if function_index == 0 => prebump as i64,
+                Some(&prebump) => prebump as i64 - total_inline_bump,
+                None => 0,
+            };
             static_local_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
+                anonymous_adjust,
                 static_local_owner: Some(function_index),
                 is_weak: false,
                 non_static_functions_before: 0,
@@ -349,7 +361,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                             string_pool.insert(string_bytes.clone(), name.clone());
                             let mut object_bytes = string_bytes.clone();
                             object_bytes.push(0);
-                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: false, non_static_functions_before: 0,
+                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
                                 name: name.clone(),
                                 size: object_bytes.len() as u32,
                                 alignment: 4,
@@ -371,7 +383,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // An address initializer that resolved to no bytes is an all-null pointer
             // (`int *p = 0;`) — an EXPLICIT zero, so it orders ahead of the uninitialized run.
             let is_explicit_zero = initial_bytes.is_none();
-            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                 name: global.name.clone(),
                 size,
                 alignment: 4,
@@ -420,7 +432,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // A const struct value/array carries its pre-serialized field bytes
             // directly into the read-only section.
             if let Some(bytes) = &global.data_bytes {
-                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                     name: global.name.clone(),
                     size,
                     alignment,
@@ -445,7 +457,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 .as_ref()
                 .ok_or_else(|| Diagnostic::error("an uninitialized const global is not supported yet (roadmap)"))?;
             let initial_bytes = serialize(values, element_size, size);
-            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                 name: global.name.clone(),
                 size,
                 alignment,
@@ -489,7 +501,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             Some(_) => (None, true),
             None => (None, false),
         };
-        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
             name: global.name.clone(),
             size,
             alignment,
@@ -545,7 +557,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 string_pool.insert(bytes.clone(), name.clone());
                 let mut object_bytes = bytes.clone();
                 object_bytes.push(0);
-                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { static_local_owner: None, is_weak: false, non_static_functions_before: 0,
+                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
                     name: name.clone(),
                     size: object_bytes.len() as u32,
                     alignment: 4,

@@ -207,6 +207,10 @@ pub struct TranslationUnit {
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
     pub skipped_inline_functions: usize,
+    /// Per static-local NAME, the skipped-inline bump total at its declaration
+    /// point (the parser's positional sample) — statics number off the
+    /// anonymous counter as of that position, not the owner's whole pre-bump.
+    pub static_local_prebumps: std::collections::HashMap<String, usize>,
     /// The skipped inline functions' NAMES: a body that calls one must defer
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.
