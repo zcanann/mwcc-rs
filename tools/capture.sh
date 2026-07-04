@@ -16,13 +16,26 @@ compiler="$FFCC/build/compilers/GC/$version/mwcceppc.exe"
 objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
 mkdir -p "$out"
 
-include_dirs=(include)
-while IFS= read -r sysroot; do
-  rel="${sysroot#"$project"/}"
-  [[ "$rel" == include ]] || include_dirs+=("$rel")
-done < <(find "$project" -maxdepth 8 \( -name stddef.h -o -name errno.h -o -name __va_arg.h -o -name fdlibm.h \) \
-           -not -path "*/orig/*" -not -path "*/build/*" -not -path "*/tools/*" 2>/dev/null \
-         | xargs -n1 dirname | sort -u)
+# Include discovery MUST match tools/refctx.sh exactly (the gate of record) —
+# fire 474: melee's compile_flags.txt adds extern/dolphin/include, changing the
+# skipped-inline FINGERPRINT vs the marker-only discovery.
+if [[ -n "${REFCTX_INCLUDES:-}" ]]; then
+  read -r -a include_dirs <<< "$REFCTX_INCLUDES"
+elif [[ -f "$project/compile_flags.txt" ]]; then
+  include_dirs=()
+  while IFS= read -r inc; do
+    [[ -d "$project/$inc" ]] && include_dirs+=("$inc")
+  done < <(sed -nE 's/^-I//p; s/^-isystem//p' "$project/compile_flags.txt")
+  [[ ${#include_dirs[@]} -gt 0 ]] || include_dirs=(include)
+else
+  include_dirs=(include)
+  while IFS= read -r sysroot; do
+    rel="${sysroot#"$project"/}"
+    [[ "$rel" == include ]] || include_dirs+=("$rel")
+  done < <(find "$project" -maxdepth 8 \( -name stddef.h -o -name errno.h -o -name __va_arg.h -o -name fdlibm.h \) \
+             -not -path "*/orig/*" -not -path "*/build/*" -not -path "*/tools/*" 2>/dev/null \
+           | xargs -n1 dirname | sort -u)
+fi
 include_flags=()
 for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
 ( cd "$project" && python3 tools/decompctx.py "$src" "${include_flags[@]}" -o "$out/ctx.c" ) >/dev/null 2>&1 \
