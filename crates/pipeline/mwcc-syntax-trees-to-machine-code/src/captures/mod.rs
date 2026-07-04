@@ -217,13 +217,12 @@ impl Generator {
             || self.try_p2_elog10(function)?
             || self.try_p2_esqrt(function)?
             || self.try_p2_erempio2(function)?;
-        if fired && self.output.symbol_order.is_empty() {
-            // mwcc emits referenced-symbol runs in AST-TRAVERSAL order (NOT
-            // .text/reloc order — measured: wind_waker abort_exit's zero
-            // statics). A capture bypasses AST emission, so derive the order
-            // from the function tree unless the template overrode it.
-            self.output.symbol_order = crate::symbol_order::referenced_names(function);
-        }
+        // NOTE (fire 483): a capture's symbol run follows its .text RELOCATION
+        // order (the writer's fallback) — mwcc schedules loop-invariant address
+        // loads above guards, so first-reference-in-text is the ground truth
+        // (measured: wind_waker abort_exit's hoisted __atexit_funcs base).
+        // An AST-derived order here was WRONG; templates that need a custom
+        // order set output.symbol_order explicitly.
         Ok(fired)
     }
 }

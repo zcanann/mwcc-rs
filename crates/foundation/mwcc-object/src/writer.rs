@@ -570,7 +570,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             RelocationTarget::External(name) => Some(name.as_str()),
             _ => None,
         });
-        for name in function.symbol_order.iter().map(|name| name.as_str()).chain(relocation_names) {
+        // TEXT-RELOCATION order, not symbol_order: mwcc's scheduler hoists a
+        // loop-invariant table base (lis/addi) ABOVE the loop guard, and the
+        // zero-static symbol run follows the FIRST TEXT REFERENCE (measured:
+        // wind_waker abort_exit — __atexit_funcs before __atexit_curr_func,
+        // opposite to the AST order symbol_order carries).
+        for name in relocation_names {
             if let Some(object) = input.data_objects.iter().find(|object| object.name == name && is_pending_zero_static(object)) {
                 if emitted_zero_static.insert(object.name) {
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);

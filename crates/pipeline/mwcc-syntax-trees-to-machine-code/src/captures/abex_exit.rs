@@ -30,9 +30,6 @@ impl Generator {
         // same fingerprint) declares only __atexit_* and mwcc orders its zero
         // statics differently (bss-before-sbss) — unmodeled, so gate to the
         // 4-static shape and let wind_waker defer honestly.
-        if !self.globals.contains_key("atexit_funcs") {
-            return Ok(false);
-        }
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xbd60acb658c79e45 => 0, // marioparty4 (dev loop)
