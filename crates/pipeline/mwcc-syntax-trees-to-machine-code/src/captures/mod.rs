@@ -39,6 +39,9 @@ mod satan;
 mod su_atoi;
 mod suac_strtol;
 mod suac_atoi_mel;
+mod ansif_close_all;
+mod ansif_close_all_cr;
+mod ansif_flush_all;
 mod sup2_atoi;
 mod sup2_strtol;
 mod sup2_strtoul_impl;
@@ -274,6 +277,9 @@ impl Generator {
             || self.try_suac_strtoul_pub(function)?
             || self.try_suac_strtol(function)?
             || self.try_suac_atoi_mel(function)?
+            || self.try_ansif_close_all(function)?
+            || self.try_ansif_close_all_cr(function)?
+            || self.try_ansif_flush_all(function)?
             || self.try_sup2_strtoul_impl(function)?
             || self.try_sup2_strtoull_impl(function)?
             || self.try_sup2_strtoul_pub(function)?
