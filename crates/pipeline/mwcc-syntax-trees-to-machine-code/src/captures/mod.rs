@@ -52,6 +52,7 @@ mod mf_copy_run;
 mod mf_copy_un;
 mod sld_atof;
 mod str_strcat;
+mod str_strcat_mp4;
 mod str_strchr;
 mod str_strchr_ac;
 mod str_strcmp;
@@ -71,6 +72,7 @@ mod str_strcpy_p2;
 mod str_strncmp_p2;
 mod str_strncpy_p2;
 mod str_strrchr;
+mod str_strrchr_mp4;
 mod str_strstr_ac;
 mod str_strstr;
 mod sld_strtod;
@@ -162,6 +164,8 @@ impl Generator {
             || self.try_str_strcpy_ac(function)?
             || self.try_str_strstr_ac(function)?
             || self.try_str_strchr_ac(function)?
+            || self.try_str_strcat_mp4(function)?
+            || self.try_str_strrchr_mp4(function)?
             || self.try_str_strstr(function)?
             || self.try_sld_strtold(function)?
             || self.try_sld_strtod(function)?
