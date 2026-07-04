@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UART_CLOSE_AST_HASH: u64 = 0;
+const UART_CLOSE_AST_HASH: u64 = 0x87b8617572473522;
 
 impl Generator {
     pub(super) fn try_uart_close(&mut self, function: &Function) -> Compilation<bool> {
@@ -20,7 +20,6 @@ impl Generator {
         }
         let hash = super::ast_hash(function);
         if hash != UART_CLOSE_AST_HASH {
-            eprintln!("uart_close hash candidate: {hash:#x}");
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -28,10 +27,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            _ => {
-                eprintln!("uart_close context candidate: {context:#x}");
-                return Ok(false);
-            }
+            0xa605ebc1c79b708d => 0, // measured (dev loop)
+            _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();

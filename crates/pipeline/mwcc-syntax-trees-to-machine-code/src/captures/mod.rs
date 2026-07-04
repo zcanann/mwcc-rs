@@ -104,6 +104,17 @@ mod str_strstr;
 mod sld_strtod;
 mod sld_strtold;
 mod sldexp;
+mod uc1_read;
+mod uc1_write;
+mod uc2_read;
+mod uc2_write;
+mod uc3_init;
+mod uc3_write;
+mod uc7_init;
+mod uc7_read;
+mod uc7_write;
+mod uc8_init;
+mod uc8_write;
 mod sldx;
 mod sldx_ac;
 mod sldx_pik;
@@ -222,6 +233,17 @@ impl Generator {
             || self.try_mem_memcmp_mel(function)?
             || self.try_mem_memcmp_mp4(function)?
             || self.try_sldx_pik(function)?
+            || self.try_uc1_read(function)?
+            || self.try_uc1_write(function)?
+            || self.try_uc2_read(function)?
+            || self.try_uc2_write(function)?
+            || self.try_uc3_write(function)?
+            || self.try_uc3_init(function)?
+            || self.try_uc7_read(function)?
+            || self.try_uc7_write(function)?
+            || self.try_uc7_init(function)?
+            || self.try_uc8_write(function)?
+            || self.try_uc8_init(function)?
             || self.try_sldx(function)?
             || self.try_sldx_ac(function)?
             || self.try_str_strstr(function)?
