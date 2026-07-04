@@ -69,6 +69,8 @@ pub enum Instruction {
     AddToZeroExtended { d: u8, a: u8 },
     /// `mullw rD, rA, rB`
     MultiplyLow { d: u8, a: u8, b: u8 },
+    /// `mullw. rD, rA, rB` — multiply low word, recording CR0.
+    MultiplyLowRecord { d: u8, a: u8, b: u8 },
     /// `mulhw rD, rA, rB` — high 32 bits of the signed product.
     MultiplyHighWord { d: u8, a: u8, b: u8 },
     /// `mulhwu rD, rA, rB` — high 32 bits of the unsigned product.

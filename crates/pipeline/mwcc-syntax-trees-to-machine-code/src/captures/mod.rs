@@ -47,6 +47,12 @@ mod fio_fflush;
 mod fio_fflush_cr;
 mod fio_strnicmp_sv;
 mod fio_strnicmp_leaf;
+mod dio_fwrite_tiny;
+mod dio_fwrite_full;
+mod dio_fwrite_mid;
+mod dio_fwrite_impl;
+mod dio_fread_stub;
+mod dio_fread_impl_stub;
 mod sup2_atoi;
 mod sup2_strtol;
 mod sup2_strtoul_impl;
@@ -290,6 +296,12 @@ impl Generator {
             || self.try_fio_fflush_cr(function)?
             || self.try_fio_strnicmp_sv(function)?
             || self.try_fio_strnicmp_leaf(function)?
+            || self.try_dio_fwrite_tiny(function)?
+            || self.try_dio_fwrite_full(function)?
+            || self.try_dio_fwrite_mid(function)?
+            || self.try_dio_fwrite_impl(function)?
+            || self.try_dio_fread_stub(function)?
+            || self.try_dio_fread_impl_stub(function)?
             || self.try_sup2_strtoul_impl(function)?
             || self.try_sup2_strtoull_impl(function)?
             || self.try_sup2_strtoul_pub(function)?

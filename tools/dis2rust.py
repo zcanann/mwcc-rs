@@ -177,6 +177,7 @@ for idx, mn, ops in instrs:
     elif mn=="divwu": push(f"DivideWordUnsigned {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="divw": push(f"DivideWord {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="mullw": push(f"MultiplyLow {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="mullw.": push(f"MultiplyLowRecord {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="mulhwu": push(f"MultiplyHighWordUnsigned {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="mulhw": push(f"MultiplyHighWord {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="addc": push(f"AddCarrying {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
