@@ -46,6 +46,10 @@ mod uart_write;
 mod satan_pik;
 mod satan_sun;
 mod krem_p2;
+mod mf_copy_al;
+mod mf_copy_ral;
+mod mf_copy_run;
+mod mf_copy_un;
 mod sld_atof;
 mod str_strcat;
 mod str_strchr;
@@ -119,6 +123,10 @@ impl Generator {
             || self.try_epow(function)?
             || self.try_epow_ww(function)?
             || self.try_krem_p2(function)?
+            || self.try_mf_copy_al(function)?
+            || self.try_mf_copy_ral(function)?
+            || self.try_mf_copy_un(function)?
+            || self.try_mf_copy_run(function)?
             || self.try_str_strlen(function)?
             || self.try_str_strcpy(function)?
             || self.try_str_strncpy(function)?
