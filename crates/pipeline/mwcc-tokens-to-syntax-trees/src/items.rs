@@ -1667,6 +1667,7 @@ impl Parser {
                                 data_bytes: local.bytes,
                                 data_relocations: Vec::new(),
                                 is_weak: true,
+                                section: None,
                             });
                         }
                     }
@@ -1714,7 +1715,7 @@ impl Parser {
             // interleaving in the global symbol run (mwcc: __upper_map AFTER
             // tolower in the MSL ctype shape) — also deferred until the writer
             // models it.
-            if seen_function && globals[globals_before..].iter().any(|global| global.is_static && !global.is_const && !global.is_extern) {
+            if seen_function && globals[globals_before..].iter().any(|global| global.is_static && !global.is_const && !global.is_extern && global.section.is_none()) {
                 return Err(Diagnostic::error("a static global declared after a function is not supported yet (local-symbol ordering)"));
             }
 
@@ -2152,6 +2153,7 @@ impl Parser {
             let mut is_extern = false;
             let mut is_static = false;
             let mut is_weak = false;
+            let mut declspec_section: Option<String> = None;
             let mut is_inline = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
@@ -2165,11 +2167,19 @@ impl Parser {
                         self.expect(Token::ParenOpen)?;
                         let mut depth = 1;
                         let mut weak_inside = false;
+                        // `__declspec(section "…")` — the string literal immediately
+                        // following the `section` keyword names the output section.
+                        let mut saw_section_kw = false;
                         while depth > 0 {
                             match self.advance() {
                                 Token::ParenOpen => depth += 1,
                                 Token::ParenClose => depth -= 1,
                                 Token::Identifier(inner) if inner == "weak" => weak_inside = true,
+                                Token::Identifier(inner) if inner == "section" => saw_section_kw = true,
+                                Token::StringLiteral(bytes) if saw_section_kw => {
+                                    declspec_section = Some(String::from_utf8_lossy(&bytes).into_owned());
+                                    saw_section_kw = false;
+                                }
                                 Token::EndOfFile => return Err(Diagnostic::error("unterminated __declspec")),
                                 _ => {}
                             }
@@ -2339,7 +2349,7 @@ impl Parser {
                         return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
                     }
                     self.variable_structs.insert(name.clone(), tag.clone());
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None, data_relocations: Vec::new() });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {
@@ -2408,7 +2418,7 @@ impl Parser {
                     None
                 };
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new() });
+                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -2551,7 +2561,7 @@ impl Parser {
                     // in `.sdata` — measured: locale) — the object itself is
                     // not const.
                     let object_is_const = is_const && !matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. });
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations) });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations), section: declspec_section.clone() });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type

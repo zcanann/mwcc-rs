@@ -176,6 +176,10 @@ pub struct GlobalDeclaration {
     /// symbol, addend) — a function pointer or a self-referential address in a
     /// struct-array initializer (ansi_files' FILE table).
     pub data_relocations: Vec<(u32, String, i32)>,
+    /// An explicit output section from `__declspec(section "…")` — overrides the
+    /// default `.sdata`/`.sdata2`/`.sbss` placement (e.g. `.dtors` for a global
+    /// destructor-chain reference). `None` uses the default rules.
+    pub section: Option<String>,
 }
 
 /// One element of a pointer global's initializer.
