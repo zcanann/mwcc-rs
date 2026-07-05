@@ -229,6 +229,102 @@ impl Generator {
         Ok(true)
     }
 
+    /// `T f(T a, int b, …) { if (b) call(…); return a; }` — a parameter live
+    /// across a call that runs only on one arm of an `if`. mwcc saves `a` in
+    /// r31, HOISTS the if-condition test into the prologue slot after `mflr`
+    /// (`cmpwi b,0` between `mflr r0` and `stw r0,20`), branches around the
+    /// call, then returns the saved value. This is the #20/#21 intersection in
+    /// its simplest form — a value live across a CONDITIONAL call. Gated narrow:
+    /// a single saved general parameter, an `if (param) { calls… }` with empty
+    /// else, and calls whose arguments do not reference the saved value.
+    pub(crate) fn try_callee_saved_conditional_call(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if matches!(function.return_type, Type::Float | Type::Double) || function.return_type == Type::Void {
+            return Ok(false);
+        }
+        // Body = exactly one `if (cond) { … }` with an empty else.
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        // Condition = a plain parameter (implicit `!= 0` → `cmpwi ,0; beq`).
+        let Expression::Variable(cond_name) = condition else { return Ok(false) };
+        // then-body = plain (void-result) calls only.
+        if then_body.is_empty()
+            || !then_body.iter().all(|statement| matches!(statement,
+                Statement::Expression(Expression::Call { .. }) | Statement::Expression(Expression::CallThrough { .. })))
+        {
+            return Ok(false);
+        }
+        // Return a single parameter, live across the call.
+        let Some(Expression::Variable(saved_name)) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if saved_name == cond_name {
+            return Ok(false);
+        }
+        if function.parameters.iter().position(|parameter| &parameter.name == saved_name).is_none() {
+            return Ok(false);
+        }
+        // A call argument that references the saved value would keep it in its
+        // incoming register past the save — not this shape.
+        if then_body.iter().any(|statement| match statement {
+            Statement::Expression(Expression::Call { arguments, .. }) => arguments.iter().any(|argument| expression_reads_name(argument, saved_name)),
+            _ => false,
+        }) {
+            return Ok(false);
+        }
+        // Both the saved value and the condition must be general-class parameters.
+        let (Some(saved_location), Some(cond_location)) = (self.locations.get(saved_name), self.locations.get(cond_name)) else {
+            return Ok(false);
+        };
+        if saved_location.class != ValueClass::General || cond_location.class != ValueClass::General {
+            return Ok(false);
+        }
+        let saved_incoming = saved_location.register;
+        let cond_register = cond_location.register;
+
+        // -- emit --
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let home = self.fresh_virtual_general();
+        self.callee_saved = vec![home];
+        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
+        let mut prologue = plan.prologue_interleaved(&[saved_incoming]);
+        // mwcc fills the ready slot after `mflr` with the if-condition test.
+        prologue.insert(2, Instruction::CompareWordImmediate { a: cond_register, immediate: 0 });
+        self.output.instructions.extend(prologue);
+        if let Some(location) = self.locations.get_mut(saved_name) {
+            location.register = home;
+        }
+        // `beq` past the conditional call.
+        let skip = self.fresh_label();
+        self.emit_branch_conditional_to(12, 2, skip);
+        for statement in then_body {
+            self.emit_statement(statement)?;
+        }
+        self.bind_label(skip);
+        // Epilogue at the join, in mwcc's order: the saved LR reloads FIRST (it can
+        // only sit after the merge, since the call is one-armed), then the return
+        // move, then the saved GPR, then `mtlr`/`addi`/`blr`. Emitted by hand — the
+        // LR-reload hoist can't cross the branch, so it leaves this alone.
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
+        self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // An `if` advances the anonymous `@N` counter by 2 (positional model), which
+        // the exception-unwind `@N` entry is numbered against.
+        self.output.anonymous_label_bump += 2;
+        Ok(true)
+    }
+
     /// `void s(T *p, …) { *p = g(args); }` — a call's result stored through a pointer
     /// PARAMETER that must survive the call. mwcc saves the pointer in r31 (`mr r31,r3`),
     /// runs the call, then stores the result through r31 (`stw r3,0(r31)`); the store-sink

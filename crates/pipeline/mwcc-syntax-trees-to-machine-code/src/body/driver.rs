@@ -1018,6 +1018,11 @@ impl Generator {
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
             // step; until then DEFER rather than emit a read of the clobbered register.
+            // `if (b) call(); return a;` — a value live across a CONDITIONAL call
+            // (the #20/#21 intersection). Handled generally before the defer.
+            if self.try_callee_saved_conditional_call(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error("a value live across a call needs the callee-saved register allocator (roadmap)"));
             }
