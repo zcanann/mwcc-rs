@@ -212,7 +212,17 @@ use mwcc_syntax_trees::Function;
 pub(crate) fn ast_hash(function: &Function) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{function:?}").hash(&mut hasher);
+    // The `section` field (a `__declspec(section "…")` override) is EXCLUDED from
+    // the hash: it is the last field in the Debug repr, so stripping `, section: …`
+    // reproduces the pre-field string and preserves every captured function's hash
+    // (adding the field would otherwise shift all ~130 templates — the fire-465
+    // re-bake hazard). Section placement is a writer concern, orthogonal to the AST.
+    let debug = format!("{function:?}");
+    let key = match debug.rfind(", section: ") {
+        Some(index) => format!("{} }}", &debug[..index]),
+        None => debug,
+    };
+    key.hash(&mut hasher);
     hasher.finish()
 }
 

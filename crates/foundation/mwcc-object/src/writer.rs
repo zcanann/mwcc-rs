@@ -454,9 +454,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // A jump table and large writable globals share `.data`; the lowering guarantees
     // they do not co-occur, so one `.data` entry covers both.
     let has_data = has_jump_table || has_file_data;
+    // A `__declspec(section "…")` on the functions relocates the code section — and
+    // its `.mwcats` catalog and `.rela` sections — from `.text` to that name (the
+    // runtime's `__mem.c` uses `.init`). A TU's functions share one code section
+    // (mixed `.text`/`.init` is not modeled); the derived names follow the same
+    // `.mwcats<sec>` / `.rela<sec>` shape mwcc uses.
+    let text_section: &str = input.functions.iter().find_map(|function| function.section).unwrap_or(".text");
+    let mwcats_section: String = format!(".mwcats{text_section}");
+    let rela_text_section: String = format!(".rela{text_section}");
+    let rela_mwcats_section: String = format!(".rela{mwcats_section}");
     let mut order: Vec<&str> = Vec::new();
     if has_functions {
-        order.push(".text");
+        order.push(text_section);
     }
     if has_frame {
         order.push("extab");
@@ -488,10 +497,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         order.push(".sdata2");
     }
     if has_functions {
-        order.push(".mwcats.text");
+        order.push(&mwcats_section);
     }
     if has_text_relocations {
-        order.push(".rela.text");
+        order.push(&rela_text_section);
     }
     if has_frame {
         order.push(".relaextabindex");
@@ -513,7 +522,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         order.push(".rela.dtors");
     }
     if has_functions {
-        order.push(".rela.mwcats.text");
+        order.push(&rela_mwcats_section);
     }
     order.push(".symtab");
     order.push(".strtab");
@@ -527,7 +536,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".dtors", ".rodata", ".data", ".bss", ".sdata", ".sbss", ".sdata2", ".mwcats.text"]
+    let content_sections: Vec<&str> = [text_section, "extab", "extabindex", ".dtors", ".rodata", ".data", ".bss", ".sdata", ".sbss", ".sdata2", &mwcats_section]
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
@@ -704,7 +713,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
             function_symbols[index] = symbol;
             local_function_symbols.insert(function.name, symbol);
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(".text") as u16);
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
             comment_values.push((4, 0)); // a function is 4-aligned
         }
     }
@@ -735,7 +744,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // `.mwcats` relocation, NOT for call resolution (calls bind the ghost).
         if function.implicit_local {
             function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(".text") as u16);
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
             comment_values.push((4, 0)); // a function is 4-aligned
         }
         // This function's NEW strings sit at the FRONT of its `@N` block, before its constants and
@@ -949,7 +958,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                         function_symbols[forward] = (symtab.len() / SYMBOL_SIZE) as u32;
                         let binding = if functions[forward].is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
-                        write_symbol(&mut symtab, strtab.add(name), function_offset[forward], function_size[forward], binding, 0, index_of(".text") as u16);
+                        write_symbol(&mut symtab, strtab.add(name), function_offset[forward], function_size[forward], binding, 0, index_of(text_section) as u16);
                         let flags = if functions[forward].is_weak {
                             if functions[forward].weak_inline { 0x0d00_0000 } else { 0x0e00_0000 }
                         } else {
@@ -983,7 +992,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if !function.is_static && !global_symbols.contains_key(function.name) {
             function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
             let binding = if function.is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], binding, 0, index_of(".text") as u16);
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], binding, 0, index_of(text_section) as u16);
             // A declspec-weak function carries 0x0e; a WEAK-MATERIALIZED plain
             // inline carries the weak-OBJECT flag 0x0d (measured: strikers mbstowcs).
             let flags = if function.is_weak {
@@ -1159,7 +1168,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         sections.push(Section { name_offset: offset_of(name), sh_type, flags, link, info, align, entry_size, payload, size });
     };
     if has_functions {
-        push(".text", SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
+        push(text_section, SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
     }
     if has_frame {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
@@ -1199,10 +1208,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2, 0);
     }
     if has_functions {
-        push(".mwcats.text", SHT_MWCATS, 0, index_of(".text"), 0, 4, 1, mwcats, 0);
+        push(&mwcats_section, SHT_MWCATS, 0, index_of(text_section), 0, 4, 1, mwcats, 0);
     }
     if has_text_relocations {
-        push(".rela.text", SHT_RELA, 0, symtab_section, index_of(".text"), 4, 12, rela_text, 0);
+        push(&rela_text_section, SHT_RELA, 0, symtab_section, index_of(text_section), 4, 12, rela_text, 0);
     }
     if has_frame {
         push(".relaextabindex", SHT_RELA, 0, symtab_section, index_of("extabindex"), 4, 12, rela_extabindex, 0);
@@ -1217,7 +1226,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push(".rela.dtors", SHT_RELA, 0, symtab_section, index_of(".dtors"), 4, 12, rela_dtors, 0);
     }
     if has_functions {
-        push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);
+        push(&rela_mwcats_section, SHT_RELA, 0, symtab_section, index_of(&mwcats_section), 4, 12, rela_mwcats, 0);
     }
     push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab, 0);
     // Metrowerks stamps string tables with sh_entsize = 1.

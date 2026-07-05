@@ -348,6 +348,7 @@ impl Generator {
 
         let synthetic = |value: &Expression| Function {
             return_type: function.return_type,
+            section: None,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,
@@ -413,6 +414,7 @@ impl Generator {
                 let payload = composition.as_ref().expect("checked at use");
                 Function {
                     return_type: function.return_type,
+                    section: None,
                     name: function.name.clone(),
                     is_static: function.is_static,
                     is_weak: function.is_weak,
@@ -715,6 +717,7 @@ impl Generator {
             self.float.frame_local = Some((payload.qx_name.clone(), payload.qx_offset));
             let composed_synthetic = Function {
                 return_type: function.return_type,
+                section: None,
                 name: function.name.clone(),
                 is_static: function.is_static,
                 is_weak: function.is_weak,
@@ -867,6 +870,7 @@ impl Generator {
         // unmeasured).
         let synthetic = Function {
             return_type: function.return_type,
+            section: None,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,

@@ -2721,6 +2721,7 @@ impl Parser {
             }
             let mut function = self.function_body(return_type, name, is_static, parameters)?;
             function.is_weak = function_is_weak;
+            function.section = declspec_section.clone();
             functions.push(function);
         }
         Ok(())
@@ -3437,7 +3438,7 @@ impl Parser {
 
         let mut locals = locals;
         locals.extend(block_locals);
-        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression })
+        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression, section: None })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

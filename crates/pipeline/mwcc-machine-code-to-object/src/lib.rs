@@ -64,6 +64,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             implicit_local: function.implicit_materialized,
             weak_inline: function.weak_inline,
             is_weak: function.is_weak,
+            section: function.section.as_deref(),
             text,
             // Each codegen relocation patches one instruction; its byte offset
             // (relative to the function) is four times the instruction index plus

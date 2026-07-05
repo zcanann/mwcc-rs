@@ -48,6 +48,9 @@ pub struct JumpTable {
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
     pub name: String,
+    /// An explicit `__declspec(section "…")` code section (e.g. `.init`), overriding
+    /// the default `.text` placement. `None` = `.text`.
+    pub section: Option<String>,
     pub instructions: Vec<Instruction>,
     /// `.text` relocations, by the instruction they patch.
     pub relocations: Vec<Relocation>,
@@ -147,6 +150,7 @@ impl MachineFunction {
     pub fn new(name: impl Into<String>) -> Self {
         MachineFunction {
             name: name.into(),
+            section: None,
             instructions: Vec::new(),
             relocations: Vec::new(),
             constants: Vec::new(),

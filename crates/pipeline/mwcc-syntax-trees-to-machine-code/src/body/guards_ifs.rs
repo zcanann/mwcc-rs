@@ -1401,6 +1401,7 @@ impl Generator {
             }
             let synthesized = Function {
                 return_type: Type::Void,
+                section: None,
                 name: function.name.clone(),
                 is_static: function.is_static,
                 is_weak: function.is_weak,

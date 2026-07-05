@@ -97,6 +97,9 @@ pub struct FunctionObject<'a> {
     /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol.
     pub is_static: bool,
     pub is_weak: bool,
+    /// An explicit `__declspec(section "…")` code section (e.g. `.init`), overriding
+    /// the default `.text`/`.mwcats.text` placement. `None` = `.text`.
+    pub section: Option<&'a str>,
     pub text: &'a [u8],
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.

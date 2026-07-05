@@ -255,4 +255,7 @@ pub struct Function {
     pub statements: Vec<Statement>,
     pub guards: Vec<GuardedReturn>,
     pub return_expression: Option<Expression>,
+    /// An explicit `__declspec(section "…")` code section (e.g. `.init` for the
+    /// runtime's `__mem.c`), overriding the default `.text` placement. `None` = `.text`.
+    pub section: Option<String>,
 }
