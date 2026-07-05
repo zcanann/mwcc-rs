@@ -162,8 +162,13 @@ impl Generator {
                 }
             }
         }
-        // Every body statement must be an in-place `var = var +/- const` on a register parameter — the
-        // increment/decrement of a scan pointer or index. No stores, calls, loads, or nested control.
+        // Every body statement is an in-place update of a register parameter that has no computable
+        // trip count, so mwcc keeps the rotated (bottom-test) form: either
+        //   (a) a pointer scan `p = p +/- const` — mwcc countifies an INTEGER increment loop but
+        //       leaves a pointer scan rotated; or
+        //   (b) a pointer CHASE `p = p->field` / `p = *p` — a linked-list walk with no trip count.
+        // No stores, calls, or nested control.
+        let mut has_chase = false;
         for statement in body {
             let Statement::Assign { name, value } = statement else {
                 return Ok(false);
@@ -171,18 +176,26 @@ impl Generator {
             if self.lookup_general(name).is_none() {
                 return Ok(false);
             }
-            // The incremented variable must be a POINTER: mwcc countifies an integer increment loop
-            // (`while (x) x++;` -> neg/mtctr/bdnz, trip count `-x`) but leaves a pointer scan as the
-            // rotated form this models.
-            if self.locations.get(name).map_or(true, |location| location.pointee.is_none()) {
+            let is_pointer = self.locations.get(name).map_or(false, |location| location.pointee.is_some());
+            let is_increment = is_pointer
+                && matches!(value, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(other) if other == name)
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(_)));
+            // A self-chase reads the next node out of the current one (`p = p->next`, `p = *p`).
+            let is_chase = matches!(value, Expression::Member { base, .. }
+                    if matches!(base.as_ref(), Expression::Variable(other) if other == name))
+                || matches!(value, Expression::Dereference { pointer }
+                    if matches!(pointer.as_ref(), Expression::Variable(other) if other == name));
+            if !is_increment && !is_chase {
                 return Ok(false);
             }
-            let is_increment = matches!(value, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
-                if matches!(left.as_ref(), Expression::Variable(other) if other == name)
-                    && matches!(right.as_ref(), Expression::IntegerLiteral(_)));
-            if !is_increment {
-                return Ok(false);
-            }
+            has_chase |= is_chase;
+        }
+        // A chase's condition must be the plain chased pointer (`while (p)`), tested once
+        // for null. A member/deref condition (`while (p->next)`) reloads the field and
+        // schedules differently — deferred rather than mis-emitted.
+        if has_chase && !matches!(condition, Expression::Variable(_)) {
+            return Ok(false);
         }
         // The loop's labels advance mwcc's anonymous-`@N` counter (4 for a while, 6 for a do-while).
         self.output.anonymous_label_bump = if matches!(kind, LoopKind::DoWhile) { 6 } else { 4 };
