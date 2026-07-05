@@ -287,46 +287,70 @@ impl Generator {
         {
             return Ok(false);
         }
-        // Return a single parameter, live across the call.
-        let Some(Expression::Variable(saved_name)) = function.return_expression.as_ref() else {
-            return Ok(false);
+        // Saved values live across the call: a single returned parameter, or two
+        // parameters combined by a low-latency op (`a+b`, `a-b`, `a&b`, …) — the same
+        // return-shape the straight-line callee-saved path allows for two saved values.
+        let saved_names: Vec<&String> = match function.return_expression.as_ref() {
+            Some(Expression::Variable(name)) => vec![name],
+            Some(Expression::Binary { operator, left, right })
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract
+                    | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor) =>
+            {
+                match (left.as_ref(), right.as_ref()) {
+                    (Expression::Variable(left_name), Expression::Variable(right_name)) if left_name != right_name => vec![left_name, right_name],
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
         };
-        if saved_name == cond_name {
-            return Ok(false);
+        // Each saved value is a distinct general parameter, none the condition operand;
+        // a call argument referencing one would keep it in its incoming register.
+        let mut promoted: Vec<(usize, String, u8)> = Vec::new();
+        for name in &saved_names {
+            if *name == cond_name {
+                return Ok(false);
+            }
+            let Some(index) = function.parameters.iter().position(|parameter| &parameter.name == *name) else {
+                return Ok(false);
+            };
+            let Some(location) = self.locations.get(*name) else { return Ok(false) };
+            if location.class != ValueClass::General {
+                return Ok(false);
+            }
+            promoted.push((index, (*name).clone(), location.register));
         }
-        if function.parameters.iter().position(|parameter| &parameter.name == saved_name).is_none() {
-            return Ok(false);
-        }
-        // A call argument that references the saved value would keep it in its
-        // incoming register past the save — not this shape.
         if then_body.iter().any(|statement| match statement {
-            Statement::Expression(Expression::Call { arguments, .. }) => arguments.iter().any(|argument| expression_reads_name(argument, saved_name)),
+            Statement::Expression(Expression::Call { arguments, .. }) => arguments
+                .iter()
+                .any(|argument| saved_names.iter().any(|name| expression_reads_name(argument, name))),
             _ => false,
         }) {
             return Ok(false);
         }
-        // Both the saved value and the condition must be general-class parameters.
-        let (Some(saved_location), Some(cond_location)) = (self.locations.get(saved_name), self.locations.get(cond_name)) else {
-            return Ok(false);
-        };
-        if saved_location.class != ValueClass::General || cond_location.class != ValueClass::General {
+        let Some(cond_location) = self.locations.get(cond_name) else { return Ok(false) };
+        if cond_location.class != ValueClass::General {
             return Ok(false);
         }
-        let saved_incoming = saved_location.register;
         let cond_register = cond_location.register;
+        // Highest register (r31) to the last parameter, descending toward the first.
+        promoted.sort_by_key(|(index, _, _)| *index);
+        let count = promoted.len();
 
         // -- emit --
         self.non_leaf = true;
-        self.frame_size = 16;
-        let home = self.fresh_virtual_general();
-        self.callee_saved = vec![home];
-        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
-        let mut prologue = plan.prologue_interleaved(&[saved_incoming]);
+        self.frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
+        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+        self.callee_saved = homes.clone();
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        let incoming_ordered: Vec<u8> = promoted.iter().rev().map(|(_, _, incoming)| *incoming).collect();
+        let mut prologue = plan.prologue_interleaved(&incoming_ordered);
         // mwcc fills the ready slot after `mflr` with the if-condition test.
         prologue.insert(2, Instruction::CompareWordImmediate { a: cond_register, immediate: cmp_constant });
         self.output.instructions.extend(prologue);
-        if let Some(location) = self.locations.get_mut(saved_name) {
-            location.register = home;
+        for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
+            if let Some(location) = self.locations.get_mut(name) {
+                location.register = homes[rank];
+            }
         }
         // Skip past the conditional call when the condition is false.
         let skip = self.fresh_label();
@@ -335,14 +359,16 @@ impl Generator {
             self.emit_statement(statement)?;
         }
         self.bind_label(skip);
-        // Epilogue at the join, in mwcc's order: the saved LR reloads FIRST (it can
-        // only sit after the merge, since the call is one-armed), then the return
-        // move, then the saved GPR, then `mtlr`/`addi`/`blr`. Emitted by hand — the
-        // LR-reload hoist can't cross the branch, so it leaves this alone.
+        // Epilogue at the join in mwcc's order: the saved LR reloads FIRST (it can only
+        // sit after the merge, since the call is one-armed), then the return move/compute,
+        // then the saved GPRs (highest first), then `mtlr`/`addi`/`blr`. Hand-emitted —
+        // the LR-reload hoist can't cross the branch.
         self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
         let result = Eabi::general_result().number;
         self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
-        self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 });
+        for (index, &home) in homes.iter().enumerate() {
+            self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 * (index as i16 + 1) });
+        }
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
