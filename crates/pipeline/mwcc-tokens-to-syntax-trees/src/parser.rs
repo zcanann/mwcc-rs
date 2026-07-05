@@ -115,6 +115,9 @@ pub(crate) struct Parser {
     pub(crate) weak_materialized: Vec<String>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
     pub(crate) weak_functions: std::collections::HashSet<String>,
+    /// A `__declspec(section "…")` seen on a function PROTOTYPE — mwcc applies it to
+    /// the later definition (pikmin's `DECL_SECT(".init")` sits on the memcpy proto).
+    pub(crate) section_functions: std::collections::HashMap<String, String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
     /// `#pragma cplusplus` state: declarations parsed under it mangle their

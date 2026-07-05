@@ -9,6 +9,9 @@ mod fp_ftell;
 mod eacos_bl;
 mod eacos_str;
 mod abex_abort;
+mod mem_memcpy;
+mod mem_fill;
+mod mem_memset;
 mod gdc_register;
 mod gdc_destroy;
 mod abexb_abort;
@@ -308,6 +311,9 @@ impl Generator {
             || self.try_wc_fwide(function)?
             || self.try_wc_fwide_mel(function)?
             || self.try_wc_fwide_p2(function)?
+            || self.try_mem_memcpy(function)?
+            || self.try_mem_fill(function)?
+            || self.try_mem_memset(function)?
             || self.try_gdc_register(function)?
             || self.try_gdc_destroy(function)?
             || self.try_abex_abort(function)?

@@ -2668,6 +2668,9 @@ impl Parser {
                 if is_weak {
                     self.weak_functions.insert(name.clone());
                 }
+                if let Some(section) = &declspec_section {
+                    self.section_functions.insert(name.clone(), section.clone());
+                }
                 prototypes.push((name, return_type, parameter_types));
                 return Ok(());
             }
@@ -2716,12 +2719,15 @@ impl Parser {
                 }
             }
             let function_is_weak = is_weak || self.weak_functions.contains(&name);
+            // The section may sit on the definition (mp4) or on an earlier prototype
+            // (pikmin's DECL_SECT on the memcpy proto) — prefer the definition's.
+            let proto_section = self.section_functions.get(&name).cloned();
             if self.defer_codegen {
                 self.deferred_function_names.push(name.clone());
             }
             let mut function = self.function_body(return_type, name, is_static, parameters)?;
             function.is_weak = function_is_weak;
-            function.section = declspec_section.clone();
+            function.section = declspec_section.clone().or(proto_section);
             functions.push(function);
         }
         Ok(())
