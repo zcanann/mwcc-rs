@@ -346,7 +346,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         // so keep dropping it. A `static const` ARRAY can't be folded into a register —
         // mwcc emits it to `.rodata` with a LOCAL symbol — so let it fall through to the
         // const-data path (which now binds it LOCAL via `global.is_static`).
-        if global.is_static && global.is_const && global.array_length.is_none() {
+        if global.is_static && global.is_const && global.array_length.is_none() && global.address_initializer.is_none() {
             let kept = machine_functions
                 .iter()
                 .any(|function| function.keep_named_const_scalars.iter().any(|name| name == &global.name));
@@ -361,10 +361,14 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         // just before the pointer that first uses it, deduplicated across the unit.
         if let Some(elements) = &global.address_initializer {
             use mwcc_syntax_trees::PointerElement;
-            // A `__declspec(section "…")` global (e.g. the `.dtors` destructor-chain
-            // reference) binds LOCAL in its explicit section — the section override
-            // handles placement, so the static/const restriction does not apply.
-            if (global.is_static || global.is_const) && global.section.is_none() {
+            // A `static const` pointer-to-symbol global (`static void* const p = &f;`,
+            // e.g. the runtime's global-destructor reference when __declspec is macro'd
+            // away) binds LOCAL in `.sdata2` with an ADDR32 — handled by the const/static
+            // routing below. A non-const, non-static writable pointer array is the
+            // original `.sdata` case. A section override handles its own placement.
+            let single_symbol = global.array_length.is_none()
+                && matches!(elements.as_slice(), [PointerElement::Symbol(_)]);
+            if (global.is_static || global.is_const) && global.section.is_none() && !single_symbol {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
             // A struct-table initializer (declared type is a struct) has one element
@@ -422,10 +426,13 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 size,
                 alignment: 4,
                 initial_bytes,
-                is_const: false,
-                // A section-attributed static (`.dtors`) binds LOCAL; a plain pointer
-                // global stays GLOBAL as before.
-                is_static: global.section.is_some() && global.is_static,
+                // A `static const` fn-pointer reference routes to `.sdata2` (read-only)
+                // as a LOCAL; the writable `int *p = &g;` case stays non-const in `.sdata`.
+                // A section override handles its own placement, so const is irrelevant there.
+                is_const: global.is_const && global.section.is_none(),
+                // A section-attributed static (`.dtors`) or a `static const` reference
+                // binds LOCAL; a plain writable pointer global stays GLOBAL as before.
+                is_static: global.is_static && (global.section.is_some() || global.is_const),
                 is_explicit_zero,
                 relocations,
                 section: global.section.clone(),

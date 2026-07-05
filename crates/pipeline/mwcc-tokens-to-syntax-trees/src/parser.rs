@@ -71,6 +71,10 @@ pub(crate) struct Parser {
     /// transparent on a parameter/local/return type, but on a file-scope global it
     /// changes the section (read-only) — so the global path defers when it is set.
     pub(crate) last_type_was_const: bool,
+    /// Set when a `const` TRAILS the pointer star (`void* const p`) — the POINTER
+    /// OBJECT is const (read-only), distinct from a leading `const void* p` where
+    /// only the pointee is const. The global path routes the former to `.sdata2`.
+    pub(crate) last_pointer_const: bool,
     /// Set by `skip_type_qualifiers` when the just-parsed type carried `volatile`.
     /// Layout and a simple access ignore it; a value-tracked local guards on it and
     /// defers (a volatile local's access must not be elided/folded).

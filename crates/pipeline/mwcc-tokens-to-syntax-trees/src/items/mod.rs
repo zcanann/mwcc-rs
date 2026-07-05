@@ -901,6 +901,7 @@ impl Parser {
 
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
+        self.last_pointer_const = false;
         // Leading qualifiers: `const`/`register` are transparent to codegen (`const`
         // is noted for the global path, which defers a read-only global); `volatile`
         // changes access semantics (memory accesses can't be elided), so defer it.
@@ -1117,9 +1118,14 @@ impl Parser {
         // `const` into `last_type_was_const` so the global path still sees it as read-only.
         self.consume_trailing_qualifiers();
         // A trailing `*` makes it a pointer to that scalar; a qualifier after the `*`
-        // is a const/volatile POINTER (`int *const p`), also transparent to codegen.
+        // is a const/volatile POINTER (`int *const p`). A `const` here makes the
+        // POINTER OBJECT read-only (routes a global to `.sdata2`), unlike a leading
+        // `const void*` (pointee-const) — tracked separately in `last_pointer_const`.
         if *self.peek() == Token::Star {
             self.advance();
+            if matches!(self.peek(), Token::Identifier(word) if word == "const") {
+                self.last_pointer_const = true;
+            }
             self.consume_trailing_qualifiers();
             // A SECOND `*` is a pointer-to-pointer (`char **end`): word-sized
             // element, inner pointee untracked (double derefs defer at codegen).
@@ -2439,6 +2445,7 @@ impl Parser {
                 // routes the supported shapes and defers the rest. `parse_type` set
                 // this for the declared type and nothing since has reset it.
                 let is_const = self.last_type_was_const;
+                let pointer_object_const = self.last_pointer_const;
                 // A struct-typed global (pointer, value, or array) carries the struct
                 // tag `parse_type` stashed, so `gp->field` / `g.field` / `arr[i].field`
                 // resolve the member layout. Codegen handles the struct-pointer base
@@ -2567,7 +2574,14 @@ impl Parser {
                     // POINTEE (`const char* dummy = "C"` is a WRITABLE pointer
                     // in `.sdata` — measured: locale) — the object itself is
                     // not const.
-                    let object_is_const = is_const && !matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. });
+                    // A pointer global is object-const only when the `const` TRAILS the
+                    // star (`void* const`); a leading `const void*` is pointee-const and
+                    // stays writable. A non-pointer keeps the plain leading-const rule.
+                    let object_is_const = if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                        pointer_object_const
+                    } else {
+                        is_const
+                    };
                     globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations), section: declspec_section.clone() });
                     if *self.peek() == Token::Comma {
                         self.advance();

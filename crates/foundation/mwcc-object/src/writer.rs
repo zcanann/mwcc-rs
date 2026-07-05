@@ -521,6 +521,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_dtors_relocs {
         order.push(".rela.dtors");
     }
+    // `.rela.sdata2` — a `static const` pointer-to-symbol global in the read-only pool
+    // carries an ADDR32 (the global-destructor reference when __declspec is macro'd off).
+    // `.sdata2` is the last data section, so its rela precedes only `.rela.mwcats`.
+    let has_sdata2_relocs = input.data_objects.iter().any(|object| section_of(object) == ".sdata2" && !object.relocations.is_empty());
+    if has_sdata2_relocs {
+        order.push(".rela.sdata2");
+    }
     if has_functions {
         order.push(&rela_mwcats_section);
     }
@@ -1099,6 +1106,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             write_rela(&mut rela_sdata, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
         }
     }
+    let mut rela_sdata2 = Vec::new();
+    for object in &input.data_objects {
+        if data_section[object.name] != ".sdata2" {
+            continue;
+        }
+        for relocation in object.relocations.iter().rev() {
+            write_rela(&mut rela_sdata2, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+        }
+    }
     for object in &input.data_objects {
         if data_section[object.name] != ".data" {
             continue;
@@ -1222,8 +1238,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata_relocs {
         push(".rela.sdata", SHT_RELA, 0, symtab_section, index_of(".sdata"), 4, 12, rela_sdata, 0);
     }
+    // Push order MUST match the `order` vector: `.rela.dtors` (early target) before
+    // `.rela.sdata2` (late target). They are mutually exclusive in practice, but keep
+    // the invariant so a future TU carrying both lays out correctly.
     if has_dtors_relocs {
         push(".rela.dtors", SHT_RELA, 0, symtab_section, index_of(".dtors"), 4, 12, rela_dtors, 0);
+    }
+    if has_sdata2_relocs {
+        push(".rela.sdata2", SHT_RELA, 0, symtab_section, index_of(".sdata2"), 4, 12, rela_sdata2, 0);
     }
     if has_functions {
         push(&rela_mwcats_section, SHT_RELA, 0, symtab_section, index_of(&mwcats_section), 4, 12, rela_mwcats, 0);
