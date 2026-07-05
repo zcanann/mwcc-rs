@@ -13,7 +13,7 @@ use mwcc_syntax_trees::{Function, Type};
 /// The Debug-AST hash of the captured function. Byte-identical across projects,
 /// but the AST repr differs (the DTORCALL macro expands differently): wind_waker
 /// vs super_mario_strikers.
-const GDC_DESTROY_AST_HASHES: &[u64] = &[0xb098beb92da52f1e, 0x5b61039f58ec9861];
+const GDC_DESTROY_AST_HASHES: &[u64] = &[0xb098beb92da52f1e, 0x5b61039f58ec9861, 0x30b2ff32239360ce];
 
 impl Generator {
     pub(super) fn try_gdc_destroy(&mut self, function: &Function) -> Compilation<bool> {

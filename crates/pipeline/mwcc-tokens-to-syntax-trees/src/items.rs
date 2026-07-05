@@ -3828,6 +3828,11 @@ impl Parser {
                 if self.last_type_was_volatile {
                     return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
                 }
+                // A struct/union-typed local carries its tag so `cur->next` resolves
+                // the layout — same as the function-top-level path. Nested-block
+                // declarations (a `DestructorChain* cur` inside a while) went
+                // unregistered before, so member access on them failed to type.
+                let struct_tag = self.last_struct_tag.take();
                 loop {
                     let mut declared_type = declared_type;
                     if self.eat_keyword(Token::Star) {
@@ -3856,6 +3861,9 @@ impl Parser {
                     // Register the type so `sizeof(s_h)` (fdlibm's __HI/__LO
                     // macros inside e_pow's inner block) resolves at parse time.
                     self.variable_types.insert(name.clone(), declared_type);
+                    if let Some(tag) = &struct_tag {
+                        self.variable_structs.insert(name.clone(), tag.clone());
+                    }
                     if self.eat_keyword(Token::Equals) {
                         let value = self.expression()?;
                         statements.push(Statement::Assign { name, value });
