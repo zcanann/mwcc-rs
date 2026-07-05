@@ -251,8 +251,35 @@ impl Generator {
         if !else_body.is_empty() {
             return Ok(false);
         }
-        // Condition = a plain parameter (implicit `!= 0` → `cmpwi ,0; beq`).
-        let Expression::Variable(cond_name) = condition else { return Ok(false) };
+        // Condition = a plain parameter (implicit `!= 0`), or `param CMP const` with a
+        // small signed constant. Yields the compared operand and the SKIP branch (the
+        // inverse of the taken condition — branch past the call when it is false).
+        // `cmpwi` is signed, so ordering comparisons require a signed `int` operand.
+        let (cond_name, cmp_constant, skip_bo, skip_bi): (&String, i16, u8, u8) = match condition {
+            Expression::Variable(name) => (name, 0, 12, 2), // if(x): cmpwi x,0; beq
+            Expression::Binary { operator, left, right } => {
+                let Expression::Variable(name) = left.as_ref() else { return Ok(false) };
+                let Some(constant) = constant_value(right) else { return Ok(false) };
+                let Ok(immediate) = i16::try_from(constant) else { return Ok(false) };
+                let ordering = matches!(operator,
+                    BinaryOperator::Less | BinaryOperator::LessEqual
+                    | BinaryOperator::Greater | BinaryOperator::GreaterEqual);
+                if ordering && function.parameters.iter().find(|parameter| &parameter.name == name).map(|parameter| parameter.parameter_type) != Some(Type::Int) {
+                    return Ok(false);
+                }
+                let (bo, bi) = match operator {
+                    BinaryOperator::Equal => (4, 2),         // bne (skip if !=)
+                    BinaryOperator::NotEqual => (12, 2),     // beq (skip if ==)
+                    BinaryOperator::Less => (4, 0),          // bge (skip if >=)
+                    BinaryOperator::LessEqual => (12, 1),    // bgt (skip if >)
+                    BinaryOperator::Greater => (4, 1),       // ble (skip if <=)
+                    BinaryOperator::GreaterEqual => (12, 0), // blt (skip if <)
+                    _ => return Ok(false),
+                };
+                (name, immediate, bo, bi)
+            }
+            _ => return Ok(false),
+        };
         // then-body = plain (void-result) calls only.
         if then_body.is_empty()
             || !then_body.iter().all(|statement| matches!(statement,
@@ -296,14 +323,14 @@ impl Generator {
         let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
         let mut prologue = plan.prologue_interleaved(&[saved_incoming]);
         // mwcc fills the ready slot after `mflr` with the if-condition test.
-        prologue.insert(2, Instruction::CompareWordImmediate { a: cond_register, immediate: 0 });
+        prologue.insert(2, Instruction::CompareWordImmediate { a: cond_register, immediate: cmp_constant });
         self.output.instructions.extend(prologue);
         if let Some(location) = self.locations.get_mut(saved_name) {
             location.register = home;
         }
-        // `beq` past the conditional call.
+        // Skip past the conditional call when the condition is false.
         let skip = self.fresh_label();
-        self.emit_branch_conditional_to(12, 2, skip);
+        self.emit_branch_conditional_to(skip_bo, skip_bi, skip);
         for statement in then_body {
             self.emit_statement(statement)?;
         }
