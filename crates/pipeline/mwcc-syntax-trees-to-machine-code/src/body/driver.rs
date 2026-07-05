@@ -940,6 +940,11 @@ impl Generator {
         let mut lr_store_index: Option<usize> = None;
         if function_makes_call(function) {
             if !function.guards.is_empty() {
+                // `if (b) return call(); return DEFAULT;` — a guarded early return
+                // whose value is a call (no callee-saved register needed).
+                if self.try_guarded_call_return(function)? {
+                    return Ok(());
+                }
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
             }
             // `*a = g(); *b = h();` — 2–4 output pointers saved in r31/r30/… across their calls.

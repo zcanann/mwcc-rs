@@ -229,6 +229,100 @@ impl Generator {
         Ok(true)
     }
 
+    /// Parse an if/guard condition mwcc HOISTS into the prologue as a single
+    /// `cmpwi operand, const`: a plain parameter (`if(x)` → implicit `!= 0`) or
+    /// `param CMP const` with a small signed constant. Returns the compared operand,
+    /// the `cmpwi` immediate, and the SKIP branch (the inverse of the taken condition
+    /// — branch past the guarded body when it is false). Ordering comparisons require
+    /// a signed `int` operand (`cmpwi` is signed); everything else yields `None`.
+    pub(crate) fn parse_hoisted_if_condition<'a>(&self, function: &Function, condition: &'a Expression) -> Option<(&'a String, i16, u8, u8)> {
+        match condition {
+            Expression::Variable(name) => Some((name, 0, 12, 2)), // if(x): cmpwi x,0; beq
+            Expression::Binary { operator, left, right } => {
+                let Expression::Variable(name) = left.as_ref() else { return None };
+                let immediate = i16::try_from(constant_value(right)?).ok()?;
+                let ordering = matches!(operator,
+                    BinaryOperator::Less | BinaryOperator::LessEqual
+                    | BinaryOperator::Greater | BinaryOperator::GreaterEqual);
+                if ordering && function.parameters.iter().find(|parameter| &parameter.name == name).map(|parameter| parameter.parameter_type) != Some(Type::Int) {
+                    return None;
+                }
+                let branch = match operator {
+                    BinaryOperator::Equal => (4, 2),         // bne (skip if !=)
+                    BinaryOperator::NotEqual => (12, 2),     // beq (skip if ==)
+                    BinaryOperator::Less => (4, 0),          // bge (skip if >=)
+                    BinaryOperator::LessEqual => (12, 1),    // bgt (skip if >)
+                    BinaryOperator::Greater => (4, 1),       // ble (skip if <=)
+                    BinaryOperator::GreaterEqual => (12, 0), // blt (skip if <)
+                    _ => return None,
+                };
+                Some((name, immediate, branch.0, branch.1))
+            }
+            _ => None,
+        }
+    }
+
+    /// `T f(…, int b, …) { if (b) return call(…); return DEFAULT; }` — an early
+    /// return whose value is a CALL, guarding a constant default. mwcc hoists the
+    /// condition test into the prologue (`cmpwi b,0` after `mflr`), branches to the
+    /// default arm, emits the call return on the taken arm, and both fall into a
+    /// shared LR-only epilogue (no callee-saved register — the call's result is
+    /// returned directly). Gated narrow: one guard with a call value and a constant
+    /// default, no other statements.
+    pub(crate) fn try_guarded_call_return(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.locals.is_empty() || !function.statements.is_empty() {
+            return Ok(false);
+        }
+        if matches!(function.return_type, Type::Float | Type::Double) || function.return_type == Type::Void {
+            return Ok(false);
+        }
+        let [guard] = function.guards.as_slice() else { return Ok(false) };
+        if !matches!(guard.value, Expression::Call { .. } | Expression::CallThrough { .. }) {
+            return Ok(false);
+        }
+        // The default (fall-through) return must be a constant — a parameter default
+        // could be clobbered by the guarded call and needs saving (a later shape).
+        let Some(default_return) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if constant_value(default_return).is_none() {
+            return Ok(false);
+        }
+        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) = self.parse_hoisted_if_condition(function, &guard.condition) else {
+            return Ok(false);
+        };
+        let Some(cond_location) = self.locations.get(cond_name) else { return Ok(false) };
+        if cond_location.class != ValueClass::General {
+            return Ok(false);
+        }
+        let cond_register = cond_location.register;
+
+        // -- emit -- prologue: stwu; mflr; [cmpwi hoisted]; stw r0 (LR only).
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: cond_register, immediate: cmp_constant });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        let else_label = self.fresh_label();
+        let join_label = self.fresh_label();
+        self.emit_branch_conditional_to(skip_bo, skip_bi, else_label);
+        let result = Eabi::general_result().number;
+        // Taken arm: the guard's call, its result in r3, then jump to the epilogue.
+        self.evaluate_tail(&guard.value, function.return_type, result)?;
+        self.emit_branch_to(join_label);
+        // Default arm: materialize the constant.
+        self.bind_label(else_label);
+        self.evaluate_tail(default_return, function.return_type, result)?;
+        self.bind_label(join_label);
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 2;
+        Ok(true)
+    }
+
     /// `T f(T a, int b, …) { if (b) call(…); return a; }` — a parameter live
     /// across a call that runs only on one arm of an `if`. mwcc saves `a` in
     /// r31, HOISTS the if-condition test into the prologue slot after `mflr`
@@ -251,34 +345,10 @@ impl Generator {
         if !else_body.is_empty() {
             return Ok(false);
         }
-        // Condition = a plain parameter (implicit `!= 0`), or `param CMP const` with a
-        // small signed constant. Yields the compared operand and the SKIP branch (the
-        // inverse of the taken condition — branch past the call when it is false).
-        // `cmpwi` is signed, so ordering comparisons require a signed `int` operand.
-        let (cond_name, cmp_constant, skip_bo, skip_bi): (&String, i16, u8, u8) = match condition {
-            Expression::Variable(name) => (name, 0, 12, 2), // if(x): cmpwi x,0; beq
-            Expression::Binary { operator, left, right } => {
-                let Expression::Variable(name) = left.as_ref() else { return Ok(false) };
-                let Some(constant) = constant_value(right) else { return Ok(false) };
-                let Ok(immediate) = i16::try_from(constant) else { return Ok(false) };
-                let ordering = matches!(operator,
-                    BinaryOperator::Less | BinaryOperator::LessEqual
-                    | BinaryOperator::Greater | BinaryOperator::GreaterEqual);
-                if ordering && function.parameters.iter().find(|parameter| &parameter.name == name).map(|parameter| parameter.parameter_type) != Some(Type::Int) {
-                    return Ok(false);
-                }
-                let (bo, bi) = match operator {
-                    BinaryOperator::Equal => (4, 2),         // bne (skip if !=)
-                    BinaryOperator::NotEqual => (12, 2),     // beq (skip if ==)
-                    BinaryOperator::Less => (4, 0),          // bge (skip if >=)
-                    BinaryOperator::LessEqual => (12, 1),    // bgt (skip if >)
-                    BinaryOperator::Greater => (4, 1),       // ble (skip if <=)
-                    BinaryOperator::GreaterEqual => (12, 0), // blt (skip if <)
-                    _ => return Ok(false),
-                };
-                (name, immediate, bo, bi)
-            }
-            _ => return Ok(false),
+        // The if-condition, hoisted into the prologue as `cmpwi operand, const` with an
+        // inverse skip branch (shared with the guarded-call-return shape).
+        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) = self.parse_hoisted_if_condition(function, condition) else {
+            return Ok(false);
         };
         // then-body = plain (void-result) calls only.
         if then_body.is_empty()
