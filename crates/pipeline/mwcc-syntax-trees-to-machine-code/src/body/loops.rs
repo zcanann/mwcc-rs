@@ -229,6 +229,81 @@ impl Generator {
         Ok(true)
     }
 
+    /// `T* f(T* p, …) { while (p) { if (p->field CMP x) return p; p = p->next; } return 0; }`
+    /// — a linked-list search. mwcc keeps the rotated chase loop and lowers the in-body
+    /// early return to a `bclr` (the searched pointer is already in r3, returned unmoved),
+    /// followed by the null default after the loop. Leaf; gated to the exact search shape.
+    pub(crate) fn try_list_search_loop(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::LoopKind;
+        if !function.guards.is_empty() || !self.frame_slots.is_empty() || !function.locals.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        if matches!(function.return_type, Type::Float | Type::Double) || function.return_type == Type::Void {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // A constant default return after the loop (`return 0;`).
+        let Some(default_return) = function.return_expression.as_ref() else { return Ok(false) };
+        if constant_value(default_return).is_none() {
+            return Ok(false);
+        }
+        // `while (p)` — the searched pointer, which must be the FIRST parameter so it sits
+        // in r3 and the in-body `return p` is a bare `bclr` (no move).
+        let Expression::Variable(loop_ptr) = condition else { return Ok(false) };
+        if function.parameters.first().map(|parameter| &parameter.name) != Some(loop_ptr) {
+            return Ok(false);
+        }
+        let Some(loop_register) = self.lookup_general(loop_ptr) else { return Ok(false) };
+        if loop_register != Eabi::general_result().number {
+            return Ok(false);
+        }
+        // Body = [ if (COND) return <p>; , <p> = <chase of p>; ] with an empty else.
+        let [Statement::If { condition: if_condition, then_body, else_body }, Statement::Assign { name: chase_name, value: chase_value }] = body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Return(Some(Expression::Variable(returned)))] = then_body.as_slice() else { return Ok(false) };
+        if returned != loop_ptr || chase_name != loop_ptr {
+            return Ok(false);
+        }
+        let is_chase = matches!(chase_value, Expression::Member { base, .. }
+                if matches!(base.as_ref(), Expression::Variable(other) if other == loop_ptr))
+            || matches!(chase_value, Expression::Dereference { pointer }
+                if matches!(pointer.as_ref(), Expression::Variable(other) if other == loop_ptr));
+        if !is_chase {
+            return Ok(false);
+        }
+
+        // -- emit: b test; body{ if-cond, bclr-if-true, chase }; test: cmplwi; bne body; default; blr --
+        self.output.anonymous_label_bump = 6; // while (4) + the inner if (2)
+        let skip = self.output.instructions.len();
+        self.output.instructions.push(Instruction::Branch { target: 0 });
+        let body_top = self.output.instructions.len();
+        // The in-body test returns (via bclr) when TRUE — invert emit_condition_test's SKIP branch.
+        let (skip_options, if_bit) = self.emit_condition_test(if_condition)?;
+        let return_options = if skip_options == 4 { 12 } else { 4 };
+        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: return_options, condition_bit: if_bit });
+        self.evaluate_general(chase_value, loop_register)?;
+        let condition_at = self.output.instructions.len();
+        if let Instruction::Branch { target } = &mut self.output.instructions[skip] {
+            *target = condition_at;
+        }
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let back = if options == 4 { 12 } else { 4 };
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: back, condition_bit, target: body_top });
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(default_return, function.return_type, result)?;
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// A `void` function whose body is a counting `for (i = 0; i < bound; i++)`
     /// loop with a parameter bound: mwcc puts the counter in r31 (callee-saved,
     /// initialised to 0) and the bound in r30, branches to the test, and runs

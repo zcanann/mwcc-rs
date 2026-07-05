@@ -523,6 +523,11 @@ impl Generator {
         if self.try_emit_increment_while(function)? {
             return Ok(());
         }
+        // `while (p) { if (…) return p; p = p->next; }` — a linked-list search: the
+        // rotated chase loop with an in-body early return (`bclr`).
+        if self.try_list_search_loop(function)? {
+            return Ok(());
+        }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
