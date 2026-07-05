@@ -123,6 +123,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Const objects are read-only (`.sdata2`/`.rodata`); writable ones split by the
     // 8-byte small-data threshold: small to `.sdata`/`.sbss`, large to `.data`/`.bss`.
     let section_of = |object: &DataObject| -> &'static str {
+        // An explicit `__declspec(section "…")` override wins over the default
+        // routing. Only the sections the writer knows how to emit are honored.
+        if let Some(section) = object.section {
+            return match section {
+                ".dtors" => ".dtors",
+                _ => ".data",
+            };
+        }
         if object.is_const {
             if object.size <= 8 { ".sdata2" } else { ".rodata" }
         } else if object.size <= 8 {
@@ -140,6 +148,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let has_const_sdata2 = input.data_objects.iter().any(|object| section_of(object) == ".sdata2");
     let has_file_data = input.data_objects.iter().any(|object| section_of(object) == ".data");
     let has_bss = input.data_objects.iter().any(|object| section_of(object) == ".bss");
+    let has_dtors = input.data_objects.iter().any(|object| section_of(object) == ".dtors");
 
     let mut data_section: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     let mut data_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
@@ -154,6 +163,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         data_aligns.insert(object.name, alignment);
         *cursor += object.size;
     };
+    // `.dtors` (a `__declspec(section ".dtors")` destructor-chain reference) sits
+    // right after `.text`, in forward declaration order — four zero bytes per
+    // entry, each patched by an `ADDR32` relocation to the destructor function.
+    let mut dtors_size = 0u32;
+    for object in input.data_objects.iter().filter(|object| section_of(object) == ".dtors") {
+        place(object, ".dtors", &mut dtors_size);
+    }
     // The const `.sdata2` globals occupy the FRONT of the constant pool (ahead of
     // any function float constants), in forward declaration order.
     let mut sdata2_global_size = 0u32;
@@ -228,6 +244,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut sdata = vec![0u8; sdata_size as usize];
     let mut rodata = vec![0u8; rodata_size as usize];
     let mut file_data = vec![0u8; file_data_size as usize];
+    let mut dtors = vec![0u8; dtors_size as usize];
     for object in &input.data_objects {
         if let Some(bytes) = &object.initial_bytes {
             let offset = data_offsets[object.name] as usize;
@@ -235,6 +252,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 ".sdata" => sdata[offset..offset + bytes.len()].copy_from_slice(bytes),
                 ".rodata" => rodata[offset..offset + bytes.len()].copy_from_slice(bytes),
                 ".data" => file_data[offset..offset + bytes.len()].copy_from_slice(bytes),
+                ".dtors" => dtors[offset..offset + bytes.len()].copy_from_slice(bytes),
                 _ => {}
             }
         }
@@ -444,6 +462,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         order.push("extab");
         order.push("extabindex");
     }
+    // `.dtors` (destructor-chain references) sits immediately after the text and
+    // unwind sections, ahead of the ordinary data sections.
+    if has_dtors {
+        order.push(".dtors");
+    }
     // Read-only const data (`.rodata`) then large writable data (`.data`/`.bss`)
     // precede the small-data sections, which in turn precede the `.sdata2` pool.
     if has_rodata {
@@ -483,6 +506,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata_relocs {
         order.push(".rela.sdata");
     }
+    // `.rela.dtors` follows its target section's position — after `.rela.text`
+    // and the data relas, before `.rela.mwcats.text` (measured order).
+    let has_dtors_relocs = input.data_objects.iter().any(|object| section_of(object) == ".dtors" && !object.relocations.is_empty());
+    if has_dtors_relocs {
+        order.push(".rela.dtors");
+    }
     if has_functions {
         order.push(".rela.mwcats.text");
     }
@@ -498,7 +527,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".rodata", ".data", ".bss", ".sdata", ".sbss", ".sdata2", ".mwcats.text"]
+    let content_sections: Vec<&str> = [".text", "extab", "extabindex", ".dtors", ".rodata", ".data", ".bss", ".sdata", ".sbss", ".sdata2", ".mwcats.text"]
         .into_iter()
         .filter(|name| order.contains(name))
         .collect();
@@ -1069,6 +1098,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             write_rela(&mut rela_data, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
         }
     }
+    // `.rela.dtors`: each destructor-chain reference's `ADDR32` to its function.
+    let mut rela_dtors = Vec::new();
+    for object in &input.data_objects {
+        if data_section[object.name] != ".dtors" {
+            continue;
+        }
+        for relocation in object.relocations.iter().rev() {
+            write_rela(&mut rela_dtors, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+        }
+    }
 
     // 4. Content payloads. One `.mwcats` record per function: `(0x02000000 | its
     //    text size, &function)`. The unwind header is a deterministic function of
@@ -1126,6 +1165,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
         push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex, 0);
     }
+    // `.dtors`: PROGBITS, ALLOC (read-only), 4-aligned — the destructor-chain
+    // reference words (the `ADDR32` relocations live in `.rela.dtors`).
+    if has_dtors {
+        push(".dtors", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, dtors, 0);
+    }
     // `.rodata` (read-only const data) then the large writable `.data`/`.bss`
     // precede the small-data sections, matching the section-name order above.
     if has_rodata {
@@ -1168,6 +1212,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     if has_sdata_relocs {
         push(".rela.sdata", SHT_RELA, 0, symtab_section, index_of(".sdata"), 4, 12, rela_sdata, 0);
+    }
+    if has_dtors_relocs {
+        push(".rela.dtors", SHT_RELA, 0, symtab_section, index_of(".dtors"), 4, 12, rela_dtors, 0);
     }
     if has_functions {
         push(".rela.mwcats.text", SHT_RELA, 0, symtab_section, index_of(".mwcats.text"), 4, 12, rela_mwcats, 0);

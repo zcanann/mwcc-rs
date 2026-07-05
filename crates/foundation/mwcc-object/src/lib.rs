@@ -74,6 +74,10 @@ pub struct DataObject<'a> {
     /// Signed shift a static local's `$N` takes off the owner's base counter
     /// (declaration-position part of the unit's inline pre-bump).
     pub anonymous_adjust: i64,
+    /// An explicit output section from `__declspec(section "…")` — overrides the
+    /// default section routing (e.g. `.dtors` for a global-destructor reference).
+    /// `None` uses the size/const/zero rules.
+    pub section: Option<&'a str>,
 }
 
 /// An `R_PPC_ADDR32` relocation inside a data object: 4 bytes at `offset` resolve

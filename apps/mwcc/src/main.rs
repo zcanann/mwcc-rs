@@ -276,6 +276,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 is_static: true,
                 is_explicit_zero: false,
                 relocations: Vec::new(),
+                section: None,
             });
         }
     }
@@ -360,7 +361,10 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         // just before the pointer that first uses it, deduplicated across the unit.
         if let Some(elements) = &global.address_initializer {
             use mwcc_syntax_trees::PointerElement;
-            if global.is_static || global.is_const {
+            // A `__declspec(section "…")` global (e.g. the `.dtors` destructor-chain
+            // reference) binds LOCAL in its explicit section — the section override
+            // handles placement, so the static/const restriction does not apply.
+            if (global.is_static || global.is_const) && global.section.is_none() {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
             // A struct-table initializer (declared type is a struct) has one element
@@ -391,7 +395,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                             string_pool.insert(string_bytes.clone(), name.clone());
                             let mut object_bytes = string_bytes.clone();
                             object_bytes.push(0);
-                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
+                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
                                 name: name.clone(),
                                 size: object_bytes.len() as u32,
                                 alignment: 4,
@@ -419,9 +423,12 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 alignment: 4,
                 initial_bytes,
                 is_const: false,
-                is_static: false,
+                // A section-attributed static (`.dtors`) binds LOCAL; a plain pointer
+                // global stays GLOBAL as before.
+                is_static: global.section.is_some() && global.is_static,
                 is_explicit_zero,
                 relocations,
+                section: global.section.clone(),
             });
             continue;
         }
@@ -462,7 +469,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // A const struct value/array carries its pre-serialized field bytes
             // directly into the read-only section.
             if let Some(bytes) = &global.data_bytes {
-                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+                defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                     name: global.name.clone(),
                     size,
                     alignment,
@@ -487,7 +494,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 .as_ref()
                 .ok_or_else(|| Diagnostic::error("an uninitialized const global is not supported yet (roadmap)"))?;
             let initial_bytes = serialize(values, element_size, size);
-            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
                 name: global.name.clone(),
                 size,
                 alignment,
@@ -531,7 +538,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             Some(_) => (None, true),
             None => (None, false),
         };
-        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
+        defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: global.is_weak, non_static_functions_before: global.non_static_functions_before,
             name: global.name.clone(),
             size,
             alignment,
@@ -556,7 +563,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                                 string_pool.insert(string_bytes.clone(), name.clone());
                                 let mut object_bytes = string_bytes.clone();
                                 object_bytes.push(0);
-                                pooled_string_globals.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
+                                pooled_string_globals.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
                                     name: name.clone(),
                                     size: object_bytes.len() as u32,
                                     alignment: 4,
@@ -618,7 +625,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 string_pool.insert(bytes.clone(), name.clone());
                 let mut object_bytes = bytes.clone();
                 object_bytes.push(0);
-                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
+                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0,
                     name: name.clone(),
                     size: object_bytes.len() as u32,
                     alignment: 4,
