@@ -1,4 +1,11 @@
-//! Parsing of types, functions, parameters, locals, and guarded returns.
+//! Top-level item parsing: declarations, types, struct/enum/union bodies,
+//! constant + data initializers, inline handling, and the translation unit.
+//! Statement parsing lives in `statements`.
+//!
+//! Split from the former single items.rs (fire 536); behavior-identical.
+
+mod statements;
+
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
@@ -78,7 +85,7 @@ fn type_alignment(declared: Type) -> u16 {
 
 /// Whether an expression tree contains a call to any of `names`
 /// (the inline-materialization and skipped-inline checks share this walk).
-    fn expression_calls(expression: &Expression, names: &std::collections::HashSet<String>) -> bool {
+    pub(crate) fn expression_calls(expression: &Expression, names: &std::collections::HashSet<String>) -> bool {
         match expression {
             Expression::Call { name, arguments } => {
                 names.contains(name) || arguments.iter().any(|argument| expression_calls(argument, names))
@@ -105,7 +112,7 @@ fn type_alignment(declared: Type) -> u16 {
             _ => false,
         }
     }
-    fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
+    pub(crate) fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
         match statement {
             Statement::Store { target, value } => {
                 expression_calls(target, names) || expression_calls(value, names)
@@ -150,7 +157,7 @@ fn type_alignment(declared: Type) -> u16 {
 impl Parser {
     /// Consume an identifier token if it matches `word` (used for the `long` and
     /// `signed`/`unsigned` specifier words that aren't dedicated keywords).
-    fn eat_word(&mut self, word: &str) -> bool {
+    pub(crate) fn eat_word(&mut self, word: &str) -> bool {
         if matches!(self.peek(), Token::Identifier(found) if found == word) {
             self.advance();
             true
@@ -160,7 +167,7 @@ impl Parser {
     }
 
     /// Consume `token` if it is next; report whether it was.
-    fn eat_keyword(&mut self, token: Token) -> bool {
+    pub(crate) fn eat_keyword(&mut self, token: Token) -> bool {
         if *self.peek() == token {
             self.advance();
             true
@@ -172,7 +179,7 @@ impl Parser {
     /// Parse a single integer constant: an integer literal, optionally negated.
     /// Parse an enum body `{ NAME [= value], … }` (cursor at the `{`), registering
     /// each enumerator's value (auto-incrementing from 0, or an explicit constant).
-    fn parse_enum_body(&mut self) -> Compilation<()> {
+    pub(crate) fn parse_enum_body(&mut self) -> Compilation<()> {
         self.expect(Token::BraceOpen)?;
         let mut next = 0i64;
         while *self.peek() != Token::BraceClose {
@@ -192,7 +199,7 @@ impl Parser {
 
     /// Evaluate a constant enumerator expression — integer/char literals, prior
     /// enumerators, parentheses, and left-to-right `+ - * & | ^ << >>`.
-    fn parse_enum_value(&mut self) -> Compilation<i64> {
+    pub(crate) fn parse_enum_value(&mut self) -> Compilation<i64> {
         let mut value = self.parse_enum_primary()?;
         loop {
             value = match self.peek() {
@@ -210,7 +217,7 @@ impl Parser {
         Ok(value)
     }
 
-    fn parse_enum_primary(&mut self) -> Compilation<i64> {
+    pub(crate) fn parse_enum_primary(&mut self) -> Compilation<i64> {
         let negative = self.eat_keyword(Token::Minus);
         let value = match self.advance() {
             Token::IntegerLiteral(value) => value,
@@ -231,7 +238,7 @@ impl Parser {
     /// A constant integer in statement position — a `switch` case label. Parsed as a
     /// full constant expression so an enum constant (`case GX_MODULATE:`) or a folded
     /// expression (`case A | B:`) resolves, not just a bare integer literal.
-    fn parse_integer_constant(&mut self) -> Compilation<i64> {
+    pub(crate) fn parse_integer_constant(&mut self) -> Compilation<i64> {
         let expression = self.expression()?;
         crate::expressions::fold_constant_expression(&expression)
     }
@@ -239,7 +246,7 @@ impl Parser {
     /// Parse `switch (scrutinee) { case <int>: return E; ... default: return E; }`.
     /// The subset requires every arm to be a single `return`; fall-through, blocks,
     /// and non-constant case labels are not supported yet.
-    fn parse_switch(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
+    pub(crate) fn parse_switch(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
         self.eat_word("switch");
         self.expect(Token::ParenOpen)?;
         let scrutinee = self.expression()?;
@@ -290,7 +297,7 @@ impl Parser {
     /// dead trailing `break;`s), or a braced STATEMENT body ending at its
     /// `break;` — represented faithfully (mwcc branches these; a ternary
     /// lowering is byte-different).
-    fn parse_switch_arm_body(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<(mwcc_syntax_trees::ArmBody, bool)> {
+    pub(crate) fn parse_switch_arm_body(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<(mwcc_syntax_trees::ArmBody, bool)> {
         use mwcc_syntax_trees::ArmBody;
         let braced = self.eat_keyword(Token::BraceOpen);
         if *self.peek() == Token::KeywordReturn {
@@ -369,7 +376,7 @@ impl Parser {
     /// A pointer global's initializer: a single address (`int *p = &g;`) or a brace
     /// list of them (`int *t[] = {&a, &b};`), each element a target symbol, string,
     /// or null.
-    fn parse_address_initializer(&mut self) -> Compilation<Vec<PointerElement>> {
+    pub(crate) fn parse_address_initializer(&mut self) -> Compilation<Vec<PointerElement>> {
         if self.eat_keyword(Token::BraceOpen) {
             let mut elements = Vec::new();
             while *self.peek() != Token::BraceClose {
@@ -390,7 +397,7 @@ impl Parser {
     /// shape of a `{ "name", id }` string-table entry. Returns `None` otherwise, so
     /// the caller falls through to the scalar/defer paths (sub-word or 8-byte fields
     /// break the flat 4-byte-slot model).
-    fn struct_pointer_table_fields(&self, tag: &str) -> Option<Vec<Type>> {
+    pub(crate) fn struct_pointer_table_fields(&self, tag: &str) -> Option<Vec<Type>> {
         let layout = self.structs.get(tag)?;
         let mut fields: Vec<&crate::parser::StructField> = layout.fields.values().collect();
         fields.sort_by_key(|field| field.offset);
@@ -404,7 +411,7 @@ impl Parser {
     /// element's fields are flattened, in order, to a `PointerElement` sequence — a
     /// pointer field to `Str`/`Symbol`/`Null`, a scalar field to `Scalar`. The shape
     /// of a `{ "path", id }` overlay/string table.
-    fn parse_struct_pointer_table(&mut self, field_types: &[Type]) -> Compilation<Vec<PointerElement>> {
+    pub(crate) fn parse_struct_pointer_table(&mut self, field_types: &[Type]) -> Compilation<Vec<PointerElement>> {
         self.expect(Token::BraceOpen)?;
         let mut elements = Vec::new();
         while *self.peek() != Token::BraceClose {
@@ -442,7 +449,7 @@ impl Parser {
     /// (pooled), `&name` or a bare `name` (a function pointer) is that symbol; `0` is
     /// a null pointer. `&a[i]`, `&s.f`, casts, and arithmetic defer (they need an
     /// addend not yet modeled).
-    fn parse_pointer_init_element(&mut self) -> Compilation<PointerElement> {
+    pub(crate) fn parse_pointer_init_element(&mut self) -> Compilation<PointerElement> {
         // A cast is transparent for an address: `(SomeType *)&x` is just `&x`. Skip
         // the parenthesised type and parse the operand after it.
         if *self.peek() == Token::ParenOpen && self.token_starts_type(self.peek_at(1)) {
@@ -499,7 +506,7 @@ impl Parser {
         Err(Diagnostic::error("a pointer global initializer must be a string, &symbol, a symbol, or 0 (roadmap)"))
     }
 
-    fn parse_constant_initializer(&mut self, element_type: Type) -> Compilation<Vec<i64>> {
+    pub(crate) fn parse_constant_initializer(&mut self, element_type: Type) -> Compilation<Vec<i64>> {
         // A string literal initializes a `char` array with its bytes plus a NUL
         // terminator (the store truncates if the array is shorter). A string for a
         // non-char type is a char-pointer initializer that needs a data relocation —
@@ -539,7 +546,7 @@ impl Parser {
     /// *expression* (`((dir)+(file))`, `1 << 3`, `(u8)0xFF`), folded to its value;
     /// the store later truncates to the element width. A `float`/`double` element
     /// is a single literal (or integer, converted) as its IEEE-754 bit pattern.
-    fn parse_scalar_constant(&mut self, element_type: Type) -> Compilation<i64> {
+    pub(crate) fn parse_scalar_constant(&mut self, element_type: Type) -> Compilation<i64> {
         match element_type {
             Type::Float | Type::Double => {
                 // A float/double initializer is a constant EXPRESSION evaluated in double
@@ -563,7 +570,7 @@ impl Parser {
     /// a nested struct field recurses. Every field must be word-width (4 bytes) so the
     /// flat value list lays out contiguously with no padding — a sub-word/`double`
     /// field, or an array field, defers (those need a width-aware data emitter).
-    fn parse_one_struct(&mut self, tag: &str) -> Compilation<Vec<u8>> {
+    pub(crate) fn parse_one_struct(&mut self, tag: &str) -> Compilation<Vec<u8>> {
         let mut relocations = Vec::new();
         let bytes = self.parse_one_struct_relocated(tag, 0, &mut relocations)?;
         if !relocations.is_empty() {
@@ -578,7 +585,7 @@ impl Parser {
     /// `(object offset, target, addend)` relocations. Values map to fields with
     /// C89 FLAT DESCENT: an unbraced nested struct/array consumes values for its
     /// own members from the same list; bit-fields pack into their storage units.
-    fn parse_one_struct_relocated(&mut self, tag: &str, base_offset: u32, relocations: &mut Vec<(u32, String, i32)>) -> Compilation<Vec<u8>> {
+    pub(crate) fn parse_one_struct_relocated(&mut self, tag: &str, base_offset: u32, relocations: &mut Vec<(u32, String, i32)>) -> Compilation<Vec<u8>> {
         let struct_size = {
             let layout = self.structs.get(tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
             layout.size
@@ -594,7 +601,7 @@ impl Parser {
     /// The declaration-ordered field list for `tag`: (offset, type, nested tag,
     /// element pointee, total array bytes, bit-field). Bit-fields sharing a
     /// storage unit order by their bit offset.
-    fn ordered_struct_fields(&self, tag: &str) -> Compilation<Vec<(u16, Type, Option<String>, Option<Pointee>, Option<u16>, Option<(u8, u8)>)>> {
+    pub(crate) fn ordered_struct_fields(&self, tag: &str) -> Compilation<Vec<(u16, Type, Option<String>, Option<Pointee>, Option<u16>, Option<(u8, u8)>)>> {
         let layout = self.structs.get(tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
         let mut ordered: Vec<_> = layout
             .fields
@@ -610,7 +617,7 @@ impl Parser {
     /// zero). Consumes one trailing comma after each value; consumes NO braces
     /// itself (the caller owns the enclosing pair; a BRACED sub-aggregate is
     /// detected per field).
-    fn fill_struct_fields(&mut self, tag: &str, image: &mut [u8], struct_base: usize, absolute_base: u32, relocations: &mut Vec<(u32, String, i32)>) -> Compilation<()> {
+    pub(crate) fn fill_struct_fields(&mut self, tag: &str, image: &mut [u8], struct_base: usize, absolute_base: u32, relocations: &mut Vec<(u32, String, i32)>) -> Compilation<()> {
         let fields = self.ordered_struct_fields(tag)?;
         for (offset, member_type, nested_tag, array_element, array_bytes, bit_field) in fields {
             if *self.peek() == Token::BraceClose {
@@ -703,7 +710,7 @@ impl Parser {
     /// into a struct-array global (`(char*)&((&__files[0]))->field` — measured:
     /// ansi_files' self-referential FILE table). Returns `None` (cursor
     /// unmoved) when the element is an ordinary constant expression.
-    fn parse_address_element(&mut self, tag: &str) -> Compilation<Option<(String, i32)>> {
+    pub(crate) fn parse_address_element(&mut self, tag: &str) -> Compilation<Option<(String, i32)>> {
         let start = self.position;
         // optional cast(s): `(char*)`, `(void*)` ... skip `( type * )` groups.
         loop {
@@ -868,7 +875,7 @@ impl Parser {
     /// Parse a `{ s0, s1, ... }` array of struct values for the layout `tag`, each
     /// element parsed by [`Self::parse_one_struct`] and concatenated (the array stride
     /// is the struct size, which each element's image already fills).
-    fn parse_struct_array_initializer(&mut self, tag: &str, relocations: &mut Vec<(u32, String, i32)>) -> Compilation<Vec<u8>> {
+    pub(crate) fn parse_struct_array_initializer(&mut self, tag: &str, relocations: &mut Vec<(u32, String, i32)>) -> Compilation<Vec<u8>> {
         self.expect(Token::BraceOpen)?;
         let mut bytes = Vec::new();
         while *self.peek() != Token::BraceClose {
@@ -885,7 +892,7 @@ impl Parser {
     /// The struct-value [`Type`] for a known struct layout (size + alignment), or
     /// `None` for an opaque/undeclared struct (whose value cannot be laid out).
     /// Drives `struct S v;` value support.
-    fn struct_value_type(&self, tag: &str) -> Option<Type> {
+    pub(crate) fn struct_value_type(&self, tag: &str) -> Option<Type> {
         self.structs
             .get(tag)
             .filter(|layout| layout.size > 0)
@@ -1740,7 +1747,7 @@ impl Parser {
     /// Try to parse the inline definition at the cursor as
     /// `inline T name(T a, ...) { return expr; }` and record its body for
     /// call-site substitution. Restores the cursor either way.
-    fn try_record_inline_body(&mut self) {
+    pub(crate) fn try_record_inline_body(&mut self) {
         let saved = self.position;
         let recorded = (|| -> Option<(String, Vec<String>, Expression)> {
             while matches!(self.peek(), Token::Identifier(word) if word == "static" || word == "inline" || word == "__inline") {
@@ -1802,7 +1809,7 @@ impl Parser {
 
     /// The name of the (inline) function definition at the cursor: the last
     /// identifier before the parameter list's `(`.
-    fn skipped_function_name(&self) -> Option<String> {
+    pub(crate) fn skipped_function_name(&self) -> Option<String> {
         let mut index = self.position;
         let mut name: Option<String> = None;
         while let Some(token) = self.tokens.get(index) {
@@ -1824,7 +1831,7 @@ impl Parser {
     /// A braced aggregate initializer: `{ e, e, { ... }, "s" }` — elements are
     /// expressions, nested braces recurse. Parsed for AST fidelity; codegen
     /// defers on aggregate-initialized locals unless a capture claims the fn.
-    fn aggregate_literal(&mut self) -> Compilation<Expression> {
+    pub(crate) fn aggregate_literal(&mut self) -> Compilation<Expression> {
         self.expect(Token::BraceOpen)?;
         let mut elements = Vec::new();
         while *self.peek() != Token::BraceClose {
@@ -1841,7 +1848,7 @@ impl Parser {
         Ok(Expression::AggregateLiteral(elements))
     }
 
-    fn inline_asm_function_name(&self) -> Option<String> {
+    pub(crate) fn inline_asm_function_name(&self) -> Option<String> {
         let mut index = self.position;
         let mut is_inline = false;
         let mut is_static = false;
@@ -1918,7 +1925,7 @@ impl Parser {
     /// Parse the skipped inline definition's `static` locals: the function
     /// name, whether the inline itself is `static`, and each local's type,
     /// const-ness, and byte image (`None` bytes = zero-initialized .sbss).
-    fn parse_skipped_inline_statics(&self) -> Compilation<(String, bool, Vec<SkippedStaticLocal>)> {
+    pub(crate) fn parse_skipped_inline_statics(&self) -> Compilation<(String, bool, Vec<SkippedStaticLocal>)> {
         let mut index = self.position;
         let mut is_static_inline = false;
         let mut name = String::new();
@@ -2061,7 +2068,7 @@ impl Parser {
         Ok((name, is_static_inline, statics))
     }
 
-    fn inline_function_has_static_local(&self) -> bool {
+    pub(crate) fn inline_function_has_static_local(&self) -> bool {
         let mut index = self.position;
         let mut is_inline = false;
         // Signature up to the first `(`: note `inline` (an `extern`/`static` qualifier
@@ -2125,7 +2132,7 @@ impl Parser {
     /// prototype, or function definition — recording it into the unit. Returns `Err`
     /// for any form outside the subset; the caller skips a failed declaration or
     /// propagates a failed function definition.
-    fn parse_top_level_item(
+    pub(crate) fn parse_top_level_item(
         &mut self,
         globals: &mut Vec<GlobalDeclaration>,
         functions: &mut Vec<Function>,
@@ -2739,7 +2746,7 @@ impl Parser {
     /// the subset, skipping it would leave an incomplete object (a silent
     /// whole-object DIFF), so it must instead DEFER the unit like a function we
     /// cannot compile. Pure lookahead — consumes nothing.
-    fn item_is_initialized_definition(&self) -> bool {
+    pub(crate) fn item_is_initialized_definition(&self) -> bool {
         let mut index = self.position;
         let (mut brace, mut paren, mut bracket) = (0i32, 0i32, 0i32);
         while let Some(token) = self.tokens.get(index) {
@@ -2773,7 +2780,7 @@ impl Parser {
     /// (e.g. `int **g;`, whose `int **` type the scalar-only `Pointee` cannot represent). mwcc emits
     /// a `.bss`/`.sbss`/`.comm` symbol for such a tentative definition, so SKIPPING it on a parse
     /// failure would drop the symbol — a silent whole-object DIFF. Defer instead. Pure lookahead.
-    fn item_is_uninitialized_definition(&self) -> bool {
+    pub(crate) fn item_is_uninitialized_definition(&self) -> bool {
         // Must start with a scalar type keyword: a struct/union/enum, a typedef alias, or an
         // `extern`-led declaration emits no tentative data symbol, so those stay skippable.
         if !matches!(
@@ -2811,7 +2818,7 @@ impl Parser {
     /// adds 2; `else`/`switch`/`case`/`default`/`||`/`&&` add 1; `while` adds
     /// 4, `for` 5; a ternary adds 0. Unmeasured control constructs (`do`,
     /// `goto`) return an Err so the unit defers rather than mis-bump.
-    fn skipped_inline_label_bump(&self) -> Compilation<Option<usize>> {
+    pub(crate) fn skipped_inline_label_bump(&self) -> Compilation<Option<usize>> {
         let mut index = self.position;
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
@@ -2898,7 +2905,7 @@ impl Parser {
         Ok(None)
     }
 
-    fn item_is_function_definition(&self) -> bool {
+    pub(crate) fn item_is_function_definition(&self) -> bool {
         let mut index = self.position;
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
@@ -2939,7 +2946,7 @@ impl Parser {
     /// typedef's name sits inside parens, so it is left alone. This lets function
     /// bodies that use the type as a pointer (`FILE *fp`, `OSThread *t`) parse
     /// instead of failing the whole translation unit on an "unknown type".
-    fn capture_skipped_typedef(&mut self) {
+    pub(crate) fn capture_skipped_typedef(&mut self) {
         if !matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if word == "typedef") {
             return;
         }
@@ -2974,7 +2981,7 @@ impl Parser {
         }
     }
 
-    fn skip_top_level_declaration(&mut self) {
+    pub(crate) fn skip_top_level_declaration(&mut self) {
         let mut brace_depth = 0i32;
         loop {
             match self.advance() {
@@ -3000,7 +3007,7 @@ impl Parser {
     /// guards, and an optional final `return <expression>;`.
     /// Whether the `{` at the cursor closes immediately before the function's
     /// own closing brace — i.e. it wraps the WHOLE remaining body.
-    fn brace_wraps_whole_body(&self) -> bool {
+    pub(crate) fn brace_wraps_whole_body(&self) -> bool {
         let mut index = self.position;
         let mut depth = 0i32;
         while let Some(token) = self.tokens.get(index) {
@@ -3020,7 +3027,7 @@ impl Parser {
         false
     }
 
-    fn function_body(&mut self, return_type: Type, name: String, is_static: bool, parameters: Vec<Parameter>) -> Compilation<Function> {
+    pub(crate) fn function_body(&mut self, return_type: Type, name: String, is_static: bool, parameters: Vec<Parameter>) -> Compilation<Function> {
         self.expect(Token::BraceOpen)?;
         // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro
         // artifact — the MSL ctype shape) is transparent: consume the inner
@@ -3505,391 +3512,6 @@ impl Parser {
     }
 }
 
-impl Parser {
-    /// Parse one simple (non-control-flow) statement: a `switch`, an increment,
-    /// an assignment / compound assignment / memory store, or a bare expression.
-    /// Whether the `return` at the cursor is the function's TRAILING return:
-    /// its statement-ending `;` is directly followed by the closing `}`. A
-    /// return expression never contains a semicolon, so the first `;` ahead
-    /// ends the statement.
-    fn return_is_terminal(&self) -> bool {
-        let mut offset = 1;
-        loop {
-            match self.peek_at(offset) {
-                Token::Semicolon => break,
-                Token::EndOfFile => return true,
-                _ => offset += 1,
-            }
-        }
-        // Stray `;;` after the return still ends the body — skip empties.
-        let mut offset = offset + 1;
-        while *self.peek_at(offset) == Token::Semicolon {
-            offset += 1;
-        }
-        *self.peek_at(offset) == Token::BraceClose
-    }
-
-    /// A jump statement or label in statement position: `break;`, `continue;`,
-    /// `goto name;`, or `name:` (an identifier directly followed by a colon —
-    /// never a valid expression statement, so the lookahead is unambiguous).
-    /// Returns None when the next tokens are none of these.
-    fn parse_jump_statement(&mut self) -> Compilation<Option<Statement>> {
-        let Token::Identifier(word) = self.peek() else {
-            return Ok(None);
-        };
-        match word.as_str() {
-            "break" => {
-                self.advance();
-                self.expect(Token::Semicolon)?;
-                Ok(Some(Statement::Break))
-            }
-            "continue" => {
-                self.advance();
-                self.expect(Token::Semicolon)?;
-                Ok(Some(Statement::Continue))
-            }
-            "goto" => {
-                self.advance();
-                let name = self.parse_identifier()?;
-                self.expect(Token::Semicolon)?;
-                Ok(Some(Statement::Goto(name)))
-            }
-            _ if *self.peek_at(1) == Token::Colon => {
-                let name = self.parse_identifier()?;
-                self.advance(); // the colon
-                Ok(Some(Statement::Label(name)))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn parse_simple_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
-        if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
-            return self.parse_switch(local_names, block_locals);
-        }
-        let first = self.factor()?;
-        // Prefix `++`/`--` desugars to `target = target ± 1` in factor; the
-        // POSTFIX form arrives as PostStep and lowers here, where the value
-        // is discarded (the two forms coincide only in that case).
-        let first = lower_discarded_post_step(first);
-        if let Expression::Assign { target, value } = first {
-            self.expect(Token::Semicolon)?;
-            return Ok(store_or_assign(*target, *value, local_names));
-        }
-        if let Some(operator) = self.peek_compound_assignment() {
-            self.advance();
-            self.advance();
-            let rhs = self.expression()?;
-            self.expect(Token::Semicolon)?;
-            let value = Expression::Binary { operator, left: Box::new(first.clone()), right: Box::new(rhs) };
-            Ok(store_or_assign(first, value, local_names))
-        } else if *self.peek() == Token::Equals {
-            self.advance();
-            let value = self.expression()?;
-            self.expect(Token::Semicolon)?;
-            Ok(store_or_assign(first, value, local_names))
-        } else if *self.peek() == Token::Semicolon {
-            self.advance();
-            Ok(Statement::Expression(first))
-        } else {
-            // A discarded BINARY expression statement (`t & w;` — dead code in
-            // MSL string.c): parse the full expression for a faithful AST; the
-            // pure discarded form has no lowering yet, so codegen defers.
-            let expression = self.binary_expression_from(first, 1)?;
-            self.expect(Token::Semicolon)?;
-            Ok(Statement::Expression(expression))
-        }
-    }
-
-    /// At a `KeywordIf`, whether it is a conditional block/statement (body is a
-    /// `{ ... }` block or a non-`return` statement) rather than a guard
-    /// (`if (c) return …`). Scans the balanced condition parentheses.
-    fn block_if_ahead(&self) -> bool {
-        if *self.peek_at(1) != Token::ParenOpen {
-            return false;
-        }
-        let mut depth = 0i32;
-        let mut index = 1;
-        loop {
-            match self.peek_at(index) {
-                Token::ParenOpen => depth += 1,
-                Token::ParenClose => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            index += 1;
-            if index > 4096 {
-                return false;
-            }
-        }
-        // A `return` body — bare `return …` or a braced single-return block
-        // `{ return …` — is a guard; anything else is an if-statement.
-        let after = self.peek_at(index + 1);
-        if *after == Token::KeywordReturn {
-            return false;
-        }
-        if *after == Token::BraceOpen && *self.peek_at(index + 2) == Token::KeywordReturn {
-            return false;
-        }
-        true
-    }
-
-    /// Parse a guard's return body: `return <expr>;`, optionally wrapped in a
-    /// single-statement block `{ return <expr>; }`. The braces are syntactic — the
-    /// guard codegen is identical either way. A bare `return;` (a void early return)
-    /// yields `None` — it cannot become a `GuardedReturn` (whose value is required),
-    /// so the caller routes it into the ordered statement list instead.
-    fn parse_guard_return(&mut self) -> Compilation<Option<Expression>> {
-        let braced = self.eat_keyword(Token::BraceOpen);
-        self.expect(Token::KeywordReturn)?;
-        if *self.peek() == Token::Semicolon {
-            self.advance();
-            if braced {
-                self.expect(Token::BraceClose)?;
-            }
-            return Ok(None);
-        }
-        let value = self.expression()?;
-        self.expect(Token::Semicolon)?;
-        if braced {
-            self.expect(Token::BraceClose)?;
-        }
-        Ok(Some(value))
-    }
-
-    /// `return [value];` as a body statement (an early return), with an optional
-    /// value (absent for `return;` in a void function).
-    fn parse_return_statement(&mut self) -> Compilation<Statement> {
-        self.expect(Token::KeywordReturn)?;
-        let value = if *self.peek() == Token::Semicolon { None } else { Some(self.expression()?) };
-        self.expect(Token::Semicolon)?;
-        Ok(Statement::Return(value))
-    }
-
-    /// A condition expression that may use the top-level comma operator
-    /// (`if ((a = x), test)` — alloc.c's link/merge macros). Each left
-    /// operand runs for side effects; the last operand is the value.
-    fn parse_comma_expression(&mut self) -> Compilation<Expression> {
-        let mut expression = self.expression()?;
-        while *self.peek() == Token::Comma {
-            self.advance();
-            let right = self.expression()?;
-            expression = Expression::Comma { left: Box::new(expression), right: Box::new(right) };
-        }
-        Ok(expression)
-    }
-
-    /// `if (condition) <block-or-statement> [else <block-or-statement> | else if]`.
-    fn parse_if_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
-        self.expect(Token::KeywordIf)?;
-        self.expect(Token::ParenOpen)?;
-        let condition = self.parse_comma_expression()?;
-        self.expect(Token::ParenClose)?;
-        let then_body = self.parse_block_or_statement(local_names, block_locals)?;
-        let else_body = if self.eat_word("else") {
-            if *self.peek() == Token::KeywordIf {
-                vec![self.parse_if_statement(local_names, block_locals)?]
-            } else {
-                self.parse_block_or_statement(local_names, block_locals)?
-            }
-        } else {
-            Vec::new()
-        };
-        Ok(Statement::If { condition, then_body, else_body })
-    }
-
-    /// A `while`, `do … while`, or `for` loop. The body is a `{ … }` block or a
-    /// single statement; the for-clause `init`/`step` are expressions (an `i = 0`
-    /// assignment, an `i++` increment), any of which may be empty.
-    fn parse_loop_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
-        match self.peek() {
-            Token::KeywordWhile => {
-                self.advance();
-                self.expect(Token::ParenOpen)?;
-                let condition = Some(self.expression()?);
-                self.expect(Token::ParenClose)?;
-                let body = self.parse_block_or_statement(local_names, block_locals)?;
-                Ok(Statement::Loop { kind: LoopKind::While, initializer: None, condition, step: None, body })
-            }
-            Token::KeywordDo => {
-                self.advance();
-                let body = self.parse_block_or_statement(local_names, block_locals)?;
-                self.expect(Token::KeywordWhile)?;
-                self.expect(Token::ParenOpen)?;
-                let condition = Some(self.expression()?);
-                self.expect(Token::ParenClose)?;
-                self.expect(Token::Semicolon)?;
-                Ok(Statement::Loop { kind: LoopKind::DoWhile, initializer: None, condition, step: None, body })
-            }
-            Token::KeywordFor => {
-                self.advance();
-                self.expect(Token::ParenOpen)?;
-                let initializer = (*self.peek() != Token::Semicolon)
-                    .then(|| self.comma_expression())
-                    .transpose()?
-                    .map(lower_discarded_post_step);
-                self.expect(Token::Semicolon)?;
-                let condition = (*self.peek() != Token::Semicolon).then(|| self.expression()).transpose()?;
-                self.expect(Token::Semicolon)?;
-                let step = (*self.peek() != Token::ParenClose)
-                    .then(|| self.comma_expression())
-                    .transpose()?
-                    .map(lower_discarded_post_step);
-                self.expect(Token::ParenClose)?;
-                let body = self.parse_block_or_statement(local_names, block_locals)?;
-                Ok(Statement::Loop { kind: LoopKind::For, initializer, condition, step, body })
-            }
-            other => Err(Diagnostic::error(format!("expected a loop keyword, found {other}"))),
-        }
-    }
-
-    /// A for-clause expression list: `a = 1, b = 2` folds left into the
-    /// comma operator (`for (ix = -1043, i = lx; ...)` — e_fmod, mem).
-    /// Elements route through `assignment_expression` so compound forms
-    /// (`i <<= 1`) parse in expression position.
-    fn comma_expression(&mut self) -> Compilation<Expression> {
-        let mut expression = self.assignment_expression()?;
-        while self.eat_keyword(Token::Comma) {
-            let right = self.assignment_expression()?;
-            expression = Expression::Comma { left: Box::new(expression), right: Box::new(right) };
-        }
-        Ok(expression)
-    }
-
-    /// A `{ ... }` block, or a single (non-`return`) statement, as a conditional
-    /// branch body.
-    fn parse_block_or_statement(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Vec<Statement>> {
-        if *self.peek() == Token::BraceOpen {
-            return self.parse_block(local_names, block_locals);
-        }
-        // An empty body — `while (c) ;` / `if (c) ;` — is no statements.
-        if *self.peek() == Token::Semicolon {
-            self.advance();
-            return Ok(Vec::new());
-        }
-        if *self.peek() == Token::KeywordIf {
-            return Ok(vec![self.parse_if_statement(local_names, block_locals)?]);
-        }
-        if *self.peek() == Token::KeywordReturn {
-            return Ok(vec![self.parse_return_statement()?]);
-        }
-        if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
-            return Ok(vec![self.parse_loop_statement(local_names, block_locals)?]);
-        }
-        if let Some(statement) = self.parse_jump_statement()? {
-            return Ok(vec![statement]);
-        }
-        Ok(vec![self.parse_simple_statement(local_names, block_locals)?])
-    }
-
-    /// A `{ ... }` block of simple statements, nested if-blocks, and `return`s. A
-    /// trailing `if (c) { return X; } return Y;` collapses to `return (c ? X : Y)`
-    /// (mwcc lowers an if-return followed by a return to a select), which also
-    /// makes nested if-return chains fold into nested ternaries.
-    fn parse_block(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Vec<Statement>> {
-        self.expect(Token::BraceOpen)?;
-        let rename_depth = self.block_renames.len();
-        let mut statements = Vec::new();
-        while *self.peek() != Token::BraceClose {
-            // An empty statement (a lone `;`) produces no code — skip it.
-            if *self.peek() == Token::Semicolon {
-                self.advance();
-                continue;
-            }
-            if *self.peek() == Token::KeywordIf {
-                statements.push(self.parse_if_statement(local_names, block_locals)?);
-                continue;
-            }
-            if *self.peek() == Token::KeywordReturn {
-                statements.push(self.parse_return_statement()?);
-                continue;
-            }
-            if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
-                statements.push(self.parse_loop_statement(local_names, block_locals)?);
-                continue;
-            }
-            if let Some(statement) = self.parse_jump_statement()? {
-                statements.push(statement);
-                continue;
-            }
-            // A nested bare `{ ... }` scoping block flattens recursively (its
-            // declarations hoist through the shared block_locals).
-            if *self.peek() == Token::BraceOpen {
-                let mut inner = self.parse_block(local_names, block_locals)?;
-                statements.append(&mut inner);
-                continue;
-            }
-            // A BLOCK-SCOPED declaration (`f32 guess = ...;` inside an if):
-            // hoist the local to the function and keep the initialization as
-            // an Assign at its position (it may be conditionally reached).
-            // `static` block locals defer (a named-datum shape).
-            if self.peek_is_type() {
-                if matches!(self.peek(), Token::Identifier(word) if word == "static") {
-                    return Err(Diagnostic::error("a static local in a nested block is not supported yet (roadmap)"));
-                }
-                let declared_type = self.parse_type()?;
-                if self.last_type_was_volatile {
-                    return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
-                }
-                // A struct/union-typed local carries its tag so `cur->next` resolves
-                // the layout — same as the function-top-level path. Nested-block
-                // declarations (a `DestructorChain* cur` inside a while) went
-                // unregistered before, so member access on them failed to type.
-                let struct_tag = self.last_struct_tag.take();
-                loop {
-                    let mut declared_type = declared_type;
-                    if self.eat_keyword(Token::Star) {
-                        if *self.peek() == Token::Star {
-                            return Err(Diagnostic::error("a pointer-to-pointer declarator in a nested block is not supported yet (roadmap)"));
-                        }
-                        declared_type = Type::Pointer(pointee_of(declared_type)?);
-                    }
-                    let name = self.parse_identifier()?;
-                    // A shadowing declaration hoists under a fresh internal name
-                    // (`i@2`); references inside the block resolve to it via the
-                    // rename stack (mwcc gives the shadow its own value/slot).
-                    let name = if local_names.contains(&name) {
-                        self.rename_counter += 1;
-                        let internal = format!("{name}@{}", self.rename_counter);
-                        self.block_renames.push((name, internal.clone()));
-                        internal
-                    } else {
-                        name
-                    };
-                    if *self.peek() == Token::BracketOpen {
-                        return Err(Diagnostic::error("a block-scoped array is not supported yet (roadmap)"));
-                    }
-                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static: false, data_bytes: None, is_const: false });
-                    local_names.insert(name.clone());
-                    // Register the type so `sizeof(s_h)` (fdlibm's __HI/__LO
-                    // macros inside e_pow's inner block) resolves at parse time.
-                    self.variable_types.insert(name.clone(), declared_type);
-                    if let Some(tag) = &struct_tag {
-                        self.variable_structs.insert(name.clone(), tag.clone());
-                    }
-                    if self.eat_keyword(Token::Equals) {
-                        let value = self.expression()?;
-                        statements.push(Statement::Assign { name, value });
-                    }
-                    if !self.eat_keyword(Token::Comma) {
-                        break;
-                    }
-                }
-                self.expect(Token::Semicolon)?;
-                continue;
-            }
-            statements.push(self.parse_simple_statement(local_names, block_locals)?);
-        }
-        collapse_if_return_chain(&mut statements);
-        self.expect(Token::BraceClose)?;
-        self.block_renames.truncate(rename_depth);
-        Ok(statements)
-    }
-}
 
 /// Collapse a trailing `if (c) { return X; } return Y;` into `return (c ? X : Y)`,
 /// repeatedly, so nested if-return chains fold into nested ternaries — matching
