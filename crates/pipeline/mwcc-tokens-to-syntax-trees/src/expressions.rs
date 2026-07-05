@@ -560,9 +560,9 @@ impl Parser {
                 // a function-pointer MEMBER (buffer_io's writeFunc). Also the
                 // `(*s->fp)(args)` spelling, which parses to Dereference(Member).
                 Token::ParenOpen
-                    if matches!(&expression, Expression::Member { .. } | Expression::Index { .. })
+                    if matches!(&expression, Expression::Member { .. } | Expression::Index { .. } | Expression::Cast { .. })
                         || matches!(&expression, Expression::Dereference { pointer }
-                            if matches!(pointer.as_ref(), Expression::Member { .. } | Expression::Index { .. })) =>
+                            if matches!(pointer.as_ref(), Expression::Member { .. } | Expression::Index { .. } | Expression::Cast { .. })) =>
                 {
                     let target = match expression {
                         Expression::Dereference { pointer } => pointer,
