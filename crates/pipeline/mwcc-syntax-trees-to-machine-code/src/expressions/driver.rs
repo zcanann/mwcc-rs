@@ -669,6 +669,10 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // `a*b + a*c` / `a*b - a*c` distribute to `a*(b±c)` — one `add`/`subf` then one `mullw`.
+                if self.try_emit_distributed_product(*operator, left, right, destination)? {
+                    return Ok(());
+                }
                 // `(cond ? c1 : c2) +/- k` distributes the constant into the arms
                 // (mwcc folds the select's trailing `addi`).
                 if self.try_emit_select_constant_fold(*operator, left, right, destination)? {

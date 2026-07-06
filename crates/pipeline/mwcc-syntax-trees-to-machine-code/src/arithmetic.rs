@@ -43,6 +43,69 @@ impl Generator {
         true
     }
 
+    /// `a*b + a*c` / `a*b - a*c` — two products sharing a common factor distribute to `a*(b±c)`, as
+    /// mwcc does: one `add`/`subf` of the non-factor operands into the scratch, then a single `mullw`.
+    /// The factor keeps its side from the FIRST product (`a*b`→`mullw d,a,r0`; `b*a`→`mullw d,r0,a`);
+    /// the sum is source order (`add r0,o1,o2`), the difference is `o1-o2` (`subf r0,o2,o1`). All three
+    /// operands must be DISTINCT register leaves — a constant multiplier (`a*2+a*3`) folds elsewhere,
+    /// and `a*a+a*b` (the factor reused as a non-factor operand) is left alone.
+    pub(crate) fn try_emit_distributed_product(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) || destination == GENERAL_SCRATCH {
+            return Ok(false);
+        }
+        let (
+            Expression::Binary { operator: BinaryOperator::Multiply, left: x1, right: y1 },
+            Expression::Binary { operator: BinaryOperator::Multiply, left: x2, right: y2 },
+        ) = (left, right)
+        else {
+            return Ok(false);
+        };
+        // The COMMUTED case (`a*b + b*a`) is ambiguous: both operands are shared but mwcc factors the
+        // OTHER operand than our left-first search would, so leave it alone. EQUAL products (`a*b +
+        // a*b`) and single-shared-operand cases (incl. `a*a + a*b` -> `a*(a+b)`) fold cleanly.
+        if structurally_equal(x1, y2) && structurally_equal(y1, x2) {
+            return Ok(false);
+        }
+        // Find the shared factor and the two remaining operands, noting the factor's side in the
+        // FIRST product (false = left, true = right).
+        let (factor, o1, o2, factor_on_right) = if structurally_equal(x1, x2) {
+            (x1, y1, y2, false)
+        } else if structurally_equal(x1, y2) {
+            (x1, y1, x2, false)
+        } else if structurally_equal(y1, x2) {
+            (y1, x1, y2, true)
+        } else if structurally_equal(y1, y2) {
+            (y1, x1, x2, true)
+        } else {
+            return Ok(false);
+        };
+        // All three operands must be register leaves (a constant multiplier or a load is not
+        // distributed here).
+        let (Some(factor_register), Some(o1_register), Some(o2_register)) = (
+            leaf_name(factor).and_then(|name| self.lookup_general(name)),
+            leaf_name(o1).and_then(|name| self.lookup_general(name)),
+            leaf_name(o2).and_then(|name| self.lookup_general(name)),
+        ) else {
+            return Ok(false);
+        };
+        // The sum / difference of the non-factor operands into the scratch.
+        match operator {
+            BinaryOperator::Subtract => {
+                // `subf d,a,b` = b - a, so `subf r0, o2, o1` = o1 - o2.
+                self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: o2_register, b: o1_register });
+            }
+            _ => self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: o1_register, b: o2_register }),
+        }
+        // One multiply, the factor on its original side.
+        let (multiply_a, multiply_b) = if factor_on_right {
+            (GENERAL_SCRATCH, factor_register)
+        } else {
+            (factor_register, GENERAL_SCRATCH)
+        };
+        self.output.instructions.push(Instruction::MultiplyLow { d: destination, a: multiply_a, b: multiply_b });
+        Ok(true)
+    }
+
     /// `L | R` where each operand is a contiguous bit field of a leaf variable
     /// (a constant shift or a mask) and the two fields tile the word exactly.
     /// This one shape subsumes a constant rotate `(x<<c)|(x>>(32-c))`, a
