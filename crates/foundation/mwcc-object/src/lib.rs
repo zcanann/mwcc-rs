@@ -100,6 +100,10 @@ pub struct FunctionObject<'a> {
     /// An explicit `__declspec(section "…")` code section (e.g. `.init`), overriding
     /// the default `.text`/`.mwcats.text` placement. `None` = `.text`.
     pub section: Option<&'a str>,
+    /// A Metrowerks inline-`asm` function. Its code lands in `.text` like any other,
+    /// but mwcc does NOT catalog hand-written asm in `.mwcats.text`, so the writer
+    /// omits its mwcats record and relocation.
+    pub is_asm: bool,
     pub text: &'a [u8],
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.

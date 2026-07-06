@@ -11,6 +11,7 @@ use mwcc_versions::{Behavior, CompilerConfig};
 use std::collections::{HashMap, HashSet};
 
 mod analysis;
+mod asm;
 mod generator;
 mod operands;
 mod body;
@@ -38,6 +39,11 @@ use generator::Generator;
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
 pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, skipped_inline_names: &std::collections::HashSet<String>, weak_materialized_names: &std::collections::HashSet<String>, prototyped_names: &std::collections::HashSet<String>, config: CompilerConfig) -> Compilation<MachineFunction> {
+    // An inline-`asm` function is emitted verbatim — no register allocation,
+    // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
+    if function.asm_body.is_some() {
+        return asm::assemble_asm_function(function);
+    }
     // A STATIC CONST float/double global is DE-NAMED by mwcc: every read compiles
     // as the literal value, pooled anonymously (@N in .sdata2) with no named
     // symbol — measured: `static const double two54 = C; x * two54` emits the

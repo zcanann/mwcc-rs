@@ -451,6 +451,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    their `.rela` and everything downstream key off this order, by name. A
     //    data-only unit (no functions) omits `.text` and the `.mwcats` machinery.
     let has_functions = !functions.is_empty();
+    // mwcc catalogs only COMPILER-GENERATED functions in `.mwcats.text`; hand-written
+    // inline-`asm` functions are excluded. An object whose only functions are asm has
+    // no `.mwcats.text`/`.rela.mwcats.text` at all (its code still lives in `.text`).
+    let has_mwcats = functions.iter().any(|function| !function.is_asm);
     // A jump table and large writable globals share `.data`; the lowering guarantees
     // they do not co-occur, so one `.data` entry covers both.
     let has_data = has_jump_table || has_file_data;
@@ -496,7 +500,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_constants || has_const_sdata2 {
         order.push(".sdata2");
     }
-    if has_functions {
+    if has_mwcats {
         order.push(&mwcats_section);
     }
     if has_text_relocations {
@@ -528,7 +532,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata2_relocs {
         order.push(".rela.sdata2");
     }
-    if has_functions {
+    if has_mwcats {
         order.push(&rela_mwcats_section);
     }
     order.push(".symtab");
@@ -1085,9 +1089,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             write_rela(&mut rela_extabindex, frame.extabindex_entry_offset + 8, extab_entry_symbols[index], R_PPC_ADDR32, 0); // -> its extab entry
         }
     }
+    // One `.mwcats` record + relocation per COMPILER-GENERATED function, packed
+    // densely (asm functions are skipped, so the catalog position is not the
+    // function index).
     let mut rela_mwcats = Vec::new();
-    for (index, _) in functions.iter().enumerate() {
-        write_rela(&mut rela_mwcats, index as u32 * 8 + 4, function_symbols[index], R_PPC_ADDR32, 0);
+    let mut mwcats_position = 0u32;
+    for (index, function) in functions.iter().enumerate() {
+        if function.is_asm {
+            continue;
+        }
+        write_rela(&mut rela_mwcats, mwcats_position * 8 + 4, function_symbols[index], R_PPC_ADDR32, 0);
+        mwcats_position += 1;
     }
     // `.rela.sdata`/`.rela.data` — a pointer global's `ADDR32` to the symbol it
     // points at, at the object's offset plus the relocation's own offset (plus
@@ -1139,7 +1151,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    the saved-register shape; each `extabindex` entry is (function, function
     //    size, extab entry).
     let mut mwcats = Vec::new();
-    for (index, _) in functions.iter().enumerate() {
+    for (index, function) in functions.iter().enumerate() {
+        if function.is_asm {
+            continue;
+        }
         write_u32(&mut mwcats, 0x0200_0000 | function_size[index]);
         write_u32(&mut mwcats, 0);
     }
@@ -1223,7 +1238,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_constants || has_const_sdata2 {
         push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2, 0);
     }
-    if has_functions {
+    if has_mwcats {
         push(&mwcats_section, SHT_MWCATS, 0, index_of(text_section), 0, 4, 1, mwcats, 0);
     }
     if has_text_relocations {
@@ -1247,7 +1262,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata2_relocs {
         push(".rela.sdata2", SHT_RELA, 0, symtab_section, index_of(".sdata2"), 4, 12, rela_sdata2, 0);
     }
-    if has_functions {
+    if has_mwcats {
         push(&rela_mwcats_section, SHT_RELA, 0, symtab_section, index_of(&mwcats_section), 4, 12, rela_mwcats, 0);
     }
     push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab, 0);

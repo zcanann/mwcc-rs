@@ -7,9 +7,43 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
     let bytes = source.as_bytes();
     let mut position = 0;
     let mut tokens = Vec::new();
+    // Inline-`asm` block tracking. `expect_asm_block` is armed when an `asm`
+    // keyword is seen; the NEXT `{` opens an asm block (or a `;` disarms it — an
+    // `asm`-qualified prototype has no body). Inside a block (`asm_depth > 0`)
+    // newlines become `Token::Newline` so the parser can group instructions by
+    // line. asm bodies contain no nested braces, so depth only ever reaches 1.
+    let mut expect_asm_block = false;
+    let mut asm_depth: u32 = 0;
 
     while position < bytes.len() {
         let character = bytes[position] as char;
+
+        // A pending asm block that hits a `;` before its `{` was a prototype.
+        if expect_asm_block && character == ';' {
+            expect_asm_block = false;
+        }
+        // Enter an asm block at the `{` following an `asm` qualifier.
+        if expect_asm_block && character == '{' {
+            expect_asm_block = false;
+            asm_depth = 1;
+            tokens.push(Token::BraceOpen);
+            position += 1;
+            continue;
+        }
+        // Inside an asm block: a newline separates instructions; a `}` closes it.
+        if asm_depth > 0 {
+            if character == '\n' {
+                tokens.push(Token::Newline);
+                position += 1;
+                continue;
+            }
+            if character == '}' {
+                asm_depth -= 1;
+                tokens.push(Token::BraceClose);
+                position += 1;
+                continue;
+            }
+        }
 
         if character.is_whitespace() {
             position += 1;
@@ -121,7 +155,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
                 position += 1;
             }
             let word = &source[start..position];
-            tokens.push(match word {
+            let token = match word {
                 "int" => Token::KeywordInt,
                 "char" => Token::KeywordChar,
                 "short" => Token::KeywordShort,
@@ -134,8 +168,14 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
                 "do" => Token::KeywordDo,
                 "for" => Token::KeywordFor,
                 "struct" => Token::KeywordStruct,
+                "asm" => Token::Asm,
                 _ => Token::Identifier(word.to_string()),
-            });
+            };
+            // Arm asm-block tracking so the next `{` opens a verbatim asm body.
+            if token == Token::Asm {
+                expect_asm_block = true;
+            }
+            tokens.push(token);
             continue;
         }
         // hexadecimal literal

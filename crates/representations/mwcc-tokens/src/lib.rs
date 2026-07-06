@@ -16,6 +16,9 @@ pub enum Token {
     Pragma(String),
     KeywordIf,
     KeywordStruct,
+    /// The Metrowerks `asm` function/statement qualifier (`asm void f(void){…}`).
+    /// Introduces an inline-assembly block whose body is emitted verbatim.
+    Asm,
     // identifiers and literals
     Identifier(String),
     IntegerLiteral(i64),
@@ -68,6 +71,10 @@ pub enum Token {
     KeywordWhile,
     KeywordDo,
     KeywordFor,
+    /// A newline — emitted ONLY inside an inline-`asm` block, where it separates
+    /// instructions (asm is line-oriented and most lines carry no `;`). Ordinary
+    /// C code never sees this token: outside asm, newlines are skipped whitespace.
+    Newline,
     EndOfFile,
 }
 

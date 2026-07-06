@@ -317,6 +317,7 @@ pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwc
     let function = Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        asm_body: None,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -435,6 +436,7 @@ pub(crate) fn inline_frame_feeding_locals(function: &Function) -> Option<Functio
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        asm_body: None,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -507,6 +509,7 @@ pub(crate) fn normalize_leading_local_assigns(function: &Function) -> Option<Fun
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        asm_body: None,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -557,6 +560,7 @@ pub(crate) fn inline_return_only_locals(function: &Function) -> Option<Function>
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        asm_body: None,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -628,6 +632,7 @@ pub(crate) fn inline_switch_scrutinee_locals(function: &Function) -> Option<Func
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        asm_body: None,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -849,6 +854,7 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        asm_body: None,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -943,6 +949,7 @@ pub(crate) fn inline_single_call_result(function: &Function) -> Option<Function>
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        asm_body: None,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,

@@ -258,4 +258,30 @@ pub struct Function {
     /// An explicit `__declspec(section "…")` code section (e.g. `.init` for the
     /// runtime's `__mem.c`), overriding the default `.text` placement. `None` = `.text`.
     pub section: Option<String>,
+    /// The instructions of a Metrowerks inline-`asm` function body, emitted
+    /// verbatim — no prologue/epilogue synthesis, no optimizer (mwcc assembles the
+    /// lines as written, appending a trailing `blr` when the body has none).
+    /// `None` for an ordinary C function. Kept AFTER `section` so the capture
+    /// `ast_hash` strip (which truncates from `, section: ` onward) also elides it,
+    /// preserving every template's hash (the fire-465 re-bake hazard).
+    pub asm_body: Option<Vec<AsmInstruction>>,
+}
+
+/// One operand of an inline-`asm` instruction.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AsmOperand {
+    /// A general-purpose register: `rN` (0..=31), or an alias (`sp`/`SP` → r1,
+    /// `RTOC` → r2).
+    Gpr(u8),
+    /// A floating-point register: `fpN` or `fN` (0..=31).
+    Fpr(u8),
+    /// An integer immediate operand.
+    Immediate(i64),
+}
+
+/// One instruction line inside an inline-`asm` body: a mnemonic and its operands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AsmInstruction {
+    pub mnemonic: String,
+    pub operands: Vec<AsmOperand>,
 }

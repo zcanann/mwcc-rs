@@ -8,7 +8,7 @@ mod statements;
 
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{AsmInstruction, AsmOperand, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -1912,7 +1912,8 @@ impl Parser {
                         break;
                     }
                 }
-                Token::Identifier(word) if word == "asm" || word == "__asm" => has_asm = true,
+                Token::Asm => has_asm = true,
+                Token::Identifier(word) if word == "__asm" => has_asm = true,
                 Token::EndOfFile => break,
                 _ => {}
             }
@@ -2138,6 +2139,119 @@ impl Parser {
     /// prototype, or function definition — recording it into the unit. Returns `Err`
     /// for any form outside the subset; the caller skips a failed declaration or
     /// propagates a failed function definition.
+    /// Parse a Metrowerks inline-`asm` function: the `asm` qualifier has been
+    /// peeked (storage qualifiers already consumed). The C signature is scanned
+    /// loosely — asm codegen names fixed registers, so only the function NAME and
+    /// a `void` return matter; parameter types are consumed and discarded. Returns
+    /// `None` for a bodyless prototype (`asm void f(void);`).
+    pub(crate) fn parse_asm_function(&mut self, is_static: bool, is_weak: bool) -> Compilation<Option<Function>> {
+        self.expect(Token::Asm)?;
+        // The return type and name precede `(`; the last identifier is the name.
+        let mut return_type = Type::Void;
+        let mut name = String::new();
+        loop {
+            match self.peek() {
+                Token::ParenOpen => break,
+                Token::Identifier(word) => {
+                    name = word.clone();
+                    self.advance();
+                }
+                Token::EndOfFile => return Err(Diagnostic::error("unterminated asm function signature")),
+                other => {
+                    // A non-`void` scalar return keeps the default `Void` type — it
+                    // does not affect the emitted object for a bare asm function.
+                    if *other == Token::KeywordInt || matches!(other, Token::KeywordChar | Token::KeywordShort | Token::KeywordUnsigned | Token::KeywordFloat) {
+                        return_type = Type::Int;
+                    }
+                    self.advance();
+                }
+            }
+        }
+        // Consume the parameter list by paren-matching.
+        self.expect(Token::ParenOpen)?;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.advance() {
+                Token::ParenOpen => depth += 1,
+                Token::ParenClose => depth -= 1,
+                Token::EndOfFile => return Err(Diagnostic::error("unterminated asm parameter list")),
+                _ => {}
+            }
+        }
+        // A bodyless prototype ends here; there is nothing to define.
+        if *self.peek() == Token::Semicolon {
+            self.advance();
+            return Ok(None);
+        }
+        self.expect(Token::BraceOpen)?;
+        let asm_body = self.parse_asm_body()?;
+        Ok(Some(Function {
+            return_type,
+            name,
+            is_static,
+            is_weak,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            asm_body: Some(asm_body),
+        }))
+    }
+
+    /// Parse the instruction lines of an asm body up to the closing `}` (already
+    /// past the opening `{`). asm is line-oriented: `Token::Newline` (emitted only
+    /// inside asm blocks) separates instructions; blank lines are skipped.
+    fn parse_asm_body(&mut self) -> Compilation<Vec<AsmInstruction>> {
+        let mut instructions = Vec::new();
+        loop {
+            while *self.peek() == Token::Newline {
+                self.advance();
+            }
+            match self.peek() {
+                Token::BraceClose => {
+                    self.advance();
+                    break;
+                }
+                Token::EndOfFile => return Err(Diagnostic::error("unterminated asm body")),
+                _ => {}
+            }
+            let mnemonic = match self.advance() {
+                Token::Identifier(word) => word,
+                other => return Err(Diagnostic::error(format!("expected an asm mnemonic, found {other}"))),
+            };
+            let mut operands = Vec::new();
+            loop {
+                match self.peek() {
+                    Token::Newline | Token::BraceClose | Token::EndOfFile => break,
+                    Token::Comma => {
+                        self.advance();
+                    }
+                    _ => operands.push(self.parse_asm_operand()?),
+                }
+            }
+            instructions.push(AsmInstruction { mnemonic, operands });
+        }
+        Ok(instructions)
+    }
+
+    /// Parse one asm operand: a register name, or an (optionally negative) integer
+    /// immediate. Unsupported operand forms (member `env->field`, labels) error, so
+    /// the enclosing translation unit DEFERS rather than emitting wrong bytes.
+    fn parse_asm_operand(&mut self) -> Compilation<AsmOperand> {
+        let negate = *self.peek() == Token::Minus;
+        if negate {
+            self.advance();
+        }
+        match self.advance() {
+            Token::IntegerLiteral(value) => Ok(AsmOperand::Immediate(if negate { -value } else { value })),
+            Token::Identifier(word) => parse_asm_register(&word)
+                .ok_or_else(|| Diagnostic::error(format!("unsupported asm operand '{word}'"))),
+            other => Err(Diagnostic::error(format!("unexpected asm operand token {other}"))),
+        }
+    }
+
     pub(crate) fn parse_top_level_item(
         &mut self,
         globals: &mut Vec<GlobalDeclaration>,
@@ -2207,6 +2321,19 @@ impl Parser {
                 self.advance();
             }
             if *self.peek() == Token::EndOfFile {
+                return Ok(());
+            }
+            // A Metrowerks inline-`asm` function DEFINITION: `[static] asm <ret>
+            // name(params) { <instructions> }`. Its body is assembled verbatim (no C
+            // codegen), so it is parsed by its own path. A bodyless `asm` prototype
+            // yields no definition. An `inline` asm function is NOT handled here — it
+            // is a skipped inline helper (recorded as a local-UND symbol by the
+            // error-recovery path), never emitted. (The `static`/`__declspec(weak)`
+            // qualifiers already ran.)
+            if *self.peek() == Token::Asm && !is_inline {
+                if let Some(function) = self.parse_asm_function(is_static, is_weak)? {
+                    functions.push(function);
+                }
                 return Ok(());
             }
             // `typedef <type> <name>;` registers a type alias. (Function-pointer and
@@ -3465,7 +3592,7 @@ impl Parser {
 
         let mut locals = locals;
         locals.extend(block_locals);
-        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression, section: None })
+        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression, section: None, asm_body: None })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {
@@ -3571,5 +3698,31 @@ fn lower_discarded_post_step(expression: Expression) -> Expression {
         },
         other => other,
     }
+}
+
+/// Parse an inline-`asm` register operand name into an `AsmOperand`: `rN` (GPR),
+/// `fpN`/`fN` (FPR) for 0..=31, or an alias (`sp`/`SP` → r1, `RTOC`/`rtoc` → r2).
+/// Returns `None` for anything else (a label, a symbol, an unknown name).
+fn parse_asm_register(word: &str) -> Option<AsmOperand> {
+    match word {
+        "sp" | "SP" => return Some(AsmOperand::Gpr(1)),
+        "RTOC" | "rtoc" => return Some(AsmOperand::Gpr(2)),
+        _ => {}
+    }
+    let index = |digits: &str| -> Option<u8> {
+        let value: u16 = digits.parse().ok()?;
+        (value <= 31).then_some(value as u8)
+    };
+    // `fp` must be tried before the bare `f`/`r` prefixes (`fp14` also starts `f`).
+    if let Some(digits) = word.strip_prefix("fp") {
+        return index(digits).map(AsmOperand::Fpr);
+    }
+    if let Some(digits) = word.strip_prefix('r') {
+        return index(digits).map(AsmOperand::Gpr);
+    }
+    if let Some(digits) = word.strip_prefix('f') {
+        return index(digits).map(AsmOperand::Fpr);
+    }
+    None
 }
 
