@@ -741,21 +741,21 @@ impl Generator {
     /// or a nested trailing if (an `else if` chain). Each then-body is a single
     /// statement — multiple statements need the scheduler.
     pub(crate) fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement]) -> Compilation<()> {
-        // `if (cond) g = c1; else g = c2;` — both arms a single constant store to the same
-        // GLOBAL — is one store of a select. mwcc branchless-ifies consecutive constants
-        // (`srawi; addi`) and branch-materializes others into one register, then stores
-        // once; route it through the conditional store path (byte-exact-or-defer) rather
-        // than the two-branch form. This applies ONLY to a direct global (SDA-addressed)
-        // target: for a POINTER-dereference store (`*p = 1; else *p = 2;`) mwcc keeps the
-        // full two-exit branch form (`cmpwi; beq; li; stw; blr; li; stw; blr`), so those
-        // fall through below rather than being (wrongly) branchless-ified.
+        // `if (cond) g = X; else g = Y;` — both arms a single store to the same GLOBAL — is
+        // byte-identical to the select `g = cond ? X : Y;`: mwcc coalesces to ONE store,
+        // speculating one value and conditionally overwriting it (constants branchless-ify;
+        // registers `mr`; `li r0,Y; beq; mr r0,X; stw` for the mixed/computed forms). Route
+        // it through the conditional-store path, which is byte-exact-or-defer for whatever X
+        // and Y are — exactly matching the direct-select lowering (so a form it cannot yet
+        // reproduce DEFERS, never emits the two-store retest idiom, which is wrong for a
+        // single coalesced target). This applies ONLY to a direct global (SDA-addressed)
+        // target: a POINTER-dereference store (`*p = 1; else *p = 2;`) keeps the two-exit
+        // branch form below (`cmpwi; beq; li; stw; blr; li; stw; blr`).
         if let ([Statement::Store { target: then_target, value: then_value }],
                 [Statement::Store { target: else_target, value: else_value }]) = (then_body, else_body)
         {
             if same_operand(then_target, else_target)
                 && matches!(then_target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
-                && constant_value(then_value).is_some()
-                && constant_value(else_value).is_some()
             {
                 let select = Expression::Conditional {
                     condition: Box::new(condition.clone()),
