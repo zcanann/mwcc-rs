@@ -111,6 +111,13 @@ impl Generator {
         if !self.frame_slots.is_empty() {
             return Ok(false);
         }
+        // This path emits only statements + the return; it does NOT emit local initializers. A local
+        // whose initializer has a side effect (`int x = g();`, x otherwise dead) would silently drop
+        // that call — a miscompile. Locals are handled by the dedicated local paths (computed_local,
+        // result_param_combine) before this; anything reaching here with a local defers.
+        if !function.locals.is_empty() {
+            return Ok(false);
+        }
         // The body is straight-line calls and stores (control flow routes through its own
         // paths). A trailing store sink (`foo(); gi = a;`) saves the live value, runs the
         // calls, then stores it from the callee-saved register; mwcc orders that epilogue's

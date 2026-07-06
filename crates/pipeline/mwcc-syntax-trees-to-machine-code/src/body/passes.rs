@@ -151,6 +151,43 @@ pub(crate) fn remove_dead_locals(function: &Function) -> Option<Function> {
     Some(Function { locals: kept, ..function.clone() })
 }
 
+/// A DEAD trailing local whose initializer has a side effect (`int x = g();` where x is never read):
+/// mwcc keeps the call but discards the result. Convert it to a leading expression statement so the
+/// ordinary call/return paths emit it — `int x=g(); return a+b;` becomes `g(); return a+b;`. Keeping
+/// it as a local would let the callee-saved paths (which emit only statements + the return, not local
+/// initializers) silently DROP the call — a miscompile. Only the LAST local converts: its initializer
+/// runs after every other local's initializer and before the statements, exactly where a leading
+/// statement runs, so the order is preserved; a re-run converts several trailing dead-call locals in
+/// order (each new statement prepends before the previous, reconstructing L0..Ln).
+pub(crate) fn hoist_dead_trailing_call_local(function: &Function) -> Option<Function> {
+    let last = function.locals.last()?;
+    let name = last.name.clone();
+    let initializer = last.initializer.clone()?;
+    if !expression_has_call(&initializer) {
+        return None;
+    }
+    // Dead: not read by any earlier local's initializer, a statement, a guard, or the return.
+    let read_elsewhere = function
+        .locals
+        .iter()
+        .rev()
+        .skip(1)
+        .any(|local| local.initializer.as_ref().map_or(false, |init| expression_reads_name(init, &name)))
+        || function.statements.iter().any(|statement| statement_references_name(statement, &name))
+        || function.guards.iter().any(|guard| {
+            expression_reads_name(&guard.condition, &name) || expression_reads_name(&guard.value, &name)
+        })
+        || function.return_expression.as_ref().map_or(false, |ret| expression_reads_name(ret, &name));
+    if read_elsewhere {
+        return None;
+    }
+    let mut locals = function.locals.clone();
+    locals.pop();
+    let mut statements = function.statements.clone();
+    statements.insert(0, Statement::Expression(initializer));
+    Some(Function { locals, statements, ..function.clone() })
+}
+
 /// Fold a pure function-pointer alias local into the single call THROUGH it: `F t = gf;
 /// t();` compiles exactly like `gf();` (mwcc loads the pointer right before `mtctr`
 /// either way — the load position is unchanged). Only the exactly-safe shape folds: the

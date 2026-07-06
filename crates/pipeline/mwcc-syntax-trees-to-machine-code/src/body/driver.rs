@@ -232,6 +232,12 @@ impl Generator {
         if let Some(cleaned) = remove_dead_locals(function) {
             return self.evaluate_body(&cleaned);
         }
+        // A dead trailing local with a side-effecting (call) initializer becomes a leading statement,
+        // so the call is emitted for effect rather than dropped (`int x=g(); return a+b;` → `g();
+        // return a+b;`).
+        if let Some(hoisted) = hoist_dead_trailing_call_local(function) {
+            return self.evaluate_body(&hoisted);
+        }
         // A body that CONTINUES past an early-return guard parses the guard into the ordered
         // statement list (`if (c) return v; b = b + 1; return b;` → statements [If, Assign]).
         // When the guard reads only names the rest never writes, guard-first and guard-last
