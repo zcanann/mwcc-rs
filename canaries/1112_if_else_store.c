@@ -24,3 +24,10 @@ void glob_store_consec(int a)             { if (a) g_consec = 1; else g_consec =
 void glob_store_nonconsec(int a)          { if (a) g_nonconsec = 5; else g_nonconsec = 9; }
 void glob_store_register(int c, int a, int b) { if (c) g_reg = a; else g_reg = b; }
 void glob_store_two_targets(int c)        { if (c) g_a = 1; else g_b = 2; }
+
+// The coalesced select is a STANDALONE-diamond optimization: a same-global diamond
+// reached through an else-if CHAIN keeps the full per-level branch form (one store per
+// level), never branchless/retest. (Ours used to branchless-ify the nested tail — wrong.)
+int g_chain;
+void glob_store_elseif(int c, int d)          { if (c) g_chain = 1; else if (d) g_chain = 2; else g_chain = 3; }
+void glob_store_elseif_reg(int c, int d, int a) { if (c) g_chain = 1; else if (d) g_chain = 2; else g_chain = a; }

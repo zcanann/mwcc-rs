@@ -1125,7 +1125,7 @@ impl Generator {
                     && then_body.len() == 2
                     && matches!(then_body.last(), Some(Statement::Return(None)))
                 {
-                    self.emit_trailing_if(condition, &then_body[..1], else_body)?;
+                    self.emit_trailing_if(condition, &then_body[..1], else_body, false)?;
                     continue;
                 }
                 // A trailing-void, no-else if-BLOCK of two-plus REGISTER-VALUED stores (each value
@@ -1140,7 +1140,7 @@ impl Generator {
                     && then_body.iter().all(|inner| matches!(inner,
                         Statement::Store { value: Expression::Variable(name), .. } if self.locations.contains_key(name.as_str())))
                 {
-                    self.emit_trailing_if(condition, then_body, else_body)?;
+                    self.emit_trailing_if(condition, then_body, else_body, false)?;
                     continue;
                 }
                 if !function_makes_call(function)
@@ -1168,7 +1168,7 @@ impl Generator {
                     if trailing_void {
                         // The false path is the function exit (or the else / else-if):
                         // a conditional return, or a branch into the else chain.
-                        self.emit_trailing_if(condition, then_body, else_body)?;
+                        self.emit_trailing_if(condition, then_body, else_body, false)?;
                         continue;
                     }
                     if else_body.is_empty() {

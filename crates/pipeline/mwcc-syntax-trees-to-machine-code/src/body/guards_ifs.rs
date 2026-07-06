@@ -740,7 +740,7 @@ impl Generator {
     /// then-body (and its `blr`) to the else, which is either a single statement
     /// or a nested trailing if (an `else if` chain). Each then-body is a single
     /// statement — multiple statements need the scheduler.
-    pub(crate) fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement]) -> Compilation<()> {
+    pub(crate) fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement], nested: bool) -> Compilation<()> {
         // `if (cond) g = X; else g = Y;` — both arms a single store to the same GLOBAL — is
         // byte-identical to the select `g = cond ? X : Y;`: mwcc coalesces to ONE store,
         // speculating one value and conditionally overwriting it (constants branchless-ify;
@@ -751,10 +751,17 @@ impl Generator {
         // single coalesced target). This applies ONLY to a direct global (SDA-addressed)
         // target: a POINTER-dereference store (`*p = 1; else *p = 2;`) keeps the two-exit
         // branch form below (`cmpwi; beq; li; stw; blr; li; stw; blr`).
+        //
+        // The coalescing (this select shortcut AND the retest idiom below) is a STANDALONE-
+        // diamond optimization: mwcc does NOT apply it to a diamond reached through an
+        // else-if chain (`if(c) g=1; else if(d) g=2; else g=3;` stays full nested branches,
+        // one store per level). When `nested` (this is the recursive else-if tail) both are
+        // suppressed so the two-exit branch form is used per level.
         if let ([Statement::Store { target: then_target, value: then_value }],
                 [Statement::Store { target: else_target, value: else_value }]) = (then_body, else_body)
         {
-            if same_operand(then_target, else_target)
+            if !nested
+                && same_operand(then_target, else_target)
                 && matches!(then_target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
             {
                 let select = Expression::Conditional {
@@ -800,7 +807,7 @@ impl Generator {
             if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
                 *target = label;
             }
-            return self.emit_trailing_if(else_condition, else_then, else_else);
+            return self.emit_trailing_if(else_condition, else_then, else_else, true);
         }
         if else_body.len() != 1 {
             return Err(Diagnostic::error("a multi-statement else-body needs the scheduler (roadmap)"));
@@ -811,8 +818,9 @@ impl Generator {
         // bnelr; B; blr`. A comparison condition re-tests by branchless recomputation (not
         // a second compare), and member/base-register arms keep the two-exit form; both of
         // those route to the two-exit branch below.
-        let truthy = matches!(condition, Expression::Variable(_))
-            || matches!(condition, Expression::Unary { operator: UnaryOperator::LogicalNot, operand } if matches!(operand.as_ref(), Expression::Variable(_)));
+        let truthy = !nested
+            && (matches!(condition, Expression::Variable(_))
+                || matches!(condition, Expression::Unary { operator: UnaryOperator::LogicalNot, operand } if matches!(operand.as_ref(), Expression::Variable(_))));
         let is_global_store = |statement: &Statement| {
             matches!(statement, Statement::Store { target: Expression::Variable(name), .. } if self.globals.contains_key(name.as_str()))
         };
