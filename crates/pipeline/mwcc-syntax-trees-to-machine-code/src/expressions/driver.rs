@@ -641,6 +641,13 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                // A VARIABLE rotate `(a<<n)|(a>>(32-n))` (or the mirror right rotate) folds to one
+                // `rotlw` (`rlwnm ...,0,31`), with a `subfic` first for the right-rotate amount.
+                if matches!(operator, BinaryOperator::BitOr)
+                    && self.try_emit_variable_rotate(left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // An OR of two complementary bit fields (shifts and/or masks) —
                 // including a constant rotate — merges via one rlwimi.
                 if matches!(operator, BinaryOperator::BitOr)

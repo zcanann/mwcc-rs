@@ -121,6 +121,67 @@ impl Generator {
         Ok(true)
     }
 
+    /// `(a << P) | (a >> Q)` for an UNSIGNED leaf `a` whose VARIABLE shift amounts are complementary
+    /// (`P + Q == 32`) — a rotate LEFT by the left-shift amount P. mwcc emits a single `rotlw d,a,P`
+    /// (`rlwnm d,a,P,0,31`); when P is `32 - m` (i.e. a rotate RIGHT by m) it first computes the
+    /// amount with `subfic r0,m,32`. The right shift must be logical, so `a` must be unsigned — a
+    /// signed `a >> Q` is arithmetic and not a rotate. (Constant-amount rotates go through the rlwimi
+    /// field-merge path instead.)
+    pub(crate) fn try_emit_variable_rotate(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+        // Split into (rotated value, left-shift amount P, right-shift amount Q); the OR's operands may
+        // be in either order.
+        fn split<'e>(x: &'e Expression, y: &'e Expression) -> Option<(&'e Expression, &'e Expression, &'e Expression)> {
+            if let (
+                Expression::Binary { operator: BinaryOperator::ShiftLeft, left: value_left, right: p },
+                Expression::Binary { operator: BinaryOperator::ShiftRight, left: value_right, right: q },
+            ) = (x, y)
+            {
+                if structurally_equal(value_left, value_right) {
+                    return Some((value_left, p, q));
+                }
+            }
+            None
+        }
+        let Some((value, p, q)) = split(left, right).or_else(|| split(right, left)) else {
+            return Ok(false);
+        };
+        // The amounts must be complementary: one is `32 - <the other>`.
+        let is_32_minus = |whole: &Expression, part: &Expression| {
+            matches!(whole, Expression::Binary { operator: BinaryOperator::Subtract, left: c, right: m }
+                if constant_value(c) == Some(32) && structurally_equal(m, part))
+        };
+        if !(is_32_minus(q, p) || is_32_minus(p, q)) {
+            return Ok(false);
+        }
+        // A SIGNED value's `>>` is arithmetic (`sraw`), so this rotate-shaped OR is NOT a true rotate:
+        // mwcc emits the literal shift-or with a distinct schedule (`subfic` first, the amount register
+        // reused) that we do not reproduce. Defer rather than emit our (differently scheduled) shift-or.
+        if self.signedness_of(value)? {
+            return Err(Diagnostic::error("a signed complementary variable shift-or is not a rotate; its literal-shift schedule is unmodeled (roadmap)"));
+        }
+        let Some(value_register) = leaf_name(value).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        // The rotate-LEFT amount is the left-shift amount P: a register directly (rotate left by n),
+        // or `32 - m` computed with `subfic r0,m,32` (rotate right by m).
+        let amount_register = if let Some(register) = leaf_name(p).and_then(|name| self.lookup_general(name)) {
+            register
+        } else if let Expression::Binary { operator: BinaryOperator::Subtract, left: c, right: m } = p {
+            if constant_value(c) != Some(32) {
+                return Ok(false);
+            }
+            let Some(m_register) = leaf_name(m).and_then(|name| self.lookup_general(name)) else {
+                return Ok(false);
+            };
+            self.output.instructions.push(Instruction::SubtractFromImmediate { d: GENERAL_SCRATCH, a: m_register, immediate: 32 });
+            GENERAL_SCRATCH
+        } else {
+            return Ok(false);
+        };
+        self.output.instructions.push(Instruction::RotateAndMaskVariable { a: destination, s: value_register, b: amount_register, begin: 0, end: 31 });
+        Ok(true)
+    }
+
     /// `(load_a & maskA) | (load_b & maskB)` with complementary masks where the
     /// operands are memory loads (e.g. the `__HI`/`__LO` pointer-pun merge in
     /// copysign). mwcc loads the inserted (left) operand first into a temporary,
