@@ -59,8 +59,25 @@ impl Generator {
         // scratch; leaf operands stay in place.
         let (left_register, right_register) = self.place_float_comparison_operands(left, right, &[true_register, false_register])?;
 
-        self.output.instructions.push(Instruction::FloatCompareOrdered { a: left_register, b: right_register });
-        let (positive_options, condition_bit) = positive_branch(*operator);
+        // Equality (`==`/`!=`) uses the QUIET compare `fcmpu` (IEEE equality does not signal on NaN);
+        // the relational operators (`<`/`>`/`<=`/`>=`) use the signaling ordered compare `fcmpo`.
+        if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+            self.output.instructions.push(Instruction::FloatCompareUnordered { a: left_register, b: right_register });
+        } else {
+            self.output.instructions.push(Instruction::FloatCompareOrdered { a: left_register, b: right_register });
+        }
+        // `<=` / `>=` on FLOATS must be FALSE for unordered (NaN) operands. A direct `ble`/`bge`
+        // (branch-if-not-gt / not-lt) would also take the branch when unordered, so mwcc instead OoRs
+        // the strict bit into the eq bit (`cror eq, lt|gt, eq`) and branches on eq. Integer `<=`/`>=`
+        // keep the direct branch (no unordered case) and never reach this float path.
+        let (positive_options, condition_bit) = match operator {
+            BinaryOperator::LessEqual | BinaryOperator::GreaterEqual => {
+                let strict_bit = if *operator == BinaryOperator::LessEqual { 0 } else { 1 }; // lt / gt
+                self.output.instructions.push(Instruction::ConditionRegisterOr { d: 2, a: strict_bit, b: 2 });
+                (12, 2) // branch-if-eq
+            }
+            _ => positive_branch(*operator),
+        };
 
         if tail && true_register == destination {
             // true value already in the result: return on the true branch.
