@@ -206,12 +206,13 @@ pub(crate) fn is_complex_add(expression: &Expression) -> bool {
     !simple
 }
 
-/// An `Add` mwcc reassociates by HOISTING an embedded additive constant to the end: `(a - 1) + a`
-/// -> `(a + a) - 1`, `(a + 1) + b`, `b + (a - 1)`. One operand is a `+`/`-` binary whose RIGHT
-/// operand is a CONSTANT (`X ± c`); the OTHER operand is a bare register leaf. mwcc groups the two
-/// register terms and applies the constant last, which the source-order codegen does not reproduce.
-/// A computed other-operand (`(a-1)+b*c`), a constant other-operand (`(a*a)+3`, constant already
-/// outer), or no inner constant (`(a-b)+a`) all match mwcc and are excluded.
+/// An `Add` mwcc reassociates by HOISTING embedded additive constants to the end: `(a-1)+a` ->
+/// `(a+a)-1` (`add r3,r3,r3; addi r3,r3,-1`), `(a+1)+b`, `b+(a-1)`, and `(a-1)+(b-1)` -> `(a+b)-2`
+/// (the constants are summed). One operand is a `+`/`-` binary whose RIGHT operand is a CONSTANT
+/// (`X ± c`); the OTHER operand is a bare register leaf OR another such `Y ± c`. mwcc groups the
+/// register terms and applies the summed constant last, which the source-order codegen does not
+/// reproduce. Excluded (all match mwcc): a computed non-additive other-operand (`(a-1)+b*c`), a
+/// constant already at the outer position (`(a*a)+3`, `(a-b)+1`), and no inner constant (`(a-b)+a`).
 fn is_constant_hoist_add(expression: &Expression) -> bool {
     let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
         return false;
@@ -220,8 +221,9 @@ fn is_constant_hoist_add(expression: &Expression) -> bool {
         matches!(operand, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, right, .. }
             if matches!(right.as_ref(), Expression::IntegerLiteral(_)))
     };
-    (additive_with_constant(left) && matches!(right.as_ref(), Expression::Variable(_)))
-        || (additive_with_constant(right) && matches!(left.as_ref(), Expression::Variable(_)))
+    let register_leaf = |operand: &Expression| matches!(operand, Expression::Variable(_));
+    (additive_with_constant(left) && (register_leaf(right) || additive_with_constant(right)))
+        || (additive_with_constant(right) && register_leaf(left))
 }
 
 /// Whether an integer expression CONTAINS a reassociated add-tree anywhere — the whole expression
