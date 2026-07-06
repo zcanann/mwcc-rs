@@ -264,6 +264,9 @@ impl Generator {
         // constant, the inlined chain (`int k=3; int m=4; return x+k+m` -> `x+3+4`) is
         // exactly the direct multi-term-with-constants form our codegen already folds
         // (`addi r3,r3,7`), and mwcc folds it identically — so it is safe to proceed.
+        // (A single constant STEP like `t = t + 5` also reassociates in mwcc, but our
+        // direct codegen matches only for `+`, not `-` — `(a+b)-5` reassociates in mwcc
+        // yet lowers in place here — so the whole additive chain stays deferred.)
         let all_values_constant = values.values().all(|value| matches!(value, Expression::IntegerLiteral(_)));
         if has_additive_chain(&inlined) && !all_values_constant {
             return Err(Diagnostic::error("a value-tracked local folded into a multi-term sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
