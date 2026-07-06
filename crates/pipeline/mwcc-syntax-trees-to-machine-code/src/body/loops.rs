@@ -269,8 +269,12 @@ impl Generator {
         if !else_body.is_empty() {
             return Ok(false);
         }
-        let [Statement::Return(Some(Expression::Variable(returned)))] = then_body.as_slice() else { return Ok(false) };
-        if returned != loop_ptr || chase_name != loop_ptr {
+        // The in-body early return: either the loop pointer itself (a bare `bclr`, no
+        // move) or a constant flag (materialize + `blr`, reached past a forward branch
+        // that skips the found arm when the condition is false).
+        let [Statement::Return(Some(return_value))] = then_body.as_slice() else { return Ok(false) };
+        let returns_pointer = matches!(return_value, Expression::Variable(other) if other == loop_ptr);
+        if (!returns_pointer && constant_value(return_value).is_none()) || chase_name != loop_ptr {
             return Ok(false);
         }
         let is_chase = matches!(chase_value, Expression::Member { base, .. }
@@ -281,16 +285,32 @@ impl Generator {
             return Ok(false);
         }
 
-        // -- emit: b test; body{ if-cond, bclr-if-true, chase }; test: cmplwi; bne body; default; blr --
+        // -- emit: b test; body{ if-cond, found-arm, chase }; test: cmplwi; bne body; default; blr --
         self.output.anonymous_label_bump = 6; // while (4) + the inner if (2)
+        let result = Eabi::general_result().number;
         let skip = self.output.instructions.len();
         self.output.instructions.push(Instruction::Branch { target: 0 });
         let body_top = self.output.instructions.len();
-        // The in-body test returns (via bclr) when TRUE — invert emit_condition_test's SKIP branch.
         let (skip_options, if_bit) = self.emit_condition_test(if_condition)?;
-        let return_options = if skip_options == 4 { 12 } else { 4 };
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: return_options, condition_bit: if_bit });
-        self.evaluate_general(chase_value, loop_register)?;
+        if returns_pointer {
+            // Return the searched pointer (already in r3) via `bclr` when TRUE — invert
+            // emit_condition_test's SKIP branch; the chase falls through after.
+            let return_options = if skip_options == 4 { 12 } else { 4 };
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: return_options, condition_bit: if_bit });
+            self.evaluate_general(chase_value, loop_register)?;
+        } else {
+            // Skip the found arm to the chase when FALSE (the emit_condition_test SKIP
+            // branch used directly), else materialize the flag and return.
+            let to_chase = self.output.instructions.len();
+            self.output.instructions.push(Instruction::BranchConditionalForward { options: skip_options, condition_bit: if_bit, target: 0 });
+            self.evaluate_tail(return_value, function.return_type, result)?;
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            let chase_at = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[to_chase] {
+                *target = chase_at;
+            }
+            self.evaluate_general(chase_value, loop_register)?;
+        }
         let condition_at = self.output.instructions.len();
         if let Instruction::Branch { target } = &mut self.output.instructions[skip] {
             *target = condition_at;
@@ -298,7 +318,6 @@ impl Generator {
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let back = if options == 4 { 12 } else { 4 };
         self.output.instructions.push(Instruction::BranchConditionalForward { options: back, condition_bit, target: body_top });
-        let result = Eabi::general_result().number;
         self.evaluate_tail(default_return, function.return_type, result)?;
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
