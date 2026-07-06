@@ -2229,6 +2229,15 @@ impl Parser {
                 items.push(AsmItem::Label(mnemonic));
                 continue;
             }
+            // `entry <name>` defines an additional global symbol at this position.
+            if mnemonic == "entry" {
+                let name = match self.advance() {
+                    Token::Identifier(word) => word,
+                    other => return Err(Diagnostic::error(format!("expected a name after asm `entry`, found {other}"))),
+                };
+                items.push(AsmItem::Entry(name));
+                continue;
+            }
             // A `.` immediately after the mnemonic is the record-bit suffix
             // (`addic.`, `rlwinm.`, `or.`): the lexer split it off as its own token.
             if *self.peek() == Token::Dot {

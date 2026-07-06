@@ -273,6 +273,10 @@ pub struct Function {
 pub enum AsmItem {
     /// A branch-target label definition, e.g. `lbl_80362740:`.
     Label(String),
+    /// An `entry <name>` directive: defines an additional GLOBAL symbol at the
+    /// current position in the function's `.text` (the runtime's `_savefpr_14` …
+    /// register save/restore entry points). Emits no instruction.
+    Entry(String),
     /// An assembled instruction line.
     Instruction(AsmInstruction),
 }

@@ -1017,6 +1017,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             // FORWARD-referenced function already emitted at its first
             // reference (the contains_key guard above).
             global_symbols.insert(function.name, function_symbols[index]);
+            // Inline-`asm` `entry <name>` points: GLOBAL NOTYPE symbols at offsets
+            // within this function's `.text`, emitted immediately after the function's
+            // own symbol (mwcc's `_savefpr_14` … register save/restore entry points).
+            for (name, byte_offset) in &function.entry_points {
+                global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(&mut symtab, strtab.add(name), function_offset[index] + byte_offset, 0, STB_GLOBAL_NOTYPE, 0, index_of(text_section) as u16);
+                comment_values.push((4, 0));
+            }
         }
         emit_referenced!(implicit_ordered);
         // Initialized objects declared right after this (non-static) function

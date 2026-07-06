@@ -26,13 +26,18 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
         .expect("assemble_asm_function called on a non-asm function");
 
     // Pass 1: map each label to the index of the instruction it precedes (a label
-    // with no following instruction points one past the end — the auto-`blr` slot).
+    // with no following instruction points one past the end — the auto-`blr` slot),
+    // and record each `entry <name>` at the same instruction position.
     let mut labels: HashMap<&str, usize> = HashMap::new();
+    let mut entry_points: Vec<(String, usize)> = Vec::new();
     let mut index = 0usize;
     for item in body {
         match item {
             AsmItem::Label(name) => {
                 labels.insert(name.as_str(), index);
+            }
+            AsmItem::Entry(name) => {
+                entry_points.push((name.clone(), index));
             }
             AsmItem::Instruction(line) if emits_word(line) => index += 1,
             AsmItem::Instruction(_) => {}
@@ -64,6 +69,7 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     output.is_weak = function.is_weak;
     output.section = function.section.clone();
     output.is_asm = true;
+    output.entry_points = entry_points;
     Ok(output)
 }
 

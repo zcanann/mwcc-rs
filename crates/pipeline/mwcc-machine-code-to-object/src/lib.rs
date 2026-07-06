@@ -66,6 +66,11 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             is_weak: function.is_weak,
             section: function.section.as_deref(),
             is_asm: function.is_asm,
+            entry_points: function
+                .entry_points
+                .iter()
+                .map(|(name, index)| (name.clone(), *index as u32 * 4))
+                .collect(),
             text,
             // Each codegen relocation patches one instruction; its byte offset
             // (relative to the function) is four times the instruction index plus

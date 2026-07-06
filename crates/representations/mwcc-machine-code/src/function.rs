@@ -149,6 +149,10 @@ pub struct MachineFunction {
     /// section (only compiler-generated functions are cataloged), so the writer
     /// excludes it from the mwcats records and relocations.
     pub is_asm: bool,
+    /// Inline-`asm` `entry <name>` points: additional GLOBAL symbols at `.text`
+    /// offsets within this function (the runtime's `_savefpr_14` … register save/
+    /// restore entry points). Each pairs the symbol name with its instruction index.
+    pub entry_points: Vec<(String, usize)>,
 }
 
 impl MachineFunction {
@@ -182,6 +186,7 @@ impl MachineFunction {
             symbol_order: Vec::new(),
             implicit_external_callees: Vec::new(),
             is_asm: false,
+            entry_points: Vec::new(),
         }
     }
 

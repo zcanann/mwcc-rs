@@ -1,0 +1,58 @@
+void _savefpr_14(void);
+void _savefpr_15(void);
+void _savefpr_16(void);
+void _savefpr_17(void);
+void _savefpr_18(void);
+void _savefpr_19(void);
+void _savefpr_20(void);
+void _savefpr_21(void);
+void _savefpr_22(void);
+void _savefpr_23(void);
+void _savefpr_24(void);
+void _savefpr_25(void);
+void _savefpr_26(void);
+void _savefpr_27(void);
+void _savefpr_28(void);
+void _savefpr_29(void);
+void _savefpr_30(void);
+void _savefpr_31(void);
+asm void __save_fpr(void) {
+	nofralloc
+    entry _savefpr_14
+		stfd    fp14,-144(r11)
+    entry _savefpr_15
+		stfd    fp15,-136(r11)
+    entry _savefpr_16
+		stfd    fp16,-128(r11)
+    entry _savefpr_17
+		stfd    fp17,-120(r11)
+    entry _savefpr_18
+		stfd    fp18,-112(r11)
+    entry _savefpr_19
+		stfd    fp19,-104(r11)
+    entry _savefpr_20
+		stfd    fp20,-96(r11)
+    entry _savefpr_21
+		stfd    fp21,-88(r11)
+    entry _savefpr_22
+		stfd    fp22,-80(r11)
+    entry _savefpr_23
+		stfd    fp23,-72(r11)
+    entry _savefpr_24
+		stfd    fp24,-64(r11)
+	entry _savefpr_25
+		stfd    fp25,-56(r11)
+	entry _savefpr_26
+		stfd    fp26,-48(r11)
+    entry _savefpr_27
+		stfd    fp27,-40(r11)
+	entry _savefpr_28
+		stfd    fp28,-32(r11)
+	entry _savefpr_29
+		stfd    fp29,-24(r11)
+    entry _savefpr_30
+		stfd    fp30,-16(r11)
+    entry _savefpr_31
+		stfd    fp31,-8(r11)
+		blr
+}

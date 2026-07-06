@@ -104,6 +104,10 @@ pub struct FunctionObject<'a> {
     /// but mwcc does NOT catalog hand-written asm in `.mwcats.text`, so the writer
     /// omits its mwcats record and relocation.
     pub is_asm: bool,
+    /// Inline-`asm` `entry <name>` points: additional GLOBAL `.text` symbols at byte
+    /// offsets within this function (`_savefpr_14` …). Each pairs the symbol name with
+    /// its byte offset relative to the function start.
+    pub entry_points: Vec<(String, u32)>,
     pub text: &'a [u8],
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.
