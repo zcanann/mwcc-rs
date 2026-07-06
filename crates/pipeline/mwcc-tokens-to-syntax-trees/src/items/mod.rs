@@ -1037,7 +1037,10 @@ impl Parser {
         }
         let base = match self.advance() {
             Token::KeywordInt => Type::Int,
-            Token::KeywordChar => Type::Char,
+            // Plain `char` follows the build's signedness default: signed on
+            // mainline/1.3.2+, UNSIGNED on GC/1.3 (build 53) and `-char unsigned`
+            // (no `extsb` on read). `signed char`/`unsigned char` below are explicit.
+            Token::KeywordChar => if self.char_is_signed { Type::Char } else { Type::UnsignedChar },
             // `short` / `short int`.
             Token::KeywordShort => {
                 let _ = self.eat_keyword(Token::KeywordInt);

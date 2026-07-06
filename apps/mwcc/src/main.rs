@@ -153,7 +153,7 @@ fn main() -> ExitCode {
 /// Run the full pipeline, optionally dumping a per-phase artifact report.
 fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfig, artifacts: Option<&str>) -> Compilation<Vec<u8>> {
     let tokens = mwcc_source_to_tokens::tokenize(source)?;
-    let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(tokens.clone())?;
+    let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(tokens.clone(), config.char_is_signed())?;
     // Every callable's return type (prototypes + this unit's definitions) so a
     // call's result type is known during lowering.
     let call_return_types: std::collections::HashMap<String, mwcc_syntax_trees::Type> = unit

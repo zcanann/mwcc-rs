@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Type, UnaryOperator};
 use crate::analysis::*;
 use crate::generator::*;
 
@@ -414,6 +414,15 @@ impl Generator {
     /// from the type of the shifted value.
     pub(crate) fn emit_shift_right(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
         let signed = self.signedness_of(left)?;
+        // A narrow (char/short) value promotes to a SIGNED int before a `>>`, so a narrow
+        // UNSIGNED LOAD — a `*p`/`p[i]`/`s->m` deref, or a file-scope global read (lbz/lhz) —
+        // shifts with the arithmetic `srawi` (the value is non-negative, same result). A
+        // register-resident narrow LOCAL fuses the extension and shift into one `rlwinm` below.
+        let promoted_signed = signed
+            || self.is_narrow_unsigned_load(left)?
+            || matches!(left, Expression::Variable(name)
+                if !self.locations.contains_key(name.as_str())
+                    && matches!(self.globals.get(name.as_str()), Some(Type::UnsignedChar) | Some(Type::UnsignedShort)));
         let d = destination;
 
         if let Some(amount) = constant_value(right) {
@@ -437,8 +446,7 @@ impl Generator {
                 let shift = amount as u8;
                 // A narrow unsigned LOAD promotes to a signed int before the shift, so mwcc emits
                 // the arithmetic `srawi` (the value is non-negative, so the result is the same).
-                let shift_signed = signed || self.is_narrow_unsigned_load(left)?;
-                self.output.instructions.push(if shift_signed {
+                self.output.instructions.push(if promoted_signed {
                     Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift }
                 } else {
                     Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift }
@@ -460,7 +468,7 @@ impl Generator {
         } else {
             self.general_register_of_leaf(right)?
         };
-        self.output.instructions.push(if signed {
+        self.output.instructions.push(if promoted_signed {
             Instruction::ShiftRightAlgebraicWord { a: d, s: source, b: amount }
         } else {
             Instruction::ShiftRightWord { a: d, s: source, b: amount }

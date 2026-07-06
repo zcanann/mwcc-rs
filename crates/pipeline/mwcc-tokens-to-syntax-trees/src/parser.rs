@@ -39,6 +39,12 @@ pub(crate) struct StructLayout {
 pub(crate) struct Parser {
     pub(crate) tokens: Vec<Token>,
     pub(crate) position: usize,
+    /// Whether plain (unqualified) `char` is signed — the build's `char` default
+    /// (mainline/1.3.2+ signed; GC/1.3 build 53 and `-char unsigned` unsigned).
+    /// A plain `char` declaration becomes `Type::UnsignedChar` when this is false,
+    /// so the codegen omits the `extsb` a signed char would take. `signed char`
+    /// and `unsigned char` are explicit and unaffected.
+    pub(crate) char_is_signed: bool,
     /// Declared struct layouts, by tag name.
     pub(crate) structs: HashMap<String, StructLayout>,
     /// In-scope variables that are struct pointers, mapped to their struct tag,
