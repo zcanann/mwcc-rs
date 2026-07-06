@@ -90,6 +90,22 @@ impl Generator {
                     }
                 }
             }
+            // BOTH operands `variable ± constant` (`(a-1)+(b-1)`): mwcc groups them with the SECOND
+            // term's variable FIRST and sums the (signed) constants — `add r3,r4,r3; addi r3,r3,-2`.
+            if let (Some((x1_name, c1, op1)), Some((x2_name, c2, op2))) = (variable_plus_constant(left), variable_plus_constant(right)) {
+                let signed = |constant: i64, operator: BinaryOperator| if operator == BinaryOperator::Subtract { constant.checked_neg() } else { Some(constant) };
+                if let (Some(s1), Some(s2)) = (signed(c1, op1), signed(c2, op2)) {
+                    if let Some(sum) = s1.checked_add(s2) {
+                        if let (Ok(immediate), Some(x1_register), Some(x2_register)) =
+                            (i16::try_from(sum), self.lookup_general(x1_name), self.lookup_general(x2_name))
+                        {
+                            self.output.instructions.push(Instruction::Add { d: destination, a: x2_register, b: x1_register });
+                            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
         // Other reassociated add-trees (nested non-leaf operands, mixed with `*`) still diverge in
         // register allocation — defer rather than emit wrong bytes (#20 allocator).
