@@ -427,13 +427,21 @@ impl Generator {
             // return. emit_condition_test yields the skip-when-false encoding directly.
             let result = mwcc_target::Eabi::general_result().number;
             let (options, condition_bit) = self.emit_condition_test(condition)?;
-            let branch_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-            self.evaluate_tail(value, function.return_type, result)?;
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
-            let continuation = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-                *target = continuation;
+            if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result)) {
+                // The guard VALUE already occupies the result register, so mwcc returns it with a
+                // single conditional branch-to-lr (`bgtlr`) — the forward branch over a `blr` whose
+                // value move would be a no-op is redundant. options^8 turns the skip-when-false
+                // encoding into return-when-true.
+                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+            } else {
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.evaluate_tail(value, function.return_type, result)?;
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                let continuation = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = continuation;
+                }
             }
 
             // The continuation is a pure value-tracking body; anything it cannot compile must
