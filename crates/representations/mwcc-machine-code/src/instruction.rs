@@ -11,6 +11,10 @@ pub enum Instruction {
     /// (so a following `bne`/`beq` tests it). Used by a loop counter decrement
     /// (`--n` → `addic. rN, rN, -1`).
     AddImmediateCarryingRecord { d: u8, a: u8, immediate: i16 },
+    /// `addic rD, rA, SIMM` — add immediate carrying (no CR0 record). Also spells
+    /// the simplified `subic rD, rA, val` mnemonic as `addic rD, rA, -val`; used by
+    /// the runtime's inline-`asm` shift helpers.
+    AddImmediateCarrying { d: u8, a: u8, immediate: i16 },
     /// `addis rD, rA, SIMM` — also spells `lis rD, SIMM` when `a == 0`.
     AddImmediateShifted { d: u8, a: u8, immediate: i16 },
     /// `ori rA, rS, UIMM`
@@ -34,6 +38,8 @@ pub enum Instruction {
     AndImmediateRecord { a: u8, s: u8, immediate: u16 },
     /// `nor rA, rS, rB` — spells `not rA, rS` when `s == b`.
     Nor { a: u8, s: u8, b: u8 },
+    /// `xor. rA, rS, rB` — XOR, record form (sets CR0).
+    XorRecord { a: u8, s: u8, b: u8 },
     /// `nand rA, rS, rB` — `~(rS & rB)`.
     Nand { a: u8, s: u8, b: u8 },
     /// `eqv rA, rS, rB` — `~(rS ^ rB)`.
@@ -60,6 +66,12 @@ pub enum Instruction {
     SubtractFromCarrying { d: u8, a: u8, b: u8 },
     /// `subfe rD, rA, rB` => rD = rB - rA + carry - 1 (the carrying high word of a 64-bit subtract).
     SubtractFromExtended { d: u8, a: u8, b: u8 },
+    /// `subfe. rD, rA, rB` — record form (sets CR0); the runtime's 64-bit divide loop
+    /// fuses the borrow high-word subtract with its `< 0` test.
+    SubtractFromExtendedRecord { d: u8, a: u8, b: u8 },
+    /// `subfze rD, rA` => rD = -rA + carry - 1 — negate-with-borrow (the runtime's
+    /// signed-magnitude divide preamble).
+    SubtractFromZeroExtended { d: u8, a: u8 },
     /// `addc rD, rA, rB` => rD = rA + rB, setting the carry (the low word of a 64-bit add).
     AddCarrying { d: u8, a: u8, b: u8 },
     /// `adde rD, rA, rB` => rD = rA + rB + carry.

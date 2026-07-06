@@ -293,6 +293,8 @@ pub enum AsmOperand {
     /// A branch-target label reference (an identifier that is not a register), e.g.
     /// the `lbl_80362740` in `blt lbl_80362740`.
     Label(String),
+    /// A condition-register field `crN` (0..=7), e.g. the `cr0` in `cmpwi cr0, r3, 0`.
+    ConditionRegister(u8),
 }
 
 /// One instruction line inside an inline-`asm` body: a mnemonic and its operands.

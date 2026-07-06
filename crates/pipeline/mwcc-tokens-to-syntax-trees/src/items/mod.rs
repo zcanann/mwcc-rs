@@ -2219,7 +2219,7 @@ impl Parser {
                 Token::EndOfFile => return Err(Diagnostic::error("unterminated asm body")),
                 _ => {}
             }
-            let mnemonic = match self.advance() {
+            let mut mnemonic = match self.advance() {
                 Token::Identifier(word) => word,
                 other => return Err(Diagnostic::error(format!("expected an asm mnemonic or label, found {other}"))),
             };
@@ -2228,6 +2228,12 @@ impl Parser {
                 self.advance();
                 items.push(AsmItem::Label(mnemonic));
                 continue;
+            }
+            // A `.` immediately after the mnemonic is the record-bit suffix
+            // (`addic.`, `rlwinm.`, `or.`): the lexer split it off as its own token.
+            if *self.peek() == Token::Dot {
+                self.advance();
+                mnemonic.push('.');
             }
             let mut operands = Vec::new();
             loop {
@@ -3734,6 +3740,12 @@ fn parse_asm_register(word: &str) -> Option<AsmOperand> {
         "sp" | "SP" => return Some(AsmOperand::Gpr(1)),
         "RTOC" | "rtoc" => return Some(AsmOperand::Gpr(2)),
         _ => {}
+    }
+    // A condition-register field `crN` (0..=7).
+    if let Some(digits) = word.strip_prefix("cr") {
+        if let Ok(field) = digits.parse::<u8>() {
+            return (field <= 7).then_some(AsmOperand::ConditionRegister(field));
+        }
     }
     let index = |digits: &str| -> Option<u8> {
         let value: u16 = digits.parse().ok()?;

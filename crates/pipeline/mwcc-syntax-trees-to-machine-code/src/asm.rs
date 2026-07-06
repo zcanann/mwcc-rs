@@ -53,9 +53,10 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     if !instructions.last().is_some_and(is_terminator) {
         instructions.push(Instruction::BranchToLinkRegister);
     }
-    // mwcc's asm peephole: a branch whose target is a `blr` becomes the
-    // corresponding branch-to-link form (`b <ret>` -> `blr`, `blt <ret>` -> `bltlr`).
-    apply_branch_to_return_peephole(&mut instructions);
+    // mwcc's asm branch peepholes (both discovered by probe): a branch whose target
+    // is another unconditional branch chases to the final target; a branch whose
+    // final target is a `blr` becomes the branch-to-link form.
+    apply_branch_peepholes(&mut instructions);
 
     let mut output = MachineFunction::new(function.name.clone());
     output.instructions = instructions;
@@ -72,22 +73,54 @@ fn emits_word(line: &AsmInstruction) -> bool {
     line.mnemonic != "nofralloc"
 }
 
-/// Rewrite each branch whose target instruction is a `blr` into the branch-to-link
-/// form, reproducing mwcc's inline-asm peephole. Indices are preserved (1-for-1).
-fn apply_branch_to_return_peephole(instructions: &mut [Instruction]) {
+/// Reproduce mwcc's two inline-asm branch peepholes, preserving instruction indices:
+///  1. CHAIN: a branch whose target is an unconditional `b` is retargeted to that
+///     branch's destination (followed transitively).
+///  2. RETURN: a branch whose (chased) target is a `blr` becomes the branch-to-link
+///     form (`b <ret>` -> `blr`, `blt <ret>` -> `bltlr`).
+fn apply_branch_peepholes(instructions: &mut [Instruction]) {
+    let count = instructions.len();
+    // Snapshot: unconditional-branch destinations and return positions.
+    let unconditional: Vec<Option<usize>> = instructions
+        .iter()
+        .map(|instruction| match instruction {
+            Instruction::Branch { target } => Some(*target),
+            _ => None,
+        })
+        .collect();
     let is_return: Vec<bool> = instructions
         .iter()
         .map(|instruction| matches!(instruction, Instruction::BranchToLinkRegister))
         .collect();
+    // Follow a chain of unconditional branches to its final landing index.
+    let chase = |mut target: usize| -> usize {
+        let mut steps = 0;
+        while let Some(Some(next)) = unconditional.get(target).copied() {
+            target = next;
+            steps += 1;
+            if steps > count {
+                break; // guard against a pathological branch cycle
+            }
+        }
+        target
+    };
     for instruction in instructions.iter_mut() {
         match *instruction {
-            Instruction::Branch { target } if is_return.get(target).copied().unwrap_or(false) => {
-                *instruction = Instruction::BranchToLinkRegister;
+            Instruction::Branch { target } => {
+                let landing = chase(target);
+                if is_return.get(landing).copied().unwrap_or(false) {
+                    *instruction = Instruction::BranchToLinkRegister;
+                } else {
+                    *instruction = Instruction::Branch { target: landing };
+                }
             }
-            Instruction::BranchConditionalForward { options, condition_bit, target }
-                if is_return.get(target).copied().unwrap_or(false) =>
-            {
-                *instruction = Instruction::BranchConditionalToLinkRegister { options, condition_bit };
+            Instruction::BranchConditionalForward { options, condition_bit, target } => {
+                let landing = chase(target);
+                if is_return.get(landing).copied().unwrap_or(false) {
+                    *instruction = Instruction::BranchConditionalToLinkRegister { options, condition_bit };
+                } else {
+                    *instruction = Instruction::BranchConditionalForward { options, condition_bit, target: landing };
+                }
             }
             _ => {}
         }
@@ -152,6 +185,38 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         // Two-register ALU (`op dst, src`).
         "neg" => { let [d, a] = gprs(mnemonic, operands)?; Instruction::Negate { d, a } }
         "cntlzw" => { let [a, s] = gprs(mnemonic, operands)?; Instruction::CountLeadingZeros { a, s } }
+        "sraw" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::ShiftRightAlgebraicWord { a, s, b } }
+        "srawi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::ShiftRightAlgebraicImmediate { a, s, shift } }
+        "addze" => { let [d, a] = gprs(mnemonic, operands)?; Instruction::AddToZeroExtended { d, a } }
+
+        // Add-immediate-carrying (`addic dst, src, SIMM`); the simplified `subic`
+        // spelling negates the immediate (`subic d, a, v` == `addic d, a, -v`).
+        "addic" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediateCarrying { d, a, immediate } }
+        "subic" => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            let immediate = immediate.checked_neg().ok_or_else(|| Diagnostic::error("inline-asm 'subic' immediate overflows on negation"))?;
+            Instruction::AddImmediateCarrying { d, a, immediate }
+        }
+        "addic." => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediateCarryingRecord { d, a, immediate } }
+        "subfze" => { let [d, a] = gprs(mnemonic, operands)?; Instruction::SubtractFromZeroExtended { d, a } }
+        "subfe." => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFromExtendedRecord { d, a, b } }
+        "or." => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::OrRecord { a, s, b } }
+        "xor." => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::XorRecord { a, s, b } }
+
+        // Rotate-and-mask family. `rlwinm rA,rS,SH,MB,ME` (+ `.` record and the
+        // `rlwimi` insert form); the `rotlwi`/`slwi`/`clrlwi` spellings are aliases.
+        "rlwinm" => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift, begin, end } }
+        "rlwinm." => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMaskRecord { a, s, shift, begin, end } }
+        "rlwimi" => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMaskInsert { a, s, shift, begin, end } }
+        "rotlwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift, begin: 0, end: 31 } }
+        "slwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::ShiftLeftImmediate { a, s, shift } }
+        "clrlwi" => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediate { a, s, clear } }
+
+        // Floating point (double): compare, subtract, round-to-single, move.
+        "fcmpu" => { let [a, b] = fprs(mnemonic, strip_cr0(mnemonic, operands)?)?; Instruction::FloatCompareUnordered { a, b } }
+        "fsub" => { let [d, a, b] = fprs(mnemonic, operands)?; Instruction::FloatSubtractDouble { d, a, b } }
+        "frsp" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::RoundToSingle { d, b } }
+        "fmr" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::FloatMove { d, b } }
 
         // Register + signed-immediate ALU (`op dst, src, SIMM`).
         "addi" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediate { d, a, immediate } }
@@ -175,26 +240,29 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         "stfd" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatDouble { s, a, offset } }
         "stfs" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatSingle { s, a, offset } }
 
-        // Compares against cr0 (`cmp rA, {rB | SIMM}`). An explicit `crN` field
-        // (a 3-operand form) is not modeled and reaches the DEFER fallthrough.
-        "cmpwi" => { let (a, immediate) = gpr_immediate(mnemonic, operands)?; Instruction::CompareWordImmediate { a, immediate } }
-        "cmplwi" => {
+        // Compares against cr0 (`cmp [cr0,] rA, {rB | SIMM}`). An explicit `crN`
+        // field (N != 0) DEFERS. `cmpi`/`cmpli` are the older mnemonic spellings.
+        "cmpwi" | "cmpi" => { let operands = strip_cr0(mnemonic, operands)?; let (a, immediate) = gpr_immediate(mnemonic, operands)?; Instruction::CompareWordImmediate { a, immediate } }
+        "cmplwi" | "cmpli" => {
+            let operands = strip_cr0(mnemonic, operands)?;
             expect_operand_count(mnemonic, operands, 2)?;
             let a = gpr(mnemonic, &operands[0])?;
             let immediate = immediate16u(mnemonic, &operands[1])?;
             Instruction::CompareLogicalWordImmediate { a, immediate }
         }
-        "cmpw" => { let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareWord { a, b } }
-        "cmplw" => { let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareLogicalWord { a, b } }
+        "cmpw" => { let operands = strip_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareWord { a, b } }
+        "cmplw" => { let operands = strip_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareLogicalWord { a, b } }
 
         // The count register (`bdnz` loop support).
         "mtctr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToCountRegister { s } }
 
         // Unconditional branch to a label.
         "b" => Instruction::Branch { target: label_target(mnemonic, operands, labels)? },
-        // Conditional branches on cr0 (BO/BI): the target is a label.
+        // Conditional branches on cr0 (BO/BI); an optional leading `cr0` is allowed.
+        // The target is a label.
         "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" => {
             let (options, condition_bit) = conditional_branch_fields(mnemonic);
+            let operands = strip_cr0(mnemonic, operands)?;
             let target = label_target(mnemonic, operands, labels)?;
             Instruction::BranchConditionalForward { options, condition_bit, target }
         }
@@ -244,6 +312,58 @@ fn gprs<const N: usize>(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<
 /// Read exactly three GPR operands positionally (`op dst, srcA, srcB`).
 fn rrr(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u8; 3]> {
     gprs(mnemonic, operands)
+}
+
+/// Read exactly `N` FPR operands positionally.
+fn fprs<const N: usize>(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u8; N]> {
+    expect_operand_count(mnemonic, operands, N)?;
+    let mut registers = [0u8; N];
+    for (slot, operand) in registers.iter_mut().zip(operands) {
+        *slot = fpr(mnemonic, operand)?;
+    }
+    Ok(registers)
+}
+
+/// Drop an optional leading `cr0` operand (mwcc spells compares/branches with an
+/// explicit `cr0`). A non-zero `crN` field is not modeled, so it DEFERS.
+fn strip_cr0<'a>(mnemonic: &str, operands: &'a [AsmOperand]) -> Compilation<&'a [AsmOperand]> {
+    match operands.first() {
+        Some(AsmOperand::ConditionRegister(0)) => Ok(&operands[1..]),
+        Some(AsmOperand::ConditionRegister(field)) => {
+            Err(Diagnostic::error(format!("inline-asm '{mnemonic}' on cr{field} (non-cr0) is not supported yet (roadmap)")))
+        }
+        _ => Ok(operands),
+    }
+}
+
+/// Read a `rlwinm`-family `(rA, rS, SH, MB, ME)` operand list.
+fn rotate5(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u8, u8, u8)> {
+    expect_operand_count(mnemonic, operands, 5)?;
+    let a = gpr(mnemonic, &operands[0])?;
+    let s = gpr(mnemonic, &operands[1])?;
+    let field = |operand: &AsmOperand, what: &str| -> Compilation<u8> {
+        match operand {
+            AsmOperand::Immediate(value) if (0..=31).contains(value) => Ok(*value as u8),
+            _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' {what} must be 0..=31"))),
+        }
+    };
+    let shift = field(&operands[2], "shift")?;
+    let begin = field(&operands[3], "mask begin")?;
+    let end = field(&operands[4], "mask end")?;
+    Ok((a, s, shift, begin, end))
+}
+
+/// Read a `(GPR, GPR, shift-amount)` triple (`op dst, src, SH`) where the shift is
+/// a 0..=31 immediate encoded in the instruction's SH field.
+fn rr_shift(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u8)> {
+    expect_operand_count(mnemonic, operands, 3)?;
+    let a = gpr(mnemonic, &operands[0])?;
+    let s = gpr(mnemonic, &operands[1])?;
+    let shift = match &operands[2] {
+        AsmOperand::Immediate(value) if (0..=31).contains(value) => *value as u8,
+        _ => return Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a shift amount in 0..=31"))),
+    };
+    Ok((a, s, shift))
 }
 
 /// Read a `(GPR, GPR, signed-immediate)` triple (`op dst, src, SIMM`).

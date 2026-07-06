@@ -49,7 +49,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
     match instruction {
         // d = rA op rB / rA op SIMM — general destination, general sources.
         Add { d, a, b } | AddRecord { d, a, b } | MultiplyLowRecord { d, a, b } | SubtractFrom { d, a, b } | SubtractFromRecord { d, a, b } | SubtractFromCarrying { d, a, b } | AddExtended { d, a, b }
-        | AddCarrying { d, a, b } | SubtractFromExtended { d, a, b }
+        | AddCarrying { d, a, b } | SubtractFromExtended { d, a, b } | SubtractFromExtendedRecord { d, a, b }
         | MultiplyLow { d, a, b } | MultiplyHighWord { d, a, b } | MultiplyHighWordUnsigned { d, a, b }
         | DivideWord { d, a, b } | DivideWordUnsigned { d, a, b } => {
             visit(D, G, d);
@@ -67,7 +67,8 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             }
         }
         SubtractFromImmediate { d, a, .. } | MultiplyImmediate { d, a, .. } | AddToZeroExtended { d, a }
-        | AddImmediateCarryingRecord { d, a, .. } => {
+        | SubtractFromZeroExtended { d, a }
+        | AddImmediateCarryingRecord { d, a, .. } | AddImmediateCarrying { d, a, .. } => {
             visit(D, G, d);
             visit(U, G, a);
         }
@@ -77,7 +78,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         }
         // rA = rS op rB — PowerPC's logical/shift form: rA destination, rS/rB sources.
         Nor { a, s, b } | Nand { a, s, b } | Eqv { a, s, b } | AndComplement { a, s, b } | OrComplement { a, s, b } | Or { a, s, b } | OrRecord { a, s, b } | And { a, s, b } | AndRecord { a, s, b }
-        | Xor { a, s, b } | ShiftLeftWord { a, s, b } | ShiftRightAlgebraicWord { a, s, b } | ShiftRightWord { a, s, b } => {
+        | Xor { a, s, b } | XorRecord { a, s, b } | ShiftLeftWord { a, s, b } | ShiftRightAlgebraicWord { a, s, b } | ShiftRightWord { a, s, b } => {
             visit(D, G, a);
             visit(U, G, s);
             visit(U, G, b);
