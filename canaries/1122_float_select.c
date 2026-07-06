@@ -11,3 +11,12 @@ double deq(double a, double b)      { return a == b ? a : b; }   // fcmpo; beqlr
 double dne(double a, double b)      { return a != b ? a : b; }   // fcmpo; bnelr; fmr
 double dle_swapped(double a, double b) { return a <= b ? b : a; } // inverted: fcmpo; cror; bnelr; fmr
 float  fmin(float a, float b)       { return a <  b ? a : b; }   // single-precision leaves
+
+// The fabs family `cond ? -x : x` (a leaf and its negation): the plain leaf returns via the branch,
+// the negated arm is an `fneg` tail. The CONSTANT comparison operand loads at the comparison WIDTH —
+// `lfd` for a double (an int literal `0` promotes to double), `lfs` for single — not always `lfs`.
+double dfabs(double a)    { return a < 0    ? -a : a; }   // lfd f0,0; fcmpo; bgelr; fneg f1,f1
+double dfabs_ge(double a) { return a >= 0   ?  a : -a; }  // lfd; fcmpo; cror eq,gt,eq; beqlr; fneg
+double dfabs_lit(double a){ return a < 0.0  ? -a : a; }   // double float-literal also lfd
+float  ffabs(float a)     { return a < 0.0f ? -a : a; }   // lfs; fcmpo; bgelr; fneg
+double dclamp_lo(double a, double b) { return a < 0.0 ? a : b; }  // double-width constant: lfd, not lfs

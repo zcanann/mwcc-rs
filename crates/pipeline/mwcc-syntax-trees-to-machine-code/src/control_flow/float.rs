@@ -24,8 +24,21 @@ impl Generator {
         } else {
             self.float_register_of_leaf(left)?
         };
-        let right_register = if let Expression::FloatLiteral(value) = right {
-            self.load_float_constant(FLOAT_SCRATCH, *value as f32);
+        // A constant right operand loads into the scratch at the comparison's WIDTH: a DOUBLE compare
+        // pools an 8-byte constant (`lfd`), a single pools 4 bytes (`lfs`). An integer literal in a
+        // float comparison (`a < 0`) promotes to that same float type. The width is taken from the
+        // left operand (the variable side of a `var REL const` comparison).
+        let constant_bits = match right {
+            Expression::FloatLiteral(value) => Some(*value),
+            Expression::IntegerLiteral(value) => Some(*value as f64),
+            _ => None,
+        };
+        let right_register = if let Some(value) = constant_bits {
+            if self.is_double_value(left) {
+                self.load_double_constant(FLOAT_SCRATCH, value.to_bits());
+            } else {
+                self.load_float_constant(FLOAT_SCRATCH, value as f32);
+            }
             FLOAT_SCRATCH
         } else if self.is_float_located(right) {
             self.emit_located_operand(right, FLOAT_SCRATCH)?;
@@ -52,8 +65,11 @@ impl Generator {
         }
         // A float conditional branch advances mwcc's anonymous-`@N` counter by 3.
         self.output.has_float_branch = true;
-        let true_register = self.float_register_of_leaf(when_true)?;
-        let false_register = self.float_register_of_leaf(when_false)?;
+        // Each arm is a float leaf (its value in a register) or the NEGATION of a leaf (the fabs
+        // family `cond ? -x : x`: the base is in the register, the arm value is `fneg base`). The
+        // negated arm becomes an `fneg` tail; a plain leaf becomes the branch-returned value or `fmr`.
+        let (true_register, true_negate) = self.float_select_arm(when_true)?;
+        let (false_register, false_negate) = self.float_select_arm(when_false)?;
         // The condition operands may be memory loads: a located left operand loads
         // into a free register (avoiding the select values), the right into the
         // scratch; leaf operands stay in place.
@@ -79,22 +95,40 @@ impl Generator {
             _ => positive_branch(*operator),
         };
 
-        if tail && true_register == destination {
+        // The arm returned via the branch must be a plain leaf already in the result register; the
+        // OTHER arm becomes the fall-through tail (`fmr` for a leaf, `fneg` for a negated one).
+        if tail && !true_negate && true_register == destination {
             // true value already in the result: return on the true branch.
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: positive_options, condition_bit });
-            if destination != false_register {
-                self.output.instructions.push(Instruction::FloatMove { d: destination, b: false_register });
-            }
+            self.emit_float_select_tail(destination, false_register, false_negate);
             return Ok(());
         }
-        if tail && false_register == destination {
+        if tail && !false_negate && false_register == destination {
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: positive_options ^ 8, condition_bit });
-            if destination != true_register {
-                self.output.instructions.push(Instruction::FloatMove { d: destination, b: true_register });
-            }
+            self.emit_float_select_tail(destination, true_register, true_negate);
             return Ok(());
         }
         Err(Diagnostic::error("non-tail float select not yet supported"))
+    }
+
+    /// Classify a float select arm: a plain leaf (`(register, false)`) or the negation of a leaf
+    /// (`(base_register, true)` — the fabs family `cond ? -x : x`).
+    fn float_select_arm(&self, arm: &Expression) -> Compilation<(u8, bool)> {
+        if let Expression::Unary { operator: UnaryOperator::Negate, operand } = arm {
+            Ok((self.float_register_of_leaf(operand)?, true))
+        } else {
+            Ok((self.float_register_of_leaf(arm)?, false))
+        }
+    }
+
+    /// Emit the fall-through arm of a tail float select: `fneg` a negated arm, else `fmr` a leaf that
+    /// is not already in the destination.
+    fn emit_float_select_tail(&mut self, destination: u8, register: u8, negate: bool) {
+        if negate {
+            self.output.instructions.push(Instruction::FloatNegate { d: destination, b: register });
+        } else if destination != register {
+            self.output.instructions.push(Instruction::FloatMove { d: destination, b: register });
+        }
     }
 
 }
