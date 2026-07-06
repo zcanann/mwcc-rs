@@ -52,8 +52,8 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     let mut symbol_order: Vec<String> = Vec::new();
     for item in body {
         if let AsmItem::Instruction(line) = item {
-            if let Some(instruction) = assemble_line(line, &labels)? {
-                let instruction_index = instructions.len();
+            let instruction_index = instructions.len();
+            if let Some(instruction) = assemble_line(line, &labels, instruction_index)? {
                 instructions.push(instruction);
                 for operand in &line.operands {
                     if let AsmOperand::Symbol { name, suffix } = operand {
@@ -166,15 +166,17 @@ fn is_terminator(instruction: &Instruction) -> bool {
 /// Assemble one asm line into an instruction, or `None` for a directive that
 /// emits nothing (`nofralloc`). Branch mnemonics resolve their target label
 /// through `labels` (label name -> instruction index).
-fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compilation<Option<Instruction>> {
+fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>, instruction_index: usize) -> Compilation<Option<Instruction>> {
     let raw = line.mnemonic.as_str();
-    // A branch static-prediction hint: `+` (predict taken) sets the low BO bit. `-`
-    // (predict not taken) is not modeled — its BO encoding is unverified, so DEFER.
-    let (mnemonic, branch_hint) = match raw.strip_suffix('+') {
-        Some(base) => (base, 1u8),
+    // A branch static-prediction hint: `+` predicts taken, `-` predicts not taken.
+    // The BO "y" bit is set only when the requested prediction DIFFERS from the
+    // default implied by the branch direction (backward = taken, forward = not
+    // taken). `assemble_branch` resolves that once the target is known.
+    let (mnemonic, hint) = match raw.strip_suffix('+') {
+        Some(base) => (base, BranchHint::Taken),
         None => match raw.strip_suffix('-') {
-            Some(_) => return Err(Diagnostic::error(format!("inline-asm branch hint '{raw}' (predict-not-taken) is not supported yet (roadmap)"))),
-            None => (raw, 0u8),
+            Some(base) => (base, BranchHint::NotTaken),
+            None => (raw, BranchHint::None),
         },
     };
     let operands = &line.operands;
@@ -357,12 +359,14 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         // optional leading `crN` selects the field. Written directly by mwcc's asm
         // (distinct from the branch-to-`blr` peephole).
         "beqlr" | "bnelr" | "bltlr" | "bgelr" | "bgtlr" | "blelr" => {
+            if hint != BranchHint::None {
+                return Err(Diagnostic::error("inline-asm branch-to-link with a prediction hint is not supported yet (roadmap)"));
+            }
             let base = &mnemonic[..mnemonic.len() - 2]; // strip the `lr`
             let (base_options, base_bit) = conditional_branch_fields(base);
-            let options = base_options | branch_hint;
             let (crf, operands) = take_cr_field(operands);
             expect_operand_count(mnemonic, operands, 0)?;
-            Instruction::BranchConditionalToLinkRegister { options, condition_bit: crf * 4 + base_bit }
+            Instruction::BranchConditionalToLinkRegister { options: base_options, condition_bit: crf * 4 + base_bit }
         }
         // Unconditional branch to a label.
         "b" => Instruction::Branch { target: label_target(mnemonic, operands, labels)? },
@@ -370,16 +374,36 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         // field (`BI = crN*4 + bit`). The target is a label.
         "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" => {
             let (base_options, base_bit) = conditional_branch_fields(mnemonic);
-            let options = base_options | branch_hint;
             let (crf, operands) = take_cr_field(operands);
             let condition_bit = crf * 4 + base_bit;
             let target = label_target(mnemonic, operands, labels)?;
+            let forward = target >= instruction_index;
+            let options = base_options | hint_bit(hint, forward);
             Instruction::BranchConditionalForward { options, condition_bit, target }
         }
 
         other => return Err(Diagnostic::error(format!("inline-asm mnemonic '{other}' is not supported yet (roadmap)"))),
     };
     Ok(Some(instruction))
+}
+
+/// A branch static-prediction hint parsed from a `+`/`-` mnemonic suffix.
+#[derive(Clone, Copy, PartialEq)]
+enum BranchHint {
+    None,
+    Taken,
+    NotTaken,
+}
+
+/// The BO "y" (prediction) bit for a hinted branch. The default prediction is
+/// implied by direction (backward = taken, forward = not taken); the bit is set
+/// only when the requested prediction differs from that default.
+fn hint_bit(hint: BranchHint, forward: bool) -> u8 {
+    match hint {
+        BranchHint::None => 0,
+        BranchHint::Taken => u8::from(forward),
+        BranchHint::NotTaken => u8::from(!forward),
+    }
 }
 
 /// The `(BO, BI)` fields for a cr0 conditional branch mnemonic.
