@@ -418,6 +418,57 @@ impl Generator {
         Ok(true)
     }
 
+    /// `h(g(), p)` — an outer call whose FIRST argument is a nested (argument-free) call and whose
+    /// SECOND argument is the single parameter, which must survive the nested call. mwcc saves the
+    /// parameter in r31 (`mr r31,p`), runs the nested call (its result lands in r3 = the outer call's
+    /// first argument), materializes the saved parameter into the second argument register
+    /// (`mr r4,r31`), then calls the outer function; the outer call's result (if any) is left in r3.
+    /// This is MSL alloc.c's `free`: `__pool_free(get_malloc_pool(), ptr)`.
+    pub(crate) fn try_callee_saved_nested_call_arg(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if function.parameters.len() != 1 || matches!(function.return_type, Type::Float | Type::Double) {
+            return Ok(false);
+        }
+        // The whole body is a single outer call — a void expression statement, or the return value.
+        let outer = match (function.statements.as_slice(), function.return_expression.as_ref()) {
+            ([Statement::Expression(call)], None) if function.return_type == Type::Void => call,
+            ([], Some(call)) => call,
+            _ => return Ok(false),
+        };
+        let Expression::Call { name: outer_name, arguments: outer_arguments } = outer else {
+            return Ok(false);
+        };
+        // Exactly two arguments: a nested argument-free call, then the (sole) parameter.
+        let [Expression::Call { arguments: nested_arguments, .. }, Expression::Variable(passed)] = outer_arguments.as_slice() else {
+            return Ok(false);
+        };
+        if !nested_arguments.is_empty() || passed != &function.parameters[0].name {
+            return Ok(false);
+        }
+        // The parameter must be general-class (a float parameter is saved differently).
+        let incoming = match self.locations.get(passed) {
+            Some(location) if location.class == ValueClass::General => location.register,
+            _ => return Ok(false),
+        };
+        // Prologue: a 16-byte frame saving the link register and the parameter (live across the call).
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output.instructions.push(Instruction::Or { a: saved, s: incoming, b: incoming });
+        if let Some(location) = self.locations.get_mut(passed) {
+            location.register = saved;
+        }
+        // The outer call: the nested argument-free call runs (result -> r3 = first argument), the saved
+        // parameter is materialized into the second argument register (`mr r4,r31`), then the call.
+        self.emit_call(outer_name, outer_arguments, None, false)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// A single local initialized by a call whose argument forwards the (single)
     /// parameter, returned combined with that parameter:
     /// `int x = g(a); return x + a;`. The parameter crosses the call: mwcc saves

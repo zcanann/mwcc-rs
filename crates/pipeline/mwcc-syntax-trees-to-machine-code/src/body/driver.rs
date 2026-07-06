@@ -1154,6 +1154,10 @@ impl Generator {
             if self.try_callee_saved_call_sequence_combine(function)? {
                 return Ok(());
             }
+            // `h(g(), p)` — a live parameter passed alongside a nested call that produces another arg.
+            if self.try_callee_saved_nested_call_arg(function)? {
+                return Ok(());
+            }
             // `return f() OP g();` — two call results combined in the return.
             if self.try_callee_saved_two_call_combine(function)? {
                 return Ok(());
