@@ -25,6 +25,17 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
         .as_ref()
         .expect("assemble_asm_function called on a non-asm function");
 
+    // An asm function WITHOUT a `nofralloc` directive that uses a stack frame gets an
+    // mwcc-generated frame prologue/epilogue (`stwu r1,-16(r1); mr r31,r1` … `mr r10,r1;
+    // lwz r1,0(r1)`) wrapped around the verbatim body — BfBB's clang-format runtime
+    // helpers. That auto-frame is not modeled, so defer rather than emit the body
+    // without it (a whole-object DIFF). A frameless leaf (GetR2) has no `stwu` and is
+    // still assembled verbatim.
+    let mnemonics = |name: &str| body.iter().any(|item| matches!(item, AsmItem::Instruction(line) if line.mnemonic == name));
+    if !mnemonics("nofralloc") && mnemonics("stwu") {
+        return Err(Diagnostic::error("an inline-asm function without `nofralloc` that manages a stack frame needs the auto-frame prologue (roadmap)"));
+    }
+
     // Pass 1: map each label to the index of the instruction it precedes (a label
     // with no following instruction points one past the end — the auto-`blr` slot),
     // and record each `entry <name>` at the same instruction position.
@@ -185,6 +196,9 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>, instructi
         // only bodies supported so far no frame is generated regardless, so it is a
         // no-op directive; it emits nothing.
         "nofralloc" => return Ok(None),
+        // `frfree` releases the FP registers for the allocator — a directive with no
+        // frame in these bodies, so it emits nothing (like `nofralloc`).
+        "frfree" => return Ok(None),
         // `mr rA, rS` — register move (`or rA, rS, rS`).
         "mr" => {
             let [a, s] = gprs(mnemonic, operands)?;

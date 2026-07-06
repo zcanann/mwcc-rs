@@ -14,6 +14,12 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
     // line. asm bodies contain no nested braces, so depth only ever reaches 1.
     let mut expect_asm_block = false;
     let mut asm_depth: u32 = 0;
+    // Names of functions declared `asm` (in a prototype or definition). A later
+    // definition that omits the `asm` keyword is still lexed as an asm body.
+    let mut asm_function_names = std::collections::HashSet::new();
+    // The most recent identifier seen while an `asm` declaration signature is open —
+    // resolved to the function name at its `(`.
+    let mut pending_asm_name: Option<String> = None;
 
     while position < bytes.len() {
         let character = bytes[position] as char;
@@ -29,6 +35,14 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             tokens.push(Token::BraceOpen);
             position += 1;
             continue;
+        }
+        // Record the name of an `asm`-declared function at its `(` — so a later
+        // DEFINITION that OMITS the `asm` keyword (BfBB's `asm void f(void);` proto
+        // then `void f(void){…}` body) is still recognized as an asm body below.
+        if expect_asm_block && character == '(' {
+            if let Some(name) = pending_asm_name.take() {
+                asm_function_names.insert(name);
+            }
         }
         // Inside an asm block: a newline separates instructions; a `}` closes it.
         if asm_depth > 0 {
@@ -174,6 +188,25 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             // Arm asm-block tracking so the next `{` opens a verbatim asm body.
             if token == Token::Asm {
                 expect_asm_block = true;
+                pending_asm_name = None;
+            } else if let Token::Identifier(name) = &token {
+                if expect_asm_block {
+                    // Inside an `asm` signature: this is a candidate function name.
+                    pending_asm_name = Some(name.clone());
+                } else if asm_function_names.contains(name)
+                    // A keyword-less DEFINITION of an already-`asm`-declared function
+                    // (BfBB): the name follows a single-keyword return type. Splice a
+                    // synthetic `asm` token before that type so the parser dispatches
+                    // to its asm path exactly as if the keyword were present.
+                    && matches!(
+                        tokens.last(),
+                        Some(Token::KeywordVoid | Token::KeywordInt | Token::KeywordChar | Token::KeywordShort | Token::KeywordUnsigned | Token::KeywordFloat)
+                    )
+                {
+                    tokens.insert(tokens.len() - 1, Token::Asm);
+                    expect_asm_block = true;
+                    pending_asm_name = Some(name.clone());
+                }
             }
             tokens.push(token);
             continue;

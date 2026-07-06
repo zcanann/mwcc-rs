@@ -445,7 +445,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         // Structs, pointers, and the like are not serializable here.
         let serializable_scalar = matches!(
             global.declared_type,
-            Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort | Type::Float | Type::Double
+            Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort | Type::Float | Type::Double | Type::LongLong | Type::UnsignedLongLong
         );
         // A struct object's element size and alignment come from its laid-out layout,
         // not the (word-default) scalar width — a struct value `g` or array `arr[N]`
