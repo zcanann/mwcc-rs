@@ -107,6 +107,37 @@ impl Generator {
                 }
             }
         }
+        // `(X + Y) - c` — a two-register sum minus a constant — reassociates to `X + (Y - c)`: mwcc
+        // pushes the constant into the SECOND sum operand and adds the first. When the first operand
+        // occupies the destination register it is saved to r0 first (`(a+b)-1` -> `mr r0,r3; addi
+        // r3,r4,-1; add r3,r0,r3`); otherwise the constant folds in place (`(b+a)-1` -> `addi
+        // r3,r3,-1; add r3,r4,r3`). Register-resident variable leaves + signed-16 const; a non-scratch
+        // destination only (the r0 save must not alias the destination). Nested/global cases defer.
+        if destination != GENERAL_SCRATCH {
+            if let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = expression {
+                if let (Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right }, Some(constant)) =
+                    (left.as_ref(), crate::analysis::constant_value(right))
+                {
+                    if let (Expression::Variable(first_name), Expression::Variable(second_name)) = (inner_left.as_ref(), inner_right.as_ref()) {
+                        if let Some(negated) = constant.checked_neg() {
+                            if let (Ok(immediate), Some(first_register), Some(second_register)) =
+                                (i16::try_from(negated), self.lookup_general(first_name), self.lookup_general(second_name))
+                            {
+                                if first_register == destination {
+                                    self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, first_register));
+                                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: second_register, immediate });
+                                    self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: destination });
+                                } else {
+                                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: second_register, immediate });
+                                    self.output.instructions.push(Instruction::Add { d: destination, a: first_register, b: destination });
+                                }
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Other reassociated add-trees (nested non-leaf operands, mixed with `*`) still diverge in
         // register allocation — defer rather than emit wrong bytes (#20 allocator).
         if crate::analysis::contains_complex_add(expression) {

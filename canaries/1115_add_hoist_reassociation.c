@@ -17,3 +17,8 @@ int hoist_right2(int a, int b)   { return a + (b - 1); }   // add r3,r4,r3; addi
 int hoist_both(int a, int b)     { return (a - 1) + (b - 1); } // add r3,r4,r3; addi -2
 int hoist_both_mix(int a, int b) { return (a + 1) + (b - 3); } // add r3,r4,r3; addi -2
 int hoist_both_rev(int a, int b) { return (b - 1) + (a - 1); } // add r3,r3,r4; addi -2
+// `(X + Y) - c` (sum minus const): mwcc pushes -c into the SECOND operand and adds the first,
+// saving the first to r0 only when it occupies the destination.
+int sub_sum_saved(int a, int b)  { return (a + b) - 1; }   // mr r0,r3; addi r3,r4,-1; add r3,r0,r3
+int sub_sum_inplace(int a, int b){ return (b + a) - 1; }   // addi r3,r3,-1; add r3,r4,r3
+int sub_sum_three(int a, int b, int c) { return (a + c) - 1; }
