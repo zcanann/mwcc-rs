@@ -53,6 +53,32 @@ impl Generator {
                 }
             }
         }
+        // `(X ± c) + Y` — a `variable ± constant` plus a register-leaf variable — reassociates to
+        // `(X + Y) ± c`: mwcc groups the two register terms in SOURCE order and applies the constant
+        // last (`(a-1)+b` -> `add r3,r3,r4; addi r3,r3,-1`, `(b-1)+a` -> `add r3,r4,r3; addi -1`).
+        // Reproduce it directly. Restricted to two register-resident variable leaves and a signed-16
+        // constant; a both-`±c` right operand (`(a-1)+(b-1)`, different var order) or a global/memory
+        // leaf falls through to the defer below.
+        if let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression {
+            if let (
+                Expression::Binary { operator: inner_operator @ (BinaryOperator::Add | BinaryOperator::Subtract), left: inner_left, right: inner_right },
+                Expression::Variable(y_name),
+            ) = (left.as_ref(), right.as_ref())
+            {
+                if let (Expression::Variable(x_name), Some(constant)) = (inner_left.as_ref(), crate::analysis::constant_value(inner_right)) {
+                    let signed = if *inner_operator == BinaryOperator::Subtract { constant.checked_neg() } else { Some(constant) };
+                    if let Some(signed) = signed {
+                        if let (Ok(immediate), Some(x_register), Some(y_register)) =
+                            (i16::try_from(signed), self.lookup_general(x_name), self.lookup_general(y_name))
+                        {
+                            self.output.instructions.push(Instruction::Add { d: destination, a: x_register, b: y_register });
+                            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
         // Other reassociated add-trees (nested non-leaf operands, mixed with `*`) still diverge in
         // register allocation — defer rather than emit wrong bytes (#20 allocator).
         if crate::analysis::contains_complex_add(expression) {
