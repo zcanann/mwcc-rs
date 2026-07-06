@@ -110,6 +110,16 @@ impl Generator {
                 {
                     return Operands::ordered(GENERAL_SCRATCH, leaf);
                 }
+                // `(2-a)+b`: a `const - variable` (subfic) left is ordered computed-first in an ADD
+                // too (`subfic r0,r3,2; add r3,r0,r4`). Only this ADD sub-shape — a `-a+b` negate-left
+                // strength-reduces to `subf` before this point, and a `var±const` left reassociates
+                // (`(a-1)+b` -> `(a+b)-1`) and defers via is_constant_hoist_add.
+                if operator == BinaryOperator::Add
+                    && matches!(left, Expression::Binary { operator: BinaryOperator::Subtract, left: subtrahend_from, right: subtrahend }
+                        if matches!(subtrahend_from.as_ref(), Expression::IntegerLiteral(_)) && matches!(subtrahend.as_ref(), Expression::Variable(_)))
+                {
+                    return Operands::ordered(GENERAL_SCRATCH, leaf);
+                }
                 Operands::reversed(GENERAL_SCRATCH, leaf)
             }
             (false, true) => {
