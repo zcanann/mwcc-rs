@@ -193,9 +193,10 @@ pub(crate) fn is_complex_add(expression: &Expression) -> bool {
     if is_constant_hoist_add(expression) {
         return true;
     }
-    // `(a-1)*b`: mwcc keeps the computed `X±const` operand in source order (`mullw r3,r0,r4`);
-    // our placement swaps the commutative operands (`mullw r3,r4,r0`) — same value, wrong bytes.
-    if is_constant_operand_multiply_swap(expression) {
+    // `(a-1)*b` / `(a-1)&b` / `(a-1)|b` / `(a-1)^b`: mwcc keeps the computed `X±const` operand in
+    // source order (`mullw r3,r0,r4`); our placement swaps the commutative operands (`mullw
+    // r3,r4,r0`) — same value, wrong bytes.
+    if is_constant_operand_commutative_swap(expression) {
         return true;
     }
     let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
@@ -236,16 +237,18 @@ fn additive_with_constant(operand: &Expression) -> bool {
         if matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
 }
 
-/// A `Mul` whose LEFT operand is a computed `X ± const` and RIGHT is a bare register leaf
-/// (`(a-1)*b`, `(a+1)*b`): mwcc keeps source order (`mullw r3, r0(a-1), r4(b)`) but our placement
-/// swaps the commutative operands (`mullw r3,r4,r0`) — same value, different bytes. A no-constant
-/// computed operand (`(a+b)*c`, `(a-c)*b`), a mul-const (`(a*2)*b`), or the computed operand on the
-/// RIGHT (`b*(a-1)`) all keep source order and match.
-fn is_constant_operand_multiply_swap(expression: &Expression) -> bool {
-    let Expression::Binary { operator: BinaryOperator::Multiply, left, right } = expression else {
+/// A COMMUTATIVE op (`*`, `&`, `|`, `^`) whose LEFT operand is a computed `variable ± const` and
+/// RIGHT is a bare register leaf (`(a-1)*b`, `(a-1)&b`): mwcc keeps source order (`mullw r3,
+/// r0(a-1), r4(b)`) but our placement swaps the operands (`mullw r3,r4,r0`) — same value, different
+/// bytes. A no-constant computed operand (`(a+b)*c`, `(a-c)*b`), a mul-const (`(a*2)*b`), or the
+/// computed operand on the RIGHT (`b*(a-1)`) all keep source order and match. `-` and `/` are not
+/// commutative (operand order is load-bearing) and never swap.
+fn is_constant_operand_commutative_swap(expression: &Expression) -> bool {
+    let Expression::Binary { operator, left, right } = expression else {
         return false;
     };
-    additive_with_constant(left) && matches!(right.as_ref(), Expression::Variable(_))
+    let commutative = matches!(operator, BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor);
+    commutative && additive_with_constant(left) && matches!(right.as_ref(), Expression::Variable(_))
 }
 
 /// Whether an integer expression CONTAINS a reassociated add-tree anywhere — the whole expression
