@@ -313,11 +313,25 @@ impl Generator {
                         }
                     }
                 }
+                let result = mwcc_target::Eabi::general_result().number;
+                let guard_value_in_result = matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result));
+                // A register-leaf store value (`*p = b`) is already in a register — mwcc stores it
+                // DIRECTLY, before the return, with no r0 materialization (`bgtlr; stw r4,0(r5);
+                // li r3,0`). Only meaningful when the guard collapses to `bgtlr` (its value already
+                // in the result register); otherwise the register-store form stays with value_tracking.
+                let stored_register_leaf = if guard_value_in_result {
+                    match stored {
+                        Expression::Variable(name) => self.lookup_general(name),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
                 let stored_is_constant = constant_value(stored).and_then(|constant| i16::try_from(constant).ok()).is_some();
                 let stored_is_two_leaf = matches!(stored, Expression::Binary { left, right, .. }
                     if matches!(left.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
                         && matches!(right.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_)));
-                if !stored_is_constant && !stored_is_two_leaf {
+                if stored_register_leaf.is_none() && !stored_is_constant && !stored_is_two_leaf {
                     return Ok(false);
                 }
                 let (pointer_name, byte_offset, pointee): (&String, i64, Pointee) = match target {
@@ -374,9 +388,8 @@ impl Generator {
                     return Ok(false);
                 }
 
-                let result = mwcc_target::Eabi::general_result().number;
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
-                if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result)) {
+                if guard_value_in_result {
                     // The guard VALUE already occupies the result register (`if(a>0) return a; *p=5;
                     // return 0;`): mwcc collapses the guard to a single conditional branch-to-lr
                     // (`bgtlr`) rather than a forward branch over a no-op value move. `options ^ 8`
@@ -393,16 +406,27 @@ impl Generator {
                         *target = continuation;
                     }
                 }
-                self.evaluate_general(stored, GENERAL_SCRATCH)?;
-                match return_value {
+                let emit_return_value = |generator: &mut Self| match return_value {
+                    // A constant `li r3,C`; a register `mr r3,reg` (a self-move when the return value
+                    // already sits in the result register — coalesced away later).
                     ReturnValue::Constant(constant) => {
-                        self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: constant });
+                        generator.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: constant });
                     }
                     ReturnValue::Register(register) => {
-                        self.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
+                        generator.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
                     }
+                };
+                if let Some(store_register) = stored_register_leaf {
+                    // CASE A — the store value is already in a register: store it DIRECTLY (no r0
+                    // materialization), then the return (`bgtlr; stw r4,0(r5); li r3,0; blr`).
+                    self.output.instructions.push(displacement_store(pointee, store_register, pointer_register, offset)?);
+                    emit_return_value(self);
+                } else {
+                    // CASE B — materialize the value in r0, schedule the return between, then store.
+                    self.evaluate_general(stored, GENERAL_SCRATCH)?;
+                    emit_return_value(self);
+                    self.output.instructions.push(displacement_store(pointee, GENERAL_SCRATCH, pointer_register, offset)?);
                 }
-                self.output.instructions.push(displacement_store(pointee, GENERAL_SCRATCH, pointer_register, offset)?);
                 self.emit_epilogue_and_return();
                 return Ok(true);
             }
