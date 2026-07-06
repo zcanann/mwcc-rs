@@ -1128,12 +1128,20 @@ impl Parser {
                 self.last_pointer_const = true;
             }
             self.consume_trailing_qualifiers();
-            // A SECOND `*` is a pointer-to-pointer (`char **end`): word-sized
-            // element, inner pointee untracked (double derefs defer at codegen).
+            // A SECOND `*` is a pointer-to-pointer (`char **end`, `int **pp`):
+            // word-sized element. When the inner scalar is a 32-bit integer word
+            // (`int **`, `unsigned **`) the double deref `**pp` is a plain `lwz`,
+            // so record `WordPointer` to let codegen emit the chained load. The
+            // narrow (`char`/`short`), float and long-long inners keep the opaque
+            // `Pointer` — their `**pp` would need `lbz`/`lha`/`lfs`, so they defer.
             if *self.peek() == Token::Star {
                 self.advance();
                 self.consume_trailing_qualifiers();
-                return Ok(Type::Pointer(Pointee::Pointer));
+                let inner = match base {
+                    Type::Int | Type::UnsignedInt => Pointee::WordPointer,
+                    _ => Pointee::Pointer,
+                };
+                return Ok(Type::Pointer(inner));
             }
             return Ok(Type::Pointer(pointee_of(base)?));
         }

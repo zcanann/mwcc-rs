@@ -17,6 +17,14 @@ pub enum Pointee {
     /// Word-sized loads/stores; the inner pointee's identity is not tracked
     /// (a double deref defers at codegen).
     Pointer,
+    /// A pointer-to-pointer whose DOUBLE dereference yields a 32-bit integer
+    /// word (`int **`, `unsigned **`). Behaves exactly like [`Pointee::Pointer`]
+    /// for single loads/stores (word-sized), but additionally records that
+    /// `**pp` is a plain `lwz` — letting codegen emit the chained load instead
+    /// of deferring. Kept SEPARATE from `Pointer` so the narrow (`char **`,
+    /// `short **`), float (`float **`) and struct (`S **`) cases still defer,
+    /// where a uniform word load would miscompile the final `lbz`/`lfs`.
+    WordPointer,
     /// `long long*` — a register-pair element (va_arg expansions).
     LongLong,
     /// `unsigned long long*` — same pair representation.
@@ -38,7 +46,10 @@ impl Pointee {
             // The element of a pointer-to-pointer is itself a pointer: word-
             // sized, integer-classed. Reported as an unsigned-int-shaped word
             // (loads lwz, stores stw) — the inner pointee is not tracked.
-            Pointee::Pointer => Type::Pointer(Pointee::UnsignedInt),
+            // Both plain and word pointer-to-pointer elements are themselves
+            // pointers: word-sized, integer-classed (loads lwz, stores stw).
+            // `WordPointer` additionally means the SECOND deref is a word too.
+            Pointee::Pointer | Pointee::WordPointer => Type::Pointer(Pointee::UnsignedInt),
             Pointee::LongLong => Type::LongLong,
             Pointee::UnsignedLongLong => Type::UnsignedLongLong,
         }

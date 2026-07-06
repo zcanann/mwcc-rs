@@ -290,6 +290,25 @@ impl Generator {
     /// nothing; a pointer-typed struct member (`*p->q`) loads the pointer value
     /// into the base's register first, reusing it as mwcc does.
     pub(crate) fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u8)> {
+        // `**pp` — a double dereference through a word-pointer-to-pointer (`int **`,
+        // `unsigned **`). The inner `*pp` loads the inner pointer VALUE (a word) into
+        // the leaf's OWN register, as mwcc does (`lwz rN,0(rN)`); the returned address
+        // register is that same register, so the outer load lands on the second
+        // `lwz rN,0(rN)`. Only `WordPointer` reaches here — a narrow (`char **`) or
+        // float inner keeps the opaque `Pointer` and still defers, since its `**pp`
+        // would need `lbz`/`lfs` rather than a word load.
+        if let Expression::Dereference { pointer: inner } = base {
+            if let Some(name) = leaf_name(inner) {
+                if let Some(location) = self.locations.get(name) {
+                    if location.pointee == Some(Pointee::WordPointer) {
+                        let register = location.register;
+                        self.output.instructions.push(Instruction::LoadWord { d: register, a: register, offset: 0 });
+                        // The second dereference yields the tracked 32-bit word (lwz).
+                        return Ok((Pointee::UnsignedInt, register));
+                    }
+                }
+            }
+        }
         // `*(T*)p` — a pointer cast reinterprets the address; the load/store type is the cast's
         // target POINTEE (`*(int*)p` -> lwz, `*(short*)p` -> lha, `*(char*)p` -> lbz), the address a
         // leaf pointer operand (whose own pointee, e.g. `void*`, is irrelevant to the access).
