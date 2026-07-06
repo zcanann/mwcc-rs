@@ -323,6 +323,98 @@ impl Generator {
         Ok(true)
     }
 
+    /// `void f(int n, …) { while (n) { call(…n…); n = n +/- const; } }` — a loop
+    /// counter kept in a callee-saved register (r31) across the body's call, updated
+    /// in place each iteration. mwcc saves it in the prologue, runs the rotated loop
+    /// (`b test; body; cmpwi r31,0; bne body`), and reloads it after. This composes
+    /// the callee-saved prologue with a call-containing loop — the shape in real
+    /// counted-work loops. Gated narrow: a single loop-counter parameter, a while over
+    /// it, body = call(s) then one in-place `counter +/- const`.
+    pub(crate) fn try_callee_saved_call_loop(&mut self, function: &Function) -> Compilation<bool> {
+        use mwcc_syntax_trees::LoopKind;
+        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // `while (n)` — the counter, a general parameter, live across the body's calls.
+        let Expression::Variable(counter) = condition else { return Ok(false) };
+        // Body = call(s), then a single in-place `counter +/- const` update.
+        let Some((Statement::Assign { name: update_name, value: update_value }, call_statements)) = body.split_last() else {
+            return Ok(false);
+        };
+        // Exactly one call in the body — two calls reschedule the counter step (deferred).
+        if update_name != counter || call_statements.len() != 1 {
+            return Ok(false);
+        }
+        // The in-place counter step `counter +/- const`; emitted directly as `addi`
+        // (a reassignment through emit_statement defers in a call context).
+        let Expression::Binary { operator, left, right } = update_value else { return Ok(false) };
+        if !matches!(left.as_ref(), Expression::Variable(other) if other == counter) {
+            return Ok(false);
+        }
+        let Some(magnitude) = constant_value(right).and_then(|value| i16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        let step = match operator {
+            BinaryOperator::Add => magnitude,
+            BinaryOperator::Subtract => magnitude.checked_neg().unwrap_or(0),
+            _ => return Ok(false),
+        };
+        if !call_statements.iter().all(|statement| matches!(statement,
+            Statement::Expression(Expression::Call { .. }) | Statement::Expression(Expression::CallThrough { .. })))
+        {
+            return Ok(false);
+        }
+        if function.parameters.iter().position(|parameter| &parameter.name == counter).is_none() {
+            return Ok(false);
+        }
+        let Some(location) = self.locations.get(counter) else { return Ok(false) };
+        if location.class != ValueClass::General {
+            return Ok(false);
+        }
+        let counter_incoming = location.register;
+
+        // -- emit: callee-saved prologue (no hoisted test — the loop tests at the bottom),
+        //    rotated loop, then a manual LR-first epilogue (the LR-reload hoist can't cross
+        //    the loop back-edge). --
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let home = self.fresh_virtual_general();
+        self.callee_saved = vec![home];
+        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
+        self.output.instructions.extend(plan.prologue_interleaved(&[counter_incoming]));
+        if let Some(location) = self.locations.get_mut(counter) {
+            location.register = home;
+        }
+        let skip = self.output.instructions.len();
+        self.output.instructions.push(Instruction::Branch { target: 0 });
+        let body_top = self.output.instructions.len();
+        // The calls (reading the counter from its callee-saved home), then the counter
+        // step emitted directly (emit_statement would defer the reassignment).
+        for statement in call_statements {
+            self.emit_statement(statement)?;
+        }
+        self.output.instructions.push(Instruction::AddImmediate { d: home, a: home, immediate: step });
+        let condition_at = self.output.instructions.len();
+        if let Instruction::Branch { target } = &mut self.output.instructions[skip] {
+            *target = condition_at;
+        }
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let back = if options == 4 { 12 } else { 4 };
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: back, condition_bit, target: body_top });
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump = 4; // the while loop's labels
+        Ok(true)
+    }
+
     /// `T f(T a, int b, …) { if (b) call(…); return a; }` — a parameter live
     /// across a call that runs only on one arm of an `if`. mwcc saves `a` in
     /// r31, HOISTS the if-condition test into the prologue slot after `mflr`

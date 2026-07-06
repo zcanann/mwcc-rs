@@ -952,6 +952,12 @@ impl Generator {
                 }
                 return Err(Diagnostic::error("calls combined with guards not yet supported"));
             }
+            // `while (n) { call(…n…); n--; }` — a counter kept in r31 across a
+            // call-containing loop, updated in place.
+            if self.try_callee_saved_call_loop(function)? {
+                return Ok(());
+            }
+            // (guard-less call handlers continue below)
             // `*a = g(); *b = h();` — 2–4 output pointers saved in r31/r30/… across their calls.
             // Runs before the general callee-saved path, which would otherwise emit the stores
             // through the raw (clobbered) argument registers and defer/miscompile.
