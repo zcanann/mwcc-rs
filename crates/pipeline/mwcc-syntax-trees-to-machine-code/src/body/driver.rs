@@ -1735,18 +1735,26 @@ impl Generator {
         // extended value is register-resident), an INDEPENDENT-register right operand (`b+c`), a
         // `*`/`-` operator, and `b+b` all place operands as mwcc does and already match.
         if matches!(local.declared_type, Type::Int | Type::UnsignedInt)
-            && matches!(initializer, Expression::Binary { .. })
+            && matches!(initializer, Expression::Binary { .. } | Expression::Unary { .. })
         {
             if let Expression::Binary { operator, left, right } = return_expression {
                 let commutative_anchor_op = matches!(
                     operator,
                     BinaryOperator::Add | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor
                 );
-                let local_on_left = matches!(left.as_ref(), Expression::Variable(name) if name == &local.name);
-                if commutative_anchor_op && local_on_left {
-                    let right_is_constant = constant_value(right).is_some();
-                    let right_in_initializer = matches!(right.as_ref(), Expression::Variable(name) if count_name_occurrences(initializer, name) > 0);
-                    if right_is_constant || right_in_initializer {
+                let is_local = |operand: &Expression| matches!(operand, Expression::Variable(name) if name == &local.name);
+                // A CONSTANT operand on EITHER side drops the scratch local — a miscompile: `b+3`
+                // and `3+b` (b=a*a) both emit `li r3,3`. An init-reused VARIABLE diverges only when
+                // the local is the LEFT operand (`b+a` -> source-order `add r3,r0,r3`, but mwcc
+                // anchors the live `a`: `add r3,r3,r0`); with the local on the RIGHT (`a+b`) source
+                // order already anchors the leaf and matches. A `-a`-init local folded to `-a+a`
+                // (mwcc `li r3,0`) is caught by the same init-variable rule.
+                if commutative_anchor_op {
+                    let constant_other = (is_local(left) && constant_value(right).is_some())
+                        || (is_local(right) && constant_value(left).is_some());
+                    let init_variable_on_right = is_local(left)
+                        && matches!(right.as_ref(), Expression::Variable(name) if count_name_occurrences(initializer, name) > 0);
+                    if constant_other || init_variable_on_right {
                         return Err(Diagnostic::error("a computed local anchored by liveness in a commutative op needs the register allocator (roadmap)"));
                     }
                 }
