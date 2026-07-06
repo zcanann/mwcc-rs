@@ -1723,6 +1723,35 @@ impl Generator {
         {
             return Err(Diagnostic::error("an additively-defined local used in a sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
         }
+        // An ARITHMETICALLY-COMPUTED plain-`int` local used as the LEFT operand of a
+        // commutative add/bitwise op whose RIGHT operand is a constant, or a variable that
+        // appears in the local's initializer: mwcc anchors by liveness/register-reuse —
+        // `int b=a*a; return b+a` -> `add r3,r3,r0` anchoring the still-live `a`; `return b+3`
+        // -> `mullw r3,r3,r3; addi r3,r3,3` keeping b in r3 — which the source-order scratch-leaf
+        // placement below does not reproduce (and for a constant right operand it even drops the
+        // local, a miscompile). Defer; the register allocator (#20) makes it exact. Restricted to
+        // a plain-int local with a computed (Binary) initializer: a FLOAT local (`y=a*b; return
+        // y+a`, `fadds` order matches), a NARROW/LOAD-init local (`char c=*s; return c+1`, the
+        // extended value is register-resident), an INDEPENDENT-register right operand (`b+c`), a
+        // `*`/`-` operator, and `b+b` all place operands as mwcc does and already match.
+        if matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+            && matches!(initializer, Expression::Binary { .. })
+        {
+            if let Expression::Binary { operator, left, right } = return_expression {
+                let commutative_anchor_op = matches!(
+                    operator,
+                    BinaryOperator::Add | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor
+                );
+                let local_on_left = matches!(left.as_ref(), Expression::Variable(name) if name == &local.name);
+                if commutative_anchor_op && local_on_left {
+                    let right_is_constant = constant_value(right).is_some();
+                    let right_in_initializer = matches!(right.as_ref(), Expression::Variable(name) if count_name_occurrences(initializer, name) > 0);
+                    if right_is_constant || right_in_initializer {
+                        return Err(Diagnostic::error("a computed local anchored by liveness in a commutative op needs the register allocator (roadmap)"));
+                    }
+                }
+            }
+        }
 
         // Otherwise the local lives in the scratch register and is used as a leaf.
         // That only works if the result expression does not itself need the scratch.
