@@ -307,11 +307,21 @@ impl Generator {
             let simple_binary_tail = matches!(&inlined, Expression::Binary { left, right, .. }
                 if matches!(left.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
                     && matches!(right.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_)));
+            // A guard whose VALUE lives in the result register (`if(a>0) return a;` with `a` in r3)
+            // cannot use the folds that compute the tail into that same register: the tail clobbers
+            // it and the fold's `mr r3,<value>` becomes a dead self-move (a MISCOMPILE — the a>0 path
+            // returns the tail value). mwcc merges through r0 with a forward branch; until that is
+            // modeled, such a body defers rather than fold.
+            let guard_value_in_result_register = function.guards.iter().any(|guard| {
+                matches!(&guard.value, Expression::Variable(name)
+                    if self.locations.get(name).is_some_and(|location| location.register == result && location.class == ValueClass::General))
+            });
             if all_constant && !tail_reads_result_register && distinct_parameter_reads <= 1 {
                 self.emit_guard_sequence(&function.guards, &inlined, function.return_type, result)?;
             } else if function.guards.len() == 1
                 && !all_constant
                 && !tail_reads_result_register
+                && !guard_value_in_result_register
                 && distinct_parameter_reads <= 1
                 && matches!(function.return_type, Type::Int | Type::UnsignedInt)
             {
@@ -335,6 +345,7 @@ impl Generator {
             } else if function.guards.len() == 1
                 && matches!(function.return_type, Type::Int | Type::UnsignedInt)
                 && simple_binary_tail
+                && !guard_value_in_result_register
             {
                 let guard = &function.guards[0];
                 let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
