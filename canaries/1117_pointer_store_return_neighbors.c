@@ -10,4 +10,7 @@
 int reg_store_computed(int a, int* p)  { *p = a; return a + 1; }   // stw r3,0(r4); addi r3,r3,1
 int reg_store_bare(int a, int* p)      { *p = a; return a; }       // stw r3,0(r4) (a already in r3)
 int reg_store_signmask(int a, int* p)  { *p = a; return a < 0; }   // stw r3,0(r4); srawi r3,r3,31
+int reg_store_nonneg(int a, int* p)    { *p = a; return a >= 0; }  // stw r3,0(r4); srwi r3,r3,31 (no neg)
 int reg_store_iszero(int a, int* p)    { *p = a; return a == 0; }  // stw; cntlzw r0,r3; srwi r3,r0,5
+// Contrast: `a == 0` (Binary, above) does NOT hoist, but the semantically-equal `!a` (Unary) DOES —
+// its leading `cntlzw` hoists over the store — so `*p=a; return !a;` DEFERS (condition C), not here.

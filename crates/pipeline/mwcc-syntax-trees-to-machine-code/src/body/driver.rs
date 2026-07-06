@@ -486,27 +486,62 @@ impl Generator {
                 !matches!(value, Expression::Variable(name) if !self.globals.contains_key(name.as_str()))
             };
             let mut has_store = false;
+            let mut has_pointer_store = false;
             let mut has_materialized_pointer_store = false;
             for statement in &function.statements {
                 if let Statement::Store { target, value } = statement {
                     has_store = true;
-                    has_materialized_pointer_store |=
-                        store_target_is_pointer(target) && store_value_needs_materialization(value);
+                    if store_target_is_pointer(target) {
+                        has_pointer_store = true;
+                        has_materialized_pointer_store |= store_value_needs_materialization(value);
+                    }
                 }
             }
-            // (A) a `> 0` / `!= 0` comparison of a register leaf against zero — as the return itself,
-            // or as a single guard's branchless const-select (`if(x>0) return C1; return C2;` folds to
-            // the same `neg`-leading mask). Both hoist the `neg r0,x` above a preceding store.
+            // (A) a `> 0` / `!= 0` comparison of a register leaf against zero, whose branchless idiom
+            // leads with `neg r0,x`. mwcc hoists that neg over ANY store (incl. a global — the DAG
+            // emitter does not model these two).
             let neg_leading_comparison = |condition: &Expression| {
                 matches!(condition,
                     Expression::Binary { operator: BinaryOperator::Greater | BinaryOperator::NotEqual, left, right }
                         if matches!(left.as_ref(), Expression::Variable(_)) && is_zero_literal(right))
             };
-            let return_hoists_neg_over_store = neg_leading_comparison(return_expression)
-                || (function.guards.len() == 1
-                    && neg_leading_comparison(&function.guards[0].condition)
-                    && constant_value(&function.guards[0].value).is_some()
-                    && constant_value(return_expression).is_some());
+            // (C) the BROADER hoisting comparisons — two-register (`a>b`), vs-nonzero-constant (`a>1`),
+            // and logical-not (`!a`, which leads with a HOISTED `cntlzw` unlike the semantically-equal
+            // Binary `a==0` that lowers cntlzw into the dest). Their leading xor/subf/subfic/cntlzw
+            // hoists ONLY over a POINTER store: a GLOBAL store with these returns rides the DAG emitter
+            // byte-exact (`g=a; return a>b;` MATCHes), so gate (C) to pointer targets.
+            let comparison_hoists = |condition: &Expression| -> bool {
+                match condition {
+                    Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => {
+                        matches!(operand.as_ref(), Expression::Variable(_))
+                    }
+                    Expression::Binary { operator, left, right } if is_comparison(*operator) => {
+                        if !matches!(left.as_ref(), Expression::Variable(_)) {
+                            return false;
+                        }
+                        if is_zero_literal(right) {
+                            matches!(operator, BinaryOperator::Greater | BinaryOperator::NotEqual)
+                        } else {
+                            matches!(right.as_ref(), Expression::Variable(_)) || constant_value(right).is_some()
+                        }
+                    }
+                    _ => false,
+                }
+            };
+            // Either predicate may appear as the return itself or as a single guard's branchless
+            // const-select (`if(cond) return C1; return C2;`).
+            let single_const_guard_condition = if function.guards.len() == 1
+                && constant_value(&function.guards[0].value).is_some()
+                && constant_value(return_expression).is_some()
+            {
+                Some(&function.guards[0].condition)
+            } else {
+                None
+            };
+            let return_hoists_neg_over_store =
+                neg_leading_comparison(return_expression) || single_const_guard_condition.is_some_and(|c| neg_leading_comparison(c));
+            let return_comparison_hoists_over_pointer =
+                comparison_hoists(return_expression) || single_const_guard_condition.is_some_and(|c| comparison_hoists(c));
             // (B) a computed arithmetic/bitwise/shift or unary return (not a comparison or short-circuit).
             let return_is_computed_arithmetic = match return_expression {
                 Expression::Binary { operator, .. } => {
@@ -516,6 +551,7 @@ impl Generator {
                 _ => false,
             };
             if (has_store && return_hoists_neg_over_store)
+                || (has_pointer_store && return_comparison_hoists_over_pointer)
                 || (has_materialized_pointer_store && return_is_computed_arithmetic)
             {
                 return Err(Diagnostic::error("a store scheduled around the return-value computation needs the store scheduler (roadmap)"));
