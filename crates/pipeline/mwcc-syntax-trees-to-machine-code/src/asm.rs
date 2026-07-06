@@ -213,7 +213,7 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         "clrlwi" => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediate { a, s, clear } }
 
         // Floating point (double): compare, subtract, round-to-single, move.
-        "fcmpu" => { let [a, b] = fprs(mnemonic, strip_cr0(mnemonic, operands)?)?; Instruction::FloatCompareUnordered { a, b } }
+        "fcmpu" => { let [a, b] = fprs(mnemonic, require_cr0(mnemonic, operands)?)?; Instruction::FloatCompareUnordered { a, b } }
         "fsub" => { let [d, a, b] = fprs(mnemonic, operands)?; Instruction::FloatSubtractDouble { d, a, b } }
         "frsp" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::RoundToSingle { d, b } }
         "fmr" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::FloatMove { d, b } }
@@ -240,29 +240,39 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         "stfd" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatDouble { s, a, offset } }
         "stfs" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatSingle { s, a, offset } }
 
-        // Compares against cr0 (`cmp [cr0,] rA, {rB | SIMM}`). An explicit `crN`
-        // field (N != 0) DEFERS. `cmpi`/`cmpli` are the older mnemonic spellings.
-        "cmpwi" | "cmpi" => { let operands = strip_cr0(mnemonic, operands)?; let (a, immediate) = gpr_immediate(mnemonic, operands)?; Instruction::CompareWordImmediate { a, immediate } }
+        // Compares with an optional explicit condition field. `cmpwi` handles any
+        // `crN`; the others model cr0 only (a non-cr0 field DEFERS). `cmpi`/`cmpli`
+        // are the older mnemonic spellings.
+        "cmpwi" | "cmpi" => {
+            let (crf, operands) = take_cr_field(operands);
+            let (a, immediate) = gpr_immediate(mnemonic, operands)?;
+            if crf == 0 {
+                Instruction::CompareWordImmediate { a, immediate }
+            } else {
+                Instruction::CompareWordImmediateField { crf, a, immediate }
+            }
+        }
         "cmplwi" | "cmpli" => {
-            let operands = strip_cr0(mnemonic, operands)?;
+            let operands = require_cr0(mnemonic, operands)?;
             expect_operand_count(mnemonic, operands, 2)?;
             let a = gpr(mnemonic, &operands[0])?;
             let immediate = immediate16u(mnemonic, &operands[1])?;
             Instruction::CompareLogicalWordImmediate { a, immediate }
         }
-        "cmpw" => { let operands = strip_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareWord { a, b } }
-        "cmplw" => { let operands = strip_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareLogicalWord { a, b } }
+        "cmpw" => { let operands = require_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareWord { a, b } }
+        "cmplw" => { let operands = require_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareLogicalWord { a, b } }
 
         // The count register (`bdnz` loop support).
         "mtctr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToCountRegister { s } }
 
         // Unconditional branch to a label.
         "b" => Instruction::Branch { target: label_target(mnemonic, operands, labels)? },
-        // Conditional branches on cr0 (BO/BI); an optional leading `cr0` is allowed.
-        // The target is a label.
+        // Conditional branches; an optional leading `crN` selects the condition
+        // field (`BI = crN*4 + bit`). The target is a label.
         "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" => {
-            let (options, condition_bit) = conditional_branch_fields(mnemonic);
-            let operands = strip_cr0(mnemonic, operands)?;
+            let (options, base_bit) = conditional_branch_fields(mnemonic);
+            let (crf, operands) = take_cr_field(operands);
+            let condition_bit = crf * 4 + base_bit;
             let target = label_target(mnemonic, operands, labels)?;
             Instruction::BranchConditionalForward { options, condition_bit, target }
         }
@@ -324,16 +334,24 @@ fn fprs<const N: usize>(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<
     Ok(registers)
 }
 
-/// Drop an optional leading `cr0` operand (mwcc spells compares/branches with an
-/// explicit `cr0`). A non-zero `crN` field is not modeled, so it DEFERS.
-fn strip_cr0<'a>(mnemonic: &str, operands: &'a [AsmOperand]) -> Compilation<&'a [AsmOperand]> {
+/// Split off an optional leading `crN` condition-field operand (mwcc spells
+/// compares/branches with an explicit condition register). Returns the field
+/// number (0 when absent) and the remaining operands.
+fn take_cr_field(operands: &[AsmOperand]) -> (u8, &[AsmOperand]) {
     match operands.first() {
-        Some(AsmOperand::ConditionRegister(0)) => Ok(&operands[1..]),
-        Some(AsmOperand::ConditionRegister(field)) => {
-            Err(Diagnostic::error(format!("inline-asm '{mnemonic}' on cr{field} (non-cr0) is not supported yet (roadmap)")))
-        }
-        _ => Ok(operands),
+        Some(AsmOperand::ConditionRegister(field)) => (*field, &operands[1..]),
+        _ => (0, operands),
     }
+}
+
+/// Require the condition field to be `cr0` (for instructions whose non-cr0 form
+/// is not modeled yet); returns the remaining operands.
+fn require_cr0<'a>(mnemonic: &str, operands: &'a [AsmOperand]) -> Compilation<&'a [AsmOperand]> {
+    let (field, rest) = take_cr_field(operands);
+    if field != 0 {
+        return Err(Diagnostic::error(format!("inline-asm '{mnemonic}' on cr{field} (non-cr0) is not supported yet (roadmap)")));
+    }
+    Ok(rest)
 }
 
 /// Read a `rlwinm`-family `(rA, rS, SH, MB, ME)` operand list.

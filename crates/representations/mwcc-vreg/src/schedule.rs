@@ -38,7 +38,7 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | LoadFloatSingle { .. } | LoadFloatDouble { .. } | LoadWordIndexed { .. }
             | LoadByteZeroIndexed { .. } | LoadHalfwordZeroIndexed { .. } | LoadHalfwordAlgebraicIndexed { .. }
             | LoadFloatSingleIndexed { .. }
-            | FloatCompareOrdered { .. } | CompareWord { .. } | CompareWordImmediate { .. }
+            | FloatCompareOrdered { .. } | CompareWord { .. } | CompareWordImmediate { .. } | CompareWordImmediateField { .. }
             | CompareLogicalWord { .. } | CompareLogicalWordImmediate { .. }
             | BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | Branch { .. }
             | BranchToLinkRegister | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. }

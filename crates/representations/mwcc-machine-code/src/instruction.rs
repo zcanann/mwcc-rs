@@ -265,6 +265,9 @@ pub enum Instruction {
     ConditionRegisterOr { d: u8, a: u8, b: u8 },
     /// `cmpwi crf0, rA, SIMM` — signed compare against an immediate.
     CompareWordImmediate { a: u8, immediate: i16 },
+    /// `cmpwi crfD, rA, SIMM` — signed immediate compare into an EXPLICIT condition
+    /// field (`crf != 0`; the runtime's inline-`asm` `__mod2i` uses `cmpwi cr7, …`).
+    CompareWordImmediateField { crf: u8, a: u8, immediate: i16 },
     /// `cmpw crf0, rA, rB` — signed compare.
     CompareWord { a: u8, b: u8 },
     /// `cmplwi crf0, rA, UIMM` — unsigned compare against an immediate.

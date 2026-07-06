@@ -211,7 +211,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, G, a);
             visit(U, G, b);
         }
-        CompareWordImmediate { a, .. } | CompareLogicalWordImmediate { a, .. } => {
+        CompareWordImmediate { a, .. } | CompareWordImmediateField { a, .. } | CompareLogicalWordImmediate { a, .. } => {
             visit(U, G, a);
         }
         // Link-register and count-register moves.
