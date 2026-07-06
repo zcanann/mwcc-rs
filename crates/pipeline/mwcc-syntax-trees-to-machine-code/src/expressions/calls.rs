@@ -129,30 +129,49 @@ impl Generator {
         if arguments.len() >= 2 && arguments.iter().any(|argument| self.is_global_address_arithmetic(argument)) {
             return Err(Diagnostic::error("a `&global + n` argument alongside others needs the multi-arg schedule (roadmap)"));
         }
-        // Two word members of one pointer base, where loading the first clobbers the
-        // base register (`g(p->a, p->b)` with `p` in r3): mwcc pre-copies the base to
-        // the second argument register, then loads each member —
-        // `mr r4,r3; lwz r3,off0(r3); lwz r4,off1(r4)`. The pre-copy `mr` is hoisted
-        // into the non-leaf prologue slot by the body emitter. (The general N-member
-        // / mixed-width choreography is the allocator's; this handles the 2-word case.)
-        if let [Expression::Member { base: base0, offset: offset0, member_type: type0, index_stride: None },
-                Expression::Member { base: base1, offset: offset1, member_type: type1, index_stride: None }] = arguments
-        {
-            if let (Expression::Variable(pointer0), Expression::Variable(pointer1)) = (base0.as_ref(), base1.as_ref()) {
-                let base_register = Eabi::FIRST_GENERAL_ARGUMENT;
-                let copy_register = base_register + 1;
-                let is_word = |member: Type| matches!(member, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. });
+        // Two word loads from ONE pointer base, where loading the first clobbers the base
+        // register (`g(p->a, p->b)` / `g(p[0], p[1])` with `p` in r3): mwcc pre-copies the base to
+        // the second argument register, then loads each — `mr r4,r3; lwz r3,off0(r3); lwz
+        // r4,off1(r4)` (without the pre-copy, ours would load p[1] through p[0], a MISCOMPILE). The
+        // pre-copy `mr` is hoisted into the non-leaf prologue slot by the body emitter. Word members
+        // and constant-index word subscripts of the base qualify; the general N-argument / mixed-width
+        // choreography is the allocator's.
+        if let [argument0, argument1] = arguments {
+            let base_register = Eabi::FIRST_GENERAL_ARGUMENT;
+            let copy_register = base_register + 1;
+            // (base pointer name, byte offset, load pointee) for a word `p->m` / `p[k]` argument.
+            let word_pointer_load = |generator: &Self, argument: &Expression| -> Option<(String, i16, Pointee)> {
+                match argument {
+                    Expression::Member { base, offset, member_type, index_stride: None } => {
+                        let Expression::Variable(name) = base.as_ref() else { return None };
+                        let is_word = matches!(member_type, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. });
+                        if !is_word {
+                            return None;
+                        }
+                        Some((name.clone(), i16::try_from(*offset as i64).ok()?, pointee_of_type(*member_type)?))
+                    }
+                    Expression::Index { base, index } => {
+                        let Expression::Variable(name) = base.as_ref() else { return None };
+                        let constant = constant_value(index)?;
+                        let pointee = generator.locations.get(name.as_str())?.pointee?;
+                        if pointee.size() != 4 {
+                            return None; // a word (int/pointer) element only
+                        }
+                        Some((name.clone(), i16::try_from(constant * pointee.size() as i64).ok()?, pointee))
+                    }
+                    _ => None,
+                }
+            };
+            if let (Some((pointer0, offset0, pointee0)), Some((pointer1, offset1, pointee1))) =
+                (word_pointer_load(self, argument0), word_pointer_load(self, argument1))
+            {
                 if pointer0 == pointer1
-                    && is_word(*type0)
-                    && is_word(*type1)
                     && self.locations.get(pointer0.as_str()).map(|location| location.register) == Some(base_register)
                 {
-                    if let (Some(pointee0), Some(pointee1)) = (pointee_of_type(*type0), pointee_of_type(*type1)) {
-                        self.output.instructions.push(Instruction::move_register(copy_register, base_register));
-                        self.output.instructions.push(displacement_load(pointee0, base_register, base_register, *offset0 as i16)?);
-                        self.output.instructions.push(displacement_load(pointee1, copy_register, copy_register, *offset1 as i16)?);
-                        return Ok(());
-                    }
+                    self.output.instructions.push(Instruction::move_register(copy_register, base_register));
+                    self.output.instructions.push(displacement_load(pointee0, base_register, base_register, offset0)?);
+                    self.output.instructions.push(displacement_load(pointee1, copy_register, copy_register, offset1)?);
+                    return Ok(());
                 }
             }
         }
