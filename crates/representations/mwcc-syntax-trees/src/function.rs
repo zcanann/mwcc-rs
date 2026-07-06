@@ -277,6 +277,9 @@ pub enum AsmOperand {
     Fpr(u8),
     /// An integer immediate operand.
     Immediate(i64),
+    /// A displacement memory operand `<disp>(<gpr>)` — e.g. `stwu r1, -0x10(r1)`
+    /// (`base` = r1, `displacement` = -16). Used by load/store instructions.
+    Memory { displacement: i16, base: u8 },
 }
 
 /// One instruction line inside an inline-`asm` body: a mnemonic and its operands.

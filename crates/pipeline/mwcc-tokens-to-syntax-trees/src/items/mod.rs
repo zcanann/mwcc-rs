@@ -2245,7 +2245,25 @@ impl Parser {
             self.advance();
         }
         match self.advance() {
-            Token::IntegerLiteral(value) => Ok(AsmOperand::Immediate(if negate { -value } else { value })),
+            Token::IntegerLiteral(value) => {
+                let value = if negate { -value } else { value };
+                // A displacement memory operand: `<disp>(<gpr>)`.
+                if *self.peek() == Token::ParenOpen {
+                    self.advance();
+                    let base = match self.advance() {
+                        Token::Identifier(word) => match parse_asm_register(&word) {
+                            Some(AsmOperand::Gpr(index)) => index,
+                            _ => return Err(Diagnostic::error(format!("asm memory operand base '{word}' must be a general-purpose register"))),
+                        },
+                        other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
+                    };
+                    self.expect(Token::ParenClose)?;
+                    let displacement = i16::try_from(value)
+                        .map_err(|_| Diagnostic::error(format!("asm memory displacement {value} does not fit in 16 bits")))?;
+                    return Ok(AsmOperand::Memory { displacement, base });
+                }
+                Ok(AsmOperand::Immediate(value))
+            }
             Token::Identifier(word) => parse_asm_register(&word)
                 .ok_or_else(|| Diagnostic::error(format!("unsupported asm operand '{word}'"))),
             other => Err(Diagnostic::error(format!("unexpected asm operand token {other}"))),
