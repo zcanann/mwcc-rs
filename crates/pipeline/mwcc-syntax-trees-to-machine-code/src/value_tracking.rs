@@ -21,6 +21,12 @@ impl Generator {
     /// single-local / leaf paths should handle it instead, so those stay
     /// byte-identical. Returns `true` once it has emitted the whole body.
     pub(crate) fn try_value_tracking(&mut self, function: &Function) -> Compilation<bool> {
+        // The clean in-place accumulator (`int t = a+b; t = t+c; return t;`) is one
+        // mwcc keeps in the result register and mutates in place — the substitution
+        // model below would reassociate it and disagree, so intercept it first.
+        if self.try_inplace_accumulator(function)? {
+            return Ok(true);
+        }
         // Only take over the cases the straight-line path does not: a reassigned
         // local, or more than one local. A single never-reassigned local keeps the
         // existing handling.
@@ -357,6 +363,128 @@ impl Generator {
             }
         }
         Ok(true)
+    }
+
+    /// The clean in-place accumulator shape — `int t = p0 OP p1; t = t OP p2; …;
+    /// return t;` — where every operand after the first two is the NEXT parameter in
+    /// register order and the accumulator is always the LEFT operand. mwcc keeps `t`
+    /// in the result register and mutates it in place (`add r3,r3,r4; add r3,r3,r5`
+    /// for `+`, `subf r3,rN,r3` for `-`, `mullw r3,r3,rN` for `*`): each source
+    /// register dies at its single use, so r3 stays free for `t` throughout and the
+    /// left-operand anchor never moves. The substitution model would instead
+    /// reassociate the folded chain (`(a+b)+c` -> `mr r0,r3; add r3,r4,r5; add
+    /// r3,r0,r3`), which disagrees, so this handles the shape directly.
+    ///
+    /// Any deviation — an out-of-order operand, the accumulator on the right, a
+    /// reused parameter, a constant operand, a non-int type — instead lands `t` in
+    /// the scratch or a callee-saved register, so it returns `false` to defer to the
+    /// substitution path (which errors honestly) rather than risk wrong bytes. This
+    /// is the first byte-exact slice of the in-register local mutation the general
+    /// allocator will eventually own (`docs/register-allocator.md`, step 5). Verified
+    /// byte-identical on GC/1.3.2 and GC/2.6.
+    fn try_inplace_accumulator(&mut self, function: &Function) -> Compilation<bool> {
+        // The result is exactly the accumulator local, returned by name, at int type.
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(Expression::Variable(returned)) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        // No guards; every statement below must reassign the accumulator, so a guard,
+        // store, call, or any other statement means this is not the pure shape.
+        if !function.guards.is_empty() {
+            return Ok(false);
+        }
+        // Exactly one local — the accumulator — an int initialized from `p0 OP p1`.
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if &local.name != returned || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // Every parameter must be a plain 32-bit integer, so parameter index k is the
+        // GPR r3+k — a float/double or narrow parameter would break that liveness.
+        if function.parameters.iter().any(|parameter| !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)) {
+            return Ok(false);
+        }
+        let parameter_name = |index: usize| function.parameters.get(index).map(|parameter| parameter.name.as_str());
+        let step_operator = |operator: &BinaryOperator| match operator {
+            BinaryOperator::Add => Some(AccumulatorOp::Add),
+            BinaryOperator::Subtract => Some(AccumulatorOp::Subtract),
+            BinaryOperator::Multiply => Some(AccumulatorOp::Multiply),
+            _ => None,
+        };
+        // The initializer defines the accumulator from the first two parameters.
+        let Some(Expression::Binary { operator: init_operator, left: init_left, right: init_right }) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        let (Expression::Variable(init_left_name), Expression::Variable(init_right_name)) = (init_left.as_ref(), init_right.as_ref()) else {
+            return Ok(false);
+        };
+        if Some(init_left_name.as_str()) != parameter_name(0) || Some(init_right_name.as_str()) != parameter_name(1) {
+            return Ok(false);
+        }
+        let Some(init_operator) = step_operator(init_operator) else {
+            return Ok(false);
+        };
+        // Each assignment is `t = t OP p_k`, consuming the next parameter in order.
+        let mut steps = Vec::new();
+        for (index, statement) in function.statements.iter().enumerate() {
+            let Statement::Assign { name, value } = statement else {
+                return Ok(false);
+            };
+            if name != returned {
+                return Ok(false);
+            }
+            let Expression::Binary { operator, left, right } = value else {
+                return Ok(false);
+            };
+            let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) else {
+                return Ok(false);
+            };
+            if left_name != returned || Some(right_name.as_str()) != parameter_name(index + 2) {
+                return Ok(false);
+            }
+            let Some(operator) = step_operator(operator) else {
+                return Ok(false);
+            };
+            let Some(register) = self.lookup_general(right_name) else {
+                return Ok(false);
+            };
+            steps.push((operator, register));
+        }
+
+        // Emit: the accumulator lives in the result register for the whole chain.
+        let (Some(left_register), Some(right_register)) = (self.lookup_general(init_left_name), self.lookup_general(init_right_name)) else {
+            return Ok(false);
+        };
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(accumulate(init_operator, result, left_register, right_register));
+        for (operator, register) in steps {
+            self.output.instructions.push(accumulate(operator, result, result, register));
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+}
+
+/// An in-place accumulator step's operator — the byte-exact subset, each a single
+/// register-to-register mutation of the accumulator.
+#[derive(Clone, Copy)]
+enum AccumulatorOp {
+    Add,
+    Subtract,
+    Multiply,
+}
+
+/// Emit `dst = left OP right` for the in-place accumulator, matching mwcc's operand
+/// placement: `add`/`mullw` take `(dst, left, right)`; subtraction is `subf dst,
+/// right, left` because `subf` computes `b - a` (the subtrahend fills the `a` field).
+fn accumulate(operator: AccumulatorOp, dst: u8, left: u8, right: u8) -> Instruction {
+    match operator {
+        AccumulatorOp::Add => Instruction::Add { d: dst, a: left, b: right },
+        AccumulatorOp::Subtract => Instruction::SubtractFrom { d: dst, a: right, b: left },
+        AccumulatorOp::Multiply => Instruction::MultiplyLow { d: dst, a: left, b: right },
     }
 }
 
