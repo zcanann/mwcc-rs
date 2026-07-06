@@ -97,7 +97,14 @@ impl Generator {
         }
         if let Some(return_expression) = &function.return_expression {
             let inlined = crate::value_tracking::substitute(return_expression, &tracked);
-            if function.parameters.iter().filter(|parameter| expression_reads_name(&inlined, &parameter.name)).count() > 1 {
+            let distinct_parameters = function.parameters.iter().filter(|parameter| expression_reads_name(&inlined, &parameter.name)).count();
+            // A SELF-REFERENTIAL reassignment (the reassigned name still appears in the substituted
+            // tail, `c = b + c` -> `b + c`) reading two-plus parameters keeps its branch form (mwcc
+            // computes the tail into the result register AFTER the guard). A NON-self-referential
+            // two-parameter tail (`c = b + e` / a fresh local `d = b + c`) instead merges through r0
+            // ahead of the guard — that folds via the value-tracking tail-merge, so let it hoist.
+            let self_referential = written.iter().any(|name| expression_reads_name(&inlined, name));
+            if distinct_parameters > 1 && self_referential {
                 return None;
             }
         }

@@ -388,9 +388,20 @@ impl Generator {
                     return Err(Diagnostic::error("a non-general guard value is not supported yet (roadmap)"));
                 };
                 // emit_condition_test returns the branch-if-FALSE options (the forward-if convention),
-                // which is exactly what skips the guard-value load when the guard does not hold.
-                let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
-                self.evaluate_general(&inlined, GENERAL_SCRATCH)?;
+                // which is exactly what skips the guard-value load when the guard does not hold. A
+                // HIGH-LATENCY tail — a register-register `mullw` — is scheduled BEFORE the compare
+                // (`mullw r0,b,c; cmpwi; ...`) to overlap its latency; a low-latency `add`/`subf`, or a
+                // constant multiply (`mulli`/shift), stays after the compare.
+                let hoist_tail = matches!(&inlined, Expression::Binary { operator: BinaryOperator::Multiply, left, right }
+                    if constant_value(left).is_none() && constant_value(right).is_none());
+                let (options, condition_bit) = if hoist_tail {
+                    self.evaluate_general(&inlined, GENERAL_SCRATCH)?;
+                    self.emit_condition_test(&guard.condition)?
+                } else {
+                    let condition = self.emit_condition_test(&guard.condition)?;
+                    self.evaluate_general(&inlined, GENERAL_SCRATCH)?;
+                    condition
+                };
                 let branch_index = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
                 // Guard TRUE (fall-through): overwrite the tail with the guard value.
