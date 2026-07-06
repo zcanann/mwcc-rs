@@ -376,13 +376,22 @@ impl Generator {
 
                 let result = mwcc_target::Eabi::general_result().number;
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
-                let branch_index = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-                self.evaluate_tail(value, function.return_type, result)?;
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
-                let continuation = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
-                    *target = continuation;
+                if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result)) {
+                    // The guard VALUE already occupies the result register (`if(a>0) return a; *p=5;
+                    // return 0;`): mwcc collapses the guard to a single conditional branch-to-lr
+                    // (`bgtlr`) rather than a forward branch over a no-op value move. `options ^ 8`
+                    // inverts the skip-when-false test to return-when-true. The materialized store
+                    // value and the return then follow exactly as below (`li r0,5; li r3,0; stw`).
+                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                } else {
+                    let branch_index = self.output.instructions.len();
+                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    self.evaluate_tail(value, function.return_type, result)?;
+                    self.output.instructions.push(Instruction::BranchToLinkRegister);
+                    let continuation = self.output.instructions.len();
+                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                        *target = continuation;
+                    }
                 }
                 self.evaluate_general(stored, GENERAL_SCRATCH)?;
                 match return_value {
