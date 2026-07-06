@@ -33,3 +33,10 @@ int ret_store_computed(int a)  { foo(); gi = a; return a + 1; }   // return a va
 int gj;
 void store_two(int a, int b)       { foo(); gi = a; gj = b; }     // r31,r0,r30 epilogue
 void store_two_swapped(int a, int b){ foo(); gi = b; gj = a; }    // saved regs by param order
+
+// A store BEFORE the call, whose sink is the RETURN (not a trailing store): this takes the ORDINARY
+// return epilogue — the LR-reload hoist issues `lwz r0` right after the call, then the return move,
+// then the GPR reload — NOT the store-sink LR-first order. Keying epilogue_lr_first on has_store
+// alone mis-scheduled this (return move before the LR reload); it now keys on the LAST statement.
+//   mr r31,a; stw r31,0(p); bl foo; lwz r0,20; mr r3,r31; lwz r31,12; mtlr
+int ret_after_early_store(int a, int* p) { *p = a; foo(); return a; }

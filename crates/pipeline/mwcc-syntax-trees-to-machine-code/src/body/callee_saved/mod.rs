@@ -214,8 +214,12 @@ impl Generator {
         // interleaved save+move prologue comes from the FRAME BUILDER.
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         self.callee_saved = homes.clone();
-        // A store sink reloads the saved LR before the GPR reloads in the epilogue.
-        self.epilogue_lr_first = has_store;
+        // Only a STORE SINK — a body whose TRAILING statement is the store of the saved value (after
+        // all calls) — reloads the saved LR before the GPR reloads, even when a value is also returned
+        // afterward (`foo(); gi=a; return a;`). An EARLIER store whose sink is the return (`*p=a; g();
+        // return a;`) takes the ordinary return epilogue (GPRs, then LR), where the hoist pass places
+        // the LR reload right after the last call. So key on the LAST statement, not merely has_store.
+        self.epilogue_lr_first = matches!(function.statements.last(), Some(Statement::Store { .. }));
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
         let incoming_ordered: Vec<u8> = promoted.iter().rev().map(|(_, _, incoming)| *incoming).collect();
