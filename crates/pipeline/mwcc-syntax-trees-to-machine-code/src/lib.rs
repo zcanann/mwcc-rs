@@ -5,7 +5,7 @@
 //! modules together and exposes the entry point; the work lives in them.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::{FrameInfo, MachineFunction};
+use mwcc_machine_code::{FrameInfo, Instruction, MachineFunction};
 use mwcc_syntax_trees::{Function, GlobalDeclaration};
 use mwcc_versions::{Behavior, CompilerConfig};
 use std::collections::{HashMap, HashSet};
@@ -195,6 +195,16 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     if generator.labels.resolve(&mut generator.output.instructions).is_err() {
         return Err(mwcc_core::Diagnostic::error("internal: a branch label was used but never bound"));
     }
+    // Peephole: a conditional forward branch whose target is the function's TERMINAL
+    // `blr` is byte-identical to `b<cc>lr` — mwcc always emits the branch-to-link form
+    // (`if(c) *p=x; return a;` -> `cmpwi;blelr;stw;blr`, never `ble .Lend`). Collapse it
+    // so any guarded tail matches, whichever handler emitted the forward branch. Safe
+    // ONLY for the terminal blr (a leaf epilogue is a bare `blr`): the fall-through always
+    // reaches it, so nothing is left dead; a mid-function blr or framed epilogue (whose
+    // target is the teardown, not a bare blr) is untouched. The forward branch's
+    // (options, condition_bit) already encode the same BO/BI, so reusing them yields the
+    // exact `b<cc>lr` mwcc emits.
+    collapse_forward_branch_to_terminal_blr(&mut generator.output.instructions);
     // The names this function references, in mwcc's symbol-table order (an AST
     // traversal); the writer assigns its external/global symbols in this order.
     if generator.output.symbol_order.is_empty() {
@@ -353,5 +363,28 @@ fn coalesce_self_moves(generator: &mut Generator) {
     let permutation = mwcc_vreg::coalesce_self_moves(&mut generator.output.instructions);
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
+    }
+}
+
+/// Rewrite any conditional forward branch whose target is the function's TERMINAL `blr`
+/// into the equivalent `b<cc>lr` (branch-conditional-to-link-register), matching mwcc,
+/// which never emits `b<cc> .Lend` when the destination is the final return. In place —
+/// same instruction count, so no relocation/index remap. Restricted to the terminal blr
+/// (the last instruction): its fall-through is always live, so the collapse leaves no dead
+/// code, and a framed epilogue (whose branch target is the teardown, not a bare `blr`) is
+/// never matched.
+fn collapse_forward_branch_to_terminal_blr(instructions: &mut [Instruction]) {
+    let Some(last) = instructions.len().checked_sub(1) else {
+        return;
+    };
+    if !matches!(instructions[last], Instruction::BranchToLinkRegister) {
+        return;
+    }
+    for index in 0..last {
+        if let Instruction::BranchConditionalForward { options, condition_bit, target } = instructions[index] {
+            if target == last {
+                instructions[index] = Instruction::BranchConditionalToLinkRegister { options, condition_bit };
+            }
+        }
     }
 }
