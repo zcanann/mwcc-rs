@@ -193,6 +193,21 @@ pub(crate) fn is_complex_add(expression: &Expression) -> bool {
     if is_constant_hoist_add(expression) {
         return true;
     }
+    // `(a+b)-1`: mwcc reassociates a `sum - const`, pushing the constant into the sum's SECOND
+    // operand (`a+(b-1)` = `mr r0,r3; addi r3,r4,-1; add r3,r0,r3`); our source-order `add; addi`
+    // diverges. The equivalent `a+(b-1)` already defers via is_constant_hoist_add, but the
+    // Subtract-outer spelling escapes the Add-focused checks below, so catch it here. Restricted to
+    // a TWO-register inner sum: `(a+10)-3` has a constant inner operand and constant-FOLDS to
+    // `addi r3,r3,7` (byte-exact, driver.rs), `(a-b)-1` keeps source order, `(a+b)-c` is not a hoist.
+    if let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = expression {
+        if matches!(right.as_ref(), Expression::IntegerLiteral(_)) {
+            if let Expression::Binary { operator: BinaryOperator::Add, right: inner_right, .. } = left.as_ref() {
+                if !matches!(inner_right.as_ref(), Expression::IntegerLiteral(_)) {
+                    return true;
+                }
+            }
+        }
+    }
     let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
         return false;
     };
