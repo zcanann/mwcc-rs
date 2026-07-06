@@ -186,6 +186,13 @@ pub(crate) fn add_chain_leaves(expression: &Expression) -> Option<Vec<&Expressio
 /// Byte-exact and kept: `a+b`, `a+b+c`, `a+b*c`, `a*b+c*d`, `(a+b+c)*d`. Diverges: `a+b+c+d`,
 /// `a+(b+c)`, `a+b+c*d`, `d+(a+b+c)` — mwcc evaluates the nested-add operand in its own order.
 pub(crate) fn is_complex_add(expression: &Expression) -> bool {
+    // `(a - 1) + a` / `(a + 1) + b` / `b + (a - 1)`: mwcc HOISTS the embedded additive
+    // constant to the end, grouping the two register terms first (`add r3,r3,r3; addi
+    // r3,r3,-1` for `(a-1)+a`). This is a 1-`Add` tree (the constant lives in a `+`/`-`
+    // child), so `count_adds` misses it, but the source-order codegen still diverges.
+    if is_constant_hoist_add(expression) {
+        return true;
+    }
     let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
         return false;
     };
@@ -197,6 +204,24 @@ pub(crate) fn is_complex_add(expression: &Expression) -> bool {
         if is_add_leaf(inner_left) && is_add_leaf(inner_right))
         && is_add_leaf(right);
     !simple
+}
+
+/// An `Add` mwcc reassociates by HOISTING an embedded additive constant to the end: `(a - 1) + a`
+/// -> `(a + a) - 1`, `(a + 1) + b`, `b + (a - 1)`. One operand is a `+`/`-` binary whose RIGHT
+/// operand is a CONSTANT (`X ± c`); the OTHER operand is a bare register leaf. mwcc groups the two
+/// register terms and applies the constant last, which the source-order codegen does not reproduce.
+/// A computed other-operand (`(a-1)+b*c`), a constant other-operand (`(a*a)+3`, constant already
+/// outer), or no inner constant (`(a-b)+a`) all match mwcc and are excluded.
+fn is_constant_hoist_add(expression: &Expression) -> bool {
+    let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
+        return false;
+    };
+    let additive_with_constant = |operand: &Expression| {
+        matches!(operand, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, right, .. }
+            if matches!(right.as_ref(), Expression::IntegerLiteral(_)))
+    };
+    (additive_with_constant(left) && matches!(right.as_ref(), Expression::Variable(_)))
+        || (additive_with_constant(right) && matches!(left.as_ref(), Expression::Variable(_)))
 }
 
 /// Whether an integer expression CONTAINS a reassociated add-tree anywhere — the whole expression
