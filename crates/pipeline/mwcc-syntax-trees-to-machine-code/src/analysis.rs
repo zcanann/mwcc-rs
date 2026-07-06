@@ -237,18 +237,33 @@ fn additive_with_constant(operand: &Expression) -> bool {
         if matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
 }
 
-/// A COMMUTATIVE op (`*`, `&`, `|`, `^`) whose LEFT operand is a computed `variable ± const` and
-/// RIGHT is a bare register leaf (`(a-1)*b`, `(a-1)&b`): mwcc keeps source order (`mullw r3,
-/// r0(a-1), r4(b)`) but our placement swaps the operands (`mullw r3,r4,r0`) — same value, different
-/// bytes. A no-constant computed operand (`(a+b)*c`, `(a-c)*b`), a mul-const (`(a*2)*b`), or the
-/// computed operand on the RIGHT (`b*(a-1)`) all keep source order and match. `-` and `/` are not
-/// commutative (operand order is load-bearing) and never swap.
+/// A value materialized into a scratch register from ONE register leaf via an immediate or unary
+/// op: `a ± const` / `const ± a` (addi/subfic) or `-a` (neg). mwcc keeps such an operand in source
+/// order in a commutative op; our placement swaps it. A TWO-register op (`a+b`, `a-c`) or a nested
+/// product (`(a*b)+1`) is a different shape and is NOT this.
+fn single_register_computed(operand: &Expression) -> bool {
+    match operand {
+        Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
+            (matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
+                || (matches!(left.as_ref(), Expression::IntegerLiteral(_)) && matches!(right.as_ref(), Expression::Variable(_)))
+        }
+        Expression::Unary { operator: UnaryOperator::Negate, operand } => matches!(operand.as_ref(), Expression::Variable(_)),
+        _ => false,
+    }
+}
+
+/// A COMMUTATIVE op (`*`, `&`, `|`, `^`) whose LEFT operand is a single-register-computed value
+/// (`(a-1)*b`, `(2-a)&b`, `-a*b`) and RIGHT is a bare register leaf: mwcc keeps source order
+/// (`mullw r3, r0(a-1), r4(b)`) but our placement swaps the operands (`mullw r3,r4,r0`) — same
+/// value, different bytes. A two-register computed operand (`(a+b)*c`, `(a-c)*b`), a nested product
+/// (`((a*b)+1)*c`), a mul-const (`(a*2)*b`), or the computed operand on the RIGHT (`b*(a-1)`) all
+/// keep source order and match. `-` and `/` are not commutative (operand order is load-bearing).
 fn is_constant_operand_commutative_swap(expression: &Expression) -> bool {
     let Expression::Binary { operator, left, right } = expression else {
         return false;
     };
     let commutative = matches!(operator, BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor);
-    commutative && additive_with_constant(left) && matches!(right.as_ref(), Expression::Variable(_))
+    commutative && single_register_computed(left) && matches!(right.as_ref(), Expression::Variable(_))
 }
 
 /// Whether an integer expression CONTAINS a reassociated add-tree anywhere — the whole expression
