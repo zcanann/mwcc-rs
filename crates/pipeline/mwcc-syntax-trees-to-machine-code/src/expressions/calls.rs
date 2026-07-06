@@ -165,7 +165,12 @@ impl Generator {
             if let (Some((pointer0, offset0, pointee0)), Some((pointer1, offset1, pointee1))) =
                 (word_pointer_load(self, argument0), word_pointer_load(self, argument1))
             {
+                // Only two DIFFERENT loads (`g(p[0], p[1])`) take the base-preservation. The SAME
+                // load twice (`g(p[0], p[0])`) is a load-once-copy in mwcc (`lwz r3,off(r3); mr
+                // r4,r3`) whose .text we match but whose @N anonymous-symbol numbering diverges (the
+                // low-impact object-writer seam), so leave it to the argument-clobber defer below.
                 if pointer0 == pointer1
+                    && !(offset0 == offset1 && pointee0 == pointee1)
                     && self.locations.get(pointer0.as_str()).map(|location| location.register) == Some(base_register)
                 {
                     self.output.instructions.push(Instruction::move_register(copy_register, base_register));

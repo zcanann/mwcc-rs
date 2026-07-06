@@ -5,6 +5,8 @@
 // this for subscripts; the member form `g(p->a, p->b)` already handled it). The base-preservation
 // now covers constant-index word subscripts too; a narrow (short/char) element defers via the
 // argument-clobber guard (collect_registers now sees a subscript/deref base register).
+// The SAME load twice (`g(p[0], p[0])`) is left to the argument-clobber defer: mwcc's load-once-copy
+// there (`lwz r3,off(r3); mr r4,r3`) matches in .text but diverges in @N numbering (object-writer seam).
 struct S { int a; int b; };
 int g2(int, int);
 int subscript_base(int* p)         { return g2(p[0], p[1]); }    // mr r4,r3; lwz r3,0(r3); lwz r4,4(r4)
