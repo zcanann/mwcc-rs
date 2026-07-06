@@ -791,6 +791,16 @@ impl Generator {
         if then_body.len() != 1 {
             return Err(Diagnostic::error("a multi-statement if-body needs the scheduler (roadmap)"));
         }
+        // A nested else-if whose comparison REUSES this comparison's condition register
+        // (same operand against the same value — `if(c>0) … else if(c<0) …`, which mwcc
+        // lowers with ONE `cmpwi` shared by both branches, `ble`/`bge` off the same CR) is
+        // not reproduced yet; defer rather than emit a redundant second `cmpwi` (wrong bytes).
+        // A different operand or a different compared value re-tests normally and is unaffected.
+        if let [Statement::If { condition: else_condition, .. }] = else_body {
+            if shares_condition_register(condition, else_condition) {
+                return Err(Diagnostic::error("consecutive else-if comparisons that reuse the condition register are not supported yet (roadmap)"));
+            }
+        }
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         if else_body.is_empty() {
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
@@ -1597,4 +1607,27 @@ impl Generator {
         Ok(())
     }
 
+}
+
+/// Whether two conditions are relational comparisons of the SAME operand against the
+/// SAME value (`c > 0` and `c < 0`, both `cmpwi r3,0`). mwcc emits ONE compare and reads
+/// its condition register from both branches; our per-branch re-compare would emit a
+/// redundant second `cmpwi`, so the else-if chain defers when this holds.
+fn shares_condition_register(a: &Expression, b: &Expression) -> bool {
+    let relational = |operator: &BinaryOperator| {
+        matches!(
+            operator,
+            BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::LessEqual
+                | BinaryOperator::GreaterEqual | BinaryOperator::Equal | BinaryOperator::NotEqual
+        )
+    };
+    match (a, b) {
+        (
+            Expression::Binary { operator: operator_a, left: left_a, right: right_a },
+            Expression::Binary { operator: operator_b, left: left_b, right: right_b },
+        ) if relational(operator_a) && relational(operator_b) => {
+            same_operand(left_a, left_b) && same_operand(right_a, right_b)
+        }
+        _ => false,
+    }
 }
