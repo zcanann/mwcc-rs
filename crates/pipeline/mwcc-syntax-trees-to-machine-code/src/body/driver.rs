@@ -1150,6 +1150,10 @@ impl Generator {
             if self.try_callee_saved_param_pair_combine(function)? {
                 return Ok(());
             }
+            // `g(a); h(b); return a OP b;` — two params passed to two calls in turn, then combined.
+            if self.try_callee_saved_call_sequence_combine(function)? {
+                return Ok(());
+            }
             // `return f() OP g();` — two call results combined in the return.
             if self.try_callee_saved_two_call_combine(function)? {
                 return Ok(());

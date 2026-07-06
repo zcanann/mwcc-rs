@@ -343,6 +343,81 @@ impl Generator {
         Ok(true)
     }
 
+    /// `g(a); h(b); return a OP b;` — TWO calls, each passing one of the two parameters, both live to
+    /// a combining return. This fuses `try_callee_saved_call_sequence` (two calls, each passing its
+    /// parameter) with `try_callee_saved_param_pair_combine` (two parameters combined in the return):
+    /// mwcc saves BOTH up front interleaved (`stw r31; mr r31,b; stw r30; mr r30,a`); the FIRST call
+    /// reads its parameter from the still-live incoming register (no move); the SECOND materializes its
+    /// parameter from r31 (`mr r3,r31`); the return combines from the saved registers (`add r3,r30,
+    /// r31`). `*` is excluded (its latency reschedules the two-GPR epilogue restores, per the
+    /// param-pair combine); the calls may target the same or different functions.
+    pub(crate) fn try_callee_saved_call_sequence_combine(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        if function.parameters.len() != 2 {
+            return Ok(false);
+        }
+        // Two call statements, each passing exactly the correspondingly-indexed parameter.
+        let [Statement::Expression(Expression::Call { name: name0, arguments: args0 }), Statement::Expression(Expression::Call { name: name1, arguments: args1 })] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let is_param = |expression: &Expression, index: usize| matches!(expression, Expression::Variable(name) if name == &function.parameters[index].name);
+        if args0.len() != 1 || !is_param(&args0[0], 0) || args1.len() != 1 || !is_param(&args1[0], 1) {
+            return Ok(false);
+        }
+        // The return combines both parameters with one low-latency op (either operand order;
+        // evaluate_tail reproduces it). `*` is excluded — see the doc comment.
+        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+            return Ok(false);
+        }
+        if !((is_param(left, 0) && is_param(right, 1)) || (is_param(left, 1) && is_param(right, 0))) {
+            return Ok(false);
+        }
+        // Both parameters general-class; keep incoming (parameter) order for the save loop.
+        let mut incoming = Vec::new();
+        for parameter in &function.parameters {
+            match self.locations.get(&parameter.name) {
+                Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                _ => return Ok(false),
+            }
+        }
+        // Prologue: a 16-byte frame saving the link register and r31 + r30, interleaved with the moves.
+        let frame_size = 16i16;
+        self.non_leaf = true;
+        self.frame_size = frame_size;
+        // Phase D: virtual homes, highest-rank first (id order -> r31, r30).
+        let homes: Vec<u8> = (0..2).map(|_| self.fresh_virtual_general()).collect();
+        self.callee_saved = homes.clone();
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        debug_assert_eq!(plan.frame_size, frame_size);
+        let incoming_ordered: Vec<u8> = incoming.iter().rev().copied().collect();
+        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+        // The second parameter now lives in its callee-saved home (r31); the second call materializes
+        // it (`mr r3,r31`). The first parameter stays in its incoming register for the first call and
+        // moves to its home (r30) only afterward (its incoming register dies at the first call).
+        if let Some(location) = self.locations.get_mut(&function.parameters[1].name) {
+            location.register = homes[0];
+        }
+        self.emit_call(name0, args0, None, false)?;
+        if let Some(location) = self.locations.get_mut(&function.parameters[0].name) {
+            location.register = homes[1];
+        }
+        self.emit_call(name1, args1, None, false)?;
+        let result = Eabi::general_result().number;
+        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// A single local initialized by a call whose argument forwards the (single)
     /// parameter, returned combined with that parameter:
     /// `int x = g(a); return x + a;`. The parameter crosses the call: mwcc saves
