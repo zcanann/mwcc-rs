@@ -26,15 +26,10 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
         .expect("assemble_asm_function called on a non-asm function");
 
     // An asm function WITHOUT a `nofralloc` directive that uses a stack frame gets an
-    // mwcc-generated frame prologue/epilogue (`stwu r1,-16(r1); mr r31,r1` … `mr r10,r1;
-    // lwz r1,0(r1)`) wrapped around the verbatim body — BfBB's clang-format runtime
-    // helpers. That auto-frame is not modeled, so defer rather than emit the body
-    // without it (a whole-object DIFF). A frameless leaf (GetR2) has no `stwu` and is
-    // still assembled verbatim.
+    // mwcc-generated 16-byte frame wrapped around the verbatim body (BfBB's clang-format
+    // runtime helpers). A frameless leaf (GetR2) has no `stwu`, so it stays verbatim.
     let mnemonics = |name: &str| body.iter().any(|item| matches!(item, AsmItem::Instruction(line) if line.mnemonic == name));
-    if !mnemonics("nofralloc") && mnemonics("stwu") {
-        return Err(Diagnostic::error("an inline-asm function without `nofralloc` that manages a stack frame needs the auto-frame prologue (roadmap)"));
-    }
+    let auto_frame = !mnemonics("nofralloc") && mnemonics("stwu");
 
     // Pass 1: map each label to the index of the instruction it precedes (a label
     // with no following instruction points one past the end — the auto-`blr` slot),
@@ -61,8 +56,14 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     let mut instructions = Vec::new();
     let mut relocations: Vec<Relocation> = Vec::new();
     let mut symbol_order: Vec<String> = Vec::new();
+    // For an auto-frame function, the `frfree` directive marks where mwcc inserts the
+    // frame-teardown epilogue (BfBB's `…; addi; frfree; blr`).
+    let mut frfree_position: Option<usize> = None;
     for item in body {
         if let AsmItem::Instruction(line) = item {
+            if line.mnemonic == "frfree" {
+                frfree_position = Some(instructions.len());
+            }
             let instruction_index = instructions.len();
             if let Some(instruction) = assemble_line(line, &labels, instruction_index)? {
                 instructions.push(instruction);
@@ -90,6 +91,9 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     // is another unconditional branch chases to the final target; a branch whose
     // final target is a `blr` becomes the branch-to-link form.
     apply_branch_peepholes(&mut instructions);
+    if auto_frame {
+        wrap_auto_frame(&mut instructions, &mut relocations, &mut entry_points, frfree_position)?;
+    }
 
     let mut output = MachineFunction::new(function.name.clone());
     output.instructions = instructions;
@@ -104,10 +108,44 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     Ok(output)
 }
 
-/// Whether an assembled line contributes a machine word (a directive like
-/// `nofralloc` does not) — used to number instructions for label resolution.
+/// Whether an assembled line contributes a machine word (the `nofralloc`/`frfree`
+/// directives do not) — used to number instructions for label resolution.
 fn emits_word(line: &AsmInstruction) -> bool {
-    line.mnemonic != "nofralloc"
+    !matches!(line.mnemonic.as_str(), "nofralloc" | "frfree")
+}
+
+/// Wrap an asm body that lacks `nofralloc` (but uses the stack) in mwcc's generated
+/// 16-byte frame: prologue `stwu r1,-16(r1); mr r31,r1` prepended, epilogue
+/// `mr r10,r1; lwz r1,0(r1)` inserted at the `frfree` directive (`frfree_position`,
+/// the index it fell on) — the frame-teardown marker in BfBB's `…; addi; frfree; blr`.
+/// A body with no `frfree` puts the epilogue at the very end (after the return).
+fn wrap_auto_frame(instructions: &mut Vec<Instruction>, relocations: &mut [Relocation], entry_points: &mut [(String, usize)], frfree_position: Option<usize>) -> Compilation<()> {
+    let insertion = frfree_position.unwrap_or(instructions.len());
+    // The prologue prepends two instructions (all indices +2), and the epilogue inserts
+    // two more at `insertion` (indices at or past it shift another +2).
+    let shift = |index: usize| index + 2 + if index >= insertion { 2 } else { 0 };
+    for instruction in instructions.iter_mut() {
+        match instruction {
+            Instruction::Branch { target } => *target = shift(*target),
+            Instruction::BranchConditionalForward { target, .. } => *target = shift(*target),
+            _ => {}
+        }
+    }
+    for relocation in relocations.iter_mut() {
+        relocation.instruction_index = shift(relocation.instruction_index);
+    }
+    for (_, index) in entry_points.iter_mut() {
+        *index = shift(*index);
+    }
+    let mut framed = Vec::with_capacity(instructions.len() + 4);
+    framed.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 }); // stwu r1, -16(r1)
+    framed.push(Instruction::move_register(31, 1)); // mr r31, r1
+    framed.extend(instructions.drain(..insertion));
+    framed.push(Instruction::move_register(10, 1)); // mr r10, r1
+    framed.push(Instruction::LoadWord { d: 1, a: 1, offset: 0 }); // lwz r1, 0(r1)
+    framed.append(instructions);
+    *instructions = framed;
+    Ok(())
 }
 
 /// Reproduce mwcc's two inline-asm branch peepholes, preserving instruction indices:
