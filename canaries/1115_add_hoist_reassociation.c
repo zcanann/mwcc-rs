@@ -10,3 +10,6 @@ int hoist_add(int a, int b)      { return (a + 1) + b; }
 int hoist_self(int a)            { return (a - 1) + a; }
 int hoist_big(int a, int b)      { return (a - 100) + b; }
 int hoist_three(int a, int b, int c) { return (a - 1) + c; }
+// The `± c` term on the RIGHT is the same emit — its variable is still the first `add` operand.
+int hoist_right(int a, int b)    { return b + (a - 1); }   // add r3,r3,r4; addi -1
+int hoist_right2(int a, int b)   { return a + (b - 1); }   // add r3,r4,r3; addi -1
