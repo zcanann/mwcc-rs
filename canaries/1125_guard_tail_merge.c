@@ -8,3 +8,7 @@ int tm_lt(int a, int b)       { if (a < 0)  return a; b = b - 1; return b; }   /
 int tm_bool(int a, int b)     { if (a)      return a; b = b * 2; return b; }   // beq skip; slwi r0
 int tm_ge(int a, int b)       { if (a >= 0) return a; b = b + 5; return b; }
 int tm_local(int a, int b)    { int c; if (a > 0) return a; c = b + 1; return c; }  // reassign a local
+// A reassigned PARAMETER read in the return counts as its tracked value (`c=b+1` reads only b), so the
+// substituted single-parameter tail hoists into the same tail-merge instead of the branch form.
+int tm_param(int a, int b, int c) { if (a > 0) return a; c = b + 1; return c; }
+int tm_param3(int a, int b, int c){ if (a < 0) return a; c = b * 2; return c; }

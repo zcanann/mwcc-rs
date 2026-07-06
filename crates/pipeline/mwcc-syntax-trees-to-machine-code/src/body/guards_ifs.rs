@@ -76,18 +76,30 @@ impl Generator {
                 return None;
             }
         }
-        // A tail reading TWO OR MORE distinct parameters does not fold directly either:
-        // mwcc schedules it into the local's home register ahead of the guard value
-        // (`add r0,r4,r5; li r3,5; bnelr; mr r3,r0` flat, a real branch ordered) — an
-        // order-dependent form, so it too stays ordered for the branch-form handler.
-        let tail_reads_parameter = |name: &str| {
-            rest.iter().any(|statement| match statement {
-                Statement::Assign { value, .. } => expression_reads_name(value, name),
-                _ => false,
-            }) || function.return_expression.as_ref().is_some_and(|ret| expression_reads_name(ret, name))
-        };
-        if function.parameters.iter().filter(|parameter| tail_reads_parameter(&parameter.name)).count() > 1 {
-            return None;
+        // A tail reading TWO OR MORE distinct parameters does not fold directly: mwcc schedules it
+        // into the local's home register ahead of the guard value (`add r0,r4,r5; li r3,5; bnelr; mr
+        // r3,r0` flat, a real branch ordered) — an order-dependent form that stays ordered for the
+        // branch-form handler. Count over the SUBSTITUTED tail so a reassigned parameter read as its
+        // tracked value (`c = b + 1; return c;` -> `b + 1`, one parameter) folds like the reassign-
+        // in-place shapes, while a self-referential reassignment (`c = b + c` -> `b + c`, two) bails.
+        let mut tracked: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+        for local in &function.locals {
+            if let Some(initializer) = &local.initializer {
+                let value = crate::value_tracking::substitute(initializer, &tracked);
+                tracked.insert(local.name.clone(), value);
+            }
+        }
+        for statement in &rest {
+            if let Statement::Assign { name, value } = statement {
+                let value = crate::value_tracking::substitute(value, &tracked);
+                tracked.insert(name.clone(), value);
+            }
+        }
+        if let Some(return_expression) = &function.return_expression {
+            let inlined = crate::value_tracking::substitute(return_expression, &tracked);
+            if function.parameters.iter().filter(|parameter| expression_reads_name(&inlined, &parameter.name)).count() > 1 {
+                return None;
+            }
         }
         let mut guards = hoisted;
         guards.extend(function.guards.iter().cloned());
