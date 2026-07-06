@@ -81,6 +81,12 @@ pub struct Behavior {
     /// float-constant load rather than filling the mflr->store latency slot with it
     /// (GC/2.0p1's order).
     pub lr_save_precedes_float_const: bool,
+    /// In a float `if`-condition against a pool constant, whether the loaded value
+    /// operand (member/global) is emitted before the constant load (GC/2.0p1's order).
+    pub float_compare_value_before_const: bool,
+    /// In `frexp`, whether the mantissa scaling `fmul` precedes the `*eptr` store
+    /// (GC/2.0p1's order).
+    pub frexp_scale_before_eptr_store: bool,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -110,6 +116,8 @@ impl Behavior {
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
             lr_save_precedes_float_const: config.build.profile.lr_save_precedes_float_const(),
+            float_compare_value_before_const: config.build.profile.float_compare_value_before_const(),
+            frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             global_addressing: config.flags.global_addressing,
         }
     }

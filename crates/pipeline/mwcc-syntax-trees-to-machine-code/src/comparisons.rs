@@ -673,13 +673,27 @@ impl Generator {
             // float member or global): mwcc loads the constant into f0 first, then the
             // value into f1 — `lfs f0,k; lfs f1,(v); fcmpo f1,f0`. Place the literal side
             // first so the loads emit in that order; the fcmpo keeps source order.
-            let b = self.place_float_compare_operand(right, double)?;
-            let a = self.place_float_compare_value(left)?;
-            (a, b)
+            // GC/2.0p1 loads the VALUE first (`lfs f1,(v); lfs f0,k`) — same registers,
+            // reversed load order — so place the value side first there.
+            if self.behavior.float_compare_value_before_const {
+                let a = self.place_float_compare_value(left)?;
+                let b = self.place_float_compare_operand(right, double)?;
+                (a, b)
+            } else {
+                let b = self.place_float_compare_operand(right, double)?;
+                let a = self.place_float_compare_value(left)?;
+                (a, b)
+            }
         } else if left_literal && !right_literal {
-            let a = self.place_float_compare_operand(left, double)?;
-            let b = self.place_float_compare_value(right)?;
-            (a, b)
+            if self.behavior.float_compare_value_before_const {
+                let b = self.place_float_compare_value(right)?;
+                let a = self.place_float_compare_operand(left, double)?;
+                (a, b)
+            } else {
+                let a = self.place_float_compare_operand(left, double)?;
+                let b = self.place_float_compare_value(right)?;
+                (a, b)
+            }
         } else {
             let a = self.place_float_compare_operand(left, double)?;
             let b = self.place_float_compare_operand(right, double)?;

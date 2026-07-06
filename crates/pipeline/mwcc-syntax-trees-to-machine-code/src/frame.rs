@@ -781,8 +781,17 @@ impl Generator {
         self.emit_branch_conditional_to(4, 0, merge); // bge: ix < C2 is FALSE, over the block
         self.load_double_constant(FLOAT_SCRATCH, scale.to_bits());
         self.output.instructions.push(Instruction::load_immediate(GENERAL_SCRATCH, store_constant));
-        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: eptr_register, offset: 0 });
-        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: FLOAT_SCRATCH, a: Eabi::FIRST_FLOAT_ARGUMENT, c: FLOAT_SCRATCH });
+        // The `*eptr = <exp>` store and the mantissa scaling `fmul` are independent; GC/2.0p1
+        // schedules the fmul first (`fmul; stw r0,0(r3)`), mainline stores first.
+        let eptr_store = Instruction::StoreWord { s: GENERAL_SCRATCH, a: eptr_register, offset: 0 };
+        let scale = Instruction::FloatMultiplyDouble { d: FLOAT_SCRATCH, a: Eabi::FIRST_FLOAT_ARGUMENT, c: FLOAT_SCRATCH };
+        if self.behavior.frexp_scale_before_eptr_store {
+            self.output.instructions.push(scale);
+            self.output.instructions.push(eptr_store);
+        } else {
+            self.output.instructions.push(eptr_store);
+            self.output.instructions.push(scale);
+        }
         self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: SLOT });
         self.output.instructions.push(Instruction::LoadWord { d: virtual_hx, a: 1, offset: SLOT });
         self.output.instructions.push(Instruction::ClearLeftImmediate { a: virtual_ix, s: virtual_hx, clear: 1 });

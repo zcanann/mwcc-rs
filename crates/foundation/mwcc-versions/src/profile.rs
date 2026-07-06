@@ -35,6 +35,23 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn lr_save_precedes_float_const(&self) -> bool {
         false
     }
+
+    /// In a float `if`-condition comparing a LOADED value (member/global) against a
+    /// pool CONSTANT, whether the value operand is loaded BEFORE the constant. GC/2.0p1:
+    /// `lfs f1,(v); lfs f0,k` vs mainline `lfs f0,k; lfs f1,(v)` (which hoists the
+    /// independent constant to fill the prologue latency slot). Same 2.0p1 float-reorder
+    /// family; the register assignment (`fcmpo f1,f0`) is unchanged, only the load order.
+    fn float_compare_value_before_const(&self) -> bool {
+        false
+    }
+
+    /// In `frexp`, whether the mantissa scaling (`fmul`) is emitted before the
+    /// `*eptr = <exp>` integer store. GC/2.0p1: `fmul; stw r0,0(r3)` vs mainline
+    /// `stw r0,0(r3); fmul` — the two are independent, so it is purely a schedule
+    /// difference. Same 2.0p1 float-reorder family.
+    fn frexp_scale_before_eptr_store(&self) -> bool {
+        false
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -62,6 +79,12 @@ impl CodegenProfile for Gc20Patch1 {
         true
     }
     fn lr_save_precedes_float_const(&self) -> bool {
+        true
+    }
+    fn float_compare_value_before_const(&self) -> bool {
+        true
+    }
+    fn frexp_scale_before_eptr_store(&self) -> bool {
         true
     }
 }
