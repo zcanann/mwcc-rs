@@ -193,6 +193,11 @@ pub(crate) fn is_complex_add(expression: &Expression) -> bool {
     if is_constant_hoist_add(expression) {
         return true;
     }
+    // `(a-1)*b`: mwcc keeps the computed `X±const` operand in source order (`mullw r3,r0,r4`);
+    // our placement swaps the commutative operands (`mullw r3,r4,r0`) — same value, wrong bytes.
+    if is_constant_operand_multiply_swap(expression) {
+        return true;
+    }
     let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
         return false;
     };
@@ -217,13 +222,30 @@ fn is_constant_hoist_add(expression: &Expression) -> bool {
     let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
         return false;
     };
-    let additive_with_constant = |operand: &Expression| {
-        matches!(operand, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, right, .. }
-            if matches!(right.as_ref(), Expression::IntegerLiteral(_)))
-    };
     let register_leaf = |operand: &Expression| matches!(operand, Expression::Variable(_));
     (additive_with_constant(left) && (register_leaf(right) || additive_with_constant(right)))
         || (additive_with_constant(right) && register_leaf(left))
+}
+
+/// A `variable ± constant` binary (`a + c`, `a - c`) — a bare register leaf plus an integer
+/// constant, the shape whose embedded constant mwcc hoists during reassociation. A COMPUTED
+/// left operand (`(a*b) + 1`) is a single materialized value, not a hoistable term, so mwcc
+/// keeps it in place (`((a*b)+1)*c` and `((a*b)+1)+c` match) — hence the `Variable` left.
+fn additive_with_constant(operand: &Expression) -> bool {
+    matches!(operand, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
+        if matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
+}
+
+/// A `Mul` whose LEFT operand is a computed `X ± const` and RIGHT is a bare register leaf
+/// (`(a-1)*b`, `(a+1)*b`): mwcc keeps source order (`mullw r3, r0(a-1), r4(b)`) but our placement
+/// swaps the commutative operands (`mullw r3,r4,r0`) — same value, different bytes. A no-constant
+/// computed operand (`(a+b)*c`, `(a-c)*b`), a mul-const (`(a*2)*b`), or the computed operand on the
+/// RIGHT (`b*(a-1)`) all keep source order and match.
+fn is_constant_operand_multiply_swap(expression: &Expression) -> bool {
+    let Expression::Binary { operator: BinaryOperator::Multiply, left, right } = expression else {
+        return false;
+    };
+    additive_with_constant(left) && matches!(right.as_ref(), Expression::Variable(_))
 }
 
 /// Whether an integer expression CONTAINS a reassociated add-tree anywhere — the whole expression
