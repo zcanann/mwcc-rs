@@ -8,7 +8,7 @@ mod statements;
 
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{AsmInstruction, AsmOperand, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -2200,11 +2200,13 @@ impl Parser {
         }))
     }
 
-    /// Parse the instruction lines of an asm body up to the closing `}` (already
-    /// past the opening `{`). asm is line-oriented: `Token::Newline` (emitted only
-    /// inside asm blocks) separates instructions; blank lines are skipped.
-    fn parse_asm_body(&mut self) -> Compilation<Vec<AsmInstruction>> {
-        let mut instructions = Vec::new();
+    /// Parse the body items of an asm function up to the closing `}` (already past
+    /// the opening `{`). asm is line-oriented: `Token::Newline` (emitted only inside
+    /// asm blocks) separates instructions; blank lines are skipped. A leading
+    /// `identifier :` is a label definition (`lbl_X:`), otherwise the line is a
+    /// mnemonic and its operands.
+    fn parse_asm_body(&mut self) -> Compilation<Vec<AsmItem>> {
+        let mut items = Vec::new();
         loop {
             while *self.peek() == Token::Newline {
                 self.advance();
@@ -2219,8 +2221,14 @@ impl Parser {
             }
             let mnemonic = match self.advance() {
                 Token::Identifier(word) => word,
-                other => return Err(Diagnostic::error(format!("expected an asm mnemonic, found {other}"))),
+                other => return Err(Diagnostic::error(format!("expected an asm mnemonic or label, found {other}"))),
             };
+            // `identifier :` is a label definition, not an instruction.
+            if *self.peek() == Token::Colon {
+                self.advance();
+                items.push(AsmItem::Label(mnemonic));
+                continue;
+            }
             let mut operands = Vec::new();
             loop {
                 match self.peek() {
@@ -2231,9 +2239,9 @@ impl Parser {
                     _ => operands.push(self.parse_asm_operand()?),
                 }
             }
-            instructions.push(AsmInstruction { mnemonic, operands });
+            items.push(AsmItem::Instruction(AsmInstruction { mnemonic, operands }));
         }
-        Ok(instructions)
+        Ok(items)
     }
 
     /// Parse one asm operand: a register name, or an (optionally negative) integer
@@ -2264,8 +2272,8 @@ impl Parser {
                 }
                 Ok(AsmOperand::Immediate(value))
             }
-            Token::Identifier(word) => parse_asm_register(&word)
-                .ok_or_else(|| Diagnostic::error(format!("unsupported asm operand '{word}'"))),
+            // A register name, or (any other identifier) a branch-target label.
+            Token::Identifier(word) => Ok(parse_asm_register(&word).unwrap_or(AsmOperand::Label(word))),
             other => Err(Diagnostic::error(format!("unexpected asm operand token {other}"))),
         }
     }

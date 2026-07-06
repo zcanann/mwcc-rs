@@ -8,6 +8,6 @@ mod operators;
 mod types;
 
 pub use expression::Expression;
-pub use function::{ArmBody, AsmInstruction, AsmOperand, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, PointerElement, Statement, SwitchArm, TranslationUnit};
+pub use function::{ArmBody, AsmInstruction, AsmItem, AsmOperand, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, PointerElement, Statement, SwitchArm, TranslationUnit};
 pub use operators::{BinaryOperator, UnaryOperator};
 pub use types::{Pointee, Type};

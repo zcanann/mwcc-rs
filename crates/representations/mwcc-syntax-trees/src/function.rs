@@ -258,13 +258,23 @@ pub struct Function {
     /// An explicit `__declspec(section "…")` code section (e.g. `.init` for the
     /// runtime's `__mem.c`), overriding the default `.text` placement. `None` = `.text`.
     pub section: Option<String>,
-    /// The instructions of a Metrowerks inline-`asm` function body, emitted
-    /// verbatim — no prologue/epilogue synthesis, no optimizer (mwcc assembles the
-    /// lines as written, appending a trailing `blr` when the body has none).
-    /// `None` for an ordinary C function. Kept AFTER `section` so the capture
-    /// `ast_hash` strip (which truncates from `, section: ` onward) also elides it,
-    /// preserving every template's hash (the fire-465 re-bake hazard).
-    pub asm_body: Option<Vec<AsmInstruction>>,
+    /// The body of a Metrowerks inline-`asm` function — a sequence of instructions
+    /// and label definitions, emitted verbatim (no prologue/epilogue synthesis, no
+    /// optimizer beyond mwcc's branch-to-return peephole; a trailing `blr` is added
+    /// when the body has none). `None` for an ordinary C function. Kept AFTER
+    /// `section` so the capture `ast_hash` strip (which truncates from `, section: `
+    /// onward) also elides it, preserving every template's hash (fire-465 hazard).
+    pub asm_body: Option<Vec<AsmItem>>,
+}
+
+/// One line of an inline-`asm` body: either a label definition (`name:`) or an
+/// instruction.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AsmItem {
+    /// A branch-target label definition, e.g. `lbl_80362740:`.
+    Label(String),
+    /// An assembled instruction line.
+    Instruction(AsmInstruction),
 }
 
 /// One operand of an inline-`asm` instruction.
@@ -280,6 +290,9 @@ pub enum AsmOperand {
     /// A displacement memory operand `<disp>(<gpr>)` — e.g. `stwu r1, -0x10(r1)`
     /// (`base` = r1, `displacement` = -16). Used by load/store instructions.
     Memory { displacement: i16, base: u8 },
+    /// A branch-target label reference (an identifier that is not a register), e.g.
+    /// the `lbl_80362740` in `blt lbl_80362740`.
+    Label(String),
 }
 
 /// One instruction line inside an inline-`asm` body: a mnemonic and its operands.

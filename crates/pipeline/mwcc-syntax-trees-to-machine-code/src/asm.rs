@@ -14,7 +14,8 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, MachineFunction};
-use mwcc_syntax_trees::{AsmInstruction, AsmOperand, Function};
+use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, Function};
+use std::collections::HashMap;
 
 /// Assemble an inline-`asm` function into a finished [`MachineFunction`]. The
 /// caller has already established `function.asm_body` is `Some`.
@@ -24,10 +25,27 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
         .as_ref()
         .expect("assemble_asm_function called on a non-asm function");
 
+    // Pass 1: map each label to the index of the instruction it precedes (a label
+    // with no following instruction points one past the end — the auto-`blr` slot).
+    let mut labels: HashMap<&str, usize> = HashMap::new();
+    let mut index = 0usize;
+    for item in body {
+        match item {
+            AsmItem::Label(name) => {
+                labels.insert(name.as_str(), index);
+            }
+            AsmItem::Instruction(line) if emits_word(line) => index += 1,
+            AsmItem::Instruction(_) => {}
+        }
+    }
+
+    // Pass 2: assemble each instruction, resolving branch targets from the label map.
     let mut instructions = Vec::new();
-    for line in body {
-        if let Some(instruction) = assemble_line(line)? {
-            instructions.push(instruction);
+    for item in body {
+        if let AsmItem::Instruction(line) = item {
+            if let Some(instruction) = assemble_line(line, &labels)? {
+                instructions.push(instruction);
+            }
         }
     }
     // mwcc appends an implicit `blr` unless the body already ends in a control
@@ -35,6 +53,9 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     if !instructions.last().is_some_and(is_terminator) {
         instructions.push(Instruction::BranchToLinkRegister);
     }
+    // mwcc's asm peephole: a branch whose target is a `blr` becomes the
+    // corresponding branch-to-link form (`b <ret>` -> `blr`, `blt <ret>` -> `bltlr`).
+    apply_branch_to_return_peephole(&mut instructions);
 
     let mut output = MachineFunction::new(function.name.clone());
     output.instructions = instructions;
@@ -43,6 +64,34 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     output.section = function.section.clone();
     output.is_asm = true;
     Ok(output)
+}
+
+/// Whether an assembled line contributes a machine word (a directive like
+/// `nofralloc` does not) — used to number instructions for label resolution.
+fn emits_word(line: &AsmInstruction) -> bool {
+    line.mnemonic != "nofralloc"
+}
+
+/// Rewrite each branch whose target instruction is a `blr` into the branch-to-link
+/// form, reproducing mwcc's inline-asm peephole. Indices are preserved (1-for-1).
+fn apply_branch_to_return_peephole(instructions: &mut [Instruction]) {
+    let is_return: Vec<bool> = instructions
+        .iter()
+        .map(|instruction| matches!(instruction, Instruction::BranchToLinkRegister))
+        .collect();
+    for instruction in instructions.iter_mut() {
+        match *instruction {
+            Instruction::Branch { target } if is_return.get(target).copied().unwrap_or(false) => {
+                *instruction = Instruction::BranchToLinkRegister;
+            }
+            Instruction::BranchConditionalForward { options, condition_bit, target }
+                if is_return.get(target).copied().unwrap_or(false) =>
+            {
+                *instruction = Instruction::BranchConditionalToLinkRegister { options, condition_bit };
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Whether an instruction ends control flow (so no implicit `blr` is appended).
@@ -56,8 +105,9 @@ fn is_terminator(instruction: &Instruction) -> bool {
 }
 
 /// Assemble one asm line into an instruction, or `None` for a directive that
-/// emits nothing (`nofralloc`).
-fn assemble_line(line: &AsmInstruction) -> Compilation<Option<Instruction>> {
+/// emits nothing (`nofralloc`). Branch mnemonics resolve their target label
+/// through `labels` (label name -> instruction index).
+fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compilation<Option<Instruction>> {
     let mnemonic = line.mnemonic.as_str();
     let operands = &line.operands;
     let instruction = match mnemonic {
@@ -125,9 +175,60 @@ fn assemble_line(line: &AsmInstruction) -> Compilation<Option<Instruction>> {
         "stfd" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatDouble { s, a, offset } }
         "stfs" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatSingle { s, a, offset } }
 
+        // Compares against cr0 (`cmp rA, {rB | SIMM}`). An explicit `crN` field
+        // (a 3-operand form) is not modeled and reaches the DEFER fallthrough.
+        "cmpwi" => { let (a, immediate) = gpr_immediate(mnemonic, operands)?; Instruction::CompareWordImmediate { a, immediate } }
+        "cmplwi" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let a = gpr(mnemonic, &operands[0])?;
+            let immediate = immediate16u(mnemonic, &operands[1])?;
+            Instruction::CompareLogicalWordImmediate { a, immediate }
+        }
+        "cmpw" => { let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareWord { a, b } }
+        "cmplw" => { let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareLogicalWord { a, b } }
+
+        // The count register (`bdnz` loop support).
+        "mtctr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToCountRegister { s } }
+
+        // Unconditional branch to a label.
+        "b" => Instruction::Branch { target: label_target(mnemonic, operands, labels)? },
+        // Conditional branches on cr0 (BO/BI): the target is a label.
+        "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" => {
+            let (options, condition_bit) = conditional_branch_fields(mnemonic);
+            let target = label_target(mnemonic, operands, labels)?;
+            Instruction::BranchConditionalForward { options, condition_bit, target }
+        }
+
         other => return Err(Diagnostic::error(format!("inline-asm mnemonic '{other}' is not supported yet (roadmap)"))),
     };
     Ok(Some(instruction))
+}
+
+/// The `(BO, BI)` fields for a cr0 conditional branch mnemonic.
+fn conditional_branch_fields(mnemonic: &str) -> (u8, u8) {
+    match mnemonic {
+        "beq" => (12, 2),
+        "bne" => (4, 2),
+        "blt" => (12, 0),
+        "bge" => (4, 0),
+        "bgt" => (12, 1),
+        "ble" => (4, 1),
+        // `bdnz`: decrement CTR, branch if CTR != 0 (BO = 16, BI ignored).
+        "bdnz" => (16, 0),
+        _ => unreachable!("conditional_branch_fields called with '{mnemonic}'"),
+    }
+}
+
+/// Resolve a branch's single label operand to its instruction index.
+fn label_target(mnemonic: &str, operands: &[AsmOperand], labels: &HashMap<&str, usize>) -> Compilation<usize> {
+    expect_operand_count(mnemonic, operands, 1)?;
+    match &operands[0] {
+        AsmOperand::Label(name) => labels
+            .get(name.as_str())
+            .copied()
+            .ok_or_else(|| Diagnostic::error(format!("inline-asm branch to undefined label '{name}'"))),
+        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a label operand"))),
+    }
 }
 
 /// Read exactly `N` GPR operands.
