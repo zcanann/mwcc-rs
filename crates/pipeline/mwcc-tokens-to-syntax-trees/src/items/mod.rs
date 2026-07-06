@@ -8,7 +8,7 @@ mod statements;
 
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -2146,12 +2146,22 @@ impl Parser {
     /// `None` for a bodyless prototype (`asm void f(void);`).
     pub(crate) fn parse_asm_function(&mut self, is_static: bool, is_weak: bool) -> Compilation<Option<Function>> {
         self.expect(Token::Asm)?;
-        // The return type and name precede `(`; the last identifier is the name.
+        // The return type and name precede `(`; the last identifier is the name. A
+        // `static`/`extern` qualifier may follow `asm` (mwcc allows `asm static void
+        // f()`), so recognize it here too rather than only in the pre-`asm` loop.
         let mut return_type = Type::Void;
         let mut name = String::new();
+        let mut is_static = is_static;
         loop {
             match self.peek() {
                 Token::ParenOpen => break,
+                Token::Identifier(word) if word == "static" => {
+                    is_static = true;
+                    self.advance();
+                }
+                Token::Identifier(word) if word == "extern" => {
+                    self.advance();
+                }
                 Token::Identifier(word) => {
                     name = word.clone();
                     self.advance();
@@ -2185,6 +2195,13 @@ impl Parser {
         }
         self.expect(Token::BraceOpen)?;
         let asm_body = self.parse_asm_body()?;
+        // A STATIC asm function with `entry` points uses a different symbol layout
+        // (the LOCAL function symbols group early; the GLOBAL entries interleave in a
+        // measured order — wind_waker's `ASM static` runtime.c). That layout is not
+        // modeled yet, so defer rather than emit the wrong-binding symbols (a DIFF).
+        if is_static && asm_body.iter().any(|item| matches!(item, AsmItem::Entry(_))) {
+            return Err(Diagnostic::error("a static inline-asm function with `entry` points is not supported yet (roadmap)"));
+        }
         Ok(Some(Function {
             return_type,
             name,
@@ -2217,6 +2234,18 @@ impl Parser {
                     break;
                 }
                 Token::EndOfFile => return Err(Diagnostic::error("unterminated asm body")),
+                // A `@`-prefixed local label definition (`@exit:`, `@1`). The colon is
+                // optional (mwcc allows a bare `@1` before an instruction on the same
+                // line), so this does not `continue` past a following instruction.
+                Token::At => {
+                    self.advance();
+                    let name = self.parse_asm_at_name()?;
+                    if *self.peek() == Token::Colon {
+                        self.advance();
+                    }
+                    items.push(AsmItem::Label(name));
+                    continue;
+                }
                 _ => {}
             }
             let mut mnemonic = match self.advance() {
@@ -2243,6 +2272,19 @@ impl Parser {
             if *self.peek() == Token::Dot {
                 self.advance();
                 mnemonic.push('.');
+            }
+            // A `+`/`-` immediately after a branch mnemonic is the static-prediction
+            // hint (`ble+`): re-attach it so the assembler sets the BO hint bit.
+            match self.peek() {
+                Token::Plus => {
+                    self.advance();
+                    mnemonic.push('+');
+                }
+                Token::Minus => {
+                    self.advance();
+                    mnemonic.push('-');
+                }
+                _ => {}
             }
             let mut operands = Vec::new();
             loop {
@@ -2287,9 +2329,38 @@ impl Parser {
                 }
                 Ok(AsmOperand::Immediate(value))
             }
-            // A register name, or (any other identifier) a branch-target label.
-            Token::Identifier(word) => Ok(parse_asm_register(&word).unwrap_or(AsmOperand::Label(word))),
+            // A register name; a `symbol@suffix` relocation reference; or (a bare
+            // identifier) a branch-target label.
+            Token::Identifier(word) => {
+                if let Some(register) = parse_asm_register(&word) {
+                    return Ok(register);
+                }
+                if *self.peek() == Token::At {
+                    self.advance();
+                    let suffix = match self.advance() {
+                        Token::Identifier(s) if s == "h" => AsmRelocSuffix::Hi,
+                        Token::Identifier(s) if s == "ha" => AsmRelocSuffix::Ha,
+                        Token::Identifier(s) if s == "l" => AsmRelocSuffix::Lo,
+                        other => return Err(Diagnostic::error(format!("unsupported asm relocation suffix @{other}"))),
+                    };
+                    return Ok(AsmOperand::Symbol { name: word, suffix });
+                }
+                Ok(AsmOperand::Label(word))
+            }
+            // A `@`-prefixed local label used as a branch target (`blt cr0, @exit`).
+            Token::At => Ok(AsmOperand::Label(self.parse_asm_at_name()?)),
             other => Err(Diagnostic::error(format!("unexpected asm operand token {other}"))),
+        }
+    }
+
+    /// Read the name after a `@` in an asm body: `@exit` (identifier) or `@1`
+    /// (integer). Returns the name WITH its leading `@` so label defs and references
+    /// use the same key.
+    fn parse_asm_at_name(&mut self) -> Compilation<String> {
+        match self.advance() {
+            Token::Identifier(word) => Ok(format!("@{word}")),
+            Token::IntegerLiteral(value) => Ok(format!("@{value}")),
+            other => Err(Diagnostic::error(format!("expected a name after asm `@`, found {other}"))),
         }
     }
 

@@ -149,6 +149,7 @@ impl Instruction {
             Instruction::StoreFloatDouble { s, a, offset } => d_form(54, s, a, offset as u16),
             Instruction::FloatCompareOrdered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
             Instruction::FloatCompareUnordered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
+            Instruction::FloatCompareUnorderedField { crf, a, b } => (63 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | ((b as u32) << 11),
             Instruction::MoveFromConditionRegister { d } => (31 << 26) | ((d as u32) << 21) | (19 << 1),
             Instruction::ConditionRegisterOr { d, a, b } => (19 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (449 << 1),
             Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),

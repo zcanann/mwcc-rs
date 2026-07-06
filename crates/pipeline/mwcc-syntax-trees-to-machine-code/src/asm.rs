@@ -13,8 +13,8 @@
 //! wrong bytes — the byte-exact-or-defer invariant.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::{Instruction, MachineFunction};
-use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, Function};
+use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget};
+use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function};
 use std::collections::HashMap;
 
 /// Assemble an inline-`asm` function into a finished [`MachineFunction`]. The
@@ -44,12 +44,29 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
         }
     }
 
-    // Pass 2: assemble each instruction, resolving branch targets from the label map.
+    // Pass 2: assemble each instruction, resolving branch targets from the label map
+    // and recording a relocation for any `sym@suffix` operand (against the symbol,
+    // patched by the linker).
     let mut instructions = Vec::new();
+    let mut relocations: Vec<Relocation> = Vec::new();
+    let mut symbol_order: Vec<String> = Vec::new();
     for item in body {
         if let AsmItem::Instruction(line) = item {
             if let Some(instruction) = assemble_line(line, &labels)? {
+                let instruction_index = instructions.len();
                 instructions.push(instruction);
+                for operand in &line.operands {
+                    if let AsmOperand::Symbol { name, suffix } = operand {
+                        relocations.push(Relocation {
+                            instruction_index,
+                            kind: relocation_kind(*suffix),
+                            target: RelocationTarget::External(name.clone()),
+                        });
+                        if !symbol_order.contains(name) {
+                            symbol_order.push(name.clone());
+                        }
+                    }
+                }
             }
         }
     }
@@ -70,6 +87,8 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     output.section = function.section.clone();
     output.is_asm = true;
     output.entry_points = entry_points;
+    output.relocations = relocations;
+    output.symbol_order = symbol_order;
     Ok(output)
 }
 
@@ -147,7 +166,16 @@ fn is_terminator(instruction: &Instruction) -> bool {
 /// emits nothing (`nofralloc`). Branch mnemonics resolve their target label
 /// through `labels` (label name -> instruction index).
 fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compilation<Option<Instruction>> {
-    let mnemonic = line.mnemonic.as_str();
+    let raw = line.mnemonic.as_str();
+    // A branch static-prediction hint: `+` (predict taken) sets the low BO bit. `-`
+    // (predict not taken) is not modeled — its BO encoding is unverified, so DEFER.
+    let (mnemonic, branch_hint) = match raw.strip_suffix('+') {
+        Some(base) => (base, 1u8),
+        None => match raw.strip_suffix('-') {
+            Some(_) => return Err(Diagnostic::error(format!("inline-asm branch hint '{raw}' (predict-not-taken) is not supported yet (roadmap)"))),
+            None => (raw, 0u8),
+        },
+    };
     let operands = &line.operands;
     let instruction = match mnemonic {
         // `nofralloc` suppresses the auto-generated stack frame. For the register-
@@ -164,9 +192,12 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
             let (d, immediate) = gpr_immediate(mnemonic, operands)?;
             Instruction::load_immediate(d, immediate)
         }
-        // `lis rD, SIMM` — load immediate shifted (`addis rD, r0, SIMM`).
+        // `lis rD, SIMM` — load immediate shifted (`addis rD, r0, SIMM`). The
+        // immediate may be a `sym@h`/`@ha` relocation (assembled as 0, patched later).
         "lis" => {
-            let (d, immediate) = gpr_immediate(mnemonic, operands)?;
+            expect_operand_count(mnemonic, operands, 2)?;
+            let d = gpr(mnemonic, &operands[0])?;
+            let immediate = signed_immediate_or_symbol(mnemonic, &operands[1])?;
             Instruction::load_immediate_shifted(d, immediate)
         }
         // `blr` — return (branch to link register).
@@ -218,18 +249,35 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         "slwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::ShiftLeftImmediate { a, s, shift } }
         "clrlwi" => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediate { a, s, clear } }
 
-        // Floating point (double): compare, subtract, round-to-single, move.
-        "fcmpu" => { let [a, b] = fprs(mnemonic, require_cr0(mnemonic, operands)?)?; Instruction::FloatCompareUnordered { a, b } }
+        // Floating point (double): compare (any cr field), subtract, round-to-single,
+        // move, and convert-to-integer-word (round toward zero).
+        "fcmpu" => {
+            let (crf, operands) = take_cr_field(operands);
+            let [a, b] = fprs(mnemonic, operands)?;
+            if crf == 0 {
+                Instruction::FloatCompareUnordered { a, b }
+            } else {
+                Instruction::FloatCompareUnorderedField { crf, a, b }
+            }
+        }
         "fsub" => { let [d, a, b] = fprs(mnemonic, operands)?; Instruction::FloatSubtractDouble { d, a, b } }
         "frsp" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::RoundToSingle { d, b } }
         "fmr" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::FloatMove { d, b } }
+        "fctiwz" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::ConvertToIntegerWordZero { d, b } }
 
         // Register + signed-immediate ALU (`op dst, src, SIMM`).
         "addi" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediate { d, a, immediate } }
         "addis" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediateShifted { d, a, immediate } }
         "subfic" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::SubtractFromImmediate { d, a, immediate } }
         // Register + unsigned-immediate logical (`op dst, src, UIMM`).
-        "ori" => { let (a, s, immediate) = rri_u(mnemonic, operands)?; Instruction::OrImmediate { a, s, immediate } }
+        "ori" => {
+            // The immediate may be a `sym@l` relocation (assembled as 0, patched later).
+            expect_operand_count(mnemonic, operands, 3)?;
+            let a = gpr(mnemonic, &operands[0])?;
+            let s = gpr(mnemonic, &operands[1])?;
+            let immediate = unsigned_immediate_or_symbol(mnemonic, &operands[2])?;
+            Instruction::OrImmediate { a, s, immediate }
+        }
         "oris" => { let (a, s, immediate) = rri_u(mnemonic, operands)?; Instruction::OrImmediateShifted { a, s, immediate } }
 
         // Integer loads/stores: `op rT, <disp>(rA)`.
@@ -249,7 +297,7 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         // Compares with an optional explicit condition field. `cmpwi` handles any
         // `crN`; the others model cr0 only (a non-cr0 field DEFERS). `cmpi`/`cmpli`
         // are the older mnemonic spellings.
-        "cmpwi" | "cmpi" => {
+        "cmpwi" => {
             let (crf, operands) = take_cr_field(operands);
             let (a, immediate) = gpr_immediate(mnemonic, operands)?;
             if crf == 0 {
@@ -258,8 +306,30 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
                 Instruction::CompareWordImmediateField { crf, a, immediate }
             }
         }
-        "cmplwi" | "cmpli" => {
+        // `cmpi crfD, L, rA, SIMM` — the classic four-operand spelling (L = 0 for a
+        // 32-bit compare; L != 0 defers).
+        "cmpi" => {
+            let (crf, operands) = strip_length_bit(mnemonic, take_cr_field(operands))?;
+            let (a, immediate) = gpr_immediate(mnemonic, operands)?;
+            if crf == 0 {
+                Instruction::CompareWordImmediate { a, immediate }
+            } else {
+                Instruction::CompareWordImmediateField { crf, a, immediate }
+            }
+        }
+        "cmplwi" => {
             let operands = require_cr0(mnemonic, operands)?;
+            expect_operand_count(mnemonic, operands, 2)?;
+            let a = gpr(mnemonic, &operands[0])?;
+            let immediate = immediate16u(mnemonic, &operands[1])?;
+            Instruction::CompareLogicalWordImmediate { a, immediate }
+        }
+        // `cmpli crfD, L, rA, UIMM` — classic four-operand spelling (cr0/L=0 only).
+        "cmpli" => {
+            let (crf, operands) = strip_length_bit(mnemonic, take_cr_field(operands))?;
+            if crf != 0 {
+                return Err(Diagnostic::error("inline-asm 'cmpli' on a non-cr0 field is not supported yet (roadmap)"));
+            }
             expect_operand_count(mnemonic, operands, 2)?;
             let a = gpr(mnemonic, &operands[0])?;
             let immediate = immediate16u(mnemonic, &operands[1])?;
@@ -276,7 +346,8 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         // Conditional branches; an optional leading `crN` selects the condition
         // field (`BI = crN*4 + bit`). The target is a label.
         "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" => {
-            let (options, base_bit) = conditional_branch_fields(mnemonic);
+            let (base_options, base_bit) = conditional_branch_fields(mnemonic);
+            let options = base_options | branch_hint;
             let (crf, operands) = take_cr_field(operands);
             let condition_bit = crf * 4 + base_bit;
             let target = label_target(mnemonic, operands, labels)?;
@@ -347,6 +418,17 @@ fn take_cr_field(operands: &[AsmOperand]) -> (u8, &[AsmOperand]) {
     match operands.first() {
         Some(AsmOperand::ConditionRegister(field)) => (*field, &operands[1..]),
         _ => (0, operands),
+    }
+}
+
+/// Consume the `L` (compare-length) operand of the classic `cmpi`/`cmpli` spelling
+/// — an immediate that must be 0 (a 32-bit compare); L != 0 defers. Threads the
+/// already-split condition field through unchanged.
+fn strip_length_bit<'a>(mnemonic: &str, (crf, operands): (u8, &'a [AsmOperand])) -> Compilation<(u8, &'a [AsmOperand])> {
+    match operands.first() {
+        Some(AsmOperand::Immediate(0)) => Ok((crf, &operands[1..])),
+        Some(AsmOperand::Immediate(_)) => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' with a 64-bit length bit is not supported yet (roadmap)"))),
+        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a length operand (`{mnemonic} crf, L, rA, imm`)"))),
     }
 }
 
@@ -464,10 +546,39 @@ fn gpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
     }
 }
 
+/// The relocation kind for a `@`-suffix on an asm symbol operand.
+fn relocation_kind(suffix: AsmRelocSuffix) -> RelocationKind {
+    match suffix {
+        AsmRelocSuffix::Hi => RelocationKind::Addr16Hi,
+        AsmRelocSuffix::Ha => RelocationKind::Addr16Ha,
+        AsmRelocSuffix::Lo => RelocationKind::Addr16Lo,
+    }
+}
+
+/// A signed 16-bit immediate, or 0 for a `sym@suffix` operand (the linker patches
+/// the field from a recorded relocation).
+fn signed_immediate_or_symbol(mnemonic: &str, operand: &AsmOperand) -> Compilation<i16> {
+    match operand {
+        AsmOperand::Symbol { .. } => Ok(0),
+        _ => immediate16(mnemonic, operand),
+    }
+}
+
+/// An unsigned 16-bit immediate, or 0 for a `sym@suffix` operand.
+fn unsigned_immediate_or_symbol(mnemonic: &str, operand: &AsmOperand) -> Compilation<u16> {
+    match operand {
+        AsmOperand::Symbol { .. } => Ok(0),
+        _ => immediate16u(mnemonic, operand),
+    }
+}
+
 fn immediate16(mnemonic: &str, operand: &AsmOperand) -> Compilation<i16> {
     match operand {
-        AsmOperand::Immediate(value) => i16::try_from(*value)
-            .map_err(|_| Diagnostic::error(format!("inline-asm '{mnemonic}' immediate {value} does not fit in 16 bits"))),
+        // A 16-bit immediate field: accept either the signed range or the unsigned
+        // bit pattern (`lis r3, 0x8000` is written as 32768 but the field is 0x8000),
+        // taking the low 16 bits either way.
+        AsmOperand::Immediate(value) if (-0x8000..=0xffff).contains(value) => Ok(*value as u16 as i16),
+        AsmOperand::Immediate(value) => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' immediate {value} does not fit in 16 bits"))),
         _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected an immediate operand"))),
     }
 }

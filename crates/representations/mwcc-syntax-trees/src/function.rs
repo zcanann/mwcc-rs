@@ -299,6 +299,21 @@ pub enum AsmOperand {
     Label(String),
     /// A condition-register field `crN` (0..=7), e.g. the `cr0` in `cmpwi cr0, r3, 0`.
     ConditionRegister(u8),
+    /// A relocated symbol reference `symbol@suffix`, e.g. `__constants@h` in
+    /// `lis r4, __constants@h`. The immediate field is filled by the linker.
+    Symbol { name: String, suffix: AsmRelocSuffix },
+}
+
+/// The `@`-suffix on an inline-`asm` symbol operand, selecting which 16-bit part of
+/// the symbol's absolute address the relocation patches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsmRelocSuffix {
+    /// `@h` — the plain high 16 bits (`R_PPC_ADDR16_HI`).
+    Hi,
+    /// `@ha` — the high 16 bits, adjusted (`R_PPC_ADDR16_HA`).
+    Ha,
+    /// `@l` — the low 16 bits (`R_PPC_ADDR16_LO`).
+    Lo,
 }
 
 /// One instruction line inside an inline-`asm` body: a mnemonic and its operands.

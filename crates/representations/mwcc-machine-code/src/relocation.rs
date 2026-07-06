@@ -14,6 +14,9 @@ pub enum RelocationKind {
     /// `R_PPC_ADDR16_HA` (6) — the high-adjusted 16 bits of an absolute address,
     /// patched into the immediate of a `lis` (the `-sdata 0` addressing mode).
     Addr16Ha,
+    /// `R_PPC_ADDR16_HI` (5) — the plain high 16 bits of an absolute address
+    /// (`sym@h`), patched into a `lis` immediate paired with an UNSIGNED `@l` `ori`.
+    Addr16Hi,
     /// `R_PPC_ADDR16_LO` (4) — the low 16 bits of an absolute address, patched
     /// into the immediate/displacement of the following `addi`/load/store.
     Addr16Lo,
@@ -26,6 +29,7 @@ impl RelocationKind {
             RelocationKind::EmbSda21 => 109,
             RelocationKind::Rel24 => 10,
             RelocationKind::Addr16Ha => 6,
+            RelocationKind::Addr16Hi => 5,
             RelocationKind::Addr16Lo => 4,
         }
     }
@@ -35,7 +39,7 @@ impl RelocationKind {
     /// SDA21 and REL24 are described from the instruction start (offset 0).
     pub fn field_offset(self) -> u32 {
         match self {
-            RelocationKind::Addr16Ha | RelocationKind::Addr16Lo => 2,
+            RelocationKind::Addr16Ha | RelocationKind::Addr16Hi | RelocationKind::Addr16Lo => 2,
             RelocationKind::EmbSda21 | RelocationKind::Rel24 => 0,
         }
     }

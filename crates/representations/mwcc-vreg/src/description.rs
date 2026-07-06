@@ -200,7 +200,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(U, F, b);
         }
         // Compares define cr0 (not a GPR/FPR), so they only use their operands.
-        FloatCompareOrdered { a, b } | FloatCompareUnordered { a, b } => {
+        FloatCompareOrdered { a, b } | FloatCompareUnordered { a, b } | FloatCompareUnorderedField { a, b, .. } => {
             visit(U, F, a);
             visit(U, F, b);
         }

@@ -258,6 +258,9 @@ pub enum Instruction {
     FloatCompareOrdered { a: u8, b: u8 },
     /// `fcmpu crf0, frA, frB` — unordered float compare (mwcc uses this for `==`/`!=`).
     FloatCompareUnordered { a: u8, b: u8 },
+    /// `fcmpu crfD, frA, frB` — unordered float compare into an EXPLICIT condition
+    /// field (`crf != 0`; the runtime's `__cvt_fp2unsigned` uses `fcmpu cr6, …`).
+    FloatCompareUnorderedField { crf: u8, a: u8, b: u8 },
     /// `mfcr rD` — move the whole condition register into a GPR.
     MoveFromConditionRegister { d: u8 },
     /// `cror crbD, crbA, crbB` — OR two condition-register bits into a third.
