@@ -2195,13 +2195,6 @@ impl Parser {
         }
         self.expect(Token::BraceOpen)?;
         let asm_body = self.parse_asm_body()?;
-        // A STATIC asm function with `entry` points uses a different symbol layout
-        // (the LOCAL function symbols group early; the GLOBAL entries interleave in a
-        // measured order — wind_waker's `ASM static` runtime.c). That layout is not
-        // modeled yet, so defer rather than emit the wrong-binding symbols (a DIFF).
-        if is_static && asm_body.iter().any(|item| matches!(item, AsmItem::Entry(_))) {
-            return Err(Diagnostic::error("a static inline-asm function with `entry` points is not supported yet (roadmap)"));
-        }
         Ok(Some(Function {
             return_type,
             name,
@@ -2214,6 +2207,7 @@ impl Parser {
             return_expression: None,
             section: None,
             asm_body: Some(asm_body),
+            force_active: self.force_active,
         }))
     }
 
@@ -2225,7 +2219,9 @@ impl Parser {
     fn parse_asm_body(&mut self) -> Compilation<Vec<AsmItem>> {
         let mut items = Vec::new();
         loop {
-            while *self.peek() == Token::Newline {
+            // Blank separators between instructions: newlines, and (some sources —
+            // BfBB's runtime.c) semicolons terminating each asm line.
+            while matches!(self.peek(), Token::Newline | Token::Semicolon) {
                 self.advance();
             }
             match self.peek() {
@@ -2289,7 +2285,7 @@ impl Parser {
             let mut operands = Vec::new();
             loop {
                 match self.peek() {
-                    Token::Newline | Token::BraceClose | Token::EndOfFile => break,
+                    Token::Newline | Token::Semicolon | Token::BraceClose | Token::EndOfFile => break,
                     Token::Comma => {
                         self.advance();
                     }
@@ -2312,6 +2308,18 @@ impl Parser {
         match self.advance() {
             Token::IntegerLiteral(value) => {
                 let value = if negate { -value } else { value };
+                // A `@`-suffix on a NUMERIC operand selects a 16-bit part of the value,
+                // computed at assembly time (`lis r3, 0x7FFFFFFF@h`) — no relocation.
+                if *self.peek() == Token::At {
+                    self.advance();
+                    let part = match self.advance() {
+                        Token::Identifier(s) if s == "h" => (value >> 16) & 0xffff,
+                        Token::Identifier(s) if s == "ha" => ((value >> 16) + ((value >> 15) & 1)) & 0xffff,
+                        Token::Identifier(s) if s == "l" => value & 0xffff,
+                        other => return Err(Diagnostic::error(format!("unsupported asm numeric relocation suffix @{other}"))),
+                    };
+                    return Ok(AsmOperand::Immediate(part));
+                }
                 // A displacement memory operand: `<disp>(<gpr>)`.
                 if *self.peek() == Token::ParenOpen {
                     self.advance();
@@ -2385,6 +2393,8 @@ impl Parser {
                     "cplusplus off" => self.cplusplus = false,
                     "defer_codegen on" => self.defer_codegen = true,
                     "defer_codegen off" => self.defer_codegen = false,
+                    "force_active on" => self.force_active = true,
+                    "force_active off" | "force_active reset" => self.force_active = false,
                     _ => {}
                 }
                 self.advance();
@@ -3704,7 +3714,7 @@ impl Parser {
 
         let mut locals = locals;
         locals.extend(block_locals);
-        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression, section: None, asm_body: None })
+        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression, section: None, asm_body: None, force_active: self.force_active })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

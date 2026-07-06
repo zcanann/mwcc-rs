@@ -87,6 +87,7 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     output.section = function.section.clone();
     output.is_asm = true;
     output.entry_points = entry_points;
+    output.force_active = function.force_active;
     output.relocations = relocations;
     output.symbol_order = symbol_order;
     Ok(output)
@@ -209,6 +210,8 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         // Three-register ALU (`op dst, srcA, srcB`), each mapped positionally.
         "add" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::Add { d, a, b } }
         "subf" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFrom { d, a, b } }
+        // `sub rD, rA, rB` (rD = rA - rB) is the simplified spelling of `subf rD, rB, rA`.
+        "sub" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFrom { d, a: b, b: a } }
         "subfc" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFromCarrying { d, a, b } }
         "subfe" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFromExtended { d, a, b } }
         "adde" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::AddExtended { d, a, b } }
@@ -246,8 +249,17 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         "rlwinm." => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMaskRecord { a, s, shift, begin, end } }
         "rlwimi" => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMaskInsert { a, s, shift, begin, end } }
         "rotlwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift, begin: 0, end: 31 } }
+        "rotrwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (32 - n as u16) as u8 & 31, begin: 0, end: 31 } }
         "slwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::ShiftLeftImmediate { a, s, shift } }
         "clrlwi" => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediate { a, s, clear } }
+        // More `rlwinm` simplified spellings (all rotate-and-mask with derived fields).
+        "srwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (32 - n as u16) as u8 & 31, begin: n, end: 31 } }
+        "clrrwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: 0, begin: 0, end: 31 - n } }
+        "clrrwi." => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMaskRecord { a, s, shift: 0, begin: 0, end: 31 - n } }
+        // `extlwi rA,rS,n,b` = rlwinm rA,rS,b,0,n-1 (extract n bits at b, left-justify).
+        "extlwi" => { let (a, s, n, b) = rr_two_immediates(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: b, begin: 0, end: n - 1 } }
+        // `extrwi rA,rS,n,b` = rlwinm rA,rS,b+n,32-n,31 (extract n bits at b, right-justify).
+        "extrwi" => { let (a, s, n, b) = rr_two_immediates(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (b as u16 + n as u16) as u8 & 31, begin: 32 - n, end: 31 } }
 
         // Floating point (double): compare (any cr field), subtract, round-to-single,
         // move, and convert-to-integer-word (round toward zero).
@@ -341,6 +353,17 @@ fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>) -> Compil
         // The count register (`bdnz` loop support).
         "mtctr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToCountRegister { s } }
 
+        // Conditional branch-to-link (a conditional return, `bgtlr` etc.); an
+        // optional leading `crN` selects the field. Written directly by mwcc's asm
+        // (distinct from the branch-to-`blr` peephole).
+        "beqlr" | "bnelr" | "bltlr" | "bgelr" | "bgtlr" | "blelr" => {
+            let base = &mnemonic[..mnemonic.len() - 2]; // strip the `lr`
+            let (base_options, base_bit) = conditional_branch_fields(base);
+            let options = base_options | branch_hint;
+            let (crf, operands) = take_cr_field(operands);
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::BranchConditionalToLinkRegister { options, condition_bit: crf * 4 + base_bit }
+        }
         // Unconditional branch to a label.
         "b" => Instruction::Branch { target: label_target(mnemonic, operands, labels)? },
         // Conditional branches; an optional leading `crN` selects the condition
@@ -421,14 +444,15 @@ fn take_cr_field(operands: &[AsmOperand]) -> (u8, &[AsmOperand]) {
     }
 }
 
-/// Consume the `L` (compare-length) operand of the classic `cmpi`/`cmpli` spelling
-/// — an immediate that must be 0 (a 32-bit compare); L != 0 defers. Threads the
-/// already-split condition field through unchanged.
+/// Consume the OPTIONAL `L` (compare-length) operand of the classic `cmpi`/`cmpli`
+/// spelling. It is present only in the four-operand form (`cmp{i,li} crf, L, rA, imm`
+/// — three operands after the condition field, the first an immediate); the
+/// three-operand form omits it. When present, L must be 0 (a 32-bit compare).
 fn strip_length_bit<'a>(mnemonic: &str, (crf, operands): (u8, &'a [AsmOperand])) -> Compilation<(u8, &'a [AsmOperand])> {
-    match operands.first() {
-        Some(AsmOperand::Immediate(0)) => Ok((crf, &operands[1..])),
-        Some(AsmOperand::Immediate(_)) => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' with a 64-bit length bit is not supported yet (roadmap)"))),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a length operand (`{mnemonic} crf, L, rA, imm`)"))),
+    match operands {
+        [AsmOperand::Immediate(0), _, _] => Ok((crf, &operands[1..])),
+        [AsmOperand::Immediate(_), _, _] => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' with a 64-bit length bit is not supported yet (roadmap)"))),
+        _ => Ok((crf, operands)),
     }
 }
 
@@ -457,6 +481,19 @@ fn rotate5(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u8, 
     let begin = field(&operands[3], "mask begin")?;
     let end = field(&operands[4], "mask end")?;
     Ok((a, s, shift, begin, end))
+}
+
+/// Read `(GPR, GPR, imm, imm)` (`op dst, src, N, B`) — the two immediates of an
+/// `extlwi`/`extrwi` rotate spelling, each 0..=31.
+fn rr_two_immediates(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u8, u8)> {
+    expect_operand_count(mnemonic, operands, 4)?;
+    let a = gpr(mnemonic, &operands[0])?;
+    let s = gpr(mnemonic, &operands[1])?;
+    let field = |operand: &AsmOperand| match operand {
+        AsmOperand::Immediate(value) if (0..=31).contains(value) => Ok(*value as u8),
+        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected an immediate in 0..=31"))),
+    };
+    Ok((a, s, field(&operands[2])?, field(&operands[3])?))
 }
 
 /// Read a `(GPR, GPR, shift-amount)` triple (`op dst, src, SH`) where the shift is

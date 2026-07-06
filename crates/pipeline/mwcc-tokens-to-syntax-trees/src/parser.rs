@@ -128,6 +128,10 @@ pub(crate) struct Parser {
     /// symbol names (push/pop scope the switch).
     pub(crate) cplusplus: bool,
     pub(crate) cplusplus_stack: Vec<bool>,
+    /// `#pragma force_active on`/`reset` state: definitions parsed under it are kept
+    /// in the link even if unreferenced, carrying a `.comment` attribute (0x00080000)
+    /// — animal_crossing's runtime.c wraps its register save/restore in it.
+    pub(crate) force_active: bool,
     /// Parsed single-return inline bodies: name -> (parameter names, body) —
     /// substituted at call sites with pure arguments (mwcc -inline auto).
     pub(crate) inline_bodies: std::collections::HashMap<String, (Vec<String>, mwcc_syntax_trees::Expression)>,

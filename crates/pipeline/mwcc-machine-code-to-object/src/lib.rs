@@ -71,6 +71,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 .iter()
                 .map(|(name, index)| (name.clone(), *index as u32 * 4))
                 .collect(),
+            force_active: function.force_active,
             text,
             // Each codegen relocation patches one instruction; its byte offset
             // (relative to the function) is four times the instruction index plus

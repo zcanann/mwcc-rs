@@ -227,6 +227,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     generator.output.is_static = function.is_static;
     generator.output.is_weak = function.is_weak;
     generator.output.section = function.section.clone();
+    generator.output.force_active = function.force_active;
     if generator.output.static_locals.is_empty() {
         generator.output.static_locals = static_local_data;
     }

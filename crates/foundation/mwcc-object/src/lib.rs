@@ -108,6 +108,9 @@ pub struct FunctionObject<'a> {
     /// offsets within this function (`_savefpr_14` …). Each pairs the symbol name with
     /// its byte offset relative to the function start.
     pub entry_points: Vec<(String, u32)>,
+    /// Defined under `#pragma force_active on`: the function symbol and its entry
+    /// symbols carry a `.comment` attribute (0x00080000).
+    pub force_active: bool,
     pub text: &'a [u8],
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.

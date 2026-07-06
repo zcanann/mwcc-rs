@@ -349,7 +349,7 @@ impl Generator {
         let synthetic = |value: &Expression| Function {
             return_type: function.return_type,
             section: None,
-            asm_body: None,
+            asm_body: None, force_active: false,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,
@@ -416,7 +416,7 @@ impl Generator {
                 Function {
                     return_type: function.return_type,
                     section: None,
-                    asm_body: None,
+                    asm_body: None, force_active: false,
                     name: function.name.clone(),
                     is_static: function.is_static,
                     is_weak: function.is_weak,
@@ -720,7 +720,7 @@ impl Generator {
             let composed_synthetic = Function {
                 return_type: function.return_type,
                 section: None,
-                asm_body: None,
+                asm_body: None, force_active: false,
                 name: function.name.clone(),
                 is_static: function.is_static,
                 is_weak: function.is_weak,
@@ -874,7 +874,7 @@ impl Generator {
         let synthetic = Function {
             return_type: function.return_type,
             section: None,
-            asm_body: None,
+            asm_body: None, force_active: false,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,

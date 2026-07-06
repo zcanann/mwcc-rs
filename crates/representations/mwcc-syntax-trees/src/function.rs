@@ -265,6 +265,11 @@ pub struct Function {
     /// `section` so the capture `ast_hash` strip (which truncates from `, section: `
     /// onward) also elides it, preserving every template's hash (fire-465 hazard).
     pub asm_body: Option<Vec<AsmItem>>,
+    /// Defined under `#pragma force_active on`: the symbol is forced live in the link
+    /// and carries a `.comment` attribute (0x00080000) — animal_crossing's runtime.c
+    /// wraps its register save/restore in it. Also AFTER `section` so the `ast_hash`
+    /// strip elides it. `false` for the common case.
+    pub force_active: bool,
 }
 
 /// One line of an inline-`asm` body: either a label definition (`name:`) or an

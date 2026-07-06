@@ -35,6 +35,9 @@ const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
 const STB_WEAK_FUNC: u8 = (2 << 4) | 2; // STB_WEAK | STT_FUNC (__declspec(weak))
 const STB_WEAK_OBJECT: u8 = (2 << 4) | 1; // STB_WEAK | STT_OBJECT (an inline's static local)
 const STB_LOCAL_FUNC: u8 = 2; // STB_LOCAL | STT_FUNC (a `static` function)
+/// A `.comment` per-symbol attribute set by `#pragma force_active on` — stamped on
+/// the function symbol and its inline-`asm` `entry` symbols (animal_crossing runtime.c).
+const FORCE_ACTIVE_FLAG: u32 = 0x0008_0000;
 const STB_GLOBAL_OBJECT: u8 = (1 << 4) | 1; // STB_GLOBAL | STT_OBJECT (a defined global)
 const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
 const STV_HIDDEN: u8 = 2; // st_other visibility for the @N unwind entries
@@ -725,7 +728,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             function_symbols[index] = symbol;
             local_function_symbols.insert(function.name, symbol);
             write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
-            comment_values.push((4, 0)); // a function is 4-aligned
+            comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
         }
     }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
@@ -1011,7 +1014,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             } else {
                 0
             };
-            comment_values.push((4, flags)); // a function is 4-aligned
+            comment_values.push((4, flags | if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
             // A LATER function's call to this one resolves to the defined
             // symbol (no UND duplicate — FILE_POS's fseek -> _fseek). A
             // FORWARD-referenced function already emitted at its first
@@ -1023,7 +1026,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             for (name, byte_offset) in &function.entry_points {
                 global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                 write_symbol(&mut symtab, strtab.add(name), function_offset[index] + byte_offset, 0, STB_GLOBAL_NOTYPE, 0, index_of(text_section) as u16);
-                comment_values.push((4, 0));
+                comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 }));
+            }
+        }
+        // A STATIC asm function's own symbol is LOCAL (emitted in the local run
+        // above); its GLOBAL `entry` points still emit HERE, at the function's source
+        // position in the global run (wind_waker's `ASM static` runtime.c — the local
+        // save/restore functions group early, their global entries follow the global
+        // functions in source order).
+        if function.is_static {
+            for (name, byte_offset) in &function.entry_points {
+                global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(&mut symtab, strtab.add(name), function_offset[index] + byte_offset, 0, STB_GLOBAL_NOTYPE, 0, index_of(text_section) as u16);
+                comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 }));
             }
         }
         emit_referenced!(implicit_ordered);

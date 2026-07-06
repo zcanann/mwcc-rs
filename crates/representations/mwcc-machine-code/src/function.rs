@@ -153,6 +153,9 @@ pub struct MachineFunction {
     /// offsets within this function (the runtime's `_savefpr_14` … register save/
     /// restore entry points). Each pairs the symbol name with its instruction index.
     pub entry_points: Vec<(String, usize)>,
+    /// Defined under `#pragma force_active on`: the function symbol and its entry
+    /// symbols carry a `.comment` attribute (0x00080000). `false` for the common case.
+    pub force_active: bool,
 }
 
 impl MachineFunction {
@@ -187,6 +190,7 @@ impl MachineFunction {
             implicit_external_callees: Vec::new(),
             is_asm: false,
             entry_points: Vec::new(),
+            force_active: false,
         }
     }
 

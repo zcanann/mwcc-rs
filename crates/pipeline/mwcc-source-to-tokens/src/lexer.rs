@@ -64,7 +64,7 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             let directive = line.trim_start_matches('#').trim();
             if let Some(rest) = directive.strip_prefix("pragma ") {
                 let rest = rest.trim();
-                if matches!(rest, "cplusplus on" | "cplusplus off" | "push" | "pop" | "defer_codegen on" | "defer_codegen off") {
+                if matches!(rest, "cplusplus on" | "cplusplus off" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset") {
                     tokens.push(Token::Pragma(rest.to_string()));
                 }
             }
