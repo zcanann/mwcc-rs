@@ -455,6 +455,72 @@ impl Generator {
                 }
             }
         }
+        // mwcc's list scheduler INTERLEAVES an independent POINTER store and the return-value
+        // computation to fill latency; our program-order codegen for pointer stores emits the store
+        // fully, then the return. Two measured shapes diverge (byte-exact-or-defer — the real fix is
+        // routing pointer stores through the Phase-E store scheduler, which treats stores as barriers):
+        //   (A) a store followed by a `> 0` / `!= 0` comparison return, whose branchless idiom leads
+        //       with `neg r0,x` — mwcc HOISTS that neg above the store (`stw` between neg and its uses).
+        //       `< 0` / `== 0` / `<= 0` returns lead with srawi/cntlzw and do NOT hoist (stay byte-exact).
+        //   (B) a store whose VALUE needs materialization (a `li` constant, an `lwz` load, or a computed
+        //       value) followed by a computed-arithmetic return — mwcc schedules the return compute into
+        //       the store's materialize→`stw` latency slot. A bare-register store value (`*p = a`) has
+        //       no slot, so `*p=a; return a+1;` stays byte-exact.
+        // Condition (A) fires for ANY store (a `neg`-hoist even over a global store DIFFs — the DAG
+        // emitter does not model a comparison return). Condition (B) is GATED to POINTER/member targets
+        // (`*p`, `p[i]`, `p->x`): a GLOBAL-scalar/aggregate store with a computed-arithmetic return
+        // (`g = a+1; return b+2;`) rides the DAG-emitter scheduler, which reproduces mwcc's interleave
+        // byte-exact (canaries 542_rand, 1015_dag_emitter) — those must NOT defer here.
+        if let Some(return_expression) = &function.return_expression {
+            let store_target_is_pointer = |target: &Expression| match target {
+                Expression::Dereference { .. } => true,
+                Expression::Index { base, .. } | Expression::Member { base, .. } => {
+                    matches!(base.as_ref(), Expression::Variable(name)
+                        if !self.globals.contains_key(name.as_str()) && !self.global_array_sizes.contains_key(name.as_str()))
+                }
+                _ => false,
+            };
+            let store_value_needs_materialization = |value: &Expression| {
+                // A direct `stw rN` (a register-resident param/local) needs no leading instruction; a
+                // constant, a load, or a computed value all materialize into a register first.
+                !matches!(value, Expression::Variable(name) if !self.globals.contains_key(name.as_str()))
+            };
+            let mut has_store = false;
+            let mut has_materialized_pointer_store = false;
+            for statement in &function.statements {
+                if let Statement::Store { target, value } = statement {
+                    has_store = true;
+                    has_materialized_pointer_store |=
+                        store_target_is_pointer(target) && store_value_needs_materialization(value);
+                }
+            }
+            // (A) a `> 0` / `!= 0` comparison of a register leaf against zero — as the return itself,
+            // or as a single guard's branchless const-select (`if(x>0) return C1; return C2;` folds to
+            // the same `neg`-leading mask). Both hoist the `neg r0,x` above a preceding store.
+            let neg_leading_comparison = |condition: &Expression| {
+                matches!(condition,
+                    Expression::Binary { operator: BinaryOperator::Greater | BinaryOperator::NotEqual, left, right }
+                        if matches!(left.as_ref(), Expression::Variable(_)) && is_zero_literal(right))
+            };
+            let return_hoists_neg_over_store = neg_leading_comparison(return_expression)
+                || (function.guards.len() == 1
+                    && neg_leading_comparison(&function.guards[0].condition)
+                    && constant_value(&function.guards[0].value).is_some()
+                    && constant_value(return_expression).is_some());
+            // (B) a computed arithmetic/bitwise/shift or unary return (not a comparison or short-circuit).
+            let return_is_computed_arithmetic = match return_expression {
+                Expression::Binary { operator, .. } => {
+                    !is_comparison(*operator) && !matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
+                }
+                Expression::Unary { .. } => true,
+                _ => false,
+            };
+            if (has_store && return_hoists_neg_over_store)
+                || (has_materialized_pointer_store && return_is_computed_arithmetic)
+            {
+                return Err(Diagnostic::error("a store scheduled around the return-value computation needs the store scheduler (roadmap)"));
+            }
+        }
         // A function that takes the address of a variable lowers it to a stack
         // slot (frame-resident); this takes over the whole body. Checked first,
         // since an address-taken variable cannot be value-tracked in a register.
