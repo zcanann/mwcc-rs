@@ -741,15 +741,19 @@ impl Generator {
     /// or a nested trailing if (an `else if` chain). Each then-body is a single
     /// statement — multiple statements need the scheduler.
     pub(crate) fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement]) -> Compilation<()> {
-        // `if (cond) tgt = c1; else tgt = c2;` — both arms a single constant store to the
-        // same target — is one store of a select. mwcc branchless-ifies consecutive
-        // constants (`srawi; addi`) and branch-materializes others into one register, then
-        // stores once; route it through the conditional store path (byte-exact-or-defer)
-        // rather than the two-branch form.
+        // `if (cond) g = c1; else g = c2;` — both arms a single constant store to the same
+        // GLOBAL — is one store of a select. mwcc branchless-ifies consecutive constants
+        // (`srawi; addi`) and branch-materializes others into one register, then stores
+        // once; route it through the conditional store path (byte-exact-or-defer) rather
+        // than the two-branch form. This applies ONLY to a direct global (SDA-addressed)
+        // target: for a POINTER-dereference store (`*p = 1; else *p = 2;`) mwcc keeps the
+        // full two-exit branch form (`cmpwi; beq; li; stw; blr; li; stw; blr`), so those
+        // fall through below rather than being (wrongly) branchless-ified.
         if let ([Statement::Store { target: then_target, value: then_value }],
                 [Statement::Store { target: else_target, value: else_value }]) = (then_body, else_body)
         {
             if same_operand(then_target, else_target)
+                && matches!(then_target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
                 && constant_value(then_value).is_some()
                 && constant_value(else_value).is_some()
             {
