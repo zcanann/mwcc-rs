@@ -637,6 +637,9 @@ impl Generator {
                             && matches!(self.globals.get(name.as_str()), Some(Type::Float | Type::Double)))
             }
             Expression::Member { member_type, .. } => *member_type == Type::Float,
+            // A cast TO a float type is a float value (`(double)x`); a cast to a
+            // non-float type is not, regardless of the operand.
+            Expression::Cast { target_type, .. } => matches!(target_type, Type::Float | Type::Double),
             _ => false,
         }
     }

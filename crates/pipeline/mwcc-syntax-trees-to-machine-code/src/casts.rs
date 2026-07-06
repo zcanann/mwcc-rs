@@ -41,7 +41,9 @@ impl Generator {
         // double is a NO-OP — the value only needs to land in `destination` (mwcc
         // emits nothing when it is already there, e.g. `return (double)dbl_call()`
         // whose result is already in the return register); do NOT emit a spurious frsp.
-        if self.is_double_value(operand) {
+        // A `(double)` of a FLOAT is also a no-op: a single value in an f-register is
+        // already the double it represents (`cos((double)float_x)` passes f1 through).
+        if self.is_double_value(operand) || self.is_float_leaf(operand) {
             if self.is_float_leaf(operand) {
                 let source = self.float_register_of_leaf(operand)?;
                 if double {
