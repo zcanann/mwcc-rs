@@ -705,6 +705,28 @@ impl Generator {
                 }
             }
         }
+        // A run of POINTER-base stores whose LAST value is COMPUTED with 2+ preceding
+        // stores: mwcc's latency scheduler HOISTS that computation up past an intervening
+        // store to fill the pipeline slot (`stw; add; stw; stw` for `p[0]=a; p[1]=b;
+        // p[2]=a+b;`), which sequential emission would not reproduce — defer. A last leaf
+        // value, a computation adjacent to its store (only 2 stores), or an earlier/middle
+        // computed value (last store a ready leaf) needs no hoist and stays byte-exact.
+        if function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && function.return_type == Type::Void
+            && function.statements.len() >= 3
+            && function.statements.iter().all(|statement| {
+                matches!(statement, Statement::Store { target: Expression::Index { .. } | Expression::Dereference { .. }, .. })
+            })
+        {
+            if let Some(Statement::Store { value, .. }) = function.statements.last() {
+                let last_is_computed = constant_value(value).is_none() && !matches!(value, Expression::Variable(_));
+                if last_is_computed {
+                    return Err(Diagnostic::error("a run of pointer stores whose last value mwcc latency-hoists needs the scheduler (roadmap)"));
+                }
+            }
+        }
         // A single COMPUTED store to an SDA integer global plus an int return that
         // does NOT read the stored global: mwcc's DAG scheduler interleaves the
         // return-value computation with the store chain; sequential emission
