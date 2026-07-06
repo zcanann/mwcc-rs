@@ -951,7 +951,17 @@ impl Generator {
                         _ => true,
                     }
                 });
-                let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
+                // GC/2.0p1 does not fill the mflr->store slot with a leading FLOAT-CONSTANT
+                // load — it stores LR first, then loads the constant (`stw r0,20; lfs f0,0(0)`),
+                // where mainline fills the slot (`lfs; stw r0,20`). Same "store before a float
+                // load" family as float_cast_value_store_first.
+                let float_load_first = matches!(
+                    self.output.instructions.get(condition_start),
+                    Some(Instruction::LoadFloatSingle { .. } | Instruction::LoadFloatSingleIndexed { .. }
+                        | Instruction::LoadFloatDouble { .. } | Instruction::LoadFloatDoubleIndexed { .. })
+                );
+                let store_first = first_writes_r0 || (self.behavior.lr_save_precedes_float_const && float_load_first);
+                let lr_position = if store_first { condition_start } else { condition_start + 1 };
                 self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });
                 // The insert shifts the condition instructions at/after it down by one, so
                 // their relocations (a global condition's SDA21 reloc) must shift too.
@@ -1032,7 +1042,17 @@ impl Generator {
                         _ => true,
                     }
                 });
-                let lr_position = if first_writes_r0 { condition_start } else { condition_start + 1 };
+                // GC/2.0p1 does not fill the mflr->store slot with a leading FLOAT-CONSTANT
+                // load — it stores LR first, then loads the constant (`stw r0,20; lfs f0,0(0)`),
+                // where mainline fills the slot (`lfs; stw r0,20`). Same "store before a float
+                // load" family as float_cast_value_store_first.
+                let float_load_first = matches!(
+                    self.output.instructions.get(condition_start),
+                    Some(Instruction::LoadFloatSingle { .. } | Instruction::LoadFloatSingleIndexed { .. }
+                        | Instruction::LoadFloatDouble { .. } | Instruction::LoadFloatDoubleIndexed { .. })
+                );
+                let store_first = first_writes_r0 || (self.behavior.lr_save_precedes_float_const && float_load_first);
+                let lr_position = if store_first { condition_start } else { condition_start + 1 };
                 self.output.instructions.insert(lr_position, Instruction::StoreWord { s: 0, a: 1, offset: 20 });
                 // The insert shifts the condition instructions at/after it down by one, so
                 // their relocations (a global condition's SDA21 reloc) must shift too.

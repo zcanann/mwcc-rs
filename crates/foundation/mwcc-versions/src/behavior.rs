@@ -77,6 +77,10 @@ pub struct Behavior {
     /// In the int->float conversion, whether the value store is scheduled before
     /// the bias load (GC/2.0p1's order).
     pub float_cast_value_store_first: bool,
+    /// In a non-leaf `if`-prologue, whether the saved-LR store precedes a leading
+    /// float-constant load rather than filling the mflr->store latency slot with it
+    /// (GC/2.0p1's order).
+    pub lr_save_precedes_float_const: bool,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -105,6 +109,7 @@ impl Behavior {
         Behavior {
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
+            lr_save_precedes_float_const: config.build.profile.lr_save_precedes_float_const(),
             global_addressing: config.flags.global_addressing,
         }
     }

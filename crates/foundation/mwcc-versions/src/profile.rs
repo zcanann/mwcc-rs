@@ -25,6 +25,16 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn float_cast_value_store_first(&self) -> bool {
         false
     }
+
+    /// In a non-leaf `if`-prologue, whether the saved-LR store (`stw r0,20(r1)`) is
+    /// emitted BEFORE a leading float-constant load in the condition, rather than
+    /// filling the `mflr`->store latency slot with that load. GC/2.0p1: `mflr r0;
+    /// stw r0,20; lfs f0,0(0); fcmpo` vs mainline `mflr r0; lfs f0,0(0); stw r0,20;
+    /// fcmpo`. The same "store before a float load" family as
+    /// [`Self::float_cast_value_store_first`].
+    fn lr_save_precedes_float_const(&self) -> bool {
+        false
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -49,6 +59,9 @@ impl CodegenProfile for Gc13Build53 {
 pub struct Gc20Patch1;
 impl CodegenProfile for Gc20Patch1 {
     fn float_cast_value_store_first(&self) -> bool {
+        true
+    }
+    fn lr_save_precedes_float_const(&self) -> bool {
         true
     }
 }
