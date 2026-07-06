@@ -19,3 +19,12 @@ int acc_mul2(int a, int b, int c)            { int t = a * b; t = t * c; return 
 int acc_mixed(int a, int b, int c, int d)    { int t = a + b; t = t - c; t = t * d; return t; }
 int acc_unused_tail(int a, int b, int c, int d) { int t = a + b; t = t + c; return t; }
 unsigned acc_unsigned(unsigned a, unsigned b, unsigned c) { unsigned t = a + b; t = t + c; return t; }
+
+// A constant in the INIT folds in place (`addi r3,r3,c` / `mulli r3,r3,c`, in the
+// signed-16-bit range) — distinct from a constant STEP, which reassociates (`t=t+5` ->
+// `a+(b+5)`) and stays deferred to the substitution path.
+int acc_initconst_add(int a, int b, int c) { int t = a + 5; t = t + b; t = t + c; return t; }
+int acc_initconst_sub(int a, int b)        { int t = a - 5; t = t + b; return t; }
+int acc_initconst_mul(int a, int b)        { int t = a * 5; t = t + b; return t; }
+int acc_initconst_substep(int a, int b)    { int t = a + 5; t = t - b; return t; }
+int acc_initconst_max(int a, int b)        { int t = a + 32767; t = t + b; return t; }

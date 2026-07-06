@@ -366,22 +366,24 @@ impl Generator {
     }
 
     /// The clean in-place accumulator shape — `int t = p0 OP p1; t = t OP p2; …;
-    /// return t;` — where every operand after the first two is the NEXT parameter in
-    /// register order and the accumulator is always the LEFT operand. mwcc keeps `t`
-    /// in the result register and mutates it in place (`add r3,r3,r4; add r3,r3,r5`
-    /// for `+`, `subf r3,rN,r3` for `-`, `mullw r3,r3,rN` for `*`): each source
-    /// register dies at its single use, so r3 stays free for `t` throughout and the
-    /// left-operand anchor never moves. The substitution model would instead
-    /// reassociate the folded chain (`(a+b)+c` -> `mr r0,r3; add r3,r4,r5; add
-    /// r3,r0,r3`), which disagrees, so this handles the shape directly.
+    /// return t;` — where every STEP operand is the NEXT parameter in register order
+    /// and the accumulator is always the LEFT operand. mwcc keeps `t` in the result
+    /// register and mutates it in place (`add r3,r3,r4; add r3,r3,r5` for `+`, `subf
+    /// r3,rN,r3` for `-`, `mullw r3,r3,rN` for `*`): each source register dies at its
+    /// single use, so r3 stays free for `t` throughout and the left-operand anchor
+    /// never moves. The substitution model would instead reassociate the folded chain
+    /// (`(a+b)+c` -> `mr r0,r3; add r3,r4,r5; add r3,r0,r3`), which disagrees, so this
+    /// handles the shape directly. The INIT may take a constant right operand (`t =
+    /// p0 OP c` -> `addi r3,r3,c` / `mulli r3,r3,c`, in the signed-16-bit range).
     ///
     /// Any deviation — an out-of-order operand, the accumulator on the right, a
-    /// reused parameter, a constant operand, a non-int type — instead lands `t` in
-    /// the scratch or a callee-saved register, so it returns `false` to defer to the
-    /// substitution path (which errors honestly) rather than risk wrong bytes. This
-    /// is the first byte-exact slice of the in-register local mutation the general
-    /// allocator will eventually own (`docs/register-allocator.md`, step 5). Verified
-    /// byte-identical on GC/1.3.2 and GC/2.6.
+    /// reused parameter, a constant STEP operand (which reassociates: `t=t+5` ->
+    /// `a+(b+5)`), an out-of-range init constant, a non-int type — instead lands `t`
+    /// in the scratch or a callee-saved register, so it returns `false` to defer to
+    /// the substitution path (which errors honestly) rather than risk wrong bytes.
+    /// This is the first byte-exact slice of the in-register local mutation the
+    /// general allocator will eventually own (`docs/register-allocator.md`, step 5).
+    /// Verified byte-identical on GC/1.3.2 and GC/2.6.
     fn try_inplace_accumulator(&mut self, function: &Function) -> Compilation<bool> {
         // The result is exactly the accumulator local, returned by name, at int type.
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -414,18 +416,46 @@ impl Generator {
             BinaryOperator::Multiply => Some(AccumulatorOp::Multiply),
             _ => None,
         };
-        // The initializer defines the accumulator from the first two parameters.
+        // The initializer defines the accumulator: `p0 OP <p1 | constant>`. The left
+        // operand is always the first parameter (its r3 home becomes t's). A constant
+        // folds in place ONLY in the init (`addi r3,r3,5` / `mulli r3,r3,5`); a constant
+        // in a later STEP instead reassociates the chain (`t=t+5` -> `a+(b+5)`), which
+        // the substitution path owns, so the step loop below admits register operands only.
+        let result = Eabi::general_result().number;
         let Some(Expression::Binary { operator: init_operator, left: init_left, right: init_right }) = local.initializer.as_ref() else {
             return Ok(false);
         };
-        let (Expression::Variable(init_left_name), Expression::Variable(init_right_name)) = (init_left.as_ref(), init_right.as_ref()) else {
+        let (init_left, init_right) = (init_left.as_ref(), init_right.as_ref());
+        let Expression::Variable(init_left_name) = init_left else {
             return Ok(false);
         };
-        if Some(init_left_name.as_str()) != parameter_name(0) || Some(init_right_name.as_str()) != parameter_name(1) {
+        if Some(init_left_name.as_str()) != parameter_name(0) {
             return Ok(false);
         }
-        let Some(init_operator) = step_operator(init_operator) else {
+        let (Some(init_operator), Some(left_register)) = (step_operator(init_operator), self.lookup_general(init_left_name)) else {
             return Ok(false);
+        };
+        // `first_step_parameter` is the parameter index the step chain starts at: a
+        // register init consumes p0,p1 (steps start at p2); a constant init consumes
+        // only p0 (steps start at p1).
+        let (init_instruction, first_step_parameter) = match init_right {
+            Expression::Variable(init_right_name) if Some(init_right_name.as_str()) == parameter_name(1) => {
+                let Some(right_register) = self.lookup_general(init_right_name) else {
+                    return Ok(false);
+                };
+                (accumulate(init_operator, result, left_register, right_register), 2)
+            }
+            _ => {
+                let Some(constant) = constant_value(init_right) else {
+                    return Ok(false);
+                };
+                // Out of the signed-16-bit immediate range mwcc materializes the constant
+                // (`addis`/`lis`), a form left to defer.
+                let Some(instruction) = accumulate_immediate(init_operator, result, left_register, constant) else {
+                    return Ok(false);
+                };
+                (instruction, 1)
+            }
         };
         // Each assignment is `t = t OP p_k`, consuming the next parameter in order.
         let mut steps = Vec::new();
@@ -442,7 +472,7 @@ impl Generator {
             let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) else {
                 return Ok(false);
             };
-            if left_name != returned || Some(right_name.as_str()) != parameter_name(index + 2) {
+            if left_name != returned || Some(right_name.as_str()) != parameter_name(first_step_parameter + index) {
                 return Ok(false);
             }
             let Some(operator) = step_operator(operator) else {
@@ -455,11 +485,7 @@ impl Generator {
         }
 
         // Emit: the accumulator lives in the result register for the whole chain.
-        let (Some(left_register), Some(right_register)) = (self.lookup_general(init_left_name), self.lookup_general(init_right_name)) else {
-            return Ok(false);
-        };
-        let result = Eabi::general_result().number;
-        self.output.instructions.push(accumulate(init_operator, result, left_register, right_register));
+        self.output.instructions.push(init_instruction);
         for (operator, register) in steps {
             self.output.instructions.push(accumulate(operator, result, result, register));
         }
@@ -486,6 +512,19 @@ fn accumulate(operator: AccumulatorOp, dst: u8, left: u8, right: u8) -> Instruct
         AccumulatorOp::Subtract => Instruction::SubtractFrom { d: dst, a: right, b: left },
         AccumulatorOp::Multiply => Instruction::MultiplyLow { d: dst, a: left, b: right },
     }
+}
+
+/// Emit `dst = left OP const` for a constant-bearing accumulator init, matching
+/// mwcc's immediate forms: `addi dst,left,c` for `+`, `addi dst,left,-c` for `-`
+/// (subtraction is `+ (-c)`), and `mulli dst,left,c` for `*`. Returns `None` when the
+/// constant does not fit the signed 16-bit immediate field — mwcc materializes it
+/// with `addis`/`lis` there, a form left to defer.
+fn accumulate_immediate(operator: AccumulatorOp, dst: u8, left: u8, constant: i64) -> Option<Instruction> {
+    Some(match operator {
+        AccumulatorOp::Add => Instruction::AddImmediate { d: dst, a: left, immediate: i16::try_from(constant).ok()? },
+        AccumulatorOp::Subtract => Instruction::AddImmediate { d: dst, a: left, immediate: i16::try_from(constant.checked_neg()?).ok()? },
+        AccumulatorOp::Multiply => Instruction::MultiplyImmediate { d: dst, a: left, immediate: i16::try_from(constant).ok()? },
+    })
 }
 
 /// Error if substituting `values` into `expression` would duplicate a non-leaf
