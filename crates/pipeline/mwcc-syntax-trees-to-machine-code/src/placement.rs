@@ -100,6 +100,16 @@ impl Generator {
                 if is_commutative(operator) && crate::analysis::is_constant_shift(left) {
                     return Operands::ordered(GENERAL_SCRATCH, leaf);
                 }
+                // A SINGLE-REGISTER-computed left (`(a-1)*b`, `-a*b`, `(2-a)&b` — one leaf via
+                // addi/subfic/neg) is ordered COMPUTED-FIRST by mwcc (`mullw r3, r0(a-1), r4(b)`),
+                // like the shift above; a two-register computed left (a product/sum) stays leaf-first.
+                // `+` is EXCLUDED — a `var±const` left there is REASSOCIATED (`(a-1)+b` -> `(a+b)-1`),
+                // not merely reordered, so it keeps deferring via analysis::is_constant_hoist_add.
+                if matches!(operator, BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor)
+                    && crate::analysis::single_register_computed(left)
+                {
+                    return Operands::ordered(GENERAL_SCRATCH, leaf);
+                }
                 Operands::reversed(GENERAL_SCRATCH, leaf)
             }
             (false, true) => {
