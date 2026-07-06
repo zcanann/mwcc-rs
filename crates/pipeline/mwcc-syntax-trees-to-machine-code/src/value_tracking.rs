@@ -370,6 +370,37 @@ impl Generator {
                 }
                 self.output.instructions.push(Instruction::Or { a: result, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
                 self.emit_epilogue_and_return();
+            } else if function.guards.len() == 1
+                && guard_value_in_result_register
+                && simple_binary_tail
+                && matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            {
+                // TAIL-MERGE through r0: the guard value lives in the RESULT register, so the direct/
+                // temp folds' `mr r3,<value>` would be a dead self-move. mwcc funnels BOTH return paths
+                // through r0 — the tail computes into r0, a forward branch on the INVERTED guard skips
+                // the guard-value load when the guard is FALSE, and a single `mr r3,r0` merges:
+                //   `cmpwi; addi r0,b,1; ble skip; mr r0,a; skip: mr r3,r0; blr`.
+                let guard = &function.guards[0];
+                let Expression::Variable(name) = &guard.value else {
+                    return Err(Diagnostic::error("a computed guard value is not supported yet (roadmap)"));
+                };
+                let Some(value_register) = self.lookup_general(name) else {
+                    return Err(Diagnostic::error("a non-general guard value is not supported yet (roadmap)"));
+                };
+                // emit_condition_test returns the branch-if-FALSE options (the forward-if convention),
+                // which is exactly what skips the guard-value load when the guard does not hold.
+                let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+                self.evaluate_general(&inlined, GENERAL_SCRATCH)?;
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                // Guard TRUE (fall-through): overwrite the tail with the guard value.
+                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: value_register, b: value_register });
+                let merge = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = merge;
+                }
+                self.output.instructions.push(Instruction::Or { a: result, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                self.emit_epilogue_and_return();
             } else {
                 return Err(Diagnostic::error(
                     "a flat early-return form outside the fold/temp-fold shapes is not supported yet (roadmap)",
