@@ -478,17 +478,21 @@ impl Generator {
             if !matches!(value, Expression::Variable(name) if name == &local.name) {
                 return Ok(false);
             }
+            // The store address must be a general parameter plus a FIXED displacement so
+            // it never touches the value's register: a bare deref (`*p`), a member
+            // (`p->field`), or a constant subscript (`p[3]`). A variable subscript would
+            // compute its offset into a register (possibly the value's) — deferred.
+            let base_is_general_param = |generator: &Self, base: &Expression| {
+                leaf_name(base).is_some_and(|name| generator.locations.get(name).map(|location| location.class) == Some(ValueClass::General))
+            };
             match target {
-                Expression::Dereference { pointer } => {
-                    let Some(base) = leaf_name(pointer) else { return Ok(false) };
-                    if self.locations.get(base).map(|location| location.class) != Some(ValueClass::General) {
-                        return Ok(false);
-                    }
-                }
+                Expression::Dereference { pointer } if base_is_general_param(self, pointer) => {}
+                Expression::Member { base, .. } if base_is_general_param(self, base) => {}
+                Expression::Index { base, index } if constant_value(index).is_some() && base_is_general_param(self, base) => {}
                 // A direct global is fine when the value is kept in r3 (its ADDR16
                 // address temp is r0, not r3). In the VOID case the value IS in r0, so a
                 // global store could clobber it (ADDR16 `lis r0,@ha`) — restrict void to
-                // parameter derefs.
+                // the register-plus-displacement targets above.
                 Expression::Variable(name) if !is_void && self.globals.contains_key(name.as_str()) => {}
                 _ => return Ok(false),
             }
