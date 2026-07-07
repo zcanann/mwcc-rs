@@ -203,6 +203,10 @@ impl Generator {
         if self.try_emit_sign_clamp(condition, when_true, when_false, destination)? {
             return Ok(());
         }
+        // `(a REL 0) ? b : 0` (b a distinct leaf): the same sign mask of a, combined with b.
+        if self.try_emit_masked_select(condition, when_true, when_false, destination)? {
+            return Ok(());
+        }
 
         // `cond ? c1 : c2` with consecutive non-zero constants is branchless: the
         // truth value (a -1/0 sign mask or a 0/1 bool) plus the lower constant.

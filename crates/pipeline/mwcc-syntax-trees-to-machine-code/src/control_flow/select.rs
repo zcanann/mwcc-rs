@@ -280,6 +280,79 @@ impl Generator {
         Ok(true)
     }
 
+    /// `(a REL 0) ? b : 0` / `(a REL 0) ? 0 : b` where `b` is a leaf DIFFERENT from the
+    /// condition operand `a` — a branchless MASKED SELECT (the clamp `try_emit_sign_clamp`
+    /// generalized to a distinct value). mwcc builds the sign mask of `a` (all-ones exactly
+    /// when the relation holds) and combines it with `b` via `and` (`? b : 0`) or `andc`
+    /// (`? 0 : b`):
+    ///   `< 0` : `srawi r0,a,31`
+    ///   `> 0` : `neg r0,a; andc r0,r0,a; srawi r0,r0,31`
+    ///   `<= 0`: `neg r0,a; orc r0,a,r0; srawi r0,r0,31`
+    ///   `>= 0`: `srwi a,a,31; addi r0,a,-1`  (a is dead after the compare, so — unlike the
+    ///          clamp, where a is also the value — its register carries the 0/1 flag)
+    /// then `and`/`andc r3,b,r0`. Restricted to an in-register destination (the return/assign
+    /// context these were measured in); a store (scratch destination) defers.
+    pub(crate) fn try_emit_masked_select(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
+        if destination == GENERAL_SCRATCH {
+            return Ok(false);
+        }
+        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        if !is_zero_literal(right)
+            || !matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::LessEqual)
+        {
+            return Ok(false);
+        }
+        let Some(a_name) = leaf_name(left) else { return Ok(false) };
+        if !self.signedness_of(left)? {
+            return Ok(false);
+        }
+        // The non-zero arm is a leaf `b` different from `a` (`b == a` is the clamp, handled
+        // earlier by try_emit_sign_clamp). `? b : 0` keeps b where the mask is set (`and`);
+        // `? 0 : b` keeps b where it is clear (`andc`).
+        let (value, use_andc) = if is_zero_literal(when_false) {
+            (when_true, false)
+        } else if is_zero_literal(when_true) {
+            (when_false, true)
+        } else {
+            return Ok(false);
+        };
+        let Some(b_name) = leaf_name(value) else { return Ok(false) };
+        if b_name == a_name {
+            return Ok(false);
+        }
+        let Some(b) = self.lookup_general(b_name) else { return Ok(false) };
+        let x = self.general_register_of_leaf(left)?;
+        // The sign mask of `a`, all-ones exactly when the relation holds.
+        match operator {
+            BinaryOperator::Less => {
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: x, shift: 31 });
+            }
+            BinaryOperator::Greater => {
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
+                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: x });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+            }
+            BinaryOperator::LessEqual => {
+                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
+                self.output.instructions.push(Instruction::OrComplement { a: GENERAL_SCRATCH, s: x, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+            }
+            _ => {
+                // GreaterEqual: `a` is dead after the compare, so its register carries the 0/1 flag.
+                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: x, s: x, shift: 31 });
+                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: x, immediate: -1 });
+            }
+        }
+        self.output.instructions.push(if use_andc {
+            Instruction::AndComplement { a: destination, s: b, b: GENERAL_SCRATCH }
+        } else {
+            Instruction::And { a: destination, s: b, b: GENERAL_SCRATCH }
+        });
+        // A ternary select: advance mwcc's anonymous-`@N` counter by 3, like its siblings.
+        self.output.anonymous_label_bump += 3;
+        Ok(true)
+    }
+
     pub(crate) fn try_emit_consecutive_constants(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
         // The truth value comes from a leaf in its register, or — in a tail context
         // — a full-word memory load brought into the destination (`*q ? 1 : 2` is
