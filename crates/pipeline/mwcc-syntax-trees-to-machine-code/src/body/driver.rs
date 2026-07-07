@@ -1103,6 +1103,31 @@ impl Generator {
                 let result = mwcc_target::Eabi::general_result().number;
                 let return_expression = function.return_expression.as_ref();
                 let already_in_result = matches!(return_expression, Some(Expression::Variable(name)) if self.lookup_general(name) == Some(result));
+                // TWO-EXIT form: the return value is ALREADY in r3 (`return <cond var>`) and the
+                // store arms (materializing through r0) leave it intact — so each arm stores then
+                // returns directly, no shared join (`<cond>; b<!c> else; <then>; blr; else: <else>;
+                // blr`). Local branch labels here do not advance @N (like the void two-store diamond).
+                if already_in_result && then_body.iter().chain(else_body).all(|statement| matches!(statement,
+                    Statement::Store { value: Expression::IntegerLiteral(_), .. }
+                    | Statement::Store { value: Expression::Variable(_), .. }))
+                {
+                    let (options, condition_bit) = self.emit_condition_test(condition)?;
+                    let branch_to_else = self.output.instructions.len();
+                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    for statement in then_body {
+                        self.emit_statement(statement)?;
+                    }
+                    self.emit_epilogue_and_return();
+                    let else_label = self.output.instructions.len();
+                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
+                        *target = else_label;
+                    }
+                    for statement in else_body {
+                        self.emit_statement(statement)?;
+                    }
+                    self.emit_epilogue_and_return();
+                    return Ok(());
+                }
                 let materialized_join = !already_in_result
                     && return_expression.is_some_and(|expression| {
                         constant_value(expression).is_some_and(|value| i16::try_from(value).is_ok())
