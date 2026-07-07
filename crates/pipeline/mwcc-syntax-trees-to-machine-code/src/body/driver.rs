@@ -1083,11 +1083,14 @@ impl Generator {
                 return Ok(());
             }
         }
-        // A LEAF if/else with a JOIN and a constant-return continuation:
-        // `if(c){ then-stores } else { else-stores } return <const>;` — both branches
-        // merge, then the shared return. No call, so no frame/LR-save (unlike the
-        // non-leaf join above): `<cond>; b<!c> else; <then>; b join; else: <else>;
-        // join: li r3,C; blr`. Both arms are pure stores; the return is a small constant.
+        // A LEAF if/else with a JOIN and a MATERIALIZED-return continuation:
+        // `if(c){ then-stores } else { else-stores } return <expr>;` — both branches
+        // merge, then the shared return materializes into r3. No call, so no frame/
+        // LR-save (unlike the non-leaf join above): `<cond>; b<!c> else; <then>; b join;
+        // else: <else>; join: <return into r3>; blr`. The return is a small constant
+        // (`li r3,C`), a parameter NOT already in r3 (`mr r3,rN`), or a `param ± const`
+        // (`addi`). A return value ALREADY in r3 (`return <cond var>`) uses mwcc's
+        // two-EXIT form (each arm blr's) instead and is left to defer here.
         if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
             if !function_makes_call(function)
                 && function.guards.is_empty()
@@ -1097,7 +1100,17 @@ impl Generator {
                 && !else_body.is_empty()
                 && then_body.iter().chain(else_body).all(|statement| matches!(statement, Statement::Store { .. }))
             {
-                if let Some(constant) = function.return_expression.as_ref().and_then(|expression| constant_value(expression)).filter(|value| i16::try_from(*value).is_ok()) {
+                let result = mwcc_target::Eabi::general_result().number;
+                let return_expression = function.return_expression.as_ref();
+                let already_in_result = matches!(return_expression, Some(Expression::Variable(name)) if self.lookup_general(name) == Some(result));
+                let materialized_join = !already_in_result
+                    && return_expression.is_some_and(|expression| {
+                        constant_value(expression).is_some_and(|value| i16::try_from(value).is_ok())
+                            || matches!(expression, Expression::Variable(name) if self.lookup_general(name).is_some())
+                            || matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
+                                if matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
+                    });
+                if materialized_join {
                     // The else branch and the join both advance mwcc's anonymous-`@N` counter.
                     self.output.anonymous_label_bump = 2;
                     let (options, condition_bit) = self.emit_condition_test(condition)?;
@@ -1119,7 +1132,7 @@ impl Generator {
                     if let Instruction::Branch { target } = &mut self.output.instructions[branch_to_join] {
                         *target = join_label;
                     }
-                    self.load_integer_constant(mwcc_target::Eabi::general_result().number, constant);
+                    self.evaluate_tail(return_expression.expect("materialized_join implies Some"), function.return_type, result)?;
                     self.emit_epilogue_and_return();
                     return Ok(());
                 }
