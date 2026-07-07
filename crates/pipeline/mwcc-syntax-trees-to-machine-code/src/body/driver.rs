@@ -391,6 +391,12 @@ impl Generator {
                 return Err(Diagnostic::error("a base-addressed global-aggregate store alongside another store needs the shared-base schedule (roadmap)"));
             }
         }
+        // `void f(){ if (g REL C) { ext(g); g = C2; } }` — a global reused across the branch
+        // (loaded once into r3, tested, then passed to the call). Handled before the pre-check
+        // below defers it. See body/callee_saved/conditional.rs.
+        if self.try_guarded_global_reuse_call(function)? {
+            return Ok(());
+        }
         // `if (gi) f(gi);` — a global read in BOTH an if-condition and its then-body. mwcc loads the
         // global ONCE into the argument register, tests it there, and reuses it for the guarded call
         // (`lwz r3,gi; cmpwi r3,0; beq; bl f`); our codegen loads it into the scratch for the test, then

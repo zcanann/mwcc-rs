@@ -412,4 +412,85 @@ impl Generator {
         Ok(true)
     }
 
+    /// `void f(void) { if (g REL C) { ext(g); g = C2; } }` — a scalar global read in BOTH
+    /// the if-condition AND the guarded call. mwcc loads g ONCE into the argument register
+    /// r3, tests it there, and REUSES it for the call (no reload): `stwu; mflr; stw r0,20;
+    /// lwz r3,g; cmpwi r3,C; b<!REL> skip; bl ext; li r0,C2; stw r0,g; skip: <epilogue>`.
+    /// This is Runtime `__fini_cpp_exceptions` (the `fragmentID` guard). Scoped to the
+    /// single reused global argument, an equality condition, and a constant store back to
+    /// the same global — the shape the driver.rs pre-check otherwise defers ("a global read
+    /// in both an if-condition and its body needs value reuse across the branch").
+    pub(crate) fn try_guarded_global_reuse_call(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || function.return_type != Type::Void
+        {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        // The condition is `g REL C`: a scalar global against a small constant, tested for
+        // (in)equality (`cmpwi` is sign-agnostic for `==`/`!=`).
+        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        if !matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+            return Ok(false);
+        }
+        let Expression::Variable(global) = left.as_ref() else { return Ok(false) };
+        if !self.globals.contains_key(global.as_str()) {
+            return Ok(false);
+        }
+        let Some(condition_constant) = constant_value(right).and_then(|value| i16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        // The body is exactly `ext(g); g = C2;` — a direct external call reusing g as its
+        // ONLY argument, then a constant store back to the same global.
+        let [Statement::Expression(Expression::Call { name: call_name, arguments }), store @ Statement::Store { target, value }] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if self.globals.contains_key(call_name.as_str())
+            || self.locations.contains_key(call_name.as_str())
+            || self.known_locals.contains(call_name.as_str())
+        {
+            return Ok(false);
+        }
+        if !matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == global) {
+            return Ok(false);
+        }
+        if !matches!(target, Expression::Variable(name) if name == global) || constant_value(value).is_none() {
+            return Ok(false);
+        }
+
+        // -- emit -- the LR-only non-leaf frame, then g loaded once into r3 and tested there.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![]).prologue());
+        let result = Eabi::general_result().number;
+        self.evaluate_general(left, result)?; // lwz r3, g
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: result, immediate: condition_constant });
+        let (skip_bo, skip_bi) = false_branch_bo_bi(*operator).expect("equality is a comparison");
+        let skip = self.fresh_label();
+        self.emit_branch_conditional_to(skip_bo, skip_bi, skip);
+        // The call reuses g (already in r3) — emit the `bl` directly, no argument reload.
+        self.record_relocation(RelocationKind::Rel24, call_name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: call_name.clone() });
+        // g = C2 (`li r0,C2; stw r0,g`), then the epilogue at the join.
+        self.emit_statement(store)?;
+        self.bind_label(skip);
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The extab anonymous symbol lands at @8 for this shape (measured) — the guard plus
+        // the reused-global load advance the counter by 3, one more than the bare guard-call.
+        self.output.anonymous_label_bump += 3;
+        Ok(true)
+    }
+
 }
