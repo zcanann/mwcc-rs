@@ -423,13 +423,17 @@ impl Generator {
     /// recompute t separately for the store and the return; mwcc keeps it in one
     /// register, so we compute it once into r3 and store from there. The store targets
     /// are bare pointer derefs of parameters (`*p = t`) or direct globals (`gg = t`) —
-    /// whose address never touches r3, so t survives every store to the return. Single
-    /// int local, single-op initializer.
+    /// whose address never touches r3, so t survives every store to the return. A VOID
+    /// function keeps the value in the scratch r0 instead and requires 2+ stores (the
+    /// single-store void is the computed-store-fill path): `addi r0,r3,1; stw r0,0(r4);
+    /// stw r0,0(r5); blr`; only parameter derefs there (a global's ADDR16 temp is r0).
+    /// Single int local, single-op initializer.
     pub(crate) fn try_computed_local_stored_returned(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || function_makes_call(function) {
             return Ok(false);
         }
-        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+        let is_void = function.return_type == Type::Void;
+        if !is_void && !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
         let [local] = function.locals.as_slice() else { return Ok(false) };
@@ -440,18 +444,28 @@ impl Generator {
         if !self.is_single_op_register_value(initializer) {
             return Ok(false);
         }
-        // The return is the kept local, bare (`return t`) or with one additive constant
-        // post-op applied IN PLACE after the stores (`return t + 1` -> `addi r3,r3,1`,
-        // `t - 2` -> `addi r3,r3,-2`). Only `+`/`-` keep t in r3 for the in-place `addi`;
-        // `* & << >>` put t in r0 and compute the result into r3 (`slwi r3,r0,2`) — an
-        // allocation choice not modeled here — so those defer.
-        let return_bare = matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name);
-        let return_post_op = matches!(function.return_expression.as_ref(), Some(Expression::Binary { operator, left, right })
-            if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
-                && matches!(left.as_ref(), Expression::Variable(name) if name == &local.name)
-                && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok()));
-        if !return_bare && !return_post_op {
-            return Ok(false);
+        // In a VALUE-returning function the kept local lives in r3 (the eventual result),
+        // and the return is the local — bare (`return t`) or with one additive constant
+        // post-op applied IN PLACE after the stores (`return t + 1` -> `addi r3,r3,1`;
+        // only `+`/`-` keep t in r3 for the in-place `addi` — `* & << >>` put t in r0 and
+        // compute into r3, an allocation choice not modeled here, so those defer). A VOID
+        // function keeps the value in the scratch r0 instead (nothing is returned) and
+        // must have MORE THAN ONE store — the single-store void is the computed-store-fill
+        // path, left to it.
+        let mut return_post_op = false;
+        if is_void {
+            if function.return_expression.is_some() || function.statements.len() < 2 {
+                return Ok(false);
+            }
+        } else {
+            let return_bare = matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name);
+            return_post_op = matches!(function.return_expression.as_ref(), Some(Expression::Binary { operator, left, right })
+                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
+                    && matches!(left.as_ref(), Expression::Variable(name) if name == &local.name)
+                    && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok()));
+            if !return_bare && !return_post_op {
+                return Ok(false);
+            }
         }
         // Every statement stores the local to memory through an address that never
         // touches r3 (so t survives to the return): a bare deref of a general parameter
@@ -471,12 +485,17 @@ impl Generator {
                         return Ok(false);
                     }
                 }
-                Expression::Variable(name) if self.globals.contains_key(name.as_str()) => {}
+                // A direct global is fine when the value is kept in r3 (its ADDR16
+                // address temp is r0, not r3). In the VOID case the value IS in r0, so a
+                // global store could clobber it (ADDR16 `lis r0,@ha`) — restrict void to
+                // parameter derefs.
+                Expression::Variable(name) if !is_void && self.globals.contains_key(name.as_str()) => {}
                 _ => return Ok(false),
             }
         }
-        // -- emit: the value once into r3, then each store from r3, then return.
-        let result = Eabi::general_result().number;
+        // -- emit: the value once into its home (r3 when returned, else the scratch r0),
+        // each store from there, then the return (post-op applied in place) or `blr`.
+        let result = if is_void { GENERAL_SCRATCH } else { Eabi::general_result().number };
         self.evaluate_general(initializer, result)?;
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
