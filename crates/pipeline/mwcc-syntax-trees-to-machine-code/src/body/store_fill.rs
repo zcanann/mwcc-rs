@@ -440,8 +440,17 @@ impl Generator {
         if !self.is_single_op_register_value(initializer) {
             return Ok(false);
         }
-        // The return is exactly the kept local.
-        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+        // The return is the kept local, bare (`return t`) or with one additive constant
+        // post-op applied IN PLACE after the stores (`return t + 1` -> `addi r3,r3,1`,
+        // `t - 2` -> `addi r3,r3,-2`). Only `+`/`-` keep t in r3 for the in-place `addi`;
+        // `* & << >>` put t in r0 and compute the result into r3 (`slwi r3,r0,2`) — an
+        // allocation choice not modeled here — so those defer.
+        let return_bare = matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name);
+        let return_post_op = matches!(function.return_expression.as_ref(), Some(Expression::Binary { operator, left, right })
+            if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
+                && matches!(left.as_ref(), Expression::Variable(name) if name == &local.name)
+                && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok()));
+        if !return_bare && !return_post_op {
             return Ok(false);
         }
         // Every statement stores the local to memory through an address that never
@@ -476,6 +485,10 @@ impl Generator {
         );
         for statement in &function.statements {
             self.emit_statement(statement)?;
+        }
+        // A bare `return t` is already in r3; a post-op computes it in place from r3.
+        if return_post_op {
+            self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
         }
         self.emit_epilogue_and_return();
         Ok(true)
