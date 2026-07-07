@@ -1162,6 +1162,12 @@ impl Generator {
             if self.try_callee_saved_call_result(function)? {
                 return Ok(());
             }
+            // `int x = g(); int y = h(); return x OP y;` — two call-result locals with NO
+            // trailing call: only the first parks in a callee-saved register, the second
+            // stays in r3. See callee_saved/combine.rs.
+            if self.try_callee_saved_two_call_result_combine(function)? {
+                return Ok(());
+            }
             // `int x = g(a); return x OP a;` — a call-result local combined with the
             // parameter that crossed the call.
             if self.try_callee_saved_result_param_combine(function)? {

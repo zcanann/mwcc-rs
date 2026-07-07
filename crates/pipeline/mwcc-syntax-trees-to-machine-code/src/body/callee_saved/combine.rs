@@ -932,6 +932,81 @@ impl Generator {
         Ok(true)
     }
 
+    /// Two int locals each initialized by an argument-free call, with NO trailing call —
+    /// `int x = g(); int y = h(); return x OP y;`. The FIRST result is live across the
+    /// second call, so it parks in one callee-saved register (r31); the second result
+    /// stays in r3, and the return combines them straight from those registers:
+    /// `bl g; mr r31,r3; bl h; <op> r3,r31,r3`. Distinct from
+    /// `try_callee_saved_call_result`, whose model has a LATER call that BOTH locals
+    /// cross (so it saves both, r30+r31) — here the last local is never live across a
+    /// call and never saved. Low-latency combines only (`+ - & | ^`): a multiply's
+    /// latency reschedules the epilogue restores (a scheduler concern) and defers, as
+    /// does a reversed operand order. Same or different callees both work — the calls
+    /// run in statement order, so the relocation order is natural (no commutative
+    /// right-first reorder like the direct `return f()+g();` form).
+    pub(crate) fn try_callee_saved_two_call_result_combine(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // Exactly two int locals, each an argument-free call initializer.
+        if function.locals.len() != 2 {
+            return Ok(false);
+        }
+        let mut init_names: Vec<String> = Vec::new();
+        for local in &function.locals {
+            if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+                return Ok(false);
+            }
+            let Some(Expression::Call { name, arguments }) = local.initializer.as_ref() else {
+                return Ok(false);
+            };
+            if !arguments.is_empty() {
+                return Ok(false);
+            }
+            init_names.push(name.clone());
+        }
+        // The return combines the two locals in declaration order with one low-latency op.
+        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) else {
+            return Ok(false);
+        };
+        if left_name != &function.locals[0].name || right_name != &function.locals[1].name {
+            return Ok(false);
+        }
+        // `x OP y` from x in the saved register and y in r3. `subf d,a,b` = b - a, so
+        // `subf r3,r3,saved` = saved - r3 = x - y (order-preserving).
+        let combine = |saved: u8| match operator {
+            BinaryOperator::Add => Some(Instruction::Add { d: 3, a: saved, b: 3 }),
+            BinaryOperator::Subtract => Some(Instruction::SubtractFrom { d: 3, a: 3, b: saved }),
+            BinaryOperator::BitOr => Some(Instruction::Or { a: 3, s: saved, b: 3 }),
+            BinaryOperator::BitAnd => Some(Instruction::And { a: 3, s: saved, b: 3 }),
+            BinaryOperator::BitXor => Some(Instruction::Xor { a: 3, s: saved, b: 3 }),
+            _ => None,
+        };
+        if combine(0).is_none() {
+            return Ok(false);
+        }
+        // Prologue: a 16-byte frame saving the link register and the one callee-saved home.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        // First call; its result parks in the callee-saved register (live across the 2nd call).
+        self.emit_call(&init_names[0], &[], None, false)?;
+        self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+        // Second call; its result stays in r3, then the combine and return.
+        self.emit_call(&init_names[1], &[], None, false)?;
+        self.output.instructions.push(combine(saved).expect("operator checked above"));
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// A single local COMPUTED from parameters (no call in its initializer) that is live
     /// across a call — passed to it and/or post-processed in the return:
     /// `int z = x + 1; g(z); return z;`. z is computed into r31 before the call, used
