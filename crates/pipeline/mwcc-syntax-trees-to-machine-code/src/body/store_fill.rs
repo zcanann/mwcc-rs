@@ -422,8 +422,9 @@ impl Generator {
     /// stores — the general value_tracking pass INLINES a local's value, which would
     /// recompute t separately for the store and the return; mwcc keeps it in one
     /// register, so we compute it once into r3 and store from there. The store targets
-    /// are bare pointer derefs of parameters (their address never touches r3), so t
-    /// survives every store to the return. Single int local, single-op initializer.
+    /// are bare pointer derefs of parameters (`*p = t`) or direct globals (`gg = t`) —
+    /// whose address never touches r3, so t survives every store to the return. Single
+    /// int local, single-op initializer.
     pub(crate) fn try_computed_local_stored_returned(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() || function_makes_call(function) {
             return Ok(false);
@@ -443,8 +444,9 @@ impl Generator {
         if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
             return Ok(false);
         }
-        // Every statement is `*p = t`: a bare deref of a general parameter storing the
-        // local. The address computation never touches r3, so t survives to the return.
+        // Every statement stores the local to memory through an address that never
+        // touches r3 (so t survives to the return): a bare deref of a general parameter
+        // (`*p = t`), or a direct global (`gg = t`, SDA/ADDR16-addressed off r0/r2/r13).
         if function.statements.is_empty() {
             return Ok(false);
         }
@@ -453,10 +455,15 @@ impl Generator {
             if !matches!(value, Expression::Variable(name) if name == &local.name) {
                 return Ok(false);
             }
-            let Expression::Dereference { pointer } = target else { return Ok(false) };
-            let Some(base) = leaf_name(pointer) else { return Ok(false) };
-            if self.locations.get(base).map(|location| location.class) != Some(ValueClass::General) {
-                return Ok(false);
+            match target {
+                Expression::Dereference { pointer } => {
+                    let Some(base) = leaf_name(pointer) else { return Ok(false) };
+                    if self.locations.get(base).map(|location| location.class) != Some(ValueClass::General) {
+                        return Ok(false);
+                    }
+                }
+                Expression::Variable(name) if self.globals.contains_key(name.as_str()) => {}
+                _ => return Ok(false),
             }
         }
         // -- emit: the value once into r3, then each store from r3, then return.
