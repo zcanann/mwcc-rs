@@ -1103,85 +1103,11 @@ impl Generator {
                 return Ok(());
             }
         }
-        // A LEAF if/else with a JOIN and a MATERIALIZED-return continuation:
-        // `if(c){ then-stores } else { else-stores } return <expr>;` — both branches
-        // merge, then the shared return materializes into r3. No call, so no frame/
-        // LR-save (unlike the non-leaf join above): `<cond>; b<!c> else; <then>; b join;
-        // else: <else>; join: <return into r3>; blr`. The return is a small constant
-        // (`li r3,C`), a parameter NOT already in r3 (`mr r3,rN`), or a `param ± const`
-        // (`addi`). A return value ALREADY in r3 (`return <cond var>`) uses mwcc's
-        // two-EXIT form (each arm blr's) instead and is left to defer here.
-        if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
-            if !function_makes_call(function)
-                && function.guards.is_empty()
-                && function.locals.is_empty()
-                && matches!(function.return_type, Type::Int | Type::UnsignedInt)
-                && !then_body.is_empty()
-                && !else_body.is_empty()
-                && then_body.iter().chain(else_body).all(|statement| matches!(statement, Statement::Store { .. }))
-            {
-                let result = mwcc_target::Eabi::general_result().number;
-                let return_expression = function.return_expression.as_ref();
-                let already_in_result = matches!(return_expression, Some(Expression::Variable(name)) if self.lookup_general(name) == Some(result));
-                // TWO-EXIT form: the return value is ALREADY in r3 (`return <cond var>`) and the
-                // store arms (materializing through r0) leave it intact — so each arm stores then
-                // returns directly, no shared join (`<cond>; b<!c> else; <then>; blr; else: <else>;
-                // blr`). Local branch labels here do not advance @N (like the void two-store diamond).
-                if already_in_result && then_body.iter().chain(else_body).all(|statement| matches!(statement,
-                    Statement::Store { value: Expression::IntegerLiteral(_), .. }
-                    | Statement::Store { value: Expression::Variable(_), .. }))
-                {
-                    let (options, condition_bit) = self.emit_condition_test(condition)?;
-                    let branch_to_else = self.output.instructions.len();
-                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-                    for statement in then_body {
-                        self.emit_statement(statement)?;
-                    }
-                    self.emit_epilogue_and_return();
-                    let else_label = self.output.instructions.len();
-                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
-                        *target = else_label;
-                    }
-                    for statement in else_body {
-                        self.emit_statement(statement)?;
-                    }
-                    self.emit_epilogue_and_return();
-                    return Ok(());
-                }
-                let materialized_join = !already_in_result
-                    && return_expression.is_some_and(|expression| {
-                        constant_value(expression).is_some_and(|value| i16::try_from(value).is_ok())
-                            || matches!(expression, Expression::Variable(name) if self.lookup_general(name).is_some())
-                            || matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
-                                if matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
-                    });
-                if materialized_join {
-                    // The else branch and the join both advance mwcc's anonymous-`@N` counter.
-                    self.output.anonymous_label_bump = 2;
-                    let (options, condition_bit) = self.emit_condition_test(condition)?;
-                    let branch_to_else = self.output.instructions.len();
-                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-                    for statement in then_body {
-                        self.emit_statement(statement)?;
-                    }
-                    let branch_to_join = self.output.instructions.len();
-                    self.output.instructions.push(Instruction::Branch { target: 0 });
-                    let else_label = self.output.instructions.len();
-                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
-                        *target = else_label;
-                    }
-                    for statement in else_body {
-                        self.emit_statement(statement)?;
-                    }
-                    let join_label = self.output.instructions.len();
-                    if let Instruction::Branch { target } = &mut self.output.instructions[branch_to_join] {
-                        *target = join_label;
-                    }
-                    self.evaluate_tail(return_expression.expect("materialized_join implies Some"), function.return_type, result)?;
-                    self.emit_epilogue_and_return();
-                    return Ok(());
-                }
-            }
+        // A LEAF if/else diamond (both arms store) with a return continuation — the JOIN
+        // (materialized return) and TWO-EXIT (return value already in r3) forms. See
+        // body/if_else.rs.
+        if self.try_leaf_ifelse_diamond(function)? {
+            return Ok(());
         }
         // A non-leaf function led by `if (c) { …calls…; return X; }` with a
         // continuation that supplies the other exit: mwcc schedules the condition

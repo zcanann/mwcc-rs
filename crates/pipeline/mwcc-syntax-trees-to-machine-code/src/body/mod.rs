@@ -5,6 +5,7 @@
 mod passes;
 mod driver;
 mod guards_ifs;
+mod if_else;
 mod conditional;
 mod store_fill;
 mod punned_select;
