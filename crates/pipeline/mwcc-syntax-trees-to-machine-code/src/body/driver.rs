@@ -1083,6 +1083,48 @@ impl Generator {
                 return Ok(());
             }
         }
+        // A LEAF if/else with a JOIN and a constant-return continuation:
+        // `if(c){ then-stores } else { else-stores } return <const>;` — both branches
+        // merge, then the shared return. No call, so no frame/LR-save (unlike the
+        // non-leaf join above): `<cond>; b<!c> else; <then>; b join; else: <else>;
+        // join: li r3,C; blr`. Both arms are pure stores; the return is a small constant.
+        if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
+            if !function_makes_call(function)
+                && function.guards.is_empty()
+                && function.locals.is_empty()
+                && matches!(function.return_type, Type::Int | Type::UnsignedInt)
+                && !then_body.is_empty()
+                && !else_body.is_empty()
+                && then_body.iter().chain(else_body).all(|statement| matches!(statement, Statement::Store { .. }))
+            {
+                if let Some(constant) = function.return_expression.as_ref().and_then(|expression| constant_value(expression)).filter(|value| i16::try_from(*value).is_ok()) {
+                    // The else branch and the join both advance mwcc's anonymous-`@N` counter.
+                    self.output.anonymous_label_bump = 2;
+                    let (options, condition_bit) = self.emit_condition_test(condition)?;
+                    let branch_to_else = self.output.instructions.len();
+                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    for statement in then_body {
+                        self.emit_statement(statement)?;
+                    }
+                    let branch_to_join = self.output.instructions.len();
+                    self.output.instructions.push(Instruction::Branch { target: 0 });
+                    let else_label = self.output.instructions.len();
+                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
+                        *target = else_label;
+                    }
+                    for statement in else_body {
+                        self.emit_statement(statement)?;
+                    }
+                    let join_label = self.output.instructions.len();
+                    if let Instruction::Branch { target } = &mut self.output.instructions[branch_to_join] {
+                        *target = join_label;
+                    }
+                    self.load_integer_constant(mwcc_target::Eabi::general_result().number, constant);
+                    self.emit_epilogue_and_return();
+                    return Ok(());
+                }
+            }
+        }
         // A non-leaf function led by `if (c) { …calls…; return X; }` with a
         // continuation that supplies the other exit: mwcc schedules the condition
         // test into the prologue, the early return materializes X and branches to a
