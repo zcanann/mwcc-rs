@@ -467,39 +467,69 @@ impl Generator {
                 return Ok(false);
             }
         }
-        // Every statement stores the local to memory through an address that never
-        // touches r3 (so t survives to the return): a bare deref of a general parameter
-        // (`*p = t`), or a direct global (`gg = t`, SDA/ADDR16-addressed off r0/r2/r13).
+        // The body is a run of leading in-place REASSIGNMENTS of the local (`t = t OP
+        // <param>`, mutated in the home register) followed by the STORES of it. The value
+        // is kept in one register throughout, so the address of every store must be that
+        // register left untouched.
         if function.statements.is_empty() {
             return Ok(false);
         }
+        let result = if is_void { GENERAL_SCRATCH } else { Eabi::general_result().number };
+        // The store address must be a general parameter plus a FIXED displacement so it
+        // never touches the value's register: a bare deref (`*p`), a member (`p->field`),
+        // or a constant subscript (`p[3]`). A variable subscript would compute its offset
+        // into a register (possibly the value's) — deferred.
+        let base_is_general_param = |generator: &Self, base: &Expression| {
+            leaf_name(base).is_some_and(|name| generator.locations.get(name).map(|location| location.class) == Some(ValueClass::General))
+        };
+        let mut seen_store = false;
         for statement in &function.statements {
-            let Statement::Store { target, value } = statement else { return Ok(false) };
-            if !matches!(value, Expression::Variable(name) if name == &local.name) {
-                return Ok(false);
-            }
-            // The store address must be a general parameter plus a FIXED displacement so
-            // it never touches the value's register: a bare deref (`*p`), a member
-            // (`p->field`), or a constant subscript (`p[3]`). A variable subscript would
-            // compute its offset into a register (possibly the value's) — deferred.
-            let base_is_general_param = |generator: &Self, base: &Expression| {
-                leaf_name(base).is_some_and(|name| generator.locations.get(name).map(|location| location.class) == Some(ValueClass::General))
-            };
-            match target {
-                Expression::Dereference { pointer } if base_is_general_param(self, pointer) => {}
-                Expression::Member { base, .. } if base_is_general_param(self, base) => {}
-                Expression::Index { base, index } if constant_value(index).is_some() && base_is_general_param(self, base) => {}
-                // A direct global is fine when the value is kept in r3 (its ADDR16
-                // address temp is r0, not r3). In the VOID case the value IS in r0, so a
-                // global store could clobber it (ADDR16 `lis r0,@ha`) — restrict void to
-                // the register-plus-displacement targets above.
-                Expression::Variable(name) if !is_void && self.globals.contains_key(name.as_str()) => {}
+            match statement {
+                // A leading reassignment `t = t OP <param>`, before any store, mutates t in
+                // place (`add r3,r3,rN`). The right operand must be a REGISTER (a constant
+                // step folds into the init in mwcc — `t=a+1; t=t+5` -> `addi r3,r3,6`) that
+                // does not sit in `result` (t occupies it, so the incoming param there is dead).
+                Statement::Assign { name, value } if name == &local.name && !seen_store => {
+                    let Expression::Binary { operator, left, right } = value else { return Ok(false) };
+                    if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply
+                        | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor
+                        | BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight)
+                    {
+                        return Ok(false);
+                    }
+                    if !matches!(left.as_ref(), Expression::Variable(n) if n == &local.name) {
+                        return Ok(false);
+                    }
+                    let Expression::Variable(rname) = right.as_ref() else { return Ok(false) };
+                    match self.locations.get(rname) {
+                        Some(location) if location.class == ValueClass::General && location.register != result => {}
+                        _ => return Ok(false),
+                    }
+                }
+                Statement::Store { target, value } => {
+                    seen_store = true;
+                    if !matches!(value, Expression::Variable(name) if name == &local.name) {
+                        return Ok(false);
+                    }
+                    match target {
+                        Expression::Dereference { pointer } if base_is_general_param(self, pointer) => {}
+                        Expression::Member { base, .. } if base_is_general_param(self, base) => {}
+                        Expression::Index { base, index } if constant_value(index).is_some() && base_is_general_param(self, base) => {}
+                        // A direct global is fine when the value is kept in r3 (its ADDR16
+                        // address temp is r0, not r3). In the VOID case the value IS in r0, so
+                        // a global store could clobber it — restrict void to the targets above.
+                        Expression::Variable(name) if !is_void && self.globals.contains_key(name.as_str()) => {}
+                        _ => return Ok(false),
+                    }
+                }
                 _ => return Ok(false),
             }
         }
+        if !seen_store {
+            return Ok(false);
+        }
         // -- emit: the value once into its home (r3 when returned, else the scratch r0),
-        // each store from there, then the return (post-op applied in place) or `blr`.
-        let result = if is_void { GENERAL_SCRATCH } else { Eabi::general_result().number };
+        // the in-place reassignments, each store from there, then the return.
         self.evaluate_general(initializer, result)?;
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
@@ -507,7 +537,11 @@ impl Generator {
             Location { class: ValueClass::General, register: result, signed, width: 32, pointee: None, stride: None },
         );
         for statement in &function.statements {
-            self.emit_statement(statement)?;
+            match statement {
+                // A reassignment mutates t in place in its home register.
+                Statement::Assign { value, .. } => self.evaluate_general(value, result)?,
+                _ => self.emit_statement(statement)?,
+            }
         }
         // A bare `return t` is already in r3; a post-op computes it in place from r3.
         if return_post_op {
