@@ -11,6 +11,43 @@ impl Generator {
     /// or a nested trailing if (an `else if` chain). Each then-body is a single
     /// statement — multiple statements need the scheduler.
     pub(crate) fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement], nested: bool) -> Compilation<()> {
+        // The top-level condition always sets cr0 with a fresh compare.
+        self.emit_trailing_if_inner(condition, then_body, else_body, nested, false)
+    }
+
+    /// The `(BO, BI)` of the branch that skips a condition's guarded code when the
+    /// condition is false. Normally this emits the compare (`emit_condition_test`);
+    /// when `reuse_cr0`, the compare already sits in cr0 from a same-operand parent
+    /// test, so read the shared branch table instead of re-testing.
+    fn condition_branch(&mut self, condition: &Expression, reuse_cr0: bool) -> Compilation<(u8, u8)> {
+        if reuse_cr0 {
+            let Expression::Binary { operator, .. } = condition else {
+                return Err(Diagnostic::error("cr0 reuse expects a comparison (roadmap)"));
+            };
+            return false_branch_bo_bi(*operator)
+                .ok_or_else(|| Diagnostic::error("cr0 reuse expects a relational comparison (roadmap)"));
+        }
+        self.emit_condition_test(condition)
+    }
+
+    /// Whether a comparison's operands are both signed — the case in which
+    /// `emit_condition_test` emits a plain `cmpw`/`cmpwi` with no unsigned
+    /// equality-fold, so a second branch can ride the same cr0 via the raw table.
+    fn comparison_operands_signed(&self, condition: &Expression) -> bool {
+        matches!(condition, Expression::Binary { left, right, .. }
+            if self.signedness_of(left).unwrap_or(false) && self.signedness_of(right).unwrap_or(false))
+    }
+
+    /// The body of [`emit_trailing_if`], threading `reuse_cr0`: when an `else if`
+    /// compares the SAME operand against the SAME value as its parent, mwcc emits ONE
+    /// `cmpwi` and both branches read that cr0 (`ble`/`bge` off the same compare). The
+    /// recursion sets `reuse_cr0` on such a child so it branches off the inherited cr0
+    /// instead of re-testing. When it reaches the child's branch, control arrived via
+    /// the parent's taken forward branch, which does not disturb cr0 — so the reuse is
+    /// exact. Only a SIGNED comparison qualifies: an unsigned operand-vs-zero test folds
+    /// to an equality idiom in `emit_condition_test`, which the raw reuse table would not
+    /// match, so that case stays deferred.
+    fn emit_trailing_if_inner(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement], nested: bool, reuse_cr0: bool) -> Compilation<()> {
         // `if (cond) g = X; else g = Y;` — both arms a single store to the same GLOBAL — is
         // byte-identical to the select `g = cond ? X : Y;`: mwcc coalesces to ONE store,
         // speculating one value and conditionally overwriting it (constants branchless-ify;
@@ -51,7 +88,7 @@ impl Generator {
             && then_body.iter().all(|statement| matches!(statement,
                 Statement::Store { value: Expression::Variable(name), .. } if self.locations.contains_key(name.as_str())))
         {
-            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let (options, condition_bit) = self.condition_branch(condition, reuse_cr0)?;
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
             for statement in then_body {
                 self.emit_statement(statement)?;
@@ -63,21 +100,28 @@ impl Generator {
         }
         // A nested else-if whose comparison REUSES this comparison's condition register
         // (same operand against the same value — `if(c>0) … else if(c<0) …`, which mwcc
-        // lowers with ONE `cmpwi` shared by both branches, `ble`/`bge` off the same CR) is
-        // not reproduced yet; defer rather than emit a redundant second `cmpwi` (wrong bytes).
-        // A different operand or a different compared value re-tests normally and is unaffected.
+        // lowers with ONE `cmpwi` shared by both branches, `ble`/`bge` off the same CR).
+        // A SIGNED comparison reuses cr0 (the child branches off the inherited compare);
+        // an unsigned operand-vs-zero test folds to an equality idiom, which the raw reuse
+        // table would not match, so that stays deferred. A different operand or value
+        // re-tests normally and is unaffected.
+        let mut child_reuses_cr0 = false;
         if let [Statement::If { condition: else_condition, .. }] = else_body {
             if shares_condition_register(condition, else_condition) {
-                return Err(Diagnostic::error("consecutive else-if comparisons that reuse the condition register are not supported yet (roadmap)"));
+                if self.comparison_operands_signed(condition) {
+                    child_reuses_cr0 = true;
+                } else {
+                    return Err(Diagnostic::error("consecutive else-if comparisons that reuse the condition register are not supported yet (roadmap)"));
+                }
             }
         }
-        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let (options, condition_bit) = self.condition_branch(condition, reuse_cr0)?;
         if else_body.is_empty() {
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
             return self.emit_statement(&then_body[0]);
         }
         // An `else if` chain keeps the two-exit form: the then-arm returns (`blr`), then
-        // the nested trailing `if`.
+        // the nested trailing `if` — reusing this cr0 when the child shares the operand.
         if let [Statement::If { condition: else_condition, then_body: else_then, else_body: else_else }] = else_body {
             let branch_index = self.output.instructions.len();
             self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
@@ -87,7 +131,7 @@ impl Generator {
             if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
                 *target = label;
             }
-            return self.emit_trailing_if(else_condition, else_then, else_else, true);
+            return self.emit_trailing_if_inner(else_condition, else_then, else_else, true, child_reuses_cr0);
         }
         if else_body.len() != 1 {
             return Err(Diagnostic::error("a multi-statement else-body needs the scheduler (roadmap)"));

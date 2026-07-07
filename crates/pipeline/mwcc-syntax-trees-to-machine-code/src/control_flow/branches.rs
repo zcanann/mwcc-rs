@@ -823,16 +823,8 @@ impl Generator {
                         }
                     }
                 }
-                // Branch when the comparison is false. BO: 4 = if-false, 12 = if-true. BI: 0=LT,1=GT,2=EQ.
-                return Ok(match operator {
-                    BinaryOperator::Greater => (4, 1),      // ble
-                    BinaryOperator::Less => (4, 0),         // bge
-                    BinaryOperator::GreaterEqual => (12, 0), // blt
-                    BinaryOperator::LessEqual => (12, 1),    // bgt
-                    BinaryOperator::Equal => (4, 2),         // bne
-                    BinaryOperator::NotEqual => (12, 2),     // beq
-                    _ => unreachable!("is_comparison restricts the operator"),
-                });
+                // Branch when the comparison is false — the shared cr0 branch table.
+                return Ok(false_branch_bo_bi(*operator).expect("is_comparison restricts the operator"));
             }
         }
         // `if (x & mask)` tests the masked bits with a record-form `rlwinm.` that

@@ -969,6 +969,24 @@ pub(crate) fn is_comparison(operator: BinaryOperator) -> bool {
     )
 }
 
+/// The `(BO, BI)` of the conditional branch that skips a comparison's guarded code
+/// when the comparison is **false** — the branch that reads a `cmpw`/`cmpwi` result
+/// in cr0 (BO: 4 = if-false, 12 = if-true; BI: 0=LT, 1=GT, 2=EQ). `None` for a
+/// non-comparison operator. This is the single source of truth shared by the branch
+/// emitter (which sets cr0 with a fresh compare) and any handler that reuses an
+/// already-set cr0 for a second branch on the same operands (the else-if ladder).
+pub(crate) fn false_branch_bo_bi(operator: BinaryOperator) -> Option<(u8, u8)> {
+    Some(match operator {
+        BinaryOperator::Greater => (4, 1),       // ble
+        BinaryOperator::Less => (4, 0),          // bge
+        BinaryOperator::GreaterEqual => (12, 0), // blt
+        BinaryOperator::LessEqual => (12, 1),    // bgt
+        BinaryOperator::Equal => (4, 2),         // bne
+        BinaryOperator::NotEqual => (12, 2),     // beq
+        _ => return None,
+    })
+}
+
 /// If `expression` is a multiplication, return its two operands.
 pub(crate) fn as_multiplication(expression: &Expression) -> Option<(&Expression, &Expression)> {
     match expression {
