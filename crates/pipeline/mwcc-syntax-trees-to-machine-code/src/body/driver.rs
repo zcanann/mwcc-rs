@@ -1229,6 +1229,11 @@ impl Generator {
             if self.try_callee_saved_conditional_call(function)? {
                 return Ok(());
             }
+            // The void sibling: `if (cond) { calls } *p = <const>;` — the store's base
+            // parameter is live across the conditional call. See callee_saved/conditional.rs.
+            if self.try_callee_saved_conditional_call_then_store(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error("a value live across a call needs the callee-saved register allocator (roadmap)"));
             }

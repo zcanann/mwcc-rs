@@ -315,4 +315,101 @@ impl Generator {
         Ok(true)
     }
 
+    /// The VOID sibling of [`try_callee_saved_conditional_call`]: `void f(…, T* p, …)
+    /// { if (cond) { calls } *p = <const>; }`. The trailing store's base parameter is
+    /// live across the conditional call, so it parks in a callee-saved register (r31)
+    /// exactly like the returned parameter of the return form; the store then runs from
+    /// that register at the join, before the epilogue. mwcc: `stwu; mflr; cmpwi cond;
+    /// stw r0,20; stw r31,12; mr r31,p; beq skip; bl g; skip: li r0,C; stw r0,0(r31);
+    /// lwz r0,20; lwz r31,12; mtlr; addi; blr`. Scoped to ONE saved parameter and ONE
+    /// constant store; the value is constant so only the store's base is live.
+    pub(crate) fn try_callee_saved_conditional_call_then_store(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void {
+            return Ok(false);
+        }
+        // Body = `if (cond) { calls } <trailing store>`: the if with an empty else,
+        // followed by exactly one store.
+        let [Statement::If { condition, then_body, else_body }, Statement::Store { target, value }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() || constant_value(value).is_none() {
+            return Ok(false);
+        }
+        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) = self.parse_hoisted_if_condition(function, condition) else {
+            return Ok(false);
+        };
+        // then-body = plain (void-result) calls only.
+        if then_body.is_empty()
+            || !then_body.iter().all(|statement| matches!(statement,
+                Statement::Expression(Expression::Call { .. }) | Statement::Expression(Expression::CallThrough { .. })))
+        {
+            return Ok(false);
+        }
+        // Exactly one general parameter, referenced by the store, live across the call
+        // (and not the condition operand): it parks in the single callee-saved home.
+        let saved: Vec<(String, u8)> = function
+            .parameters
+            .iter()
+            .filter_map(|parameter| {
+                if expression_reads_name(target, &parameter.name) || expression_reads_name(value, &parameter.name) {
+                    self.locations
+                        .get(&parameter.name)
+                        .filter(|location| location.class == ValueClass::General)
+                        .map(|location| (parameter.name.clone(), location.register))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if saved.len() != 1 || saved[0].0 == *cond_name {
+            return Ok(false);
+        }
+        // A call passing the saved parameter would keep it in its incoming register; defer.
+        if then_body.iter().any(|statement| matches!(statement,
+            Statement::Expression(Expression::Call { arguments, .. }) if arguments.iter().any(|argument| expression_reads_name(argument, &saved[0].0))))
+        {
+            return Ok(false);
+        }
+        let Some(cond_location) = self.locations.get(cond_name) else { return Ok(false) };
+        if cond_location.class != ValueClass::General {
+            return Ok(false);
+        }
+        let cond_register = cond_location.register;
+
+        // -- emit -- (mirrors try_callee_saved_conditional_call, a trailing store for the return)
+        self.non_leaf = true;
+        self.frame_size = 16; // 8 (LR area) + 4 (one saved GPR), padded to 16
+        let home = self.fresh_virtual_general();
+        self.callee_saved = vec![home];
+        let mut prologue = mwcc_vreg::FramePlan::sized_for(vec![home]).prologue_interleaved(&[saved[0].1]);
+        // mwcc fills the ready slot after `mflr` with the if-condition test.
+        prologue.insert(2, Instruction::CompareWordImmediate { a: cond_register, immediate: cmp_constant });
+        self.output.instructions.extend(prologue);
+        // The saved parameter now lives in its callee-saved home.
+        if let Some(location) = self.locations.get_mut(&saved[0].0) {
+            location.register = home;
+        }
+        // Skip past the conditional call when the condition is false.
+        let skip = self.fresh_label();
+        self.emit_branch_conditional_to(skip_bo, skip_bi, skip);
+        for statement in then_body {
+            self.emit_statement(statement)?;
+        }
+        self.bind_label(skip);
+        // The trailing store (from the saved register), then the epilogue in mwcc's order:
+        // the saved LR reloads FIRST (it can only sit after the merge), then the saved GPR,
+        // then `mtlr`/`addi`/`blr`. Hand-emitted — the LR-reload hoist can't cross the branch.
+        self.emit_statement(&function.statements[1])?;
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 2;
+        Ok(true)
+    }
+
 }
