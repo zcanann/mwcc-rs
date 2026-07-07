@@ -989,12 +989,18 @@ impl Generator {
         // the shared epilogue.
         if let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() {
             if function_makes_call(function)
-                && function.return_type == Type::Void
                 && function.guards.is_empty()
                 && !then_body.is_empty()
                 && !else_body.is_empty()
                 && then_body.iter().chain(else_body).all(|statement| matches!(statement, Statement::Store { .. } | Statement::Expression(_) | Statement::Assign { .. }))
                 && !reads_value_across_call(function)
+                // Void, or an int/unsigned function returning a small CONSTANT — materialized at
+                // the join before the epilogue (`join: li r3,C; <epilogue>`); the LR reload hoists
+                // between the last call and it, as mwcc does. A non-constant return re-reads a value
+                // across the call and defers.
+                && (function.return_type == Type::Void
+                    || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
+                        && function.return_expression.as_ref().and_then(|expression| constant_value(expression)).is_some_and(|value| i16::try_from(value).is_ok())))
             {
                 self.non_leaf = true;
                 self.frame_size = 16;
@@ -1079,7 +1085,21 @@ impl Generator {
                 if let Instruction::Branch { target } = &mut self.output.instructions[branch_to_join] {
                     *target = join_label;
                 }
-                self.emit_epilogue_and_return();
+                // A non-void function materializes its constant return BETWEEN the LR reload and
+                // the mtlr (mwcc: `join: lwz r0,20; li r3,C; mtlr; addi; blr`). The reload-hoist
+                // pass bails on the join's forward branches, so emit the epilogue explicitly here
+                // rather than via emit_epilogue_and_return (which would place the return value
+                // BEFORE the reload). This handler builds a plain 16-byte frame with no callee-
+                // saved GPRs, so the epilogue is exactly reload-LR / mtlr / teardown.
+                if let Some(constant) = function.return_expression.as_ref().filter(|_| function.return_type != Type::Void).and_then(|expression| constant_value(expression)) {
+                    self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+                    self.load_integer_constant(mwcc_target::Eabi::general_result().number, constant);
+                    self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+                    self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+                    self.output.instructions.push(Instruction::BranchToLinkRegister);
+                } else {
+                    self.emit_epilogue_and_return();
+                }
                 return Ok(());
             }
         }
