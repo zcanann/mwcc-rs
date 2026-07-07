@@ -699,6 +699,12 @@ impl Generator {
         if self.try_live_across_branches(function)? {
             return Ok(());
         }
+        // `int t = <single-op>; *p = t; return t;` — a computed local kept in r3 and
+        // stored from there, rather than inlined (recomputed) by value_tracking. See
+        // body/store_fill.rs.
+        if self.try_computed_local_stored_returned(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }

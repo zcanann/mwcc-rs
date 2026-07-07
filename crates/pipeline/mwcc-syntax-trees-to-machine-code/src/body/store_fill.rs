@@ -415,6 +415,65 @@ impl Generator {
     /// multiply, divide), whose latency the fill orders around. Excluded (need more than a
     /// register-shuffle): modulo and comparisons (multi-instruction idioms), a nested
     /// value (needs an intermediate), and a memory read (needs load hoisting).
+    /// `int t = <single-op value>; *p = t; [*q = t; …] return t;` — a computed local
+    /// KEPT in the result register (r3, because it is returned), stored to one or more
+    /// pointers from that register, then returned: `addi r3,r3,1; stw r3,0(r4);
+    /// [stw r3,0(r5);] blr`. This is the register-kept slice of value-tracking-with-
+    /// stores — the general value_tracking pass INLINES a local's value, which would
+    /// recompute t separately for the store and the return; mwcc keeps it in one
+    /// register, so we compute it once into r3 and store from there. The store targets
+    /// are bare pointer derefs of parameters (their address never touches r3), so t
+    /// survives every store to the return. Single int local, single-op initializer.
+    pub(crate) fn try_computed_local_stored_returned(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else { return Ok(false) };
+        if !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(initializer) = local.initializer.as_ref() else { return Ok(false) };
+        if !self.is_single_op_register_value(initializer) {
+            return Ok(false);
+        }
+        // The return is exactly the kept local.
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+            return Ok(false);
+        }
+        // Every statement is `*p = t`: a bare deref of a general parameter storing the
+        // local. The address computation never touches r3, so t survives to the return.
+        if function.statements.is_empty() {
+            return Ok(false);
+        }
+        for statement in &function.statements {
+            let Statement::Store { target, value } = statement else { return Ok(false) };
+            if !matches!(value, Expression::Variable(name) if name == &local.name) {
+                return Ok(false);
+            }
+            let Expression::Dereference { pointer } = target else { return Ok(false) };
+            let Some(base) = leaf_name(pointer) else { return Ok(false) };
+            if self.locations.get(base).map(|location| location.class) != Some(ValueClass::General) {
+                return Ok(false);
+            }
+        }
+        // -- emit: the value once into r3, then each store from r3, then return.
+        let result = Eabi::general_result().number;
+        self.evaluate_general(initializer, result)?;
+        let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            local.name.clone(),
+            Location { class: ValueClass::General, register: result, signed, width: 32, pointee: None, stride: None },
+        );
+        for statement in &function.statements {
+            self.emit_statement(statement)?;
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     pub(crate) fn is_single_op_register_value(&self, value: &Expression) -> bool {
         let is_register_leaf = |operand: &Expression| match operand {
             // A NARROW (char/short) register is not a single-op leaf: it needs a
