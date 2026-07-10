@@ -94,17 +94,38 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // The return base must be a CHAR pointer (stride 1): a wider pointee scales
-        // the product by its stride (`int* + g*rs` multiplies by 4), which this
-        // unscaled emission would MISCOMPILE — measured DIFF on int*, so gate hard.
-        let Some(&crate::generator::Location { class: ValueClass::General, register: base, pointee: Some(base_pointee), .. }) =
+        // The return base: a CHAR-pointer parameter (stride 1 — a wider pointee
+        // scales the product ×stride, which the unscaled emission would MISCOMPILE;
+        // measured DIFF on int*), or a CHAR-pointer MEMBER `list->area` (the
+        // __va_arg reg_save_area form) — which flips the measured schedule: the
+        // store issues FIRST with its value in the SCRATCH (the multiply still needs
+        // its operand), the product reuses the freed scratch, and the member load
+        // reclaims the dying struct-pointer register:
+        //   add r0,g,inc; stb r0,0(reg); mullw r0,g,rs; lwz r3,off(list); add r3,r3,r0
+        enum ReturnBase {
+            Param(u8),
+            Member { base: u8, offset: u16 },
+        }
+        let return_base = if let Some(&crate::generator::Location { class: ValueClass::General, register, pointee: Some(pointee), .. }) =
             leaf_name(return_left).and_then(|name| self.locations.get(name))
-        else {
+        {
+            if !matches!(pointee, mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar) {
+                return Ok(false);
+            }
+            ReturnBase::Param(register)
+        } else if let Expression::Member { base: member_base, offset, member_type, index_stride: None } = return_left.as_ref() {
+            if !matches!(member_type, Type::Pointer(mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar)) {
+                return Ok(false);
+            }
+            let Some(&crate::generator::Location { class: ValueClass::General, register, .. }) =
+                leaf_name(member_base).and_then(|name| self.locations.get(name))
+            else {
+                return Ok(false);
+            };
+            ReturnBase::Member { base: register, offset: *offset }
+        } else {
             return Ok(false);
         };
-        if !matches!(base_pointee, mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar) {
-            return Ok(false);
-        }
         let Expression::Binary { operator: BinaryOperator::Multiply, left: mul_left, right: mul_right } = return_right.as_ref() else {
             return Ok(false);
         };
@@ -145,12 +166,33 @@ impl Generator {
             }
             _ => return Ok(false),
         };
-        // -- emit (measured order) --
+        // -- emit (measured orders — they differ by base kind) --
         let result = Eabi::general_result().number;
-        self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: product_a, b: product_b });
-        self.output.instructions.push(Instruction::Add { d: value_a, a: value_a, b: value_b });
-        self.output.instructions.push(store_instruction);
-        self.output.instructions.push(Instruction::Add { d: result, a: base, b: GENERAL_SCRATCH });
+        match return_base {
+            ReturnBase::Param(base) => {
+                // The multiply consumes its operand FIRST, so the store value may
+                // compute in place on that operand's register.
+                self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: product_a, b: product_b });
+                self.output.instructions.push(Instruction::Add { d: value_a, a: value_a, b: value_b });
+                self.output.instructions.push(store_instruction);
+                self.output.instructions.push(Instruction::Add { d: result, a: base, b: GENERAL_SCRATCH });
+            }
+            ReturnBase::Member { base, offset } => {
+                // The store issues first with its value in the SCRATCH (the multiply
+                // still needs its operand), the product reuses the freed scratch, and
+                // the member load reclaims the dying struct-pointer register.
+                self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: value_a, b: value_b });
+                let scratch_store = match store_instruction {
+                    Instruction::StoreByte { a, offset, .. } => Instruction::StoreByte { s: GENERAL_SCRATCH, a, offset },
+                    Instruction::StoreWord { a, offset, .. } => Instruction::StoreWord { s: GENERAL_SCRATCH, a, offset },
+                    other => other,
+                };
+                self.output.instructions.push(scratch_store);
+                self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: product_a, b: product_b });
+                self.output.instructions.push(Instruction::LoadWord { d: result, a: base, offset: offset as i16 });
+                self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH });
+            }
+        }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }

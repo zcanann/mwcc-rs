@@ -7,3 +7,9 @@
 // (int* would multiply by 4), which the unscaled emission would MISCOMPILE — measured and gated.
 // (fire 669)
 char* spr(char* base, int g, int rs, char* reg, int inc) { *reg = (char)(g + inc); return base + g * rs; }
+// MEMBER-base variant (fire 670): `return list->area + g * rs;` FLIPS the schedule — the store issues
+// FIRST with its value in the SCRATCH (the multiply still needs its operand), the product reuses the
+// freed scratch, and the member load reclaims the dying struct-pointer register:
+//   add r0,g,inc; stb r0,0(reg); mullw r0,g,rs; lwz r3,4(list); add r3,r3,r0; blr
+typedef struct VL2 { int gpr; char* area; } VL2;
+char* spr_member(VL2* list, int g, int rs, char* reg, int inc) { *reg = (char)(g + inc); return list->area + g * rs; }
