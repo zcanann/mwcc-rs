@@ -72,6 +72,89 @@ impl Generator {
     /// `<test c>; li result,INIT; b<!c>lr; li result,NEW; blr` (the false path returns the
     /// initializer already in the result; the true path falls through to the new value). Variable
     /// arms use a different move/staging form and are deferred here.
+    /// A STORE-THROUGH-POINTER beside a PRODUCT-ADDRESS return — the __va_arg
+    /// diamond-arm cluster reduced: `*reg = (char)(g + inc); return base + g * rs;`.
+    /// mwcc hoists the long-latency multiply FIRST (into the scratch), computes the
+    /// store value IN PLACE on its first operand's register, stores, then the
+    /// return add (measured):
+    ///   mullw r0,g,rs; add g,g,inc; stb g,0(reg); add r3,base,r0; blr
+    pub(crate) fn try_store_product_return(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || !function.locals.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Pointer(_)) {
+            return Ok(false);
+        }
+        // One store statement; the return is `base + a * c` over general params.
+        let [Statement::Store { target, value }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        let Some(Expression::Binary { operator: BinaryOperator::Add, left: return_left, right: return_right }) =
+            function.return_expression.as_ref()
+        else {
+            return Ok(false);
+        };
+        // The return base must be a CHAR pointer (stride 1): a wider pointee scales
+        // the product by its stride (`int* + g*rs` multiplies by 4), which this
+        // unscaled emission would MISCOMPILE — measured DIFF on int*, so gate hard.
+        let Some(&crate::generator::Location { class: ValueClass::General, register: base, pointee: Some(base_pointee), .. }) =
+            leaf_name(return_left).and_then(|name| self.locations.get(name))
+        else {
+            return Ok(false);
+        };
+        if !matches!(base_pointee, mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar) {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Multiply, left: mul_left, right: mul_right } = return_right.as_ref() else {
+            return Ok(false);
+        };
+        let (Some(product_a), Some(product_b)) = (
+            leaf_name(mul_left).and_then(|name| self.lookup_general(name)),
+            leaf_name(mul_right).and_then(|name| self.lookup_general(name)),
+        ) else {
+            return Ok(false);
+        };
+        // The store: `*p = (cast)(x + y)` — a deref of a general param, the value an
+        // add of two general params (any narrowing cast peels; the store width comes
+        // from the pointee).
+        let Expression::Dereference { pointer } = target else { return Ok(false) };
+        let Some(&crate::generator::Location { class: ValueClass::General, register: store_base, pointee: Some(pointee), .. }) =
+            leaf_name(pointer).and_then(|name| self.locations.get(name))
+        else {
+            return Ok(false);
+        };
+        let mut store_value = value;
+        while let Expression::Cast { operand, .. } = store_value {
+            store_value = operand.as_ref();
+        }
+        let Expression::Binary { operator: BinaryOperator::Add, left: value_left, right: value_right } = store_value else {
+            return Ok(false);
+        };
+        let (Some(value_a), Some(value_b)) = (
+            leaf_name(value_left).and_then(|name| self.lookup_general(name)),
+            leaf_name(value_right).and_then(|name| self.lookup_general(name)),
+        ) else {
+            return Ok(false);
+        };
+        let store_instruction = match pointee {
+            mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar => {
+                Instruction::StoreByte { s: value_a, a: store_base, offset: 0 }
+            }
+            mwcc_syntax_trees::Pointee::Int | mwcc_syntax_trees::Pointee::UnsignedInt => {
+                Instruction::StoreWord { s: value_a, a: store_base, offset: 0 }
+            }
+            _ => return Ok(false),
+        };
+        // -- emit (measured order) --
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: product_a, b: product_b });
+        self.output.instructions.push(Instruction::Add { d: value_a, a: value_a, b: value_b });
+        self.output.instructions.push(store_instruction);
+        self.output.instructions.push(Instruction::Add { d: result, a: base, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// The CONDITIONAL-DEREF TAIL — __va_arg's ending shape: a pointer parameter
     /// reassigned from a dereference of ITSELF under a `t == 0` narrow guard, then
     /// returned. mwcc uses the RECORD-form width test (no compare) and loads IN
