@@ -300,9 +300,10 @@ impl Generator {
         if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
-        // TWO or THREE const-init int locals (extensible toward __va_arg's eight).
+        // TWO to FOUR const-init int locals (extensible toward __va_arg's eight,
+        // one measured width at a time).
         let locals = function.locals.as_slice();
-        if !(2..=3).contains(&locals.len()) {
+        if !(2..=4).contains(&locals.len()) {
             return Ok(false);
         }
         let init_values: Option<Vec<i16>> = locals
@@ -448,12 +449,18 @@ impl Generator {
             // Each if's join advances mwcc's anonymous-@N counter by 2.
             self.output.anonymous_label_bump += 2;
         }
-        // The join sum: two locals add directly; three reassociate a+(b+c)
-        // (measured: `add r3,r5,r6; add r3,r4,r3`).
+        // The join sum reassociates a+(rest), the inner sum building left-to-right —
+        // three: `add r3,h1,h2; add r3,h0,r3`; four routes the innermost pair through
+        // the scratch first: `add r0,h1,h2; add r3,r0,h3; add r3,h0,r3` (measured).
         match homes.len() {
             2 => self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: homes[1] }),
-            _ => {
+            3 => {
                 self.output.instructions.push(Instruction::Add { d: result, a: homes[1], b: homes[2] });
+                self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: result });
+            }
+            _ => {
+                self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: homes[1], b: homes[2] });
+                self.output.instructions.push(Instruction::Add { d: result, a: GENERAL_SCRATCH, b: homes[3] });
                 self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: result });
             }
         }

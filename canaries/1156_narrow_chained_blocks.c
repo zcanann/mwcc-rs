@@ -20,3 +20,6 @@ int ncb_fold2(unsigned char t) { int a = 8; int b = 4; if (t == 2) { a = a + 5; 
 // reassociates a+(b+c): `add r3,r5,r6; add r3,r4,r3`. Arms reassign any subset across any block count.
 int ncb3(unsigned char t)      { int a = 8; int b = 4; int c = 1; if (t == 2) { a = 7; } if (t == 3) { b = 9; c = 2; } return a + b + c; }
 int ncb3_mix(unsigned char t)  { int a = 8; int b = 4; int c = 1; if (t > 1) { a = 7; c = 3; } if (t < 5) { b = 9; } if (t == 3) { c = 2; } return a + b + c; }
+// FOUR locals (fire 665): homes r4-r7 sequential; the join reassociates a+((b+c)+d) with the innermost
+// pair through the SCRATCH first: `add r0,r5,r6; add r3,r0,r7; add r3,r4,r3` (measured).
+int ncb4(unsigned char t) { int a = 8; int b = 4; int c = 1; int d = 6; if (t == 2) { a = 7; d = 5; } if (t == 3) { b = 9; c = 2; } return a + b + c + d; }
