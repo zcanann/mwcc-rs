@@ -72,6 +72,104 @@ impl Generator {
     /// `<test c>; li result,INIT; b<!c>lr; li result,NEW; blr` (the false path returns the
     /// initializer already in the result; the true path falls through to the new value). Variable
     /// arms use a different move/staging form and are deferred here.
+    /// A MEMBER-LOAD-init local + a const-init local under one narrow guard that
+    /// reassigns only the second — the __va_arg mixed-init interleave slice
+    /// (measured): the LOAD issues in the width-op -> compare latency slot, its
+    /// destination RECLAIMING the dying condition register r3 (the in-place add's
+    /// home); the const init lands in the freed scratch after the compare; a signed-
+    /// char pointee's `extsb` is SPLIT from its `lbz` and schedules after that init:
+    ///   clrlwi r0,t,24; lbz r3,0(p); cmplwi r0,C; li r0,i2; extsb r3,r3; b<!c> L;
+    ///   li r0,n2; L: add r3,r3,r0; blr           (lwz and no extend for an int*)
+    pub(crate) fn try_narrow_interleave_load_first(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let [first, second] = function.locals.as_slice() else { return Ok(false) };
+        if first.array_length.is_some() || second.array_length.is_some() {
+            return Ok(false);
+        }
+        // First local: `*p` of a general pointer PARAMETER — a signed-char (lbz +
+        // split extsb) or word (lwz) pointee. Second: an i16 constant.
+        let Some(Expression::Dereference { pointer }) = first.initializer.as_ref() else { return Ok(false) };
+        let Some(pointer_name) = leaf_name(pointer) else { return Ok(false) };
+        let Some(&crate::generator::Location { class: ValueClass::General, register: base, pointee: Some(pointee), .. }) =
+            self.locations.get(pointer_name)
+        else {
+            return Ok(false);
+        };
+        let (signed_char, word) = (
+            pointee == mwcc_syntax_trees::Pointee::Char,
+            matches!(pointee, mwcc_syntax_trees::Pointee::Int | mwcc_syntax_trees::Pointee::UnsignedInt),
+        );
+        if !signed_char && !word {
+            return Ok(false);
+        }
+        let Some(second_init) = second.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        // One narrow-guarded block reassigning ONLY the second local to a constant.
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name, value }] = then_body.as_slice() else { return Ok(false) };
+        if name != &second.name {
+            return Ok(false);
+        }
+        let Some(second_new) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
+            return Ok(false);
+        };
+        // The return is `first + second`.
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Binary { operator: BinaryOperator::Add, left, right })
+            if matches!(left.as_ref(), Expression::Variable(name) if name == &first.name)
+                && matches!(right.as_ref(), Expression::Variable(name) if name == &second.name))
+        {
+            return Ok(false);
+        }
+        // The condition: an UNSIGNED narrow leaf against a u16 constant, whose
+        // register the load's destination reclaims.
+        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        let Some(constant) = constant_value(right).and_then(|value| u16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        let Some((register, width)) = leaf_name(left)
+            .and_then(|name| self.locations.get(name))
+            .filter(|location| location.class == ValueClass::General && !location.signed && location.width < 32)
+            .map(|location| (location.register, location.width))
+        else {
+            return Ok(false);
+        };
+        let Some((options, condition_bit)) = false_branch_bo_bi(*operator) else {
+            return Ok(false);
+        };
+        // -- emit (measured) --
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+        self.output.instructions.push(if signed_char {
+            Instruction::LoadByteZero { d: result, a: base, offset: 0 }
+        } else {
+            Instruction::LoadWord { d: result, a: base, offset: 0 }
+        });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_init));
+        if signed_char {
+            self.output.instructions.push(Instruction::ExtendSignByte { a: result, s: result });
+        }
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_new));
+        let join = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = join;
+        }
+        self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += 2;
+        Ok(true)
+    }
+
     /// TWO const-init locals mutated by a CHAIN of narrow-guarded subset blocks
     /// (the __va_arg fall-through form): `int a=8; int b=4; if(t==2){a=7;}
     /// if(t==3){b=9;} return a+b;`. The condition parameter stays LIVE across the
