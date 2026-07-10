@@ -762,10 +762,14 @@ impl Generator {
                 return Err(Diagnostic::error("a narrow condition over an initialized local needs the init-interleave schedule (roadmap)"));
             };
             self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
-            self.load_integer_constant(result, init_value);
+            // The local's home rides a VIRTUAL with a consumer-tree preference for the
+            // result register — the first shape routed through the general allocation
+            // machinery (Phase D policy #1 end-to-end); LinearScan resolves it to r3.
+            let home = self.fresh_virtual_general_preferring(result);
+            self.load_integer_constant(home, init_value);
             self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
-            self.load_integer_constant(result, new_value);
+            self.load_integer_constant(home, new_value);
             self.output.instructions.push(Instruction::BranchToLinkRegister);
             return Ok(true);
         }

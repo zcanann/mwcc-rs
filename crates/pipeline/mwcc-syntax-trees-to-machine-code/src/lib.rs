@@ -170,7 +170,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         non_leaf: false,
         callee_saved_float: 0,
         next_virtual: 0,
-        register_avoid: HashMap::new(),
+        register_avoid: HashMap::new(), register_prefer: HashMap::new(),
         stored_globals: HashMap::new(),
         const_address_bases: HashSet::new(),
         frame_slots: HashMap::new(),
@@ -295,10 +295,14 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
     if liveness.intervals.is_empty() {
         return Ok(()); // no virtuals — selection chose physical registers directly
     }
-    // Apply selection's placement hints: registers a given virtual must avoid.
+    // Apply selection's placement hints: registers a given virtual must avoid,
+    // and the consumer-tree preference it should take when free (policy #1).
     for interval in &mut liveness.intervals {
         if let Some(avoid) = generator.register_avoid.get(&interval.vreg.id) {
             interval.avoid = avoid.clone();
+        }
+        if let Some(&prefer) = generator.register_prefer.get(&interval.vreg.id) {
+            interval.prefer = Some(prefer);
         }
     }
     let allocation = mwcc_vreg::Allocator::allocate(

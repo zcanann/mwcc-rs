@@ -151,6 +151,9 @@ pub(crate) struct Generator {
     /// avoid the destination") so the allocation pass reproduces mwcc's coalescing
     /// of result-path temporaries onto the destination register.
     pub(crate) register_avoid: HashMap<u32, Vec<u8>>,
+    /// Consumer-tree PREFERENCES: virtual id -> the register its consumer wants
+    /// (Phase D policy #1); honored by LinearScan when free, pool order otherwise.
+    pub(crate) register_prefer: HashMap<u32, u8>,
     /// Return type of each callable name (prototypes + definitions), so a call's
     /// result type is known — e.g. `(float)cos(x)` rounds a double with `frsp`.
     pub(crate) call_return_types: HashMap<String, Type>,
@@ -290,6 +293,16 @@ impl Generator {
         let register = Reg::float(self.next_virtual);
         self.next_virtual += 1;
         register.to_field()
+    }
+
+    /// A fresh general virtual register carrying a consumer-tree PREFERENCE — the
+    /// register the value's consumer wants it in (taken when free at allocation).
+    pub(crate) fn fresh_virtual_general_preferring(&mut self, register: u8) -> u8 {
+        let id = self.next_virtual;
+        self.register_prefer.insert(id, register);
+        let virtual_register = Reg::general(id);
+        self.next_virtual += 1;
+        virtual_register.to_field()
     }
 
     /// A fresh general virtual register that the allocator must not place in any
