@@ -294,6 +294,8 @@ mod mfp_minus_dec;
 mod mfp_num2dec_i;
 mod mfp_num2dec;
 mod mfp_dec2num;
+mod sc_stringread;
+mod sc_stringread_ac;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -436,6 +438,8 @@ impl Generator {
             || self.try_mfp_num2dec_i(function)?
             || self.try_mfp_num2dec(function)?
             || self.try_mfp_dec2num(function)?
+            || self.try_sc_stringread(function)?
+            || self.try_sc_stringread_ac(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
