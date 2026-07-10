@@ -140,7 +140,35 @@ impl Generator {
             _ => None,
         };
         if condition_leaf.is_some_and(|leaf| self.is_narrow_leaf(leaf)) {
-            return Err(Diagnostic::error("a narrow condition over an initialized local needs the init-interleave schedule (roadmap)"));
+            // The MODELED slice of the interleave (measured — __va_arg's type-test
+            // shape): an UNSIGNED narrow leaf compared against a small constant, with
+            // both arms constant. mwcc widens into the scratch, fills the width-op ->
+            // compare latency gap with the local's initializer (loaded into the
+            // RESULT, since the local is returned bare), then the LOGICAL compare and
+            // the conditional return: `clrlwi r0,t,24; li r3,init; cmplwi r0,C;
+            // b<!c>lr; li r3,new; blr`.
+            let interleave = (|| {
+                let (init_value, new_value) = (init_const?, new_const?);
+                let Expression::Binary { operator, left, right } = condition else { return None };
+                let constant = constant_value(right).and_then(|value| u16::try_from(value).ok())?;
+                let name = leaf_name(left)?;
+                let location = self.locations.get(name)?;
+                if location.class != ValueClass::General || location.signed || location.width >= 32 {
+                    return None;
+                }
+                let (options, condition_bit) = false_branch_bo_bi(*operator)?;
+                Some((location.register, location.width, constant, options, condition_bit, init_value, new_value))
+            })();
+            let Some((register, width, constant, options, condition_bit, init_value, new_value)) = interleave else {
+                return Err(Diagnostic::error("a narrow condition over an initialized local needs the init-interleave schedule (roadmap)"));
+            };
+            self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+            self.load_integer_constant(result, init_value);
+            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+            self.load_integer_constant(result, new_value);
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            return Ok(true);
         }
         // - The MOVE form with a CONSTANT init (staging in the scratch) when the
         //   condition operand OCCUPIES the result register and DIES at the compare
