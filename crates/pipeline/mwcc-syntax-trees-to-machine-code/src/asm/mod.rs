@@ -218,6 +218,8 @@ fn is_terminator(instruction: &Instruction) -> bool {
         Instruction::BranchToLinkRegister
             | Instruction::Branch { .. }
             | Instruction::BranchConditionalToLinkRegister { .. }
+            // `mtctr r12; bctr` — the ptmf tail dispatch ends the function.
+            | Instruction::BranchToCountRegister
     )
 }
 

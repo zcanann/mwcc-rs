@@ -259,6 +259,32 @@ impl Parser {
                 if let Some(register) = parse_asm_register(&word) {
                     return Ok(register);
                 }
+                // `Tag.field(rN)` — a struct-TAG-qualified field offset as a
+                // displacement memory operand (`lwz r5, PTMF.this_delta(r3)` ->
+                // `lwz r5, 0(r3)`, the field's offset off the base register).
+                if self.structs.contains_key(word.as_str()) && *self.peek() == Token::Dot {
+                    self.advance();
+                    let field = match self.advance() {
+                        Token::Identifier(field) => field,
+                        other => return Err(Diagnostic::error(format!("expected a field name after '{word}.', found {other}"))),
+                    };
+                    let offset = self
+                        .structs
+                        .get(&word)
+                        .and_then(|layout| layout.fields.get(&field))
+                        .map(|member| member.offset)
+                        .ok_or_else(|| Diagnostic::error(format!("no field '{field}' in struct '{word}'")))?;
+                    self.expect(Token::ParenOpen)?;
+                    let base = match self.advance() {
+                        Token::Identifier(register) => match parse_asm_register(&register) {
+                            Some(AsmOperand::Gpr(index)) => index,
+                            _ => return Err(Diagnostic::error(format!("asm memory operand base '{register}' must be a general-purpose register"))),
+                        },
+                        other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
+                    };
+                    self.expect(Token::ParenClose)?;
+                    return Ok(AsmOperand::Memory { displacement: offset as i16, base });
+                }
                 if let Some((_, gpr, tag)) = self.asm_parameters.iter().find(|(name, _, _)| *name == word).cloned() {
                     if *self.peek() == Token::Arrow {
                         self.advance();

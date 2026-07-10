@@ -233,15 +233,20 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
         // optional leading `crN` selects the field. Written directly by mwcc's asm
         // (distinct from the branch-to-`blr` peephole).
         "beqlr" | "bnelr" | "bltlr" | "bgelr" | "bgtlr" | "blelr" => {
-            if hint != BranchHint::None {
-                return Err(Diagnostic::error("inline-asm branch-to-link with a prediction hint is not supported yet (roadmap)"));
-            }
+            // A prediction hint on a branch-to-link is DROPPED by mwcc (measured:
+            // `bnelr-` assembles to the plain 4c 82 00 20, y = 0), so it is accepted
+            // and ignored — unlike a displacement branch, where the y bit is real.
+            let _ = hint;
             let base = &mnemonic[..mnemonic.len() - 2]; // strip the `lr`
             let (base_options, base_bit) = conditional_branch_fields(base);
             let (crf, operands) = take_cr_field(operands);
             expect_operand_count(mnemonic, operands, 0)?;
             Instruction::BranchConditionalToLinkRegister { options: base_options, condition_bit: crf * 4 + base_bit }
         }
+        // Indexed word load (`lwzx rD, rA, rB` — the ptmf vtable dispatch).
+        "lwzx" => { let [d, a, b] = gprs(mnemonic, operands)?; Instruction::LoadWordIndexed { d, a, b } }
+        // Branch to the count register (`mtctr r12; bctr` — the ptmf tail dispatch).
+        "bctr" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::BranchToCountRegister }
         // Unconditional branch to a label.
         "b" => Instruction::Branch { target: label_target(mnemonic, operands, labels)? },
         // Conditional branches; an optional leading `crN` selects the condition

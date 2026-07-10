@@ -415,9 +415,28 @@ impl Parser {
                     offset = unit_offset + (bits_used as u16).div_ceil(8);
                 }
                 match (tag, member_name) {
-                    // A named union *value* member (`union {…} u;`) needs union-value
-                    // access — defer rather than mis-place it.
-                    (_, Some(_)) => return Err(Diagnostic::error("a named union member is not supported yet (roadmap)")),
+                    // A named WORD-SIZED union member (`union {…} f_data;` — the ptmf
+                    // function-pointer payload): lay it out as a field at the aligned
+                    // offset occupying the union's size. A 4-byte union reads/writes as
+                    // its word representation (a union value copy is a word copy), so it
+                    // registers as UnsignedInt; member-of-member access (`.f_addr`) does
+                    // not resolve through it and defers. Other sizes keep deferring.
+                    (_, Some(name)) => {
+                        if inner_size != 4 {
+                            return Err(Diagnostic::error("a named union member of this size is not supported yet (roadmap)"));
+                        }
+                        alignment_max = alignment_max.max(inner_align);
+                        offset = offset.div_ceil(inner_align) * inner_align;
+                        layout.fields.insert(name, StructField {
+                            member_type: Type::UnsignedInt,
+                            offset,
+                            struct_tag: None,
+                            array_element: None,
+                            array_bytes: None,
+                            bit_field: None,
+                        });
+                        offset += inner_size;
+                    }
                     // `union Tag { … };` — register the tag, no member contributed.
                     (Some(tag), None) => { self.structs.insert(tag, inner); }
                     // `union { … };` — flatten every member at the union's offset.
