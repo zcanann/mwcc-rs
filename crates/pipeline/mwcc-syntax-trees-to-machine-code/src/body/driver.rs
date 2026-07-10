@@ -658,6 +658,9 @@ impl Generator {
         // conditional ASSIGN as an early-return branch form (NOT the select/branchless idiom).
         // TWO const-init locals under one narrow guard, returned as their sum — the
         // 2-local init-interleave slice. See body/conditional.rs.
+        if self.try_narrow_guard_inner_bittest(function)? {
+            return Ok(());
+        }
         if self.try_narrow_interleave_load_first(function)? {
             return Ok(());
         }

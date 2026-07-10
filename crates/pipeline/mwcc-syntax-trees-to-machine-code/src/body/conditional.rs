@@ -72,6 +72,112 @@ impl Generator {
     /// `<test c>; li result,INIT; b<!c>lr; li result,NEW; blr` (the false path returns the
     /// initializer already in the result; the true path falls through to the new value). Variable
     /// arms use a different move/staging form and are deferred here.
+    /// A narrow-guarded arm containing an INNER `&1` record-test one-liner — the
+    /// __va_arg `if (type==2) { size=8; if (g_reg & 1) { even=1; } }` shape at
+    /// 2-local scale (measured):
+    ///   clrlwi r0,t,24; li r3,i1; cmplwi r0,C; li r5,i2; b<!c> JOIN;
+    ///   clrlwi. r0,g,31; li r3,n1; beq JOIN; li r5,n2; JOIN: add r3,r3,r5; blr
+    /// Home facts: a takes the in-place r3 (the dying outer-condition register); b
+    /// AVOIDS the scratch (the inner record test claims r0) and the live inner
+    /// operand's register, taking the next volatile (r5). BOTH branches land on the
+    /// single join, and the arm's const assign fills the record-test latency slot.
+    pub(crate) fn try_narrow_guard_inner_bittest(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let [first, second] = function.locals.as_slice() else { return Ok(false) };
+        let (Some(first_init), Some(second_init)) = (
+            first.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok()),
+            second.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok()),
+        ) else {
+            return Ok(false);
+        };
+        if first.array_length.is_some() || second.array_length.is_some() {
+            return Ok(false);
+        }
+        // Body: ONE narrow guard whose arm is [first = const, if (g & 1) { second = const }].
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name: name1, value: value1 }, Statement::If { condition: inner, then_body: inner_body, else_body: inner_else }] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if name1 != &first.name || !inner_else.is_empty() {
+            return Ok(false);
+        }
+        let Some(first_new) = constant_value(value1).and_then(|constant| i16::try_from(constant).ok()) else {
+            return Ok(false);
+        };
+        let [Statement::Assign { name: name2, value: value2 }] = inner_body.as_slice() else { return Ok(false) };
+        if name2 != &second.name {
+            return Ok(false);
+        }
+        let Some(second_new) = constant_value(value2).and_then(|constant| i16::try_from(constant).ok()) else {
+            return Ok(false);
+        };
+        // Inner condition: `g & 1` on a full-width general parameter.
+        let Expression::Binary { operator: BinaryOperator::BitAnd, left: inner_left, right: inner_right } = inner else {
+            return Ok(false);
+        };
+        if constant_value(inner_right) != Some(1) {
+            return Ok(false);
+        }
+        let Some(inner_register) = leaf_name(inner_left)
+            .and_then(|name| self.locations.get(name))
+            .filter(|location| location.class == ValueClass::General && location.width == 32)
+            .map(|location| location.register)
+        else {
+            return Ok(false);
+        };
+        // Outer condition: an unsigned narrow leaf against a u16 constant.
+        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        let Some(constant) = constant_value(right).and_then(|value| u16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        let Some((register, width)) = leaf_name(left)
+            .and_then(|name| self.locations.get(name))
+            .filter(|location| location.class == ValueClass::General && !location.signed && location.width < 32)
+            .map(|location| (location.register, location.width))
+        else {
+            return Ok(false);
+        };
+        let Some((options, condition_bit)) = false_branch_bo_bi(*operator) else {
+            return Ok(false);
+        };
+        // -- emit (measured) -- b's home: the next volatile past the live inner operand.
+        let result = Eabi::general_result().number;
+        let second_home = inner_register.max(result) + 1;
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+        self.load_integer_constant(result, i64::from(first_init));
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        self.load_integer_constant(second_home, i64::from(second_init));
+        let outer_branch = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        // The inner `&1` record test (keep only bit 31, record form), the arm const in
+        // its latency slot, then the skip of the one-liner — to the SAME join.
+        self.output.instructions.push(Instruction::AndMaskRecord { a: GENERAL_SCRATCH, s: inner_register, begin: 31, end: 31 });
+        self.load_integer_constant(result, i64::from(first_new));
+        let inner_branch = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 }); // beq
+        self.load_integer_constant(second_home, i64::from(second_new));
+        let join = self.output.instructions.len();
+        for index in [outer_branch, inner_branch] {
+            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[index] {
+                *target = join;
+            }
+        }
+        self.output.instructions.push(Instruction::Add { d: result, a: result, b: second_home });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // Two ifs advance mwcc's anonymous-@N counter by 2 each.
+        self.output.anonymous_label_bump += 4;
+        Ok(true)
+    }
+
     /// A MEMBER-LOAD-init local + a const-init local under one narrow guard that
     /// reassigns only the second — the __va_arg mixed-init interleave slice
     /// (measured): the LOAD issues in the width-op -> compare latency slot, its
