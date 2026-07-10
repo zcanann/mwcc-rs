@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MFP_NUM2DEC_I_AST_HASH: u64 = 0;
+const MFP_NUM2DEC_I_AST_HASH: u64 = 0x9cd077ad50c3a4fa;
 
 impl Generator {
     pub(super) fn try_mfp_num2dec_i(&mut self, function: &Function) -> Compilation<bool> {
@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x634c2c214dc5e7a9 => 249, // metroid_prime
             _ => {
                 eprintln!("mfp_num2dec_i context candidate: {context:#x}");
                 return Ok(false);

@@ -363,14 +363,25 @@ impl Parser {
                 // declarations (a `DestructorChain* cur` inside a while) went
                 // unregistered before, so member access on them failed to type.
                 let struct_tag = self.last_struct_tag.take();
+                // parse_type consumes the FIRST declarator's `*` into the type;
+                // a later declarator's own `*` MIRRORS it (`unsigned char *jp,
+                // *kp;` — prime's ansi_fp), same as the function-level rule. A
+                // mixed list (`int *p, q;`) defers rather than mis-typing q.
+                let outer_is_pointer = matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. });
+                let mut first_declarator = true;
                 loop {
                     let mut declared_type = declared_type;
                     if self.eat_keyword(Token::Star) {
                         if *self.peek() == Token::Star {
                             return Err(Diagnostic::error("a pointer-to-pointer declarator in a nested block is not supported yet (roadmap)"));
                         }
-                        declared_type = Type::Pointer(pointee_of(declared_type)?);
+                        if !outer_is_pointer {
+                            declared_type = Type::Pointer(pointee_of(declared_type)?);
+                        }
+                    } else if outer_is_pointer && !first_declarator {
+                        return Err(Diagnostic::error("a mixed pointer/non-pointer declarator list in a nested block is not supported yet (roadmap)"));
                     }
+                    first_declarator = false;
                     let name = self.parse_identifier()?;
                     // A shadowing declaration hoists under a fresh internal name
                     // (`i@2`); references inside the block resolve to it via the

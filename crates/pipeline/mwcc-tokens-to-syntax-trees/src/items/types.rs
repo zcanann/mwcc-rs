@@ -10,6 +10,17 @@ use super::*;
 
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
+        let parsed = self.parse_type_base()?;
+        // A POSTFIX qualifier — east const: `unsigned char const *jp` (metroid
+        // prime's ansi_fp revision) — reads exactly like the prefix form.
+        while matches!(self.peek(), Token::Identifier(word) if word == "const") {
+            self.advance();
+            self.last_type_was_const = true;
+        }
+        Ok(parsed)
+    }
+
+    fn parse_type_base(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
         self.last_pointer_const = false;
         // Leading qualifiers: `const`/`register` are transparent to codegen (`const`

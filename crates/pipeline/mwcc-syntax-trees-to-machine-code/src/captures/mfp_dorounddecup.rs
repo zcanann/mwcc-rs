@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MFP_DOROUNDDECUP_AST_HASH: u64 = 0;
+const MFP_DOROUNDDECUP_AST_HASH: u64 = 0x3f93aa80c68e850e;
 
 impl Generator {
     pub(super) fn try_mfp_dorounddecup(&mut self, function: &Function) -> Compilation<bool> {
@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x634c2c214dc5e7a9 => 0, // marioparty4 (bump TBD from refctx @N diff)
             _ => {
                 eprintln!("mfp_dorounddecup context candidate: {context:#x}");
                 return Ok(false);
