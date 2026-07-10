@@ -529,27 +529,33 @@ impl Generator {
                 let Some((options, condition_bit)) = false_branch_bo_bi(*operator) else {
                     return Ok(false);
                 };
+                // The general-path treatment (fires 659-662): the first local's home
+                // is a PLAIN virtual — the measured r3 EMERGES (the condition
+                // parameter's pin ends at the width-op) — and the const local rides
+                // the r0 preference.
                 let result = Eabi::general_result().number;
+                let first_home = self.fresh_virtual_general();
+                let const_home = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
                 self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
-                self.load_integer_constant(result, i64::from(first_init));
+                self.load_integer_constant(first_home, i64::from(first_init));
                 self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: compare_constant });
-                self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_init));
+                self.load_integer_constant(const_home, i64::from(second_init));
                 let branch_index = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
                 self.output.instructions.push(if signed_char {
-                    Instruction::LoadByteZero { d: result, a: base, offset: 0 }
+                    Instruction::LoadByteZero { d: first_home, a: base, offset: 0 }
                 } else {
-                    Instruction::LoadWord { d: result, a: base, offset: 0 }
+                    Instruction::LoadWord { d: first_home, a: base, offset: 0 }
                 });
-                self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_new));
+                self.load_integer_constant(const_home, i64::from(second_new));
                 if signed_char {
-                    self.output.instructions.push(Instruction::ExtendSignByte { a: result, s: result });
+                    self.output.instructions.push(Instruction::ExtendSignByte { a: first_home, s: first_home });
                 }
                 let join = self.output.instructions.len();
                 if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
                     *target = join;
                 }
-                self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::Add { d: result, a: first_home, b: const_home });
                 self.output.instructions.push(Instruction::BranchToLinkRegister);
                 self.output.anonymous_label_bump += 2;
                 Ok(true)
