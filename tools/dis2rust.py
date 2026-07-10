@@ -31,6 +31,18 @@ for ln in lines:
     r = re.match(r'^\s*([0-9a-f]+):\s+(R_PPC_\S+)\s+(\S+)', ln)
     if r:
         reloc[int(r.group(1),16)//4] = (r.group(2), r.group(3))
+STRINGS = {}
+if len(sys.argv) > 3:
+    for line in open(sys.argv[3]):
+        parts = line.split()
+        if len(parts) >= 2:
+            STRINGS[parts[0]] = parts[1]
+STR_EMITTED = {}
+def string_intern_expr(name):
+    # Emit the intern on first reference (creation order = mwcc's), reuse after.
+    hexbytes = STRINGS[name]
+    array = ", ".join(f"0x{hexbytes[i:i+2]}" for i in range(0, len(hexbytes), 2))
+    return f"self.intern_string_literal(&[{array}])"
 def R(x): return x.replace('r','')
 def imm(x): return x
 targets = set()
@@ -66,13 +78,24 @@ for idx, mn, ops in instrs:
             kind = "StoreWord {{ s: {r}, a: 0, offset: 0 }}" if mn=="stw" else "LoadWord {{ d: {r}, a: 0, offset: 0 }}"
             out.append(f"        self.output.instructions.push(Instruction::{kind.format(r=R(ops[0]))});")
             continue
+        # a short-string address: `li rD,0` + SDA21 @str -> the @@strN
+        # placeholder the unit resolver rewrites (strings.rs model).
+        if mn == "li" and rl[1] in STRINGS:
+            out.append(f'        let index = {string_intern_expr(rl[1])};')
+            out.append(f'        self.record_relocation(RelocationKind::EmbSda21, &format!("@@str{{index}}"));')
+            out.append(f"        self.output.instructions.push(Instruction::AddImmediate {{ d: {R(ops[0])}, a: 0, immediate: 0 }});")
+            continue
         out.append(f"        // UNHANDLED SDA21: {mn} {ops} -> {rl[1]}")
         continue
     if rl and rl[0] == "R_PPC_REL24":
         pass  # handled by the bl case itself
     elif rl:
         kind = {"R_PPC_ADDR16_HA":"Addr16Ha","R_PPC_ADDR16_LO":"Addr16Lo"}[rl[0]]
-        if rl[1].startswith("@"):
+        if rl[1] in STRINGS:
+            # a long (.data) string's address half — the @@strN placeholder.
+            out.append(f'        let index = {string_intern_expr(rl[1])};')
+            out.append(f'        self.record_relocation(RelocationKind::{kind}, &format!("@@str{{index}}"));')
+        elif rl[1].startswith("@"):
             # a jump-table base (@N .data object) — the writer resolves it.
             out.append(f"        self.record_target(RelocationKind::{kind}, mwcc_machine_code::RelocationTarget::JumpTable);")
         else:

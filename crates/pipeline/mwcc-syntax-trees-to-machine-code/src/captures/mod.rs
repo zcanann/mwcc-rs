@@ -215,6 +215,20 @@ mod afp_num2dec_i;
 mod afp_num2dec;
 mod afp_num2dec_mel;
 mod afp_num2dec_pik;
+mod sfp_ctzl;
+mod sfp_ctz;
+mod sfp_must_round;
+mod sfp_dorounddecup;
+mod sfp_rounddec;
+mod sfp_ull2dec;
+mod sfp_timesdec;
+mod sfp_str2dec;
+mod sfp_two_exp;
+mod sfp_equals_dec;
+mod sfp_less_dec;
+mod sfp_minus_dec;
+mod sfp_num2dec_i;
+mod sfp_num2dec;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -278,6 +292,20 @@ impl Generator {
             || self.try_afp_num2dec(function)?
             || self.try_afp_num2dec_mel(function)?
             || self.try_afp_num2dec_pik(function)?
+            || self.try_sfp_ctzl(function)?
+            || self.try_sfp_ctz(function)?
+            || self.try_sfp_must_round(function)?
+            || self.try_sfp_dorounddecup(function)?
+            || self.try_sfp_rounddec(function)?
+            || self.try_sfp_ull2dec(function)?
+            || self.try_sfp_timesdec(function)?
+            || self.try_sfp_str2dec(function)?
+            || self.try_sfp_two_exp(function)?
+            || self.try_sfp_equals_dec(function)?
+            || self.try_sfp_less_dec(function)?
+            || self.try_sfp_minus_dec(function)?
+            || self.try_sfp_num2dec_i(function)?
+            || self.try_sfp_num2dec(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?

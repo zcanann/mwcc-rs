@@ -765,6 +765,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
         }
     }
+    // The `...data.0` SECTION-ALIAS marker: mwcc emits one zero-size LOCAL
+    // `.data` symbol named `...data.0` when code addresses the long-string
+    // block through the section base (`lis/addi ...data.0@ha/@l` + runtime
+    // indexing — the ansi_fp big-copy family). It sits immediately before the
+    // unit's first string-object symbol (measured: strikers, wind_waker).
+    if functions.iter().any(|function| {
+        function.relocations.iter().any(|relocation| matches!(&relocation.target, RelocationTarget::External(name) if name == "...data.0"))
+    }) {
+        local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
+        comment_values.push((0, 0));
+    }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
     // then its hidden unwind entries.
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();

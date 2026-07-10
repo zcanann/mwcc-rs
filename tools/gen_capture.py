@@ -20,9 +20,11 @@ ap.add_argument('--gate-not-skipped', action='append', default=[])
 ap.add_argument('--fire', default='?')
 a = ap.parse_args()
 
-emit = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), 'dis2rust.py'),
-                       os.path.join(a.dir, 'real.dis'), os.path.join(a.dir, 'pool.txt')],
-                      capture_output=True, text=True).stdout.splitlines()
+dis_args = [sys.executable, os.path.join(os.path.dirname(__file__), 'dis2rust.py'),
+            os.path.join(a.dir, 'real.dis'), os.path.join(a.dir, 'pool.txt')]
+if os.path.exists(os.path.join(a.dir, 'strings.txt')):
+    dis_args.append(os.path.join(a.dir, 'strings.txt'))
+emit = subprocess.run(dis_args, capture_output=True, text=True).stdout.splitlines()
 targets = emit[0].split('label targets: ')[1]
 body = "\n".join(emit[1:])
 assert 'UNHANDLED' not in body, "dis2rust has unhandled instructions"

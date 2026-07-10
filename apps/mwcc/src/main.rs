@@ -367,9 +367,13 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // away) binds LOCAL in `.sdata2` with an ADDR32 — handled by the const/static
             // routing below. A non-const, non-static writable pointer array is the
             // original `.sdata` case. A section override handles its own placement.
-            let single_symbol = global.array_length.is_none()
-                && matches!(elements.as_slice(), [PointerElement::Symbol(_)]);
-            if (global.is_static || global.is_const) && global.section.is_none() && !single_symbol {
+            // ... or a single STRING (`static const char* const unused = "…"` —
+            // ansi_fp's strikers revision): the pointer routes `.sdata2` LOCAL like
+            // the symbol case, the string pools as a file-scope `@N` (measured:
+            // `unused` l O .sdata2 4B, its string @229 l O .data).
+            let single_target = global.array_length.is_none()
+                && matches!(elements.as_slice(), [PointerElement::Symbol(_)] | [PointerElement::Str(_)]);
+            if (global.is_static || global.is_const) && global.section.is_none() && !single_target {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
             // A struct-table initializer (declared type is a struct) has one element
@@ -603,11 +607,6 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // `5 + global_strings` and advances per function by [its new strings + its new deduped constants
     // + its unwind entries] plus a fixed +4 gap. A jump table interleaves its own `@N` here in a way
     // not yet modeled, so a unit that mixes a string with a jump table defers wholesale.
-    let has_string = machine_functions.iter().any(|function| !function.string_literals.is_empty());
-    let has_jump_table = machine_functions.iter().any(|function| function.jump_table.is_some());
-    if has_string && has_jump_table {
-        return Err(Diagnostic::error("a string literal alongside a jump table is not supported yet (roadmap)"));
-    }
     let mut counter = 5u32 + string_counter;
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> = std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
@@ -648,13 +647,25 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             .collect();
         machine_function.new_string_count = new_string_names.len() as u32;
         machine_function.new_string_names = new_string_names;
-        // Then the function's constants (deduped across the unit) and its unwind entries, so the next
-        // function's block starts at the right `@N`.
-        for constant in &machine_function.constants {
+        // Then the function's constants (deduped across the unit, with the same
+        // per-index number gaps the writer applies), its jump table (the counter
+        // JUMPS to the table's number and continues from it — mirroring the
+        // writer), the post-table label bump, and its unwind entries, so the
+        // next function's block starts at the right `@N`.
+        for (constant_index, constant) in machine_function.constants.iter().enumerate() {
+            for (gap_index, gap) in &machine_function.constant_number_gaps {
+                if *gap_index == constant_index {
+                    number += gap;
+                }
+            }
             if numbered_constant.insert((constant.bits, constant.byte_width)) {
                 number += 1;
             }
         }
+        if let Some(table) = &machine_function.jump_table {
+            number += table.anonymous_offset;
+        }
+        number += machine_function.post_constant_label_bump;
         if machine_function.frame.is_some() {
             number += 2;
         }
