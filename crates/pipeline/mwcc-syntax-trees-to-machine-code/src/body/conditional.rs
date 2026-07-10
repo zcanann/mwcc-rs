@@ -129,6 +129,37 @@ impl Generator {
             Some(stage)
         };
 
+        // Two measured DIFF gates (probed fire 644 — wrong bytes without them):
+        // - A NARROW condition operand (`unsigned char t`): mwcc fills the width-op ->
+        //   compare latency gap with the initializer (`clrlwi r0,t,24; li r3,init;
+        //   cmplwi r0,2; bclr`), an interleave the test-first emission here does not
+        //   model — defer.
+        let condition_leaf = match condition {
+            Expression::Binary { left, .. } => Some(left.as_ref()),
+            other @ Expression::Variable(_) => Some(other),
+            _ => None,
+        };
+        if condition_leaf.is_some_and(|leaf| self.is_narrow_leaf(leaf)) {
+            return Err(Diagnostic::error("a narrow condition over an initialized local needs the init-interleave schedule (roadmap)"));
+        }
+        // - The MOVE form with a CONSTANT init (staging in the scratch) when the
+        //   condition operand OCCUPIES the result register and DIES at the compare
+        //   (the arm's new value does not read it): mwcc homes the local directly in
+        //   r3 (`li r3,init; bclr; mr r3,new; blr` — no scratch staging, no merge) —
+        //   defer. When the arm READS the condition operand (canary 890's `if (a)
+        //   b = a;`) it stays live past the compare, and the scratch-staged form IS
+        //   mwcc's; a variable init stages in its own register either way.
+        if init_const.is_some()
+            && stage.is_some()
+            && condition_leaf
+                .and_then(leaf_name)
+                .and_then(|name| self.lookup_general(name))
+                == Some(result)
+            && new_register != Some(result)
+        {
+            return Err(Diagnostic::error("a conditional reassign whose condition dies in the result register homes the local there (roadmap)"));
+        }
+
         // emit_condition_test returns the branch-if-FALSE options (a guard's forward-skip sense),
         // which is exactly the early-return / forward-skip-on-!c we want.
         let (options, condition_bit) = self.emit_condition_test(condition)?;

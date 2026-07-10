@@ -223,6 +223,19 @@ impl Generator {
             if self.lookup_general(condition_param).is_none() || local_names.contains(&condition_param) {
                 return Ok(false);
             }
+            // A NARROW condition operand (`unsigned char t`) — mwcc interleaves the
+            // speculative inits into the width-op -> compare latency gap (`clrlwi;
+            // li; cmplwi; li; …`) and may reuse the test scratch r0 as a local's home
+            // once the compare consumes it — a schedule/allocation this handler's
+            // "cmpwi leads, inits follow" model does not reproduce (measured DIFF,
+            // fire 644). Defer.
+            if self
+                .locations
+                .get(condition_param)
+                .is_some_and(|location| location.width < 32)
+            {
+                return Ok(false);
+            }
             for inner in then_body {
                 let Statement::Assign { name, value } = inner else { return Ok(false) };
                 if !local_names.contains(&name.as_str()) || !simple_value(value) {
@@ -232,6 +245,26 @@ impl Generator {
             branch_conditions.push(condition);
         }
         if branch_conditions.is_empty() || (void_stores && tail_stores.is_empty()) {
+            return Ok(false);
+        }
+        // Every declared local must be REASSIGNED in some branch. An UNMUTATED
+        // const-init local is FOLDED by mwcc into its consumer instead of living in
+        // a register (`int b=4; … return a+b+c` -> `add a,c; addi r3,r3,4` — measured
+        // DIFF, fire 644), a fold this handler does not model. Defer.
+        let assigned: Vec<&str> = function
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::If { then_body, .. } => Some(then_body),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|inner| match inner {
+                Statement::Assign { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        if function.locals.iter().any(|local| !assigned.contains(&local.name.as_str())) {
             return Ok(false);
         }
         // Init values must be simple too.
