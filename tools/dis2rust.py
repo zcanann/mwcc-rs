@@ -48,8 +48,9 @@ def imm(x): return x
 targets = set()
 for idx, mn, ops in instrs:
     if mn in ("b","beq","bne","blt","bgt","bge","ble","bdnz","beqlr","blelr"):
-        if ops and re.match(r'^[0-9a-f]+$', ops[0]):
-            targets.add(int(ops[0],16)//4)
+        # a crN-qualified branch (`bne cr1,34`) carries the target LAST
+        if ops and re.match(r'^[0-9a-f]+$', ops[-1]):
+            targets.add(int(ops[-1],16)//4)
 out = []
 for idx, mn, ops in instrs:
     if idx in targets:
@@ -104,6 +105,9 @@ for idx, mn, ops in instrs:
     def push(s): out.append(f"        self.output.instructions.push(Instruction::{s});")
     def bc(o,b_):
         t = int(ops[-1],16)//4
+        # a crN-qualified branch (`bne cr1,X`) offsets the condition bit by 4*N
+        if ops and ops[0].startswith("cr") and len(ops[0]) == 3:
+            b_ = b_ + 4 * int(ops[0][2])
         out.append(f"        self.emit_branch_conditional_to({o}, {b_}, labels[&{t}]); // {mn}")
     if   mn=="stwu": push(f"StoreWordWithUpdate {{ s: {R(ops[0])}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="stfd": push(f"StoreFloatDouble {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
@@ -179,6 +183,9 @@ for idx, mn, ops in instrs:
     elif mn=="fmsub": push(f"FloatMultiplySubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
     elif mn=="fnmsub": push(f"FloatNegativeMultiplySubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
     elif mn=="fneg": push(f"FloatNegate {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
+    elif mn=="frsp": push(f"RoundToSingle {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
+    elif mn=="stfs": push(f"StoreFloatSingle {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="subfze": push(f"SubtractFromZeroExtended {{ d: {R(ops[0])}, a: {R(ops[1])} }}")
     elif mn=="fabs": push(f"FloatAbsolute {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="fcmpo": push(f"FloatCompareOrdered {{ a: {ops[-2][1:]}, b: {ops[-1][1:]} }}")
     elif mn=="cmplwi": push(f"CompareLogicalWordImmediate {{ a: {R(ops[0])}, immediate: {ops[1]} }}")
