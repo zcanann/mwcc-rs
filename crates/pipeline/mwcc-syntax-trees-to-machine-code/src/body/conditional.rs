@@ -221,6 +221,19 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: arm.list_register, offset: arm.offset });
     }
 
+    /// The narrow-guard width test: `clrlwi r0,reg,32-width` staged for a later
+    /// `cmplwi r0,C` — except a compare against ZERO folds into the record form
+    /// (`clrlwi.`, cr0 set by the mask itself) and the compare disappears
+    /// entirely (measured across every narrow-guard family at 2.6; the callers
+    /// skip their cmplwi when the constant is zero).
+    fn push_narrow_guard_test(&mut self, register: u8, clear: u8, constant: u16) {
+        if constant == 0 {
+            self.output.instructions.push(Instruction::ClearLeftImmediateRecord { a: GENERAL_SCRATCH, s: register, clear });
+        } else {
+            self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear });
+        }
+    }
+
     /// The __va_arg type==4 block at whole-function scale — the CONSTANT-size
     /// ALIGN with a member store-back: `addr = (char*)(((unsigned long)list->area
     /// + 15) & ~15); list->area = addr + 16; return addr;`. Measured: the member
@@ -859,9 +872,11 @@ impl Generator {
         // is r5), validating policy #4 as derived, not hardcoded.
         let result = Eabi::general_result().number;
         let second_home = self.fresh_virtual_general();
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+        self.push_narrow_guard_test(register, 32 - width, constant);
         self.load_integer_constant(result, i64::from(first_init));
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        if constant != 0 {
+            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        }
         self.load_integer_constant(second_home, i64::from(second_init));
         let outer_branch = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
@@ -965,13 +980,15 @@ impl Generator {
         let result = Eabi::general_result().number;
         let load_home = self.fresh_virtual_general();
         let const_home = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+        self.push_narrow_guard_test(register, 32 - width, constant);
         self.output.instructions.push(if signed_char {
             Instruction::LoadByteZero { d: load_home, a: base, offset: 0 }
         } else {
             Instruction::LoadWord { d: load_home, a: base, offset: 0 }
         });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        if constant != 0 {
+            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        }
         self.load_integer_constant(const_home, i64::from(second_init));
         if signed_char {
             self.output.instructions.push(Instruction::ExtendSignByte { a: load_home, s: load_home });
@@ -1137,11 +1154,13 @@ impl Generator {
             .map(|index| self.fresh_virtual_general_preferring(result + 1 + index as u8))
             .collect();
         for (block_index, ((_, arm), &(constant, options, condition_bit))) in blocks.iter().zip(&tests).enumerate() {
-            self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width as u8 });
+            self.push_narrow_guard_test(register, 32 - width as u8, constant);
             if block_index == 0 {
                 self.load_integer_constant(homes[0], i64::from(inits[0]));
             }
-            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+            if constant != 0 {
+                self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+            }
             if block_index == 0 {
                 // Every init past the first lands AFTER the compare (measured: li r5;
                 // li r6 both follow cmplwi in the 3-local form).
@@ -1286,9 +1305,11 @@ impl Generator {
                 let result = Eabi::general_result().number;
                 let first_home = self.fresh_virtual_general();
                 let const_home = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
-                self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+                self.push_narrow_guard_test(register, 32 - width, compare_constant);
                 self.load_integer_constant(first_home, i64::from(first_init));
-                self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: compare_constant });
+                if compare_constant != 0 {
+                    self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: compare_constant });
+                }
                 self.load_integer_constant(const_home, i64::from(second_init));
                 let branch_index = self.output.instructions.len();
                 self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
@@ -1422,9 +1443,11 @@ impl Generator {
             ],
             _ => return Ok(false),
         };
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+        self.push_narrow_guard_test(register, 32 - width, constant);
         self.load_integer_constant(homes[0], i64::from(pairs[0].0));
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        if constant != 0 {
+            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        }
         for (index, &(init, _)) in pairs.iter().enumerate().skip(1) {
             self.load_integer_constant(homes[index], i64::from(init));
         }
@@ -1541,13 +1564,15 @@ impl Generator {
             let Some((register, width, constant, options, condition_bit, init_value, new_value)) = interleave else {
                 return Err(Diagnostic::error("a narrow condition over an initialized local needs the init-interleave schedule (roadmap)"));
             };
-            self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+            self.push_narrow_guard_test(register, 32 - width, constant);
             // The local's home rides a VIRTUAL with a consumer-tree preference for the
             // result register — the first shape routed through the general allocation
             // machinery (Phase D policy #1 end-to-end); LinearScan resolves it to r3.
             let home = self.fresh_virtual_general_preferring(result);
             self.load_integer_constant(home, init_value);
-            self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+            if constant != 0 {
+                self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+            }
             self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
             self.load_integer_constant(home, new_value);
             self.output.instructions.push(Instruction::BranchToLinkRegister);
