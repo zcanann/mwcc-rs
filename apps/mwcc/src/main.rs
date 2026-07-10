@@ -672,6 +672,34 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);
 
+    // A SECTION-attributed data object (`.ctors`/`.dtors` function-pointer constants)
+    // skips the writer's initialized-run symbol pass, so its relocation targets never
+    // get the undefined-symbol fallback — a target that is neither a defined global nor
+    // a function defined in this unit would panic in the writer ("no entry found for
+    // key"). Defer honestly instead: the extern-function `.dtors` reference (Runtime's
+    // `__destroy_global_chain_reference = __destroy_global_chain`, defined in another
+    // TU) needs the writer's section-attributed undefined-target support.
+    {
+        let defined_names: std::collections::HashSet<&str> = defined_globals
+            .iter()
+            .map(|global| global.name.as_str())
+            .chain(machine_functions.iter().map(|function| function.name.as_str()))
+            .collect();
+        for global in &defined_globals {
+            if global.section.is_none() {
+                continue;
+            }
+            for relocation in &global.relocations {
+                if !defined_names.contains(relocation.target.as_str()) {
+                    return Err(Diagnostic::error(format!(
+                        "a section-attributed pointer to the undefined symbol '{}' is not supported yet (roadmap)",
+                        relocation.target
+                    )));
+                }
+            }
+        }
+    }
+
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
 
     if let Some(directory) = artifacts {

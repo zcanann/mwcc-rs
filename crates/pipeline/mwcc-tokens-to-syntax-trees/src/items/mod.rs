@@ -1328,6 +1328,13 @@ impl Parser {
                         // initializer (constant values or address elements).
                         match initializer.as_ref().map(Vec::len).or(address_initializer.as_ref().map(Vec::len)) {
                             Some(length) => Some(length as u16),
+                            // `extern T name[];` — an UNSIZED extern array (Runtime's
+                            // `extern __eti_init_info _eti_init_info[];`). Its size is
+                            // unknowable here, and it only feeds the SDA21-vs-ADDR16
+                            // total-size <= 8 choice — mwcc addresses an unknown-size
+                            // array absolutely (lis/addi, measured), so register it with
+                            // a huge sentinel length. No data is emitted for an extern.
+                            None if is_extern => Some(u16::MAX),
                             None => return Err(Diagnostic::error("an array with no length needs an initializer")),
                         }
                     };
