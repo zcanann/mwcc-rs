@@ -570,6 +570,9 @@ impl Generator {
             if self.try_prefixed_store_product_return(function)? {
                 return Ok(());
             }
+            if self.try_align_store_arm(function)? {
+                return Ok(());
+            }
             if (has_store && return_hoists_neg_over_store)
                 || (has_pointer_store && return_comparison_hoists_over_pointer)
                 || (has_materialized_pointer_store && return_is_computed_arithmetic)
