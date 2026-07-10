@@ -229,6 +229,14 @@ mod sfp_less_dec;
 mod sfp_minus_dec;
 mod sfp_num2dec_i;
 mod sfp_num2dec;
+mod wfp_ctzl;
+mod wfp_ull2dec;
+mod wfp_timesdec;
+mod wfp_str2dec;
+mod wfp_two_exp;
+mod wfp_dummy;
+mod wfp_num2dec_i;
+mod wfp_num2dec;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -306,6 +314,14 @@ impl Generator {
             || self.try_sfp_minus_dec(function)?
             || self.try_sfp_num2dec_i(function)?
             || self.try_sfp_num2dec(function)?
+            || self.try_wfp_ctzl(function)?
+            || self.try_wfp_ull2dec(function)?
+            || self.try_wfp_timesdec(function)?
+            || self.try_wfp_str2dec(function)?
+            || self.try_wfp_two_exp(function)?
+            || self.try_wfp_dummy(function)?
+            || self.try_wfp_num2dec_i(function)?
+            || self.try_wfp_num2dec(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?

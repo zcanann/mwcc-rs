@@ -201,11 +201,34 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             rodata_blob_offset.push(None);
         }
     }
-    // Large initialized `.data` is laid out FORWARD (declaration order).
+    // Large initialized `.data` is laid out in CREATION order: file-scope
+    // objects (declaration order) first, then per function its pooled `.data`
+    // strings followed by its jump table (measured: ww's table at 0x80 sits
+    // between two_exp's long strings and dummy's later string at 0x1a4).
+    let string_owner: std::collections::HashMap<&str, usize> = input
+        .functions
+        .iter()
+        .enumerate()
+        .flat_map(|(function_index, function)| function.string_names.iter().map(move |name| (name.as_str(), function_index)))
+        .collect();
     let mut file_data_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".data") {
+    for object in input.data_objects.iter().filter(|object| section_of(object) == ".data" && !string_owner.contains_key(object.name)) {
         place(object, ".data", &mut file_data_size);
     }
+    let mut jump_table_offset: Vec<Option<u32>> = vec![None; input.functions.len()];
+    for (function_index, function) in input.functions.iter().enumerate() {
+        for name in &function.string_names {
+            if let Some(object) = input.data_objects.iter().find(|object| object.name == name.as_str() && section_of(object) == ".data") {
+                place(object, ".data", &mut file_data_size);
+            }
+        }
+        if let Some(table) = &function.jump_table {
+            file_data_size = file_data_size.div_ceil(4) * 4;
+            jump_table_offset[function_index] = Some(file_data_size);
+            file_data_size += table.entries.len() as u32 * 4;
+        }
+    }
+    let has_jump_table = input.functions.iter().any(|function| function.jump_table.is_some());
     // Large zero `.bss` lays out in SYMBOL-EMISSION order, not declaration order:
     // referenced objects first (in the order functions reference them — their
     // `symbol_order`, across functions in source order), then any unreferenced ones
@@ -279,22 +302,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Jump tables (dense switches) live in a `.data` section: one 4-byte entry per
     // index, every entry filled by an `ADDR32` relocation (so the file bytes are
     // zero). Each table is recorded at its offset; `.data` is 8-aligned.
-    let mut jump_data_size = u32::from(file_data_size).div_ceil(4) * 4;
-    let mut jump_table_offset: Vec<Option<u32>> = Vec::new();
-    for function in functions {
-        if let Some(table) = &function.jump_table {
-            jump_data_size = jump_data_size.div_ceil(4) * 4;
-            jump_table_offset.push(Some(jump_data_size));
-            jump_data_size += table.entries.len() as u32 * 4;
-        } else {
-            jump_table_offset.push(None);
-        }
-    }
-    // Strip the file-data prefix back off: `jump_data` holds only the tables;
-    // the offsets recorded above are SECTION-relative (past the file data).
-    let jump_tables_size = jump_data_size - u32::from(file_data_size).div_ceil(4) * 4;
-    let has_jump_table = jump_tables_size > 0;
-    let jump_data = vec![0u8; jump_data_size as usize];
+
 
     // `.sdata2` constant pool — the const globals routed here (laid out above) come
     // first, then every function's float constants appended in source order, each at
@@ -743,7 +751,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // symbol indices are recorded by function index so a call relocation resolves to
     // the local symbol; the global run below skips them.
     let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
-    let mut early_jump_table_symbols: Vec<Option<u32>> = vec![None; functions.len()];
     let mut local_function_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut static_slot_symbols: HashMap<(usize, usize), u32> = HashMap::new();
     let mut static_slot_symbol_by_value: HashMap<(u64, u8), u32> = HashMap::new();
@@ -751,64 +758,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // image emission registers into the same dedup map an ordinary pool
     // reference consults (ww's wcstombs reuses unicode's @47 image plainly).
     let mut constant_symbol: HashMap<(u64, u8), u32> = HashMap::new();
-    for (index, function) in functions.iter().enumerate() {
-        // An IMPLICIT-declaration materialization emits its local symbol later
-        // (after its own static locals), and calls bind the UND ghost instead —
-        // it never enters `local_function_symbols` (measured: ww uart).
-        if function.is_static && !function.implicit_local {
-            // A STATIC function's pooled constants lead its own FUNC symbol —
-            // mwcc creates the object symbols while compiling the body, then
-            // the function symbol at definition end (measured: mbstring's @4
-            // image before unicode_to_UTF8's FUNC; ansi_fp's @837 pool double
-            // before __num2dec_internal's FUNC).
-            for (constant_index, constant) in function.constants.iter().enumerate() {
-                if !constant_symbol.contains_key(&(constant.bits, constant.byte_width)) {
-                    let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                    if constant.image {
-                        static_slot_symbols.insert((index, constant_index), symbol);
-                        static_slot_symbol_by_value.insert((constant.bits, constant.byte_width), symbol);
-                    }
-                    constant_symbol.insert((constant.bits, constant.byte_width), symbol);
-                    let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
-                    write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
-                    comment_values.push((constant.byte_width as u32, 0));
-                }
-            }
-            // Its jump table likewise precedes the FUNC symbol (measured:
-            // ansi_fp's @752 table before __two_exp's FUNC).
-            if let Some(number) = jump_table_numbers[index] {
-                if early_jump_table_symbols[index].is_none() {
-                    let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                    early_jump_table_symbols[index] = Some(symbol);
-                    let name = strtab.add(&format!("@{}", number));
-                    let size = function.jump_table.as_ref().unwrap().entries.len() as u32 * 4;
-                    write_symbol(&mut symtab, name, jump_table_offset[index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".data") as u16);
-                    comment_values.push((4, 0));
-                }
-            }
-            let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-            function_symbols[index] = symbol;
-            local_function_symbols.insert(function.name, symbol);
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
-            comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
-        }
-    }
-    // The `...data.0` SECTION-ALIAS marker: mwcc emits one zero-size LOCAL
-    // `.data` symbol named `...data.0` when code addresses the long-string
-    // block through the section base (`lis/addi ...data.0@ha/@l` + runtime
-    // indexing — the ansi_fp big-copy family). It sits immediately before the
-    // unit's first string-object symbol (measured: strikers, wind_waker).
-    if functions.iter().any(|function| {
+    // The `...data.0` SECTION-ALIAS marker is emitted LAZILY: immediately
+    // before the unit's first `.data`-section string/object symbol (measured:
+    // strikers — after 5 static FUNC symbols, before @229; wind_waker — after
+    // ctzl's symbol, before @797).
+    let mut data_marker_pending = functions.iter().any(|function| {
         function.relocations.iter().any(|relocation| matches!(&relocation.target, RelocationTarget::External(name) if name == "...data.0"))
-    }) {
-        local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
-        write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
-        // The section-anchor .comment record — (1, 0x00100000), same as
-        // `...rodata.0` (measured on strikers ansi_fp).
-        comment_values.push((1, 0x0010_0000));
-    }
-    // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
-    // then its hidden unwind entries.
+    });
+    // ONE creation-order pass: per function, its file-scope statics, static
+    // locals, strings, blobs, pooled constants, unwind entries, jump table,
+    // then — for a STATIC function — its own FUNC symbol at definition end
+    // (measured: mbstring's @4 image, ansi_fp's @837 pool and @752 table all
+    // LEAD their static owners' symbols; ww's `dummy` symbol sits BETWEEN
+    // two_exp's and num2dec_internal's @N blocks).
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
     let mut jump_table_symbols: Vec<u32> = Vec::new();
@@ -831,15 +793,26 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 && index > 0
                 && !local_data_symbols.contains_key(object.name)
             {
+                if data_marker_pending && data_section[object.name] == ".data" {
+                    local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                    write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
+                    comment_values.push((1, 0x0010_0000));
+                    data_marker_pending = false;
+                }
                 local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[object.name]) as u16;
                 write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
                 comment_values.push((data_aligns[object.name], 0));
             }
         }
-        // The function's STATIC LOCALS lead its `@N` block (they carry the
-        // block's first numbers — displayed `name$K`, keyed by raw name).
+        // An IMPLICIT function's STATIC LOCALS lead its block (its FUNC symbol
+        // trails them — measured: ww uart). A REGULAR static function's locals
+        // instead FOLLOW its FUNC symbol (measured: ac uart's initialized$16
+        // after __init_uart_console).
         for object in &input.data_objects {
+            if !function.implicit_local && function.is_static {
+                break;
+            }
             if object.static_local_owner == Some(index) {
                 local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[object.name]) as u16;
@@ -865,6 +838,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // its LOCAL symbol here and record it so relocations (this function's, and a later function
         // reusing the same pooled string) resolve to it.
         for name in &function.string_names {
+            if data_marker_pending && data_section[name.as_str()] == ".data" {
+                local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
+                comment_values.push((1, 0x0010_0000));
+                data_marker_pending = false;
+            }
             local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[name.as_str()]) as u16;
             write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
@@ -918,11 +897,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         } else {
             extab_entry_symbols.push(0);
         }
-        // The jump table is a 4-aligned local `@N` object in `.data`. A STATIC
-        // function's table already emitted ahead of its FUNC symbol above.
-        if let Some(early) = early_jump_table_symbols[index] {
-            jump_table_symbols.push(early);
-        } else if let Some(number) = jump_table_numbers[index] {
+        // The jump table is a 4-aligned local `@N` object in `.data`.
+        if let Some(number) = jump_table_numbers[index] {
             jump_table_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
             let name = strtab.add(&format!("@{}", number));
             let size = function.jump_table.as_ref().unwrap().entries.len() as u32 * 4;
@@ -930,6 +906,28 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push((4, 0));
         } else {
             jump_table_symbols.push(0);
+        }
+        // A STATIC function's own FUNC symbol closes its block (definition end;
+        // an implicit-local already emitted after its static locals above),
+        // followed by its own static locals (measured: ac uart).
+        if function.is_static && !function.implicit_local {
+            let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+            function_symbols[index] = symbol;
+            local_function_symbols.insert(function.name, symbol);
+            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
+            comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
+            for object in &input.data_objects {
+                if object.static_local_owner == Some(index) {
+                    local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                    let section = index_of(data_section[object.name]) as u16;
+                    let display = match static_local_numbers.get(object.name) {
+                        Some(&number) => strtab.add(&format!("{}${}", object.name, number)),
+                        None => strtab.add(object.name),
+                    };
+                    write_symbol(&mut symtab, display, data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                    comment_values.push((data_aligns[object.name], 0));
+                }
+            }
         }
     }
     // The GLOBAL run. mwcc emits symbols in source-encounter order, which for the
@@ -1358,15 +1356,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push(".rodata", SHT_PROGBITS, SHF_ALLOC, 0, 0, 8, 0, rodata, 0);
     }
     if has_data {
-        // `.data` holds the large initialized globals (strings included) first,
-        // then any jump tables at 4-aligned offsets past them (ansi_fp's
-        // strikers revision has both; a table-only or data-only unit reduces
-        // to the old either/or shape).
-        let mut payload = file_data;
-        if has_jump_table {
-            payload.resize(jump_data.len(), 0);
-        }
-        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, payload, 0);
+        // `.data` holds the creation-order layout computed above — file data
+        // and jump tables interleaved; table bytes stay zero (ADDR32
+        // relocations fill them at link time).
+        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, file_data, 0);
     }
     if has_bss {
         // `.bss` is NOBITS (large zero-initialized globals): a size, no file bytes.
