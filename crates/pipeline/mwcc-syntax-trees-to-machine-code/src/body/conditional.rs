@@ -461,10 +461,32 @@ impl Generator {
         if name1 != &first.name || name2 != &second.name {
             return Ok(false);
         }
-        let (Some(first_new), Some(second_new)) = (
-            constant_value(value1).and_then(|value| i16::try_from(value).ok()),
-            constant_value(value2).and_then(|value| i16::try_from(value).ok()),
-        ) else {
+        let Some(second_new) = constant_value(value2).and_then(|value| i16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        // The FIRST arm value: an i16 constant, or a `*p` deref-load of a signed-char/
+        // word pointer parameter (the __va_arg type==3 `g_reg = list->fpr` reassign).
+        // The load emits into the local's home with the second const filling its
+        // latency slot and a signed-char's `extsb` SPLIT after it (measured):
+        //   bne JOIN; lbz r3,0(p); li r0,n2; extsb r3,r3; JOIN: add r3,r3,r0
+        enum ArmFirst {
+            Const(i16),
+            Load { base: u8, signed_char: bool },
+        }
+        let arm_first = if let Some(constant) = constant_value(value1).and_then(|value| i16::try_from(value).ok()) {
+            ArmFirst::Const(constant)
+        } else if let Expression::Dereference { pointer } = value1 {
+            let Some(&crate::generator::Location { class: ValueClass::General, register: load_base, pointee: Some(pointee), .. }) =
+                leaf_name(pointer).and_then(|name| self.locations.get(name))
+            else {
+                return Ok(false);
+            };
+            let signed_char = pointee == mwcc_syntax_trees::Pointee::Char;
+            if !signed_char && !matches!(pointee, mwcc_syntax_trees::Pointee::Int | mwcc_syntax_trees::Pointee::UnsignedInt) {
+                return Ok(false);
+            }
+            ArmFirst::Load { base: load_base, signed_char }
+        } else {
             return Ok(false);
         };
         // The return is `first + second` in declaration order.
@@ -474,7 +496,52 @@ impl Generator {
         {
             return Ok(false);
         }
-        self.emit_narrow_interleave(function, &[(first_init, first_new), (second_init, second_new)])
+        match arm_first {
+            ArmFirst::Const(first_new) => {
+                self.emit_narrow_interleave(function, &[(first_init, first_new), (second_init, second_new)])
+            }
+            ArmFirst::Load { base, signed_char } => {
+                // The load-reassign arm variant (measured; homes stay [r3, r0]).
+                let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+                let Some(compare_constant) = constant_value(right).and_then(|value| u16::try_from(value).ok()) else {
+                    return Ok(false);
+                };
+                let Some((register, width)) = leaf_name(left)
+                    .and_then(|name| self.locations.get(name))
+                    .filter(|location| location.class == ValueClass::General && !location.signed && location.width < 32)
+                    .map(|location| (location.register, location.width))
+                else {
+                    return Ok(false);
+                };
+                let Some((options, condition_bit)) = false_branch_bo_bi(*operator) else {
+                    return Ok(false);
+                };
+                let result = Eabi::general_result().number;
+                self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+                self.load_integer_constant(result, i64::from(first_init));
+                self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: compare_constant });
+                self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_init));
+                let branch_index = self.output.instructions.len();
+                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.output.instructions.push(if signed_char {
+                    Instruction::LoadByteZero { d: result, a: base, offset: 0 }
+                } else {
+                    Instruction::LoadWord { d: result, a: base, offset: 0 }
+                });
+                self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_new));
+                if signed_char {
+                    self.output.instructions.push(Instruction::ExtendSignByte { a: result, s: result });
+                }
+                let join = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    *target = join;
+                }
+                self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                self.output.anonymous_label_bump += 2;
+                Ok(true)
+            }
+        }
     }
 
     /// The THREE-local sibling of [`Self::try_narrow_interleave_two_locals`]: the sum
