@@ -312,6 +312,19 @@ mod scb_vscanf;
 mod scb_scanf;
 mod scb_vfscanf;
 mod scb_sscanf;
+mod scc_parse_format;
+mod scc_sformatter;
+mod scc_fileread;
+mod scc_stringread;
+mod scc_fscanf;
+mod scc_vscanf;
+mod scc_scanf;
+mod scc_vfscanf;
+mod scc_sscanf;
+mod scd_parse_format;
+mod scd_sformatter;
+mod scd_stringread;
+mod scd_sscanf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -472,6 +485,19 @@ impl Generator {
             || self.try_scb_scanf(function)?
             || self.try_scb_vfscanf(function)?
             || self.try_scb_sscanf(function)?
+            || self.try_scc_parse_format(function)?
+            || self.try_scc_sformatter(function)?
+            || self.try_scc_fileread(function)?
+            || self.try_scc_stringread(function)?
+            || self.try_scc_fscanf(function)?
+            || self.try_scc_vscanf(function)?
+            || self.try_scc_scanf(function)?
+            || self.try_scc_vfscanf(function)?
+            || self.try_scc_sscanf(function)?
+            || self.try_scd_parse_format(function)?
+            || self.try_scd_sformatter(function)?
+            || self.try_scd_stringread(function)?
+            || self.try_scd_sscanf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
