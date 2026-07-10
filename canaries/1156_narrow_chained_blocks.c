@@ -23,3 +23,8 @@ int ncb3_mix(unsigned char t)  { int a = 8; int b = 4; int c = 1; if (t > 1) { a
 // FOUR locals (fire 665): homes r4-r7 sequential; the join reassociates a+((b+c)+d) with the innermost
 // pair through the SCRATCH first: `add r0,r5,r6; add r3,r0,r7; add r3,r4,r3` (measured).
 int ncb4(unsigned char t) { int a = 8; int b = 4; int c = 1; int d = 6; if (t == 2) { a = 7; d = 5; } if (t == 3) { b = 9; c = 2; } return a + b + c + d; }
+// FIVE locals (fire 666): homes r4-r8; the N>=4 join generalizes — the inner sum builds in the
+// SCRATCH (`add r0,h1,h2; add r0,r0,h3; …`), the last term lands in the result, h0 tops it.
+// Also fire 666: an UNMUTATED const-init local DEFERS (mwcc folds it into the join and compacts the
+// homes — measured; the handler previously DIFFed on that shape).
+int ncb5(unsigned char t) { int a = 8; int b = 4; int c = 1; int d = 6; int e = 3; if (t == 2) { a = 7; c = 5; e = 2; } if (t == 3) { b = 9; d = 4; } return a + b + c + d + e; }

@@ -300,10 +300,10 @@ impl Generator {
         if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
-        // TWO to FOUR const-init int locals (extensible toward __va_arg's eight,
+        // TWO to FIVE const-init int locals (extensible toward __va_arg's eight,
         // one measured width at a time).
         let locals = function.locals.as_slice();
-        if !(2..=4).contains(&locals.len()) {
+        if !(2..=5).contains(&locals.len()) {
             return Ok(false);
         }
         let init_values: Option<Vec<i16>> = locals
@@ -417,6 +417,14 @@ impl Generator {
             tests.push((constant, options, condition_bit));
         }
         let (register, width) = condition_register_width.expect("at least two blocks");
+        // Every local must be REASSIGNED in some block: an UNMUTATED const-init local
+        // gets NO home in mwcc — it FOLDS into the join sum (`int c=1; … a+b+c` ->
+        // `addi r0,r5,1`, measured at width 5) and the remaining homes COMPACT. That
+        // fold is not modeled here, so defer (the same rule as the fire-644
+        // live-across gate; probing found this handler DIFFed on the shape).
+        if (0..locals.len()).any(|index| !assigned_before[index]) {
+            return Ok(false);
+        }
         // -- emit (measured) -- homes are SEQUENTIAL volatiles past the live
         // condition parameter (r4, r5, r6 …), riding preferred VIRTUALS through the
         // general allocation machinery.
@@ -459,8 +467,14 @@ impl Generator {
                 self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: result });
             }
             _ => {
+                // N >= 4: the inner sum h1+h2(+h3…) builds in the SCRATCH, the last
+                // term lands in the result, then h0 tops it (measured at 4 and 5:
+                // `add r0,h1,h2; [add r0,r0,h3;] add r3,r0,hLAST; add r3,h0,r3`).
                 self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: homes[1], b: homes[2] });
-                self.output.instructions.push(Instruction::Add { d: result, a: GENERAL_SCRATCH, b: homes[3] });
+                for &home in &homes[3..homes.len() - 1] {
+                    self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: home });
+                }
+                self.output.instructions.push(Instruction::Add { d: result, a: GENERAL_SCRATCH, b: homes[homes.len() - 1] });
                 self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: result });
             }
         }
