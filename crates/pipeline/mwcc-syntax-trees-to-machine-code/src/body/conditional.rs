@@ -200,6 +200,8 @@ impl Generator {
         if function.statements.len() < 2 {
             return Ok(false);
         }
+        let inits = [first_init, second_init];
+        let mut assigned_before = [false, false];
         let mut blocks: Vec<(&Expression, Vec<(usize, i16)>)> = Vec::new();
         for statement in &function.statements {
             let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
@@ -214,10 +216,40 @@ impl Generator {
                 if arm.last().is_some_and(|&(last, _)| last >= index) {
                     return Ok(false);
                 }
-                let Some(constant) = constant_value(value).and_then(|value| i16::try_from(value).ok()) else {
-                    return Ok(false);
+                let constant = match constant_value(value).and_then(|value| i16::try_from(value).ok()) {
+                    Some(constant) => constant,
+                    // A SELF-op against the still-known init constant FOLDS (measured:
+                    // `int a=8; if(..){ a=a-1; }` -> `li r4,7`, exactly __va_arg's
+                    // `maxsize--` -> `li r5,7`). Valid only while NO earlier block
+                    // reassigned the local (the value would then be branch-dependent).
+                    None => {
+                        let folded = (|| {
+                            if assigned_before[index] {
+                                return None;
+                            }
+                            let Expression::Binary { operator, left, right } = value else { return None };
+                            if !matches!(left, box_expression if matches!(box_expression.as_ref(), Expression::Variable(inner_name) if inner_name == name)) {
+                                return None;
+                            }
+                            let operand = constant_value(right).and_then(|constant| i16::try_from(constant).ok())?;
+                            let base = i64::from(inits[index]);
+                            let value = match operator {
+                                BinaryOperator::Add => base + i64::from(operand),
+                                BinaryOperator::Subtract => base - i64::from(operand),
+                                _ => return None,
+                            };
+                            i16::try_from(value).ok()
+                        })();
+                        match folded {
+                            Some(folded) => folded,
+                            None => return Ok(false),
+                        }
+                    }
                 };
                 arm.push((index, constant));
+            }
+            for &(index, _) in &arm {
+                assigned_before[index] = true;
             }
             blocks.push((condition, arm));
         }

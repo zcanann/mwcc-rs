@@ -10,3 +10,8 @@
 int ncb_two(unsigned char t)   { int a = 8; int b = 4; if (t == 2) { a = 7; }        if (t == 3) { b = 9; } return a + b; }
 int ncb_mixed(unsigned char t) { int a = 8; int b = 4; if (t == 2) { a = 7; b = 5; } if (t == 3) { b = 9; } return a + b; }
 int ncb_three(unsigned char t) { int a = 8; int b = 4; if (t > 1) { a = 7; } if (t < 5) { b = 9; } if (t == 3) { a = 1; } return a + b; }
+// SELF-OP arm values fold against the still-known init (fire 650): `int a=8; if(t==2){ a=a-1; }` emits
+// `li r4,7` — exactly __va_arg's `maxsize--` -> `li r5,7`. Valid only while no EARLIER block reassigned
+// the local (a branch-dependent value defers).
+int ncb_fold(unsigned char t)  { int a = 8; int b = 4; if (t == 2) { a = a - 1; }        if (t == 3) { b = 9; } return a + b; }
+int ncb_fold2(unsigned char t) { int a = 8; int b = 4; if (t == 2) { a = a + 5; b = b - 2; } if (t == 3) { b = 9; } return a + b; }
