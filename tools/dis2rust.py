@@ -110,6 +110,7 @@ for idx, mn, ops in instrs:
     elif mn=="or.": push(f"OrRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="xor": push(f"Xor {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="neg": push(f"Negate {{ d: {R(ops[0])}, a: {R(ops[1])} }}")
+    elif mn=="not": push(f"Nor {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[1])} }}")
     elif mn=="add": push(f"Add {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="subf": push(f"SubtractFrom {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="subf.": push(f"SubtractFromRecord {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")

@@ -204,6 +204,8 @@ mod sldx;
 mod sldx_ac;
 mod sldx_pik;
 mod sldexp_str;
+mod rt_va_arg;
+mod rt_va_arg_50;
 
 use crate::generator::Generator;
 use mwcc_core::Compilation;
@@ -255,7 +257,9 @@ impl Generator {
                 skipped_context_fingerprint(&self.skipped_inline_names)
             );
         }
-        let fired = self.try_efmod(function)?
+        let fired = self.try_rt_va_arg(function)?
+            || self.try_rt_va_arg_50(function)?
+            || self.try_efmod(function)?
             || self.try_satan(function)?
             || self.try_satan_pik(function)?
             || self.try_satan_sun(function)?
