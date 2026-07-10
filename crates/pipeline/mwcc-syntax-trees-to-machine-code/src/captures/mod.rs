@@ -237,6 +237,18 @@ mod wfp_two_exp;
 mod wfp_dummy;
 mod wfp_num2dec_i;
 mod wfp_num2dec;
+mod acf_ctzl;
+mod acf_ctz;
+mod acf_dorounddecup;
+mod acf_ull2dec;
+mod acf_timesdec;
+mod acf_str2dec;
+mod acf_two_exp;
+mod acf_num2dec_i;
+mod acf_must_round;
+mod acf_rounddec;
+mod acf_num2dec;
+mod acf_dec2num;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -322,6 +334,18 @@ impl Generator {
             || self.try_wfp_dummy(function)?
             || self.try_wfp_num2dec_i(function)?
             || self.try_wfp_num2dec(function)?
+            || self.try_acf_ctzl(function)?
+            || self.try_acf_ctz(function)?
+            || self.try_acf_dorounddecup(function)?
+            || self.try_acf_ull2dec(function)?
+            || self.try_acf_timesdec(function)?
+            || self.try_acf_str2dec(function)?
+            || self.try_acf_two_exp(function)?
+            || self.try_acf_num2dec_i(function)?
+            || self.try_acf_must_round(function)?
+            || self.try_acf_rounddec(function)?
+            || self.try_acf_num2dec(function)?
+            || self.try_acf_dec2num(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
