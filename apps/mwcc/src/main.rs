@@ -195,7 +195,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> = unit
         .functions
         .iter()
-        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, &unit.skipped_inline_names, &weak_materialized_names, &prototyped_names, config))
+        .map(|function| mwcc_syntax_trees_to_machine_code::lower_function(function, &unit.globals, &call_return_types, &call_parameter_types, &unit.skipped_inline_names, &weak_materialized_names, &prototyped_names, &unit.variadic_definitions, config))
         .collect::<Compilation<_>>()?;
     // MWCC_DUMP_FIXTURES=<dir>: serialize every lowered function's register
     // structure (per-instruction define/use operands via the vreg machine

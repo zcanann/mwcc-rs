@@ -300,6 +300,11 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        // A VARIADIC definition only a capture may claim — the general path
+        // cannot emit the register-save prologue byte-exactly.
+        if self.variadic_definition {
+            return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
+        }
         // An INITIALIZED AUTOMATIC local array needs the frame copy-in
         // sequence natively — only a capture claim emits it byte-exactly, so
         // an unclaimed function with one defers here (after the templates).

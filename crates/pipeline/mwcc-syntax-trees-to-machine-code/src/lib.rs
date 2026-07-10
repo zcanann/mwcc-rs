@@ -38,7 +38,7 @@ use generator::Generator;
 /// `call_return_types` maps callable names (prototypes and definitions) to their
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
-pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, skipped_inline_names: &std::collections::HashSet<String>, weak_materialized_names: &std::collections::HashSet<String>, prototyped_names: &std::collections::HashSet<String>, config: CompilerConfig) -> Compilation<MachineFunction> {
+pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, skipped_inline_names: &std::collections::HashSet<String>, weak_materialized_names: &std::collections::HashSet<String>, prototyped_names: &std::collections::HashSet<String>, variadic_definitions: &std::collections::HashSet<String>, config: CompilerConfig) -> Compilation<MachineFunction> {
     // An inline-`asm` function is emitted verbatim — no register allocation,
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {
@@ -100,7 +100,9 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         };
         &stripped
     };
+    let variadic_definition = variadic_definitions.contains(&function.name);
     let mut generator = Generator {
+        variadic_definition,
         output: MachineFunction::new(function.name.clone()),
         labels: mwcc_vreg::Labels::default(),
         locations: HashMap::new(),

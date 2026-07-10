@@ -100,6 +100,9 @@ pub(crate) struct FrameSlot {
 }
 
 pub(crate) struct Generator {
+    /// This function is a VARIADIC definition — only a capture may emit it
+    /// (the register-save prologue is unmodeled in general codegen).
+    pub(crate) variadic_definition: bool,
     pub(crate) output: MachineFunction,
     /// Branch labels awaiting resolution — the multi-block emission substrate.
     /// Resolved into `output.instructions` once body emission completes.

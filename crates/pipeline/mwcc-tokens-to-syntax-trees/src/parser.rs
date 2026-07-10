@@ -67,6 +67,8 @@ pub(crate) struct Parser {
     pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
+    /// Names of variadic function DEFINITIONS (side-set — never in the hashed AST).
+    pub(crate) variadic_definitions: std::collections::HashSet<String>,
     /// The current inline-`asm` function's REGISTER PARAMETERS: `(name, gpr,
     /// struct tag)` in declaration order (r3, r4, … positional). An asm operand
     /// naming a parameter resolves to its register (`mr r3,val`), and

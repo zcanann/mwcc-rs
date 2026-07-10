@@ -525,6 +525,7 @@ impl Parser {
             weak_materialized: std::mem::take(&mut self.weak_materialized),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
+            variadic_definitions: std::mem::take(&mut self.variadic_definitions),
         })
     }
 
@@ -1544,12 +1545,12 @@ impl Parser {
                 prototypes.push((name, return_type, parameter_types));
                 return Ok(());
             }
-            // A variadic function DEFINITION needs the variadic-register save
-            // prologue (`stwu; bne cr1; stfd f1-f8; stw r3-r10; …`), which is not
-            // modeled — defer rather than emit an empty body. (A variadic prototype
-            // above is fine; only a definition reaches here.)
+            // A variadic function DEFINITION parses like any other (so a capture
+            // can hash-match it); its name goes in a SIDE set — never in the
+            // hashed Function — and the general lowering defers it (the
+            // variadic-register-save prologue is capture-only for now).
             if is_variadic {
-                return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
+                self.variadic_definitions.insert(name.clone());
             }
             // A `static inline` DEFINITION is normally skipped-and-inlined (the
             // mp4 shape — the error routes it to the skip machinery). But with a
