@@ -281,6 +281,8 @@ pub enum Instruction {
     /// `cmpwi crfD, rA, SIMM` — signed immediate compare into an EXPLICIT condition
     /// field (`crf != 0`; the runtime's inline-`asm` `__mod2i` uses `cmpwi cr7, …`).
     CompareWordImmediateField { crf: u8, a: u8, immediate: i16 },
+    /// `cmpw crf, rA, rB` — signed register compare into a NON-cr0 field.
+    CompareWordField { crf: u8, a: u8, b: u8 },
     /// `cmpw crf0, rA, rB` — signed compare.
     CompareWord { a: u8, b: u8 },
     /// `cmplwi crf0, rA, UIMM` — unsigned compare against an immediate.

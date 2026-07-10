@@ -240,7 +240,11 @@ impl Parser {
                     let base = match self.advance() {
                         Token::Identifier(word) => match parse_asm_register(&word) {
                             Some(AsmOperand::Gpr(index)) => index,
-                            _ => return Err(Diagnostic::error(format!("asm memory operand base '{word}' must be a general-purpose register"))),
+                            // A named register PARAMETER as the base (`PTMF.f(ptmf)`).
+                            _ => match self.asm_parameters.iter().find(|(name, _, _)| *name == word) {
+                                Some(&(_, gpr, _)) => gpr,
+                                None => return Err(Diagnostic::error(format!("asm memory operand base '{word}' must be a general-purpose register"))),
+                            },
                         },
                         other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
                     };
@@ -278,7 +282,11 @@ impl Parser {
                     let base = match self.advance() {
                         Token::Identifier(register) => match parse_asm_register(&register) {
                             Some(AsmOperand::Gpr(index)) => index,
-                            _ => return Err(Diagnostic::error(format!("asm memory operand base '{register}' must be a general-purpose register"))),
+                            // A named register PARAMETER as the base (`PTMF.f(ptmf)`).
+                            _ => match self.asm_parameters.iter().find(|(name, _, _)| *name == register) {
+                                Some(&(_, gpr, _)) => gpr,
+                                None => return Err(Diagnostic::error(format!("asm memory operand base '{register}' must be a general-purpose register"))),
+                            },
                         },
                         other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
                     };

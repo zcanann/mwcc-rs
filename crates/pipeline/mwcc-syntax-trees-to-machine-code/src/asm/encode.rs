@@ -199,7 +199,13 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
             let immediate = immediate16u(mnemonic, &operands[1])?;
             Instruction::CompareLogicalWordImmediate { a, immediate }
         }
-        "cmpw" => { let operands = require_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareWord { a, b } }
+        "cmpw" => {
+            // cr0 keeps the plain form; a `crN` field selects the field compare
+            // (`cmpw cr6, rA, rB` — the BfBB ptmf vtable test).
+            let (crf, operands) = take_cr_field(operands);
+            let [a, b] = gprs(mnemonic, operands)?;
+            if crf == 0 { Instruction::CompareWord { a, b } } else { Instruction::CompareWordField { crf, a, b } }
+        }
         "cmplw" => { let operands = require_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareLogicalWord { a, b } }
 
         // The count register (`bdnz` loop support).

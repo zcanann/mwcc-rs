@@ -164,6 +164,7 @@ impl Instruction {
             Instruction::ConditionRegisterOr { d, a, b } => (19 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (449 << 1),
             Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWordImmediateField { crf, a, immediate } => (11 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | (immediate as u16 as u32),
+            Instruction::CompareWordField { crf, a, b } => (31 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | ((b as u32) << 11),
             Instruction::CompareWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
             Instruction::CompareLogicalWordImmediate { a, immediate } => (10 << 26) | ((a as u32) << 16) | (immediate as u32),
             Instruction::CompareLogicalWord { a, b } => (31 << 26) | ((a as u32) << 16) | ((b as u32) << 11) | (32 << 1),
