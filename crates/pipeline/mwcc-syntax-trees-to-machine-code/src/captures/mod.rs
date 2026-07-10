@@ -303,6 +303,15 @@ mod sca_fscanf;
 mod sca_scanf;
 mod sca_vsscanf;
 mod sca_sscanf;
+mod scb_parse_format;
+mod scb_sformatter;
+mod scb_fileread;
+mod scb_stringread;
+mod scb_fscanf;
+mod scb_vscanf;
+mod scb_scanf;
+mod scb_vfscanf;
+mod scb_sscanf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -454,6 +463,15 @@ impl Generator {
             || self.try_sca_scanf(function)?
             || self.try_sca_vsscanf(function)?
             || self.try_sca_sscanf(function)?
+            || self.try_scb_parse_format(function)?
+            || self.try_scb_sformatter(function)?
+            || self.try_scb_fileread(function)?
+            || self.try_scb_stringread(function)?
+            || self.try_scb_fscanf(function)?
+            || self.try_scb_vscanf(function)?
+            || self.try_scb_scanf(function)?
+            || self.try_scb_vfscanf(function)?
+            || self.try_scb_sscanf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
