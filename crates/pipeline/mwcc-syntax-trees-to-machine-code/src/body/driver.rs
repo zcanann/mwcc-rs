@@ -661,6 +661,9 @@ impl Generator {
         if self.try_narrow_interleave_two_locals(function)? {
             return Ok(());
         }
+        if self.try_narrow_interleave_three_locals(function)? {
+            return Ok(());
+        }
         if self.try_conditional_assign_initialized(function)? {
             return Ok(());
         }

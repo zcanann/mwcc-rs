@@ -123,6 +123,69 @@ impl Generator {
         {
             return Ok(false);
         }
+        self.emit_narrow_interleave(function, &[(first_init, first_new), (second_init, second_new)])
+    }
+
+    /// The THREE-local sibling of [`Self::try_narrow_interleave_two_locals`]: the sum
+    /// `a+b+c` REASSOCIATES to `a+(b+c)`, shifting the consumer-tree homes — c takes
+    /// the in-place r3, b the scratch r0, and a the first FREE volatile (r4 with one
+    /// param): `clrlwi r0,t,w; li r4,i1; cmplwi r0,C; li r0,i2; li r3,i3; b<!c> L;
+    /// li r4,n1; li r0,n2; li r3,n3; L: add r3,r0,r3; add r3,r4,r3; blr` (measured).
+    pub(crate) fn try_narrow_interleave_three_locals(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let [first, second, third] = function.locals.as_slice() else { return Ok(false) };
+        let inits: Option<Vec<i16>> = [first, second, third]
+            .iter()
+            .map(|local| {
+                if local.array_length.is_some() {
+                    return None;
+                }
+                local.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok())
+            })
+            .collect();
+        let Some(inits) = inits else { return Ok(false) };
+        let [Statement::If { condition: _, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name: name1, value: value1 }, Statement::Assign { name: name2, value: value2 }, Statement::Assign { name: name3, value: value3 }] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if name1 != &first.name || name2 != &second.name || name3 != &third.name {
+            return Ok(false);
+        }
+        let news: Option<Vec<i16>> = [value1, value2, value3]
+            .iter()
+            .map(|value| constant_value(value).and_then(|constant| i16::try_from(constant).ok()))
+            .collect();
+        let Some(news) = news else { return Ok(false) };
+        // The return is `first + second + third` (left-assoc) in declaration order.
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Binary { operator: BinaryOperator::Add, left, right })
+            if matches!(right.as_ref(), Expression::Variable(name) if name == &third.name)
+                && matches!(left.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right }
+                    if matches!(inner_left.as_ref(), Expression::Variable(name) if name == &first.name)
+                        && matches!(inner_right.as_ref(), Expression::Variable(name) if name == &second.name)))
+        {
+            return Ok(false);
+        }
+        self.emit_narrow_interleave(function, &[(inits[0], news[0]), (inits[1], news[1]), (inits[2], news[2])])
+    }
+
+    /// Shared emission for the 2-/3-local narrow init-interleave, `pairs` in
+    /// declaration order. Homes are CONSUMER-TREE-driven (the direct sum lowering):
+    /// two locals -> [r3, r0]; three (the reassociated `a+(b+c)`) -> [free, r0, r3].
+    /// The first local's init fills the width-op -> compare latency gap; the rest
+    /// follow the compare; the arm rewrites all; the join adds right-first.
+    fn emit_narrow_interleave(&mut self, function: &Function, pairs: &[(i16, i16)]) -> Compilation<bool> {
+        let [Statement::If { condition, .. }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
         // The condition: an UNSIGNED narrow leaf against a u16 constant.
         let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
         let Some(constant) = constant_value(right).and_then(|value| u16::try_from(value).ok()) else {
@@ -138,21 +201,52 @@ impl Generator {
         let Some((options, condition_bit)) = false_branch_bo_bi(*operator) else {
             return Ok(false);
         };
-        // -- emit (measured order) --
+        // -- emit (measured order) -- Homes per the consumer tree: two locals ->
+        // [r3, r0] (in-place `add r3,r3,r0`); three (reassociated `a+(b+c)`) ->
+        // [first free volatile, r0, r3] (`add r3,r0,r3; add r3,rF,r3`).
         let result = Eabi::general_result().number;
+        // The three-local first home is r4 — measured with the condition as the ONLY
+        // parameter. A second parameter complicates it: mwcc reclaims a DEAD extra
+        // param's register (an unused `u` in r4 still yields r4) but must skip a live
+        // one — liveness the allocator models, not this handler. Gate to one param.
+        if pairs.len() == 3
+            && self
+                .locations
+                .values()
+                .filter(|location| location.class == ValueClass::General)
+                .count()
+                != 1
+        {
+            return Ok(false);
+        }
+        let homes: Vec<u8> = match pairs.len() {
+            2 => vec![result, GENERAL_SCRATCH],
+            3 => vec![result + 1, GENERAL_SCRATCH, result],
+            _ => return Ok(false),
+        };
         self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
-        self.load_integer_constant(result, i64::from(first_init));
+        self.load_integer_constant(homes[0], i64::from(pairs[0].0));
         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
-        self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_init));
+        for (index, &(init, _)) in pairs.iter().enumerate().skip(1) {
+            self.load_integer_constant(homes[index], i64::from(init));
+        }
         let branch_index = self.output.instructions.len();
         self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-        self.load_integer_constant(result, i64::from(first_new));
-        self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_new));
+        for (index, &(_, new)) in pairs.iter().enumerate() {
+            self.load_integer_constant(homes[index], i64::from(new));
+        }
         let join = self.output.instructions.len();
         if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
             *target = join;
         }
-        self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH });
+        match pairs.len() {
+            2 => self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH }),
+            _ => {
+                // a+(b+c): b (r0) + c (r3) in place, then a (the free volatile).
+                self.output.instructions.push(Instruction::Add { d: result, a: GENERAL_SCRATCH, b: result });
+                self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: result });
+            }
+        }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         // The if's join advances mwcc's anonymous-@N counter by 2.
         self.output.anonymous_label_bump += 2;
