@@ -72,6 +72,93 @@ impl Generator {
     /// `<test c>; li result,INIT; b<!c>lr; li result,NEW; blr` (the false path returns the
     /// initializer already in the result; the true path falls through to the new value). Variable
     /// arms use a different move/staging form and are deferred here.
+    /// TWO const-init locals both reassigned to constants in ONE narrow-guarded
+    /// block, returned as their sum — the 2-local slice of the __va_arg init-
+    /// interleave (measured): the width op leads, the FIRST local's init fills the
+    /// latency gap in the sum's in-place register r3, the LOGICAL compare consumes
+    /// the scratch, the SECOND local's init lands in the freed r0, the arm rewrites
+    /// both, and the join adds them:
+    ///   clrlwi r0,t,24; li r3,i1; cmplwi r0,C; li r0,i2; b<!c> L; li r3,n1;
+    ///   li r0,n2; L: add r3,r3,r0; blr
+    /// The homes mirror the direct `a+b` lowering (a in r3, b in r0); three-plus
+    /// locals reassociate the sum and shift homes (r4 appears) — deferred.
+    pub(crate) fn try_narrow_interleave_two_locals(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let [first, second] = function.locals.as_slice() else { return Ok(false) };
+        let (Some(first_init), Some(second_init)) = (
+            first.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok()),
+            second.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok()),
+        ) else {
+            return Ok(false);
+        };
+        if first.array_length.is_some() || second.array_length.is_some() {
+            return Ok(false);
+        }
+        // The single narrow-guarded block reassigns BOTH locals to i16 constants, in
+        // declaration order.
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name: name1, value: value1 }, Statement::Assign { name: name2, value: value2 }] = then_body.as_slice() else {
+            return Ok(false);
+        };
+        if name1 != &first.name || name2 != &second.name {
+            return Ok(false);
+        }
+        let (Some(first_new), Some(second_new)) = (
+            constant_value(value1).and_then(|value| i16::try_from(value).ok()),
+            constant_value(value2).and_then(|value| i16::try_from(value).ok()),
+        ) else {
+            return Ok(false);
+        };
+        // The return is `first + second` in declaration order.
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Binary { operator: BinaryOperator::Add, left, right })
+            if matches!(left.as_ref(), Expression::Variable(name) if name == &first.name)
+                && matches!(right.as_ref(), Expression::Variable(name) if name == &second.name))
+        {
+            return Ok(false);
+        }
+        // The condition: an UNSIGNED narrow leaf against a u16 constant.
+        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        let Some(constant) = constant_value(right).and_then(|value| u16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        let Some((register, width)) = leaf_name(left)
+            .and_then(|name| self.locations.get(name))
+            .filter(|location| location.class == ValueClass::General && !location.signed && location.width < 32)
+            .map(|location| (location.register, location.width))
+        else {
+            return Ok(false);
+        };
+        let Some((options, condition_bit)) = false_branch_bo_bi(*operator) else {
+            return Ok(false);
+        };
+        // -- emit (measured order) --
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
+        self.load_integer_constant(result, i64::from(first_init));
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
+        self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_init));
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.load_integer_constant(result, i64::from(first_new));
+        self.load_integer_constant(GENERAL_SCRATCH, i64::from(second_new));
+        let join = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = join;
+        }
+        self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The if's join advances mwcc's anonymous-@N counter by 2.
+        self.output.anonymous_label_bump += 2;
+        Ok(true)
+    }
+
     pub(crate) fn try_conditional_assign_initialized(&mut self, function: &Function) -> Compilation<bool> {
         let [local] = function.locals.as_slice() else { return Ok(false) };
         let Some(initializer) = &local.initializer else { return Ok(false) };

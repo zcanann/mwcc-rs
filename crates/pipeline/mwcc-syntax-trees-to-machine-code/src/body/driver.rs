@@ -656,6 +656,11 @@ impl Generator {
         }
         // `T y = INIT; if (c) y = NEW; return y;` (no else), constant arms — mwcc lowers the
         // conditional ASSIGN as an early-return branch form (NOT the select/branchless idiom).
+        // TWO const-init locals under one narrow guard, returned as their sum — the
+        // 2-local init-interleave slice. See body/conditional.rs.
+        if self.try_narrow_interleave_two_locals(function)? {
+            return Ok(());
+        }
         if self.try_conditional_assign_initialized(function)? {
             return Ok(());
         }
