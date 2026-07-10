@@ -442,7 +442,7 @@ impl Parser {
                             let mangled = format!("{}$localstatic{}${}", local.name, slot + 3, function_name);
                             self.global_sizes.insert(mangled.clone(), (local.byte_size as u32, None));
                             globals.push(GlobalDeclaration {
-                                non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(),
+                                non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(),
                                 declared_type: local.declared_type,
                                 name: mangled,
                                 is_extern: false,
@@ -1197,7 +1197,7 @@ impl Parser {
                         return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
                     }
                     self.variable_structs.insert(name.clone(), tag.clone());
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {
@@ -1266,7 +1266,7 @@ impl Parser {
                     None
                 };
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
+                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -1424,7 +1424,7 @@ impl Parser {
                     } else {
                         is_const
                     };
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations), section: declspec_section.clone() });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations), section: declspec_section.clone() });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type

@@ -206,6 +206,13 @@ mod sldx_pik;
 mod sldexp_str;
 mod rt_va_arg;
 mod rt_va_arg_50;
+mod afp_ctzl;
+mod afp_ull2dec;
+mod afp_timesdec;
+mod afp_str2dec;
+mod afp_two_exp;
+mod afp_num2dec_i;
+mod afp_num2dec;
 
 use crate::generator::Generator;
 use mwcc_core::Compilation;
@@ -259,6 +266,13 @@ impl Generator {
         }
         let fired = self.try_rt_va_arg(function)?
             || self.try_rt_va_arg_50(function)?
+            || self.try_afp_ctzl(function)?
+            || self.try_afp_ull2dec(function)?
+            || self.try_afp_timesdec(function)?
+            || self.try_afp_str2dec(function)?
+            || self.try_afp_two_exp(function)?
+            || self.try_afp_num2dec_i(function)?
+            || self.try_afp_num2dec(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
             || self.try_satan_pik(function)?

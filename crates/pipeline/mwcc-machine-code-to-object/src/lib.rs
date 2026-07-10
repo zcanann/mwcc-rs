@@ -32,6 +32,7 @@ pub struct DefinedGlobal {
     pub relocations: Vec<mwcc_object::DataRelocation>,
     /// Non-static functions defined before this object (source-order symbol interleaving).
     pub non_static_functions_before: usize,
+    pub functions_before: usize,
     /// A WEAK object symbol (an inline function's emitted static local).
     pub is_weak: bool,
     /// A real function's STATIC LOCAL: the owning function's index. The writer
@@ -126,7 +127,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone(), non_static_functions_before: global.non_static_functions_before, is_weak: global.is_weak, static_local_owner: global.static_local_owner, anonymous_adjust: global.anonymous_adjust, section: global.section.as_deref() })
+        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone(), non_static_functions_before: global.non_static_functions_before, functions_before: global.functions_before, is_weak: global.is_weak, static_local_owner: global.static_local_owner, anonymous_adjust: global.anonymous_adjust, section: global.section.as_deref() })
         .collect();
     mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data, inline_asm_symbols })
 }

@@ -715,6 +715,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // symbol indices are recorded by function index so a call relocation resolves to
     // the local symbol; the global run below skips them.
     let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
+    let mut early_jump_table_symbols: Vec<Option<u32>> = vec![None; functions.len()];
     let mut local_function_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut static_slot_symbols: HashMap<(usize, usize), u32> = HashMap::new();
     let mut static_slot_symbol_by_value: HashMap<(u64, u8), u32> = HashMap::new();
@@ -727,18 +728,34 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // (after its own static locals), and calls bind the UND ghost instead —
         // it never enters `local_function_symbols` (measured: ww uart).
         if function.is_static && !function.implicit_local {
-            // A STATIC-SLOT pooled constant (an auto array's word image) leads
-            // its owning STATIC function's symbol (measured: mbstring's @4
-            // before unicode_to_UTF8's FUNC).
+            // A STATIC function's pooled constants lead its own FUNC symbol —
+            // mwcc creates the object symbols while compiling the body, then
+            // the function symbol at definition end (measured: mbstring's @4
+            // image before unicode_to_UTF8's FUNC; ansi_fp's @837 pool double
+            // before __num2dec_internal's FUNC).
             for (constant_index, constant) in function.constants.iter().enumerate() {
-                if constant.image && !static_slot_symbol_by_value.contains_key(&(constant.bits, constant.byte_width)) {
+                if !constant_symbol.contains_key(&(constant.bits, constant.byte_width)) {
                     let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                    static_slot_symbols.insert((index, constant_index), symbol);
-                    static_slot_symbol_by_value.insert((constant.bits, constant.byte_width), symbol);
+                    if constant.image {
+                        static_slot_symbols.insert((index, constant_index), symbol);
+                        static_slot_symbol_by_value.insert((constant.bits, constant.byte_width), symbol);
+                    }
                     constant_symbol.insert((constant.bits, constant.byte_width), symbol);
                     let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
                     write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
                     comment_values.push((constant.byte_width as u32, 0));
+                }
+            }
+            // Its jump table likewise precedes the FUNC symbol (measured:
+            // ansi_fp's @752 table before __two_exp's FUNC).
+            if let Some(number) = jump_table_numbers[index] {
+                if early_jump_table_symbols[index].is_none() {
+                    let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                    early_jump_table_symbols[index] = Some(symbol);
+                    let name = strtab.add(&format!("@{}", number));
+                    let size = function.jump_table.as_ref().unwrap().entries.len() as u32 * 4;
+                    write_symbol(&mut symtab, name, jump_table_offset[index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".data") as u16);
+                    comment_values.push((4, 0));
                 }
             }
             let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
@@ -836,8 +853,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         } else {
             extab_entry_symbols.push(0);
         }
-        // The jump table is a 4-aligned local `@N` object in `.data`.
-        if let Some(number) = jump_table_numbers[index] {
+        // The jump table is a 4-aligned local `@N` object in `.data`. A STATIC
+        // function's table already emitted ahead of its FUNC symbol above.
+        if let Some(early) = early_jump_table_symbols[index] {
+            jump_table_symbols.push(early);
+        } else if let Some(number) = jump_table_numbers[index] {
             jump_table_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
             let name = strtab.add(&format!("@{}", number));
             let size = function.jump_table.as_ref().unwrap().entries.len() as u32 * 4;
@@ -907,11 +927,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // UNINITIALIZED zero globals trail the functions in reverse. (Large `.bss`
     // follows its own reference-order rule, untouched here.)
     for object in &input.data_objects {
-        if is_initialized_run_object(object) && object.non_static_functions_before == 0 {
+        if is_initialized_run_object(object) && object.functions_before == 0 {
             emit_initialized_object!(object);
         }
     }
-    let mut non_static_seen = 0usize;
+    let mut functions_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
         // Assign this function's referenced externals in mwcc's symbol-table order
         // (its AST `symbol_order`) for the names it lists, then any remaining in
@@ -1063,17 +1083,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
         emit_referenced!(implicit_ordered);
-        // Initialized objects declared right after this (non-static) function
-        // emit here — the source-position interleaving.
-        if !function.is_static {
-            non_static_seen += 1;
-            for object in &input.data_objects {
-                if is_initialized_run_object(object)
-                    && object.non_static_functions_before == non_static_seen
-                    && !global_symbols.contains_key(object.name)
-                {
-                    emit_initialized_object!(object);
-                }
+        // Initialized objects declared right after this function emit here —
+        // the source-position interleaving. STATIC functions count too
+        // (measured: ansi_fp's .rodata digit table, declared between static
+        // functions, lands after the preceding function's referenced
+        // externals, not up front).
+        functions_seen += 1;
+        for object in &input.data_objects {
+            if is_initialized_run_object(object)
+                && object.functions_before == functions_seen
+                && !global_symbols.contains_key(object.name)
+            {
+                emit_initialized_object!(object);
             }
         }
     }

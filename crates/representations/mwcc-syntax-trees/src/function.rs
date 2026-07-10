@@ -150,6 +150,11 @@ pub struct GlobalDeclaration {
     /// source position (static functions' LOCAL symbols precede the data run,
     /// so only global functions shift an object's slot).
     pub non_static_functions_before: usize,
+    /// Count of ALL function definitions (static included) before this
+    /// declaration — the initialized-global symbol interleave keys on this
+    /// (measured: ansi_fp's lbl table, declared between static functions,
+    /// emits at its source position, not up front).
+    pub functions_before: usize,
     /// Declared array length `[N]`; `Some` for an array (an empty `[]` infers it
     /// from the initializer), `None` for a scalar.
     pub array_length: Option<u16>,

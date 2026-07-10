@@ -67,6 +67,8 @@ pub struct DataObject<'a> {
     /// Non-static functions defined before this object — the writer emits its
     /// symbol at that source position among the function symbol runs.
     pub non_static_functions_before: usize,
+    /// ALL function definitions (static included) before this declaration.
+    pub functions_before: usize,
     /// A WEAK object symbol (an inline function's emitted static local).
     pub is_weak: bool,
     /// A real function's static local: the owning function index (numbering).
