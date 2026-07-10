@@ -637,9 +637,20 @@ impl Generator {
         {
             return Ok(false);
         }
+        // The homes ride preferred VIRTUALS through the general allocation machinery
+        // (Phase D policy #1 end-to-end); LinearScan resolves each to its consumer-
+        // tree register — including the scratch r0 preference, whose interval starts
+        // at the post-compare `li`, after the width-op's physical r0 died.
         let homes: Vec<u8> = match pairs.len() {
-            2 => vec![result, GENERAL_SCRATCH],
-            3 => vec![result + 1, GENERAL_SCRATCH, result],
+            2 => vec![
+                self.fresh_virtual_general_preferring(result),
+                self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
+            ],
+            3 => vec![
+                self.fresh_virtual_general_preferring(result + 1),
+                self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
+                self.fresh_virtual_general_preferring(result),
+            ],
             _ => return Ok(false),
         };
         self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
@@ -658,10 +669,10 @@ impl Generator {
             *target = join;
         }
         match pairs.len() {
-            2 => self.output.instructions.push(Instruction::Add { d: result, a: result, b: GENERAL_SCRATCH }),
+            2 => self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: homes[1] }),
             _ => {
                 // a+(b+c): b (r0) + c (r3) in place, then a (the free volatile).
-                self.output.instructions.push(Instruction::Add { d: result, a: GENERAL_SCRATCH, b: result });
+                self.output.instructions.push(Instruction::Add { d: result, a: homes[1], b: homes[2] });
                 self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: result });
             }
         }
