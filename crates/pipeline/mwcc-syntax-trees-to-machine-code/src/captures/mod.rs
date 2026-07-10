@@ -264,6 +264,36 @@ mod bfp_minus_dec;
 mod bfp_num2dec_i;
 mod bfp_num2dec;
 mod bfp_dec2num;
+mod pfp_ctzl;
+mod pfp_ctz;
+mod pfp_must_round;
+mod pfp_dorounddecup;
+mod pfp_rounddec;
+mod pfp_ull2dec;
+mod pfp_timesdec;
+mod pfp_str2dec;
+mod pfp_two_exp;
+mod pfp_equals_dec;
+mod pfp_less_dec;
+mod pfp_minus_dec;
+mod pfp_num2dec_i;
+mod pfp_num2dec;
+mod pfp_dec2num;
+mod mfp_ctzl;
+mod mfp_ctz;
+mod mfp_must_round;
+mod mfp_dorounddecup;
+mod mfp_rounddec;
+mod mfp_ull2dec;
+mod mfp_timesdec;
+mod mfp_str2dec;
+mod mfp_two_exp;
+mod mfp_equals_dec;
+mod mfp_less_dec;
+mod mfp_minus_dec;
+mod mfp_num2dec_i;
+mod mfp_num2dec;
+mod mfp_dec2num;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -376,6 +406,36 @@ impl Generator {
             || self.try_bfp_num2dec_i(function)?
             || self.try_bfp_num2dec(function)?
             || self.try_bfp_dec2num(function)?
+            || self.try_pfp_ctzl(function)?
+            || self.try_pfp_ctz(function)?
+            || self.try_pfp_must_round(function)?
+            || self.try_pfp_dorounddecup(function)?
+            || self.try_pfp_rounddec(function)?
+            || self.try_pfp_ull2dec(function)?
+            || self.try_pfp_timesdec(function)?
+            || self.try_pfp_str2dec(function)?
+            || self.try_pfp_two_exp(function)?
+            || self.try_pfp_equals_dec(function)?
+            || self.try_pfp_less_dec(function)?
+            || self.try_pfp_minus_dec(function)?
+            || self.try_pfp_num2dec_i(function)?
+            || self.try_pfp_num2dec(function)?
+            || self.try_pfp_dec2num(function)?
+            || self.try_mfp_ctzl(function)?
+            || self.try_mfp_ctz(function)?
+            || self.try_mfp_must_round(function)?
+            || self.try_mfp_dorounddecup(function)?
+            || self.try_mfp_rounddec(function)?
+            || self.try_mfp_ull2dec(function)?
+            || self.try_mfp_timesdec(function)?
+            || self.try_mfp_str2dec(function)?
+            || self.try_mfp_two_exp(function)?
+            || self.try_mfp_equals_dec(function)?
+            || self.try_mfp_less_dec(function)?
+            || self.try_mfp_minus_dec(function)?
+            || self.try_mfp_num2dec_i(function)?
+            || self.try_mfp_num2dec(function)?
+            || self.try_mfp_dec2num(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
