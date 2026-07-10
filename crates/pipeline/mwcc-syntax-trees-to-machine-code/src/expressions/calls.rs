@@ -90,6 +90,25 @@ impl Generator {
         // left-to-right would overwrite the earlier arguments (`s(5, f())`, `s(f(), g())`), so defer.
         // (A call in the FIRST argument alone is fine: later constant/in-place arguments do not clobber
         // its r3 result, e.g. `s(f(), 5)`.)
+        // `h(gg, g())` — a scalar-global first argument and an argument-free call as the
+        // SECOND. The global is reloadable (it lives in memory), so mwcc needs no callee-
+        // saved register: it evaluates the call FIRST (its result in r3), copies it to the
+        // second argument register, then loads the global into r3 — `bl g; mr r4,r3; lwz
+        // r3,gg`. This is the first slice of the callee-saved argument scheduler; the
+        // param-first form (which must save the param across the call) and a `&array`
+        // first argument (whose address materialization interleaves) still defer below.
+        if let [Expression::Variable(global), second @ Expression::Call { arguments: call_arguments, .. }] = arguments {
+            if self.globals.contains_key(global.as_str())
+                && !self.global_array_sizes.contains_key(global.as_str())
+                && call_arguments.is_empty()
+            {
+                let first_register = Eabi::FIRST_GENERAL_ARGUMENT;
+                self.evaluate_general(second, first_register)?; // bl g -> r3
+                self.output.instructions.push(Instruction::move_register(first_register + 1, first_register)); // mr r4,r3
+                self.evaluate_general(&arguments[0], first_register)?; // lwz r3,gg
+                return Ok(());
+            }
+        }
         if arguments.iter().skip(1).any(expression_has_call) {
             return Err(Diagnostic::error("a call in a non-first argument needs the callee-saved argument scheduler (roadmap)"));
         }
