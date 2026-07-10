@@ -1023,6 +1023,15 @@ impl Parser {
                     let tag = if tag.is_empty() { alias.clone() } else { tag };
                     self.structs.insert(tag.clone(), layout);
                     loop {
+                        // An ARRAY declarator (`typedef struct {…} __va_list[1];` — the
+                        // stdarg va_list shape): the alias still resolves through the
+                        // struct tag; a parameter of this type decays to the struct
+                        // pointer exactly like the bare struct typedef does.
+                        while *self.peek() == Token::BracketOpen {
+                            self.advance();
+                            self.parse_integer_constant()?;
+                            self.expect(Token::BracketClose)?;
+                        }
                         if is_pointer {
                             self.struct_pointer_typedefs.insert(alias, tag.clone());
                         } else {
@@ -1069,6 +1078,33 @@ impl Parser {
                     }
                     self.expect(Token::Semicolon)?;
                     return Ok(());
+                }
+                // `typedef Existing NewAlias;` — a pure re-alias of a struct,
+                // struct-pointer, or array typedef COPIES the original registration
+                // (`typedef __va_list va_list;` — parse_type's scalar model would
+                // lose the struct identity).
+                if let (Token::Identifier(existing), Some(Token::Identifier(_)), Some(Token::Semicolon)) =
+                    (self.peek(), self.tokens.get(self.position + 1), self.tokens.get(self.position + 2))
+                {
+                    let existing = existing.clone();
+                    let struct_tag = self.struct_typedefs.get(&existing).cloned();
+                    let pointer_tag = self.struct_pointer_typedefs.get(&existing).cloned();
+                    let array_entry = self.array_typedefs.get(&existing).cloned();
+                    if struct_tag.is_some() || pointer_tag.is_some() || array_entry.is_some() {
+                        self.advance(); // the existing alias
+                        let alias = self.parse_identifier()?;
+                        self.expect(Token::Semicolon)?;
+                        if let Some(tag) = struct_tag {
+                            self.struct_typedefs.insert(alias.clone(), tag);
+                        }
+                        if let Some(tag) = pointer_tag {
+                            self.struct_pointer_typedefs.insert(alias.clone(), tag);
+                        }
+                        if let Some(entry) = array_entry {
+                            self.array_typedefs.insert(alias, entry);
+                        }
+                        return Ok(());
+                    }
                 }
                 let aliased = self.parse_type()?;
                 // Function-pointer typedef `typedef RET (*name)(params);` — the
