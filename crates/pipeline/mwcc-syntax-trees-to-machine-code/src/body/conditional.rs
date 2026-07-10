@@ -149,9 +149,12 @@ impl Generator {
         let Some((options, condition_bit)) = false_branch_bo_bi(*operator) else {
             return Ok(false);
         };
-        // -- emit (measured) -- b's home: the next volatile past the live inner operand.
+        // -- emit (measured) -- b's home is a PLAIN virtual: the measured r5 EMERGES
+        // from pinned interference alone (the record test pins r0, the live inner
+        // operand pins its register, the first local's li pins r3 — the lowest free
+        // is r5), validating policy #4 as derived, not hardcoded.
         let result = Eabi::general_result().number;
-        let second_home = inner_register.max(result) + 1;
+        let second_home = self.fresh_virtual_general();
         self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width });
         self.load_integer_constant(result, i64::from(first_init));
         self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
@@ -393,9 +396,13 @@ impl Generator {
             tests.push((constant, options, condition_bit));
         }
         let (register, width) = condition_register_width.expect("at least two blocks");
-        // -- emit (measured) -- homes r4, r5 (past the live condition parameter).
+        // -- emit (measured) -- homes r4, r5 (past the live condition parameter),
+        // riding preferred VIRTUALS through the general allocation machinery.
         let result = Eabi::general_result().number;
-        let homes = [result + 1, result + 2];
+        let homes = [
+            self.fresh_virtual_general_preferring(result + 1),
+            self.fresh_virtual_general_preferring(result + 2),
+        ];
         let inits = [first_init, second_init];
         for (block_index, ((_, arm), &(constant, options, condition_bit))) in blocks.iter().zip(&tests).enumerate() {
             self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width as u8 });
