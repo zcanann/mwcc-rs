@@ -40,4 +40,4 @@ for line in syms.splitlines():
     # exclude the jump table (all-zero relocated words, size multiple of 4, > 0x40)
     if size > 0x40 and size % 4 == 0 and all(b == 0 for b in blob):
         continue
-    print(name, body.hex())
+    print(name, body.hex() if body else '-')

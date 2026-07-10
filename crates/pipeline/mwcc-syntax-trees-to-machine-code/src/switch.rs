@@ -231,7 +231,7 @@ impl Generator {
         // entry — a padded table has more entries than cases) plus the dispatch,
         // and one more when the default is an explicit `default:` label.
         let anonymous_offset = sorted.len() as u32 + 1 + if default_is_labeled { 1 } else { 0 };
-        self.output.jump_table = Some(JumpTable { entries, anonymous_offset });
+        self.output.jump_tables.push(JumpTable { entries, anonymous_offset });
         Ok(())
     }
 

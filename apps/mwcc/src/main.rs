@@ -323,7 +323,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // A large (> 8 byte) writable global shares `.data`/`.bss` with any dense-switch
     // jump table; the two layouts aren't reconciled yet, so a jump table forces such
     // globals to keep deferring (be dropped).
-    let has_jump_table = machine_functions.iter().any(|function| function.jump_table.is_some());
+    let has_jump_table = machine_functions.iter().any(|function| !function.jump_tables.is_empty());
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     // Distinct pooled string literals, by bytes, to their anonymous `@N` name, and
     // the running `@N` counter — deduplicated across the unit (mwcc `-str reuse`).
@@ -757,7 +757,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 }
             }
         }
-        if let Some(table) = &machine_function.jump_table {
+        for table in &machine_function.jump_tables {
             number += table.anonymous_offset;
         }
         number += machine_function.post_constant_label_bump;

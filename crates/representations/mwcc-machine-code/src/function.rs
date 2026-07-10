@@ -125,7 +125,7 @@ pub struct MachineFunction {
     pub frame: Option<FrameInfo>,
     /// A dense `switch`'s jump table; `None` unless the function dispatches through
     /// one. The writer materializes it as an anonymous `@N` object in `.data`.
-    pub jump_table: Option<JumpTable>,
+    pub jump_tables: Vec<JumpTable>,
     /// An anonymous read-only data BLOB this function references (`@N` in
     /// `.rodata` via ADDR16_HA/LO — e.g. __strtold's 42-byte zero table).
     /// Numbered like the jump table: `anonymous_offset` past the function's
@@ -189,7 +189,7 @@ impl MachineFunction {
             post_constant_label_bump: 0,
             pre_scheduled: false,
             frame: None,
-            jump_table: None,
+            jump_tables: Vec::new(),
             anonymous_rodata: None,
             local_undefined_callees: Vec::new(),
             symbol_order: Vec::new(),

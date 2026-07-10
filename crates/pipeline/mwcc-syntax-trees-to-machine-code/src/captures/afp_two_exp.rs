@@ -37,7 +37,7 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 208;
         self.non_leaf = true;
-        self.output.jump_table = Some(mwcc_machine_code::JumpTable {
+        self.output.jump_tables.push(mwcc_machine_code::JumpTable {
             entries: vec![72, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 316, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 560, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 804, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 1048, 1292, 1536, 1780, 2024, 2268, 2512, 2756, 3000, 3240, 3480, 3720, 3960, 4204, 4448, 4692, 4936],
             anonymous_offset: 669, // measured (real table @752, counter @83 at dispatch)
         });

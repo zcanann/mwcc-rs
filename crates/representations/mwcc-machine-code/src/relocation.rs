@@ -54,7 +54,11 @@ pub enum RelocationTarget {
     Constant(usize),
     /// This function's own jump table — the anonymous `@N` object the writer
     /// materializes in `.data` for a dense `switch` (its `lis`/`addi` address load).
+    /// Refers to the FIRST table; a function with several uses `JumpTableAt`.
     JumpTable,
+    /// The i-th of this function's jump tables (mp4 printf's parse_format
+    /// carries two — a 17-entry and a 56-entry switch).
+    JumpTableAt(usize),
     /// This function's anonymous `.rodata` blob (`MachineFunction::anonymous_rodata`).
     AnonymousRodata,
 }

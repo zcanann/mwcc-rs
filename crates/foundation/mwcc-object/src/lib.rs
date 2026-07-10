@@ -155,7 +155,7 @@ pub struct FunctionObject<'a> {
     /// A dense `switch`'s jump table. The writer materializes it as an anonymous
     /// `@N` object in `.data`, fills the per-entry `ADDR32` relocations to this
     /// function, and resolves this function's `JumpTable` `.text` relocations.
-    pub jump_table: Option<JumpTable>,
+    pub jump_tables: Vec<JumpTable>,
     /// An anonymous `.rodata` blob (`@N` via ADDR16_HA/LO): raw bytes plus the
     /// blob's offset past the function's running `@N` counter (numbered BEFORE
     /// the pool constants — measured on __strtold: table @26, pool @147).
@@ -182,6 +182,8 @@ pub struct JumpTable {
 
 /// What a `.text` relocation points at.
 pub enum RelocationTarget {
+    /// The i-th of the function's jump tables.
+    JumpTableAt(usize),
     /// An external symbol defined elsewhere (a global or callee).
     External(String),
     /// An entry in this object's constant pool, by index.

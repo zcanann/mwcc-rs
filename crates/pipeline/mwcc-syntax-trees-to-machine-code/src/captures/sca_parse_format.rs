@@ -45,7 +45,7 @@ impl Generator {
             },
             anonymous_offset: -1, // real @4 against the running counter 5
         });
-        self.output.jump_table = Some(mwcc_machine_code::JumpTable {
+        self.output.jump_tables.push(mwcc_machine_code::JumpTable {
             entries: vec![600, 1244, 600, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 1244, 576, 1244, 1244, 840, 1244, 1244, 1244, 1244, 1244, 600, 1244, 680, 576, 600, 600, 600, 1244, 576, 1244, 1244, 1244, 1244, 1252, 576, 660, 1244, 1244, 724, 1244, 576, 1244, 1244, 576],
             anonymous_offset: 115, // real table @120 (counter @5 at dispatch)
         });

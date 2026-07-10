@@ -44,7 +44,7 @@ impl Generator {
             },
             anonymous_offset: -10, // real blob @24
         });
-        self.output.jump_table = Some(mwcc_machine_code::JumpTable {
+        self.output.jump_tables.push(mwcc_machine_code::JumpTable {
             entries: vec![624, 1268, 624, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 1268, 600, 1268, 1268, 864, 1268, 1268, 1268, 1268, 1268, 624, 1268, 704, 600, 624, 624, 624, 1268, 600, 1268, 1268, 1268, 1268, 1276, 600, 684, 1268, 1268, 748, 1268, 600, 1268, 1268, 600],
             anonymous_offset: 115, // real table @140 (blob advance feeds the stream)
         });

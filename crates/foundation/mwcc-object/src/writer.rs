@@ -217,7 +217,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }) {
         place(object, ".data", &mut file_data_size);
     }
-    let mut jump_table_offset: Vec<Option<u32>> = vec![None; input.functions.len()];
+    let mut jump_table_offset: Vec<Vec<Option<u32>>> = input.functions.iter().map(|function| vec![None; function.jump_tables.len()]).collect();
     for (function_index, function) in input.functions.iter().enumerate() {
         // The function's own `.data` STATIC LOCALS lead its block (declared at
         // the body top, before any string literal use — bfbb's pow_10$1224 at
@@ -232,13 +232,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 place(object, ".data", &mut file_data_size);
             }
         }
-        if let Some(table) = &function.jump_table {
+        for (table_index, table) in function.jump_tables.iter().enumerate().rev() {
             file_data_size = file_data_size.div_ceil(4) * 4;
-            jump_table_offset[function_index] = Some(file_data_size);
+            jump_table_offset[function_index][table_index] = Some(file_data_size);
             file_data_size += table.entries.len() as u32 * 4;
         }
     }
-    let has_jump_table = input.functions.iter().any(|function| function.jump_table.is_some());
+    let has_jump_table = input.functions.iter().any(|function| !function.jump_tables.is_empty());
     // Large zero `.bss` lays out in SYMBOL-EMISSION order, not declaration order:
     // referenced objects first (in the order functions reference them — their
     // `symbol_order`, across functions in source order), then any unreferenced ones
@@ -365,7 +365,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     let mut constant_numbers: Vec<Vec<u32>> = Vec::new();
     let mut frame_numbers: Vec<Option<FrameNumbers>> = Vec::new();
-    let mut jump_table_numbers: Vec<Option<u32>> = Vec::new();
+    let mut jump_table_numbers: Vec<Vec<u32>> = Vec::new();
     let mut rodata_blob_numbers: Vec<Option<u32>> = Vec::new();
     let mut extab_payload_offset = 0u32;
     let mut extabindex_payload_offset = 0u32;
@@ -490,13 +490,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         constant_numbers.push(numbers);
         // A dense switch's jump table is numbered after the function's internal
         // labels (a label per case, the dispatch, and an explicit `default:`).
-        if let Some(table) = &function.jump_table {
+        let mut numbers_of_tables = Vec::new();
+        for table in &function.jump_tables {
             let number_of_table = number + table.anonymous_offset;
             number = number_of_table;
-            jump_table_numbers.push(Some(number_of_table));
-        } else {
-            jump_table_numbers.push(None);
+            numbers_of_tables.push(number_of_table);
         }
+        jump_table_numbers.push(numbers_of_tables);
         number += function.post_constant_bump;
         if function.frame.is_some() {
             let frame = FrameNumbers {
@@ -795,7 +795,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // two_exp's and num2dec_internal's @N blocks).
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
-    let mut jump_table_symbols: Vec<u32> = Vec::new();
+    let mut jump_table_symbols: Vec<Vec<u32>> = Vec::new();
     let mut rodata_blob_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         // FILE-SCOPE statics declared right before this function (ansi_fp's
@@ -931,16 +931,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         } else {
             extab_entry_symbols.push(0);
         }
-        // The jump table is a 4-aligned local `@N` object in `.data`.
-        if let Some(number) = jump_table_numbers[index] {
-            jump_table_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
-            let name = strtab.add(&format!("@{}", number));
-            let size = function.jump_table.as_ref().unwrap().entries.len() as u32 * 4;
-            write_symbol(&mut symtab, name, jump_table_offset[index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".data") as u16);
+        // Each jump table is a 4-aligned local `@N` object in `.data`,
+        // symbols in creation (numbering) order.
+        let mut symbols_of_tables = Vec::new();
+        for (table_index, table) in function.jump_tables.iter().enumerate() {
+            symbols_of_tables.push((symtab.len() / SYMBOL_SIZE) as u32);
+            let name = strtab.add(&format!("@{}", jump_table_numbers[index][table_index]));
+            let size = table.entries.len() as u32 * 4;
+            write_symbol(&mut symtab, name, jump_table_offset[index][table_index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".data") as u16);
             comment_values.push((4, 0));
-        } else {
-            jump_table_symbols.push(0);
         }
+        jump_table_symbols.push(symbols_of_tables);
         // A STATIC function's own FUNC symbol closes its block (definition end;
         // an implicit-local already emitted after its static locals above),
         // followed by its own static locals (measured: ac uart).
@@ -1227,7 +1228,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     .or_else(|| local_function_symbols.get(name.as_str()))
                     .unwrap_or_else(|| &global_symbols[name.as_str()]),
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
-                RelocationTarget::JumpTable => jump_table_symbols[index],
+                RelocationTarget::JumpTable => jump_table_symbols[index][0],
+                RelocationTarget::JumpTableAt(table_index) => jump_table_symbols[index][*table_index],
                 RelocationTarget::AnonymousRodata => rodata_blob_symbols[index],
             };
             write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, 0);
@@ -1237,8 +1239,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // case body's byte offset as the addend.
     let mut rela_data = Vec::new();
     for (index, function) in functions.iter().enumerate() {
-        if let Some(table) = &function.jump_table {
-            let base = jump_table_offset[index].unwrap();
+        // Tables emit their entry relocations in LAYOUT order (ascending
+        // section offset), each an ADDR32 to the function + body offset.
+        let mut ordered: Vec<usize> = (0..function.jump_tables.len()).collect();
+        ordered.sort_by_key(|&table_index| jump_table_offset[index][table_index]);
+        for table_index in ordered {
+            let table = &function.jump_tables[table_index];
+            let base = jump_table_offset[index][table_index].unwrap();
             for (entry_index, &body_offset) in table.entries.iter().enumerate() {
                 write_rela(&mut rela_data, base + entry_index as u32 * 4, function_symbols[index], R_PPC_ADDR32, body_offset);
             }

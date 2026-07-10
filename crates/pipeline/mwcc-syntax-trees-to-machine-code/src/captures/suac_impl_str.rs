@@ -35,7 +35,7 @@ impl Generator {
         self.frame_size = 64;
         self.non_leaf = true;
         self.callee_saved = vec![21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]; // via _savegpr_21
-        self.output.jump_table = Some(mwcc_machine_code::JumpTable {
+        self.output.jump_tables.push(mwcc_machine_code::JumpTable {
             entries: vec![784, 196, 356, 784, 428, 784, 784, 784, 508, 784, 784, 784, 784, 784, 784, 784, 508],
             anonymous_offset: 80, // measured: table @100 (f512 refctx probe)
         });

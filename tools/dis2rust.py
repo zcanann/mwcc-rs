@@ -41,6 +41,8 @@ STR_EMITTED = {}
 def string_intern_expr(name):
     # Emit the intern on first reference (creation order = mwcc's), reuse after.
     hexbytes = STRINGS[name]
+    if hexbytes == "-":
+        return "self.intern_string_literal(&[])"
     array = ", ".join(f"0x{hexbytes[i:i+2]}" for i in range(0, len(hexbytes), 2))
     return f"self.intern_string_literal(&[{array}])"
 def R(x): return x.replace('r','')
