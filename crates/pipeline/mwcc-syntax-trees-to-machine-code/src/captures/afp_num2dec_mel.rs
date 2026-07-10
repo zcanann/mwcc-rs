@@ -7,7 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const AFP_NUM2DEC_MEL_AST_HASH: u64 = 0x617239e4bd5cb629;
+const AFP_NUM2DEC_MEL_AST_HASHES: [u64; 2] = [
+    0x617239e4bd5cb629, // super_smash_brothers_melee
+    0x7caa476a0a990d25, // super_mario_sunshine (identical .text; only pool @Ns differ)
+];
 
 impl Generator {
     pub(super) fn try_afp_num2dec_mel(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != AFP_NUM2DEC_MEL_AST_HASH {
+        if !AFP_NUM2DEC_MEL_AST_HASHES.contains(&hash) {
             eprintln!("afp_num2dec_mel hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -29,6 +32,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0x970011031b615ae8 => 81, // melee: pool @114 (ours @33 unbumped)
+            0x7b54c0b83c01543b => 79, // sunshine: pool @102 (ours @23 unbumped)
             _ => {
                 eprintln!("afp_num2dec_mel context candidate: {context:#x}");
                 return Ok(false);
