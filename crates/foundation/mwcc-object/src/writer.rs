@@ -678,7 +678,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && object.static_local_owner.is_none()
             // Declared BETWEEN functions -> emitted at its source position in
             // the per-function run below (ansi_fp's `unused` + its string).
-            && object.functions_before == 0
+            // SECTION-ATTRIBUTED statics (gdc's `.dtors` reference) stay up
+            // front regardless of declaration position (measured).
+            && (object.functions_before == 0 || object.section.is_some())
         {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
@@ -821,7 +823,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 && static_forward(object)
                 && !function_string_names.contains(object.name)
                 && object.static_local_owner.is_none()
-                && object.functions_before == index
+                && object.section.is_none()
+                // At its declaring position; a tail declaration (after the
+                // last function) clamps to the final block.
+                && (object.functions_before == index
+                    || (index + 1 == functions.len() && object.functions_before > index))
                 && index > 0
                 && !local_data_symbols.contains_key(object.name)
             {
