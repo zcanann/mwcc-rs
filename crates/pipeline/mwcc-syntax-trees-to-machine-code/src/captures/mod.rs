@@ -213,6 +213,9 @@ mod afp_str2dec;
 mod afp_two_exp;
 mod afp_num2dec_i;
 mod afp_num2dec;
+mod afp_num2dec_mel;
+mod afp_num2dec_pik;
+mod afp_dec2num_pik;
 
 use crate::generator::Generator;
 use mwcc_core::Compilation;
@@ -273,6 +276,9 @@ impl Generator {
             || self.try_afp_two_exp(function)?
             || self.try_afp_num2dec_i(function)?
             || self.try_afp_num2dec(function)?
+            || self.try_afp_num2dec_mel(function)?
+            || self.try_afp_num2dec_pik(function)?
+            || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
             || self.try_satan_pik(function)?

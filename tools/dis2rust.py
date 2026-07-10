@@ -101,6 +101,7 @@ for idx, mn, ops in instrs:
     elif mn=="clrrwi": push(f"AndContiguousMask {{ a: {R(ops[0])}, s: {R(ops[1])}, begin: 0, end: {31-int(ops[2])} }}")
     elif mn=="rlwinm": push(f"RotateAndMask {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: {ops[3]}, end: {ops[4]} }}")
     elif mn=="slwi": push(f"ShiftLeftImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]} }}")
+    elif mn=="rotlwi": push(f"RotateAndMask {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]}, begin: 0, end: 31 }}")
     elif mn=="srwi": push(f"ShiftRightLogicalImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]} }}")
     elif mn=="srawi": push(f"ShiftRightAlgebraicImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]} }}")
     elif mn=="slw": push(f"ShiftLeftWord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[2])} }}")
