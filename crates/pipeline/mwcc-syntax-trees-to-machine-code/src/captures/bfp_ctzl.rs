@@ -28,10 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            // DISABLED: dec2num's string numbers MID-CONSTANTS (creation order @1542
-            // between @1541/@1545) — the strings-first resolver needs a position
-            // knob before the @Ns can match (see memory). TU defers meanwhile.
-            // 0xdbce2bc49da89140 => 0,
+            0xdbce2bc49da89140 => 0, // battle_for_bikini_bottom
             _ => {
                 eprintln!("bfp_ctzl context candidate: {context:#x}");
                 return Ok(false);

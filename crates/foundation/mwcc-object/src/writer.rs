@@ -212,11 +212,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .flat_map(|(function_index, function)| function.string_names.iter().map(move |name| (name.as_str(), function_index)))
         .collect();
     let mut file_data_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".data" && !string_owner.contains_key(object.name)) {
+    for object in input.data_objects.iter().filter(|object| {
+        section_of(object) == ".data" && !string_owner.contains_key(object.name) && object.static_local_owner.is_none()
+    }) {
         place(object, ".data", &mut file_data_size);
     }
     let mut jump_table_offset: Vec<Option<u32>> = vec![None; input.functions.len()];
     for (function_index, function) in input.functions.iter().enumerate() {
+        // The function's own `.data` STATIC LOCALS lead its block (declared at
+        // the body top, before any string literal use — bfbb's pow_10$1224 at
+        // 0x1a8 ahead of dec2num's pooled string).
+        for object in input.data_objects.iter().filter(|object| {
+            object.static_local_owner == Some(function_index) && section_of(object) == ".data"
+        }) {
+            place(object, ".data", &mut file_data_size);
+        }
         for name in &function.string_names {
             if let Some(object) = input.data_objects.iter().find(|object| object.name == name.as_str() && section_of(object) == ".data") {
                 place(object, ".data", &mut file_data_size);
@@ -420,8 +430,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             );
         }
         let mut number = counter + owned_statics.len() as u32 + function.anonymous_bump;
-        // This function's own strings sit at the front of its `@N` block, before its constants.
-        number += function.string_count;
+        // This function's own strings sit at the front of its `@N` block, before
+        // its constants — unless string_number_after_constants places them
+        // after the first K constants (creation order — bfbb's __dec2num).
+        if function.string_number_after_constants.is_none() {
+            number += function.string_count;
+        }
         // The anonymous rodata blob numbers BEFORE the pool constants
         // (measured: __strtold's table @26 precedes its pool double @147).
         if let Some((_, anonymous_offset)) = &function.anonymous_rodata {
@@ -451,6 +465,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
                 continue;
             }
+            if function.string_number_after_constants == Some(constant_index as u32) {
+                number += function.string_count;
+            }
             for (gap_index, gap) in &function.constant_number_gaps {
                 if *gap_index == constant_index {
                     number += gap;
@@ -463,6 +480,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     numbers.push(number);
                     number += 1;
                 }
+            }
+        }
+        if let Some(position) = function.string_number_after_constants {
+            if position as usize >= function.constants.len() {
+                number += function.string_count;
             }
         }
         constant_numbers.push(numbers);
@@ -837,17 +859,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // unwind entries. Each `@N` name already has a laid-out data object (`.sdata`/`.data`); emit
         // its LOCAL symbol here and record it so relocations (this function's, and a later function
         // reusing the same pooled string) resolve to it.
-        for name in &function.string_names {
-            if data_marker_pending && data_section[name.as_str()] == ".data" {
-                local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
-                write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
-                comment_values.push((1, 0x0010_0000));
-                data_marker_pending = false;
+        // (When string_number_after_constants is set, the string SYMBOLS also
+        // emit mid-constants — handled inside the constants loop below.)
+        if function.string_number_after_constants.is_none() {
+            for name in &function.string_names {
+                if data_marker_pending && data_section[name.as_str()] == ".data" {
+                    local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                    write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
+                    comment_values.push((1, 0x0010_0000));
+                    data_marker_pending = false;
+                }
+                local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[name.as_str()]) as u16;
+                write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                comment_values.push((data_aligns[name.as_str()], 0));
             }
-            local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-            let section = index_of(data_section[name.as_str()]) as u16;
-            write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
-            comment_values.push((data_aligns[name.as_str()], 0));
         }
         // The anonymous rodata blob's LOCAL `@N` symbol precedes the pool
         // constants' (symtab order measured on __strtold: @26 then @147).
@@ -863,6 +889,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
+            if function.string_number_after_constants == Some(constant_index as u32) {
+                for name in &function.string_names {
+                    local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                    let section = index_of(data_section[name.as_str()]) as u16;
+                    write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                    comment_values.push((data_aligns[name.as_str()], 0));
+                }
+            }
             // An IMAGE constant's symbol already emitted ahead of its owning
             // static function — a later function reusing it binds the same
             // symbol.

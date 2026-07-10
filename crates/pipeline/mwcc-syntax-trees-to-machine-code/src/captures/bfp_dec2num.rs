@@ -28,7 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0xdbce2bc49da89140 => 0, // marioparty4 (bump TBD from refctx @N diff)
+            0xdbce2bc49da89140 => 313, // bfbb (pow_10 owned-static consumes a slot; 71 shifted upstream)
             _ => {
                 eprintln!("bfp_dec2num context candidate: {context:#x}");
                 return Ok(false);
@@ -37,6 +37,12 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 512;
         self.non_leaf = true;
+        // Creation order inside the body: three doubles, THEN the pooled
+        // string (@1542), a 2-number gap, the last two doubles (@1545/@1546).
+        // (index 0 is the REUSED @1145 — it consumes no number, so the three
+        // new doubles are indices 1-3 and the string+gap sit before index 4.)
+        self.output.string_number_after_constants = Some(4);
+        self.output.constant_number_gaps = vec![(4, 2)];
         for bits in [
             0x0000000000000000u64,
             0x3ff0000000000000,
@@ -267,13 +273,13 @@ impl Generator {
         self.bind_label(labels[&179]);
         self.output.instructions.push(Instruction::LoadByteZero { d: 4, a: 1, offset: 421 });
         self.output.instructions.push(Instruction::load_immediate_shifted(7, 17200));
-        self.record_relocation(RelocationKind::Addr16Ha, "pow_10$1224");
+        self.record_relocation(RelocationKind::Addr16Ha, "pow_10");
         self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
         self.output.instructions.push(Instruction::StoreWord { s: 7, a: 1, offset: 464 });
         self.load_double_constant(3, 0x4330000000000000);
         self.output.instructions.push(Instruction::AddImmediate { d: 8, a: 30, immediate: 1 });
         self.output.instructions.push(Instruction::StoreWord { s: 4, a: 1, offset: 468 });
-        self.record_relocation(RelocationKind::Addr16Lo, "pow_10$1224");
+        self.record_relocation(RelocationKind::Addr16Lo, "pow_10");
         self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 3, immediate: 0 });
         self.output.instructions.push(Instruction::LoadHalfwordAlgebraic { d: 4, a: 1, offset: 418 });
         self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 464 });

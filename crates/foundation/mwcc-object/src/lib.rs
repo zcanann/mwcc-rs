@@ -144,6 +144,8 @@ pub struct FunctionObject<'a> {
     /// `@N` string pool. They are numbered at the FRONT of this function's `@N` block
     /// (before its constants and unwind entries), so the writer advances by this first.
     pub string_count: u32,
+    /// See MachineFunction::string_number_after_constants.
+    pub string_number_after_constants: Option<u32>,
     /// The `@N` names of those NEW strings, in front-of-block order. The writer emits a
     /// LOCAL object symbol for each at the FRONT of this function's `@N` block (its bytes
     /// and section/offset come from the matching `.sdata`/`.data` data object), so the

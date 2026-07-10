@@ -66,6 +66,11 @@ pub struct MachineFunction {
     /// advances its per-function `@N` counter by this at the FRONT of the function's
     /// block (strings precede the function's constants and unwind entries).
     pub new_string_count: u32,
+    /// When set to K, this function's NEW pooled strings take their `@N`
+    /// numbers AFTER its first K pool constants instead of at the block front
+    /// (bfbb's __dec2num: constants @1539-1541, THEN the string @1542 —
+    /// creation order inside the body).
+    pub string_number_after_constants: Option<u32>,
     /// The `@N` names of the NEW strings this function introduces, in front-of-block
     /// order — set by the unit's string resolver alongside `new_string_count`. The
     /// object writer emits a LOCAL symbol for each at the FRONT of the function's `@N`
@@ -168,6 +173,7 @@ impl MachineFunction {
             constants: Vec::new(),
             string_literals: Vec::new(),
             new_string_count: 0,
+            string_number_after_constants: None,
             new_string_names: Vec::new(),
             is_static: false,
             implicit_materialized: false,

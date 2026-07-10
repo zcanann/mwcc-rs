@@ -111,6 +111,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             // names of those strings. The writer numbers/emits them at the front of the function's
             // `@N` block (interleaved per-function with its constants and unwind entries).
             string_count: function.new_string_count,
+            string_number_after_constants: function.string_number_after_constants,
             string_names: function.new_string_names.clone(),
             jump_table: function.jump_table.as_ref().map(|table| JumpTable {
                 entries: table.entries.clone(),

@@ -28,7 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0xdbce2bc49da89140 => 0, // marioparty4 (bump TBD from refctx @N diff)
+            0xdbce2bc49da89140 => 802, // bfbb
             _ => {
                 eprintln!("bfp_two_exp context candidate: {context:#x}");
                 return Ok(false);

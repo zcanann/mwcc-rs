@@ -99,7 +99,8 @@ for idx, mn, ops in instrs:
             # a jump-table base (@N .data object) — the writer resolves it.
             out.append(f"        self.record_target(RelocationKind::{kind}, mwcc_machine_code::RelocationTarget::JumpTable);")
         else:
-            out.append(f'        self.record_relocation(RelocationKind::{kind}, "{rl[1]}");')
+            target = re.sub(r'\$\d+$', '', rl[1])
+            out.append(f'        self.record_relocation(RelocationKind::{kind}, "{target}");')
     def push(s): out.append(f"        self.output.instructions.push(Instruction::{s});")
     def bc(o,b_):
         t = int(ops[-1],16)//4

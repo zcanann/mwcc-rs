@@ -650,12 +650,13 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         let bump = u32::from(machine_function.has_conversion)
             + if machine_function.has_float_branch { 3 } else { 0 }
             + machine_function.anonymous_label_bump;
-        let mut number = counter + bump;
+        let mut number = counter + bump
+            + unit.functions.get(function_index).map_or(0, |source| source.locals.iter().filter(|local| local.is_static).count() as u32);
         // Strings first, in the function's `@N` block. The NEW ones (a reuse points at an earlier
         // pool entry) are recorded by name so the writer emits their symbols at the FRONT of this
         // function's `@N` block, interleaved per-function with its constants/unwind entries.
         let mut new_string_names: Vec<String> = Vec::new();
-        let resolved: Vec<String> = machine_function
+        let mut resolved: Vec<String> = machine_function
             .string_literals
             .iter()
             .map(|bytes| {
@@ -688,7 +689,22 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         // JUMPS to the table's number and continues from it — mirroring the
         // writer), the post-table label bump, and its unwind entries, so the
         // next function's block starts at the right `@N`.
+        // string_number_after_constants: the string numbers assigned above used
+        // the block-front position; when the knob places them after the first K
+        // constants instead, re-derive them from the walk here (the writer
+        // mirrors the same split).
+        let string_shift = machine_function.new_string_count;
+        let mut deferred_string_base: Option<u32> = None;
+        if machine_function.string_number_after_constants.is_some() {
+            // The strings were numbered at the front above; pull the walk back
+            // and inject them at position K instead.
+            number -= string_shift;
+        }
         for (constant_index, constant) in machine_function.constants.iter().enumerate() {
+            if machine_function.string_number_after_constants == Some(constant_index as u32) {
+                deferred_string_base = Some(number);
+                number += string_shift;
+            }
             for (gap_index, gap) in &machine_function.constant_number_gaps {
                 if *gap_index == constant_index {
                     number += gap;
@@ -696,6 +712,49 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             }
             if numbered_constant.insert((constant.bits, constant.byte_width)) {
                 number += 1;
+            }
+        }
+        if let Some(position) = machine_function.string_number_after_constants {
+            if position as usize >= machine_function.constants.len() {
+                deferred_string_base = Some(number);
+                number += string_shift;
+            }
+            // Rename the front-assigned @Ns to the deferred position.
+            if let Some(base) = deferred_string_base {
+                let mut renumbered = std::collections::HashMap::new();
+                for (offset, name) in machine_function.new_string_names.iter().enumerate() {
+                    renumbered.insert(name.clone(), format!("@{}", base + offset as u32));
+                }
+                for name in &mut machine_function.new_string_names {
+                    if let Some(new_name) = renumbered.get(name) {
+                        *name = new_name.clone();
+                    }
+                }
+                for (bytes, name) in string_pool.iter_mut() {
+                    let _ = bytes;
+                    if let Some(new_name) = renumbered.get(name) {
+                        *name = new_name.clone();
+                    }
+                }
+                for object in &mut function_string_objects {
+                    if let Some(new_name) = renumbered.get(&object.name) {
+                        object.name = new_name.clone();
+                    }
+                }
+                for relocation in &mut machine_function.relocations {
+                    if let mwcc_machine_code::RelocationTarget::External(name) = &relocation.target {
+                        if let Some(new_name) = renumbered.get(name) {
+                            relocation.target = mwcc_machine_code::RelocationTarget::External(new_name.clone());
+                        }
+                    }
+                }
+                // The @@str placeholder rewrite below installs `resolved` names —
+                // point them at the deferred numbers too.
+                for name in &mut resolved {
+                    if let Some(new_name) = renumbered.get(name) {
+                        *name = new_name.clone();
+                    }
+                }
             }
         }
         if let Some(table) = &machine_function.jump_table {
