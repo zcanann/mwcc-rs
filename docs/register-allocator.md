@@ -174,3 +174,45 @@ allocator in place — plus the addressing modes (done: SDA21 + ADDR16) and a
 fuller frontend (Phase F) — the project's north star becomes reachable:
 byte-identical output for whole translation units. The allocator is the single
 highest-leverage subsystem between here and there.
+
+## The __va_arg policy specification (fires 645-654, canaries 1154-1159)
+
+The narrow-guard construct campaign measured the allocation/scheduling policies a
+general multi-local path must reproduce. Each is oracle-backed; the canaries are the
+acceptance tests. Insertion points named against the current crate:
+
+1. **Consumer-tree home coloring.** A local's home is the register where the RETURN
+   expression's evaluation wants it: `a+b` -> [r3, r0] (in-place add); `a+b+c`
+   reassociates `a+(b+c)` -> [r4, r0, r3]. Insert as a coloring PREFERENCE on the
+   locals' LiveIntervals (a preferred-register field beside `avoiding`), derived by
+   walking the consumer tree the way evaluate_tail lowers it.
+2. **Dying-register reclaim is KIND-dependent.** A LOAD init may take the condition
+   parameter's register once the width-op copies it out (`lbz r3,0(p)` after
+   `clrlwi r0,t,24`); a CONST `li` init may NOT (it takes the next volatile, r4).
+   Encode as: load-defined intervals may start at the width-op's index; const-defined
+   intervals start at the compare (conservative overlap with the parameter).
+3. **Scratch double-duty.** r0 hosts the width-op result until the compare consumes
+   it, then becomes a local's home. The interval for the test scratch must END at the
+   compare, not the branch.
+4. **Conflict avoidance vs record tests.** An arm containing a record-form test
+   (`clrlwi.`) claims r0 inside the arm — locals live across the arm avoid r0
+   (measured: b -> r5). This is a pinned occupancy across the arm's range.
+5. **Live-param home shifting.** When the condition parameter is re-read by LATER
+   tests (chained blocks), locals shift past it (r4, r5) and the join computes into
+   r3 (`add r3,r4,r5`); when it dies at the single test, the consumer tree owns the
+   homes. Dead EXTRA params' registers ARE reclaimed (unused u in r4 -> a takes r4).
+6. **The latency-slot scheduler** (schedule.rs): the pending init/assign pool fills
+   (a) the width-op -> compare gap (first init), (b) post-compare slots (later inits),
+   (c) a record-test -> branch gap (an arm const), (d) a load -> use gap (the SPLIT
+   extsb schedules after the next ready init). Generalize as list scheduling within
+   the block with the measured latency ranks, run before allocation.
+7. **Self-op init folds.** `x = x OP const` on a still-statically-known local folds
+   to a constant (value tracking against the init, invalidated by any prior
+   conditional assign).
+8. **Member-address locals alias or copy.** `T* q = &base->f` aliases base's register
+   (offset-0: no instruction; the reassign mutates in place) when base is otherwise
+   dead; when base stays live (later member accesses), q takes a `mr` copy.
+
+Milestone: route the canary-1154..1159 shapes through the general path (virtual homes
++ LinearScan with 1-5 + the scheduler with 6) and delete the bespoke handlers when the
+oracle stays green; then attempt __va_arg (9 corpus copies), then ansi_fp/scanf.
