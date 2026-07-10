@@ -29,17 +29,28 @@ pub struct LiveInterval {
     pub start: usize,
     pub end: usize,
     pub avoid: Vec<u8>,
+    /// CONSUMER-TREE COLORING (the __va_arg policy spec, #1): the register this
+    /// value's consumer wants it in — a return-sum leaf's in-place home (`a+b` ->
+    /// a prefers r3, b prefers r0), taken when free at allocation, else the pool
+    /// order proceeds. `None` (the default) is the plain lowest-free behavior.
+    pub prefer: Option<u8>,
 }
 
 impl LiveInterval {
     pub fn new(vreg: VirtualRegister, start: usize, end: usize) -> Self {
         debug_assert!(start <= end, "an interval ends no earlier than it starts");
-        LiveInterval { vreg, start, end, avoid: Vec::new() }
+        LiveInterval { vreg, start, end, avoid: Vec::new(), prefer: None }
     }
 
     /// The same interval with a set of registers it must avoid.
     pub fn avoiding(mut self, avoid: Vec<u8>) -> Self {
         self.avoid = avoid;
+        self
+    }
+
+    /// The same interval with a consumer-tree preferred register.
+    pub fn preferring(mut self, register: u8) -> Self {
+        self.prefer = Some(register);
         self
     }
 }
@@ -177,11 +188,27 @@ impl Allocator for LinearScan {
             } else {
                 constraints.pool(class)
             };
-            let choice = pool
-                .iter()
-                .copied()
-                .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
-                .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?;
+            // The consumer-tree preference wins when free (policy #1); the pool
+            // order is the fallback. The class SCRATCH (r0) is a legal preference —
+            // the measured double-duty home (policy #3) — though it is outside the
+            // default pool; it is never honored across a call (the scratch dies
+            // there). Any other out-of-pool wish is ignored — correctness first.
+            let preferred = interval
+                .prefer
+                .filter(|register| {
+                    let scratch_home = *register == constraints.scratch(class) && !crosses_call;
+                    (pool.contains(register) || scratch_home)
+                        && !busy.contains(register)
+                        && !interval.avoid.contains(register)
+                });
+            let choice = match preferred {
+                Some(register) => register,
+                None => pool
+                    .iter()
+                    .copied()
+                    .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
+                    .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?,
+            };
 
             allocation.assignments.insert(interval.vreg.id, choice);
             active.push((interval.end, choice, class));
@@ -207,6 +234,22 @@ mod tests {
         let allocation = LinearScan.allocate(&intervals, &[], &[2], &constraints).unwrap();
         // v0/v1 cross the call (r31, r30); v2 does not (r3, volatile).
         assert_eq!(allocation.assigned_callee_saved(&constraints), vec![31, 30]);
+    }
+
+    #[test]
+    fn a_preferred_register_wins_when_free_and_is_ignored_when_busy() {
+        // b prefers r0 (the consumer-tree scratch home) over the default r3.
+        let constraints = RegisterConstraints::gekko();
+        let intervals = vec![gpr(1, 0, 4), gpr(2, 1, 4).preferring(0)];
+        let allocation = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap();
+        assert_eq!(allocation.physical(Reg::general(2).virtual_register().unwrap()), Some(0));
+        // The same preference is IGNORED when another live value holds it.
+        let intervals = vec![gpr(1, 0, 4).preferring(0), gpr(2, 1, 4).preferring(0)];
+        let allocation = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap();
+        let first = allocation.physical(Reg::general(1).virtual_register().unwrap()).unwrap();
+        let second = allocation.physical(Reg::general(2).virtual_register().unwrap()).unwrap();
+        assert_eq!(first, 0);
+        assert_ne!(second, 0);
     }
 
     #[test]
