@@ -15,3 +15,8 @@ int ncb_three(unsigned char t) { int a = 8; int b = 4; if (t > 1) { a = 7; } if 
 // the local (a branch-dependent value defers).
 int ncb_fold(unsigned char t)  { int a = 8; int b = 4; if (t == 2) { a = a - 1; }        if (t == 3) { b = 9; } return a + b; }
 int ncb_fold2(unsigned char t) { int a = 8; int b = 4; if (t == 2) { a = a + 5; b = b - 2; } if (t == 3) { b = 9; } return a + b; }
+// THREE locals (fire 664): homes extend sequentially past the live condition parameter (a->r4, b->r5,
+// c->r6); ALL inits past the first land after the compare (li r5; li r6 both follow cmplwi); the join
+// reassociates a+(b+c): `add r3,r5,r6; add r3,r4,r3`. Arms reassign any subset across any block count.
+int ncb3(unsigned char t)      { int a = 8; int b = 4; int c = 1; if (t == 2) { a = 7; } if (t == 3) { b = 9; c = 2; } return a + b + c; }
+int ncb3_mix(unsigned char t)  { int a = 8; int b = 4; int c = 1; if (t > 1) { a = 7; c = 3; } if (t < 5) { b = 9; } if (t == 3) { c = 2; } return a + b + c; }

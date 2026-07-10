@@ -300,23 +300,28 @@ impl Generator {
         if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
-        let [first, second] = function.locals.as_slice() else { return Ok(false) };
-        let (Some(first_init), Some(second_init)) = (
-            first.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok()),
-            second.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok()),
-        ) else {
-            return Ok(false);
-        };
-        if first.array_length.is_some() || second.array_length.is_some() {
+        // TWO or THREE const-init int locals (extensible toward __va_arg's eight).
+        let locals = function.locals.as_slice();
+        if !(2..=3).contains(&locals.len()) {
             return Ok(false);
         }
+        let init_values: Option<Vec<i16>> = locals
+            .iter()
+            .map(|local| {
+                if local.array_length.is_some() || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+                    return None;
+                }
+                local.initializer.as_ref().and_then(constant_value).and_then(|value| i16::try_from(value).ok())
+            })
+            .collect();
+        let Some(init_values) = init_values else { return Ok(false) };
         // TWO-plus chained no-else blocks, every condition the SAME unsigned narrow
         // leaf against a u16 constant; every arm a run of subset reassigns to consts.
         if function.statements.len() < 2 {
             return Ok(false);
         }
-        let inits = [first_init, second_init];
-        let mut assigned_before = [false, false];
+        let inits = init_values;
+        let mut assigned_before = vec![false; locals.len()];
         let mut blocks: Vec<(&Expression, Vec<(usize, i16)>)> = Vec::new();
         for statement in &function.statements {
             let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
@@ -326,7 +331,7 @@ impl Generator {
             let mut arm: Vec<(usize, i16)> = Vec::new();
             for inner in then_body {
                 let Statement::Assign { name, value } = inner else { return Ok(false) };
-                let index = if name == &first.name { 0 } else if name == &second.name { 1 } else { return Ok(false) };
+                let Some(index) = locals.iter().position(|local| &local.name == name) else { return Ok(false) };
                 // Declaration order within the arm, no duplicates.
                 if arm.last().is_some_and(|&(last, _)| last >= index) {
                     return Ok(false);
@@ -368,12 +373,21 @@ impl Generator {
             }
             blocks.push((condition, arm));
         }
-        // The return is `first + second`.
-        if !matches!(function.return_expression.as_ref(), Some(Expression::Binary { operator: BinaryOperator::Add, left, right })
-            if matches!(left.as_ref(), Expression::Variable(name) if name == &first.name)
-                && matches!(right.as_ref(), Expression::Variable(name) if name == &second.name))
+        // The return is the left-associated sum of ALL locals in declaration order.
         {
-            return Ok(false);
+            let mut expression = function.return_expression.as_ref();
+            for index in (1..locals.len()).rev() {
+                let Some(Expression::Binary { operator: BinaryOperator::Add, left, right }) = expression else {
+                    return Ok(false);
+                };
+                if !matches!(right.as_ref(), Expression::Variable(name) if name == &locals[index].name) {
+                    return Ok(false);
+                }
+                expression = Some(left.as_ref());
+            }
+            if !matches!(expression, Some(Expression::Variable(name)) if name == &locals[0].name) {
+                return Ok(false);
+            }
         }
         // Conditions: all on the SAME unsigned narrow single general parameter.
         if self.locations.values().filter(|location| location.class == ValueClass::General).count() != 1 {
@@ -402,14 +416,13 @@ impl Generator {
             tests.push((constant, options, condition_bit));
         }
         let (register, width) = condition_register_width.expect("at least two blocks");
-        // -- emit (measured) -- homes r4, r5 (past the live condition parameter),
-        // riding preferred VIRTUALS through the general allocation machinery.
+        // -- emit (measured) -- homes are SEQUENTIAL volatiles past the live
+        // condition parameter (r4, r5, r6 …), riding preferred VIRTUALS through the
+        // general allocation machinery.
         let result = Eabi::general_result().number;
-        let homes = [
-            self.fresh_virtual_general_preferring(result + 1),
-            self.fresh_virtual_general_preferring(result + 2),
-        ];
-        let inits = [first_init, second_init];
+        let homes: Vec<u8> = (0..locals.len())
+            .map(|index| self.fresh_virtual_general_preferring(result + 1 + index as u8))
+            .collect();
         for (block_index, ((_, arm), &(constant, options, condition_bit))) in blocks.iter().zip(&tests).enumerate() {
             self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: register, clear: 32 - width as u8 });
             if block_index == 0 {
@@ -417,7 +430,11 @@ impl Generator {
             }
             self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: GENERAL_SCRATCH, immediate: constant });
             if block_index == 0 {
-                self.load_integer_constant(homes[1], i64::from(inits[1]));
+                // Every init past the first lands AFTER the compare (measured: li r5;
+                // li r6 both follow cmplwi in the 3-local form).
+                for index in 1..locals.len() {
+                    self.load_integer_constant(homes[index], i64::from(inits[index]));
+                }
             }
             let branch_index = self.output.instructions.len();
             self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
@@ -431,7 +448,15 @@ impl Generator {
             // Each if's join advances mwcc's anonymous-@N counter by 2.
             self.output.anonymous_label_bump += 2;
         }
-        self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: homes[1] });
+        // The join sum: two locals add directly; three reassociate a+(b+c)
+        // (measured: `add r3,r5,r6; add r3,r4,r3`).
+        match homes.len() {
+            2 => self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: homes[1] }),
+            _ => {
+                self.output.instructions.push(Instruction::Add { d: result, a: homes[1], b: homes[2] });
+                self.output.instructions.push(Instruction::Add { d: result, a: homes[0], b: result });
+            }
+        }
         self.output.instructions.push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
