@@ -263,6 +263,16 @@ pub enum Instruction {
     FloatCompareUnorderedField { crf: u8, a: u8, b: u8 },
     /// `mfcr rD` — move the whole condition register into a GPR.
     MoveFromConditionRegister { d: u8 },
+    /// `mffs frD` — copy the FPSCR into frD (inline-asm setjmp saves it).
+    MoveFromFpscr { d: u8 },
+    /// `mtcrf CRM, rS` — move rS into the CR fields selected by the 8-bit mask.
+    MoveToConditionRegisterFields { mask: u8, s: u8 },
+    /// `mtfsf FM, frB` — move frB into the FPSCR fields selected by the 8-bit mask.
+    MoveToFpscrFields { mask: u8, b: u8 },
+    /// `stmw rS, d(rA)` — store rS through r31 at consecutive words.
+    StoreMultipleWord { s: u8, a: u8, offset: i16 },
+    /// `lmw rD, d(rA)` — load rD through r31 from consecutive words.
+    LoadMultipleWord { d: u8, a: u8, offset: i16 },
     /// `cror crbD, crbA, crbB` — OR two condition-register bits into a third.
     /// Bit numbers are absolute (cr0 occupies bits 0..=3: lt=0, gt=1, eq=2, so=3).
     ConditionRegisterOr { d: u8, a: u8, b: u8 },

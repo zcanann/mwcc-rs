@@ -67,6 +67,12 @@ pub(crate) struct Parser {
     pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
+    /// The current inline-`asm` function's REGISTER PARAMETERS: `(name, gpr,
+    /// struct tag)` in declaration order (r3, r4, … positional). An asm operand
+    /// naming a parameter resolves to its register (`mr r3,val`), and
+    /// `param->field` to a displacement memory operand off it (`stw r5,env->pc`).
+    /// Set by `parse_asm_function` for the body parse, cleared after.
+    pub(crate) asm_parameters: Vec<(String, u8, Option<String>)>,
     /// Set by [`Parser::parse_type`] when it just parsed a `struct Name*`, so the
     /// declarator parser can associate the variable name with the struct tag.
     pub(crate) last_struct_tag: Option<String>,

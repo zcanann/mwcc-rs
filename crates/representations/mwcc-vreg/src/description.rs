@@ -206,6 +206,19 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         }
         // mfcr defines a GPR from the condition register; cror only touches cr bits.
         MoveFromConditionRegister { d } => visit(D, G, d),
+        MoveFromFpscr { d } => visit(D, F, d),
+        MoveToConditionRegisterFields { s, .. } => visit(U, G, s),
+        MoveToFpscrFields { b, .. } => visit(U, F, b),
+        // stmw/lmw touch rS..r31 / rD..r31 — inline-asm-only (never scheduled or
+        // allocated), so listing the named register and the base is sufficient.
+        StoreMultipleWord { s, a, .. } => {
+            visit(U, G, s);
+            visit(U, G, a);
+        }
+        LoadMultipleWord { d, a, .. } => {
+            visit(D, G, d);
+            visit(U, G, a);
+        }
         ConditionRegisterOr { .. } => {}
         CompareWord { a, b } | CompareLogicalWord { a, b } => {
             visit(U, G, a);

@@ -205,6 +205,30 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
         // The count register (`bdnz` loop support).
         "mtctr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToCountRegister { s } }
 
+        // The link register, condition register, and FPSCR moves + the multi-word
+        // load/store — the setjmp/longjmp register-save vocabulary (Gecko_setjmp.c).
+        "mflr" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromLinkRegister { d } }
+        "mtlr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToLinkRegister { s } }
+        "mfcr" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromConditionRegister { d } }
+        "mffs" => { let [d] = fprs(mnemonic, operands)?; Instruction::MoveFromFpscr { d } }
+        // `mtcrf CRM, rS` / `mtfsf FM, frB` — an 8-bit field mask then the source.
+        "mtcrf" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let mask = immediate16u(mnemonic, &operands[0])?;
+            let mask = u8::try_from(mask).map_err(|_| Diagnostic::error(format!("{mnemonic} field mask {mask} does not fit in 8 bits")))?;
+            let [s] = gprs(mnemonic, &operands[1..])?;
+            Instruction::MoveToConditionRegisterFields { mask, s }
+        }
+        "mtfsf" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let mask = immediate16u(mnemonic, &operands[0])?;
+            let mask = u8::try_from(mask).map_err(|_| Diagnostic::error(format!("{mnemonic} field mask {mask} does not fit in 8 bits")))?;
+            let [b] = fprs(mnemonic, &operands[1..])?;
+            Instruction::MoveToFpscrFields { mask, b }
+        }
+        "stmw" => { let (s, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::StoreMultipleWord { s, a, offset } }
+        "lmw" => { let (d, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::LoadMultipleWord { d, a, offset } }
+
         // Conditional branch-to-link (a conditional return, `bgtlr` etc.); an
         // optional leading `crN` selects the field. Written directly by mwcc's asm
         // (distinct from the branch-to-`blr` peephole).

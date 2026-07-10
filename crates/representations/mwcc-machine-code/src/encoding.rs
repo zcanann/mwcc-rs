@@ -151,6 +151,16 @@ impl Instruction {
             Instruction::FloatCompareUnordered { a, b } => (63 << 26) | ((a as u32) << 16) | ((b as u32) << 11),
             Instruction::FloatCompareUnorderedField { crf, a, b } => (63 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | ((b as u32) << 11),
             Instruction::MoveFromConditionRegister { d } => (31 << 26) | ((d as u32) << 21) | (19 << 1),
+            // mffs frD (63/583; measured fc 00 04 8e for f0)
+            Instruction::MoveFromFpscr { d } => 0xFC00_048E | ((d as u32) << 21),
+            // mtcrf CRM,rS (31/144; measured 7c cf f1 20 for 255,r6)
+            Instruction::MoveToConditionRegisterFields { mask, s } => 0x7C00_0120 | ((s as u32) << 21) | ((mask as u32) << 12),
+            // mtfsf FM,frB (63/711; measured fd fe 05 8e for 255,f0)
+            Instruction::MoveToFpscrFields { mask, b } => 0xFC00_058E | ((mask as u32) << 17) | ((b as u32) << 11),
+            // stmw rS,d(rA) (opcode 47; measured bd a3 00 14 for r13,20(r3))
+            Instruction::StoreMultipleWord { s, a, offset } => (47 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | (offset as u16 as u32),
+            // lmw rD,d(rA) (opcode 46; measured b9 a3 00 14 for r13,20(r3))
+            Instruction::LoadMultipleWord { d, a, offset } => (46 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (offset as u16 as u32),
             Instruction::ConditionRegisterOr { d, a, b } => (19 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (449 << 1),
             Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWordImmediateField { crf, a, immediate } => (11 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | (immediate as u16 as u32),

@@ -46,15 +46,57 @@ impl Parser {
                 }
             }
         }
-        // Consume the parameter list by paren-matching.
+        // Consume the parameter list, capturing REGISTER PARAMETER names so the body's
+        // operands can name them (`mr r3,val`; `stw r5,env->pc`). Integer/pointer
+        // parameters take the positional argument registers r3, r4, …; the LAST
+        // identifier of each comma-separated parameter that is not a qualifier is its
+        // name, and an identifier naming a declared struct is the parameter's tag (for
+        // member-operand offsets). A float/double parameter would take an FPR — not
+        // needed by any measured asm function, so it defers.
         self.expect(Token::ParenOpen)?;
+        let mut parameters: Vec<(String, u8, Option<String>)> = Vec::new();
+        let mut parameter_name: Option<String> = None;
+        let mut parameter_tag: Option<String> = None;
+        let mut parameter_is_float = false;
         let mut depth = 1;
-        while depth > 0 {
-            match self.advance() {
+        loop {
+            let token = self.advance();
+            let end_of_parameter = matches!(token, Token::Comma) && depth == 1;
+            match token {
                 Token::ParenOpen => depth += 1,
-                Token::ParenClose => depth -= 1,
+                Token::ParenClose => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Some(name) = parameter_name.take() {
+                            if !parameter_is_float {
+                                parameters.push((name, 3 + parameters.len() as u8, parameter_tag.take()));
+                            }
+                        }
+                        break;
+                    }
+                }
+                // A float/double parameter lives in an FPR (f1, …) and — per the EABI —
+                // consumes NO integer argument register, so it is skipped: the body
+                // addresses it as `fp1` directly (measured: __cvt_fp2unsigned's
+                // `register double d` is only ever fp1), never by name.
+                Token::KeywordFloat => parameter_is_float = true,
+                Token::Identifier(word) if word == "double" => parameter_is_float = true,
+                Token::Identifier(word) if word != "register" && word != "const" => {
+                    if self.structs.contains_key(word.as_str()) {
+                        parameter_tag = Some(word.clone());
+                    }
+                    parameter_name = Some(word.clone());
+                }
                 Token::EndOfFile => return Err(Diagnostic::error("unterminated asm parameter list")),
                 _ => {}
+            }
+            if end_of_parameter {
+                if let Some(name) = parameter_name.take() {
+                    if !parameter_is_float {
+                        parameters.push((name, 3 + parameters.len() as u8, parameter_tag.take()));
+                    }
+                }
+                parameter_is_float = false;
             }
         }
         // A bodyless prototype ends here; there is nothing to define.
@@ -63,7 +105,10 @@ impl Parser {
             return Ok(None);
         }
         self.expect(Token::BraceOpen)?;
-        let asm_body = self.parse_asm_body()?;
+        self.asm_parameters = parameters;
+        let asm_body = self.parse_asm_body();
+        self.asm_parameters = Vec::new();
+        let asm_body = asm_body?;
         Ok(Some(Function {
             return_type,
             name,
@@ -206,11 +251,33 @@ impl Parser {
                 }
                 Ok(AsmOperand::Immediate(value))
             }
-            // A register name; a `symbol@suffix` relocation reference; or (a bare
-            // identifier) a branch-target label.
+            // A register name; a register PARAMETER (`mr r3,val`) or its member
+            // (`stw r5,env->pc` — a displacement off the parameter's register); a
+            // `symbol@suffix` relocation reference; or (a bare identifier) a
+            // branch-target label.
             Token::Identifier(word) => {
                 if let Some(register) = parse_asm_register(&word) {
                     return Ok(register);
+                }
+                if let Some((_, gpr, tag)) = self.asm_parameters.iter().find(|(name, _, _)| *name == word).cloned() {
+                    if *self.peek() == Token::Arrow {
+                        self.advance();
+                        let field = match self.advance() {
+                            Token::Identifier(field) => field,
+                            other => return Err(Diagnostic::error(format!("expected a field name after '{word}->', found {other}"))),
+                        };
+                        let tag = tag.ok_or_else(|| {
+                            Diagnostic::error(format!("asm parameter '{word}' has no struct type for '->{field}'"))
+                        })?;
+                        let offset = self
+                            .structs
+                            .get(&tag)
+                            .and_then(|layout| layout.fields.get(&field))
+                            .map(|member| member.offset)
+                            .ok_or_else(|| Diagnostic::error(format!("no field '{field}' in struct '{tag}'")))?;
+                        return Ok(AsmOperand::Memory { displacement: offset as i16, base: gpr });
+                    }
+                    return Ok(AsmOperand::Gpr(gpr));
                 }
                 if *self.peek() == Token::At {
                     self.advance();
