@@ -72,6 +72,86 @@ impl Generator {
     /// `<test c>; li result,INIT; b<!c>lr; li result,NEW; blr` (the false path returns the
     /// initializer already in the result; the true path falls through to the new value). Variable
     /// arms use a different move/staging form and are deferred here.
+    /// The CONDITIONAL-DEREF TAIL — __va_arg's ending shape: a pointer parameter
+    /// reassigned from a dereference of ITSELF under a `t == 0` narrow guard, then
+    /// returned. mwcc uses the RECORD-form width test (no compare) and loads IN
+    /// PLACE through the parameter's own register (measured):
+    ///   clrlwi. r0,t,24; bne SKIP; lwz r4,0(r4); SKIP: mr r3,r4; blr
+    pub(crate) fn try_conditional_deref_tail(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || !function.locals.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Pointer(_)) {
+            return Ok(false);
+        }
+        // Body: one `if (t == 0) { p = *(cast)p; }`, returning p.
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !else_body.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name, value }] = then_body.as_slice() else { return Ok(false) };
+        let Some(Expression::Variable(returned)) = function.return_expression.as_ref() else { return Ok(false) };
+        if returned != name {
+            return Ok(false);
+        }
+        // The new value: a word deref of the SAME parameter (any pointer cast peels).
+        let Expression::Dereference { pointer } = value else { return Ok(false) };
+        let mut inner = pointer.as_ref();
+        while let Expression::Cast { operand, target_type } = inner {
+            if !matches!(target_type, Type::Pointer(_)) {
+                return Ok(false);
+            }
+            inner = operand.as_ref();
+        }
+        if !matches!(inner, Expression::Variable(inner_name) if inner_name == name) {
+            return Ok(false);
+        }
+        let Some(&crate::generator::Location { class: ValueClass::General, register: home, .. }) = self.locations.get(name.as_str()) else {
+            return Ok(false);
+        };
+        // The condition: `t == 0` on an UNSIGNED narrow leaf — the record-form width
+        // test (clrlwi. sets cr0; the arm runs on EQ, so bne skips it).
+        let Expression::Binary { operator: BinaryOperator::Equal, left, right } = condition else {
+            return Ok(false);
+        };
+        if constant_value(right) != Some(0) {
+            return Ok(false);
+        }
+        let Some(width) = leaf_name(left)
+            .and_then(|leaf| self.locations.get(leaf))
+            .filter(|location| location.class == ValueClass::General && !location.signed && location.width < 32)
+            .map(|location| (location.register, location.width))
+        else {
+            return Ok(false);
+        };
+        let (test_register, test_width) = width;
+        // -- emit (measured) --
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(Instruction::RotateAndMaskRecord {
+            a: GENERAL_SCRATCH,
+            s: test_register,
+            shift: 0,
+            begin: 32 - test_width,
+            end: 31,
+        });
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 0 }); // bne
+        self.output.instructions.push(Instruction::LoadWord { d: home, a: home, offset: 0 });
+        let skip = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = skip;
+        }
+        if home != result {
+            self.output.instructions.push(Instruction::move_register(result, home));
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The if advances mwcc's anonymous-@N counter by 2.
+        self.output.anonymous_label_bump += 2;
+        Ok(true)
+    }
+
     /// A narrow-guarded arm containing an INNER `&1` record-test one-liner — the
     /// __va_arg `if (type==2) { size=8; if (g_reg & 1) { even=1; } }` shape at
     /// 2-local scale (measured):
