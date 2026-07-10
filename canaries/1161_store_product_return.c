@@ -13,3 +13,11 @@ char* spr(char* base, int g, int rs, char* reg, int inc) { *reg = (char)(g + inc
 //   add r0,g,inc; stb r0,0(reg); mullw r0,g,rs; lwz r3,4(list); add r3,r3,r0; blr
 typedef struct VL2 { int gpr; char* area; } VL2;
 char* spr_member(VL2* list, int g, int rs, char* reg, int inc) { *reg = (char)(g + inc); return list->area + g * rs; }
+// The FULL then-arm (fire 671): pre-add + store + THREE-term member address —
+// `g = g + even; *reg = (char)(g + inc); return list->area + off + g * rs;`. Measured schedule: the
+// pre-add in place; the multiply as early as its operands allow; the store value in place (the
+// multiply is done with the counter); the member load RECLAIMING the counter register; the sum
+// right-grouped, its first add reclaiming the dying struct pointer:
+//   add g,g,even; mullw r0,g,rs; add g,g,inc; stb g,0(reg); lwz g,4(list); add r3,off,r0; add r3,g,r3
+// This is __va_arg's g_reg<maxsize then-arm at parameter scale.
+char* spr_full(VL2* list, int g, int rs, char* reg, int inc, int even, int off) { g = g + even; *reg = (char)(g + inc); return list->area + off + g * rs; }

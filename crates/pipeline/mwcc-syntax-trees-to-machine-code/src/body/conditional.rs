@@ -72,6 +72,106 @@ impl Generator {
     /// `<test c>; li result,INIT; b<!c>lr; li result,NEW; blr` (the false path returns the
     /// initializer already in the result; the true path falls through to the new value). Variable
     /// arms use a different move/staging form and are deferred here.
+    /// The FULL __va_arg then-arm reduced: a pre-add on the counter, a store of
+    /// `counter + inc` through a pointer, and a THREE-term member address return —
+    /// `g = g + even; *reg = (char)(g + inc); return list->area + off + g * rs;`.
+    /// Measured schedule: the pre-add in place; the multiply as early as its
+    /// operands allow (consuming the updated counter); the store value in place
+    /// (the multiply is done with the counter); the member load RECLAIMING the
+    /// counter register (dead after the store); the sum right-grouped, its first
+    /// add reclaiming the dying struct pointer:
+    ///   add g,g,even; mullw r0,g,rs; add g,g,inc; stb g,0(reg);
+    ///   lwz g,off(list); add r3,offv,r0; add r3,g,r3; blr
+    pub(crate) fn try_prefixed_store_product_return(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || !function.locals.is_empty() || function_makes_call(function) {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Pointer(_)) {
+            return Ok(false);
+        }
+        let [Statement::Assign { name: pre_name, value: pre_value }, Statement::Store { target, value }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // The pre-add: `g = g + even` over general params.
+        let Some(counter) = self.lookup_general(pre_name) else { return Ok(false) };
+        let Expression::Binary { operator: BinaryOperator::Add, left: pre_left, right: pre_right } = pre_value else {
+            return Ok(false);
+        };
+        if !matches!(pre_left.as_ref(), Expression::Variable(name) if name == pre_name) {
+            return Ok(false);
+        }
+        let Some(pre_operand) = leaf_name(pre_right).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        // The store: `*reg = (cast)(g + inc)` — char pointee.
+        let Expression::Dereference { pointer } = target else { return Ok(false) };
+        let Some(&crate::generator::Location { class: ValueClass::General, register: store_base, pointee: Some(store_pointee), .. }) =
+            leaf_name(pointer).and_then(|name| self.locations.get(name))
+        else {
+            return Ok(false);
+        };
+        if !matches!(store_pointee, mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar) {
+            return Ok(false);
+        }
+        let mut store_value = value;
+        while let Expression::Cast { operand, .. } = store_value {
+            store_value = operand.as_ref();
+        }
+        let Expression::Binary { operator: BinaryOperator::Add, left: value_left, right: value_right } = store_value else {
+            return Ok(false);
+        };
+        if !matches!(value_left.as_ref(), Expression::Variable(name) if name == pre_name) {
+            return Ok(false);
+        }
+        let Some(increment) = leaf_name(value_right).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        // The return: `list->area + off + g * rs` (left-assoc: (member + off) + product),
+        // the member a char pointer.
+        let Some(Expression::Binary { operator: BinaryOperator::Add, left: sum_left, right: sum_right }) =
+            function.return_expression.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Multiply, left: mul_left, right: mul_right } = sum_right.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(mul_left.as_ref(), Expression::Variable(name) if name == pre_name) {
+            return Ok(false);
+        }
+        let Some(scale) = leaf_name(mul_right).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        let Expression::Binary { operator: BinaryOperator::Add, left: member_expression, right: offset_expression } = sum_left.as_ref() else {
+            return Ok(false);
+        };
+        let Expression::Member { base: member_base, offset, member_type, index_stride: None } = member_expression.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(member_type, Type::Pointer(mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar)) {
+            return Ok(false);
+        }
+        let Some(list_register) = leaf_name(member_base).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        let Some(offset_register) = leaf_name(offset_expression).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        // -- emit (measured) --
+        let result = Eabi::general_result().number;
+        self.output.instructions.push(Instruction::Add { d: counter, a: counter, b: pre_operand });
+        self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: counter, b: scale });
+        self.output.instructions.push(Instruction::Add { d: counter, a: counter, b: increment });
+        self.output.instructions.push(Instruction::StoreByte { s: counter, a: store_base, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord { d: counter, a: list_register, offset: *offset as i16 });
+        self.output.instructions.push(Instruction::Add { d: result, a: offset_register, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::Add { d: result, a: counter, b: result });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// A STORE-THROUGH-POINTER beside a PRODUCT-ADDRESS return — the __va_arg
     /// diamond-arm cluster reduced: `*reg = (char)(g + inc); return base + g * rs;`.
     /// mwcc hoists the long-latency multiply FIRST (into the scratch), computes the
