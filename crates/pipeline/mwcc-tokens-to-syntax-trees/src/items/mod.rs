@@ -1083,7 +1083,7 @@ impl Parser {
                 // struct-pointer, or array typedef COPIES the original registration
                 // (`typedef __va_list va_list;` — parse_type's scalar model would
                 // lose the struct identity).
-                if let (Token::Identifier(existing), Some(Token::Identifier(_)), Some(Token::Semicolon)) =
+                if let (Token::Identifier(existing), Some(Token::Identifier(_)), Some(Token::Semicolon | Token::BracketOpen)) =
                     (self.peek(), self.tokens.get(self.position + 1), self.tokens.get(self.position + 2))
                 {
                     let existing = existing.clone();
@@ -1093,6 +1093,15 @@ impl Parser {
                     if struct_tag.is_some() || pointer_tag.is_some() || array_entry.is_some() {
                         self.advance(); // the existing alias
                         let alias = self.parse_identifier()?;
+                        // An ARRAY declarator on the re-alias (`typedef _va_list_struct
+                        // __va_list[1];` — wind_waker's stdarg spelling): the alias still
+                        // resolves through the struct tag; a parameter decays to the
+                        // struct pointer exactly like the bare struct typedef.
+                        while *self.peek() == Token::BracketOpen {
+                            self.advance();
+                            self.parse_integer_constant()?;
+                            self.expect(Token::BracketClose)?;
+                        }
                         self.expect(Token::Semicolon)?;
                         if let Some(tag) = struct_tag {
                             self.struct_typedefs.insert(alias.clone(), tag);

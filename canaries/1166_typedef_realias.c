@@ -15,3 +15,8 @@ char* trc(va_list_c v) { return v->input_arg_area; }
 typedef struct VaLike { int a; char* p; } VaArr[1];
 typedef VaArr VaArr2;
 char* trd(VaArr2 v) { return v->p; }
+// The wind_waker spelling: a re-alias WITH an array declarator (`typedef _va_list_struct
+// __va_list[1];`) — the alias resolves through the struct tag; a parameter decays to the pointer.
+typedef struct VaWW { char g; char* area; } VaWWs;
+typedef VaWWs VaWWArr[1];
+char* tre(VaWWArr v) { return v->area; }
