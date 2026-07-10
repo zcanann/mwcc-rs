@@ -249,6 +249,21 @@ mod acf_must_round;
 mod acf_rounddec;
 mod acf_num2dec;
 mod acf_dec2num;
+mod bfp_ctzl;
+mod bfp_ctz;
+mod bfp_must_round;
+mod bfp_dorounddecup;
+mod bfp_rounddec;
+mod bfp_ull2dec;
+mod bfp_timesdec;
+mod bfp_str2dec;
+mod bfp_two_exp;
+mod bfp_equals_dec;
+mod bfp_less_dec;
+mod bfp_minus_dec;
+mod bfp_num2dec_i;
+mod bfp_num2dec;
+mod bfp_dec2num;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -346,6 +361,21 @@ impl Generator {
             || self.try_acf_rounddec(function)?
             || self.try_acf_num2dec(function)?
             || self.try_acf_dec2num(function)?
+            || self.try_bfp_ctzl(function)?
+            || self.try_bfp_ctz(function)?
+            || self.try_bfp_must_round(function)?
+            || self.try_bfp_dorounddecup(function)?
+            || self.try_bfp_rounddec(function)?
+            || self.try_bfp_ull2dec(function)?
+            || self.try_bfp_timesdec(function)?
+            || self.try_bfp_str2dec(function)?
+            || self.try_bfp_two_exp(function)?
+            || self.try_bfp_equals_dec(function)?
+            || self.try_bfp_less_dec(function)?
+            || self.try_bfp_minus_dec(function)?
+            || self.try_bfp_num2dec_i(function)?
+            || self.try_bfp_num2dec(function)?
+            || self.try_bfp_dec2num(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?

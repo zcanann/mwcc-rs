@@ -328,11 +328,32 @@ impl Parser {
             // A BLOCK-SCOPED declaration (`f32 guess = ...;` inside an if):
             // hoist the local to the function and keep the initialization as
             // an Assign at its position (it may be conditionally reached).
-            // `static` block locals defer (a named-datum shape).
-            if self.peek_is_type() {
-                if matches!(self.peek(), Token::Identifier(word) if word == "static") {
-                    return Err(Diagnostic::error("a static local in a nested block is not supported yet (roadmap)"));
-                }
+            if self.peek_is_type() || matches!(self.peek(), Token::Identifier(word) if word == "static") {
+                self.parse_block_declaration(local_names, block_locals, &mut statements)?;
+                continue;
+            }
+            statements.push(self.parse_simple_statement(local_names, block_locals)?);
+        }
+        collapse_if_return_chain(&mut statements);
+        self.expect(Token::BraceClose)?;
+        self.block_renames.truncate(rename_depth);
+        Ok(statements)
+    }
+
+    /// One declaration line inside a nested `{}` scope, a braced switch arm, or
+    /// an if/loop body: the local hoists to the function (with a shadow rename
+    /// when the name already exists) and any initializer becomes an `Assign` at
+    /// its position. A `static` declaration parses like a function-level static
+    /// local (bfbb ansi_fp's scoped `static double pow_10[8] = {…}` — a
+    /// name$K-numbered data image).
+    pub(crate) fn parse_block_declaration(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>, statements: &mut Vec<Statement>) -> Compilation<()> {
+        let is_static = if matches!(self.peek(), Token::Identifier(word) if word == "static") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        {
                 let declared_type = self.parse_type()?;
                 if self.last_type_was_volatile {
                     return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
@@ -363,15 +384,71 @@ impl Parser {
                         name
                     };
                     if *self.peek() == Token::BracketOpen {
-                        return Err(Diagnostic::error("a block-scoped array is not supported yet (roadmap)"));
+                        if !is_static {
+                            return Err(Diagnostic::error("a block-scoped array is not supported yet (roadmap)"));
+                        }
+                        // `static double pow_10[8] = { 1e1, … };` — parse the
+                        // image exactly like a function-level static array.
+                        self.advance();
+                        let explicit = if *self.peek() == Token::BracketClose { None } else { Some(self.parse_integer_constant()? as u16) };
+                        self.expect(Token::BracketClose)?;
+                        self.expect(Token::Equals)?;
+                        self.expect(Token::BraceOpen)?;
+                        let mut bytes: Vec<u8> = Vec::new();
+                        let mut count: u16 = 0;
+                        loop {
+                            let negative = self.eat_keyword(Token::Minus);
+                            match (self.advance().clone(), declared_type) {
+                                (Token::FloatLiteral(value), Type::Double) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&value.to_be_bytes());
+                                }
+                                (Token::FloatLiteral(value), Type::Float) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as f32).to_be_bytes());
+                                }
+                                (Token::IntegerLiteral(value), Type::Double) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as f64).to_be_bytes());
+                                }
+                                (Token::IntegerLiteral(value), Type::Int | Type::UnsignedInt) => {
+                                    let value = if negative { -value } else { value };
+                                    bytes.extend_from_slice(&(value as i32).to_be_bytes());
+                                }
+                                _ => return Err(Diagnostic::error("a scoped static array initializer element is not supported yet (roadmap)")),
+                            }
+                            count += 1;
+                            if !self.eat_keyword(Token::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(Token::BraceClose)?;
+                        let length = explicit.unwrap_or(count);
+                        let element_bytes = match declared_type {
+                            Type::Struct { size, .. } => size as u32,
+                            Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                            other => other.width() as u32 / 8,
+                        };
+                        self.variable_types.insert(name.clone(), declared_type);
+                        self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
+                        block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: Some(length), is_static: true, data_bytes: Some(bytes), is_const: self.last_type_was_const });
+                        local_names.insert(name);
+                        if !self.eat_keyword(Token::Comma) {
+                            self.expect(Token::Semicolon)?;
+                            return Ok(());
+                        }
+                        continue;
                     }
-                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static: false, data_bytes: None, is_const: false });
+                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static, data_bytes: None, is_const: false });
                     local_names.insert(name.clone());
                     // Register the type so `sizeof(s_h)` (fdlibm's __HI/__LO
                     // macros inside e_pow's inner block) resolves at parse time.
                     self.variable_types.insert(name.clone(), declared_type);
                     if let Some(tag) = &struct_tag {
                         self.variable_structs.insert(name.clone(), tag.clone());
+                    }
+                    if *self.peek() == Token::Equals && is_static {
+                        return Err(Diagnostic::error("a scalar static local initializer in a nested block is not supported yet (roadmap)"));
                     }
                     if self.eat_keyword(Token::Equals) {
                         let value = self.expression()?;
@@ -382,13 +459,7 @@ impl Parser {
                     }
                 }
                 self.expect(Token::Semicolon)?;
-                continue;
-            }
-            statements.push(self.parse_simple_statement(local_names, block_locals)?);
         }
-        collapse_if_return_chain(&mut statements);
-        self.expect(Token::BraceClose)?;
-        self.block_renames.truncate(rename_depth);
-        Ok(statements)
+        Ok(())
     }
 }

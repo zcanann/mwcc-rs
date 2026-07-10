@@ -367,6 +367,13 @@ impl Parser {
                 statements.push(statement);
                 continue;
             }
+            // A declaration inside a braced arm (`case 'N': { double result;
+            // u64* ll = (u64*)&result; … }` — bfbb ansi_fp's __dec2num) hoists
+            // exactly like one in a nested block.
+            if self.peek_is_type() || matches!(self.peek(), Token::Identifier(word) if word == "static") {
+                self.parse_block_declaration(local_names, block_locals, &mut statements)?;
+                continue;
+            }
             statements.push(self.parse_simple_statement(local_names, block_locals)?);
         }
         let falls_through =
