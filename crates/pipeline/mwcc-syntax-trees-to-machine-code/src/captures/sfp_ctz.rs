@@ -36,12 +36,6 @@ impl Generator {
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
-        for bits in [
-            0x0000000000000000u64,
-            0x4330000080000000,
-        ] {
-            self.output.intern_constant(bits, 8);
-        }
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [12, 18, 20, 25, 29, 32, 41, 47, 49, 54, 58, 60, 61] {
             labels.insert(target, self.fresh_label());

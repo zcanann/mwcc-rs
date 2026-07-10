@@ -28,7 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x626216a8cf3d36f5 => 0, // marioparty4 (bump TBD from refctx @N diff)
+            0x626216a8cf3d36f5 => 0, // strikers
             _ => {
                 eprintln!("sfp_ull2dec context candidate: {context:#x}");
                 return Ok(false);
@@ -37,12 +37,6 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 32;
         self.non_leaf = true;
-        for bits in [
-            0x0000000000000000u64,
-            0x4330000080000000,
-        ] {
-            self.output.intern_constant(bits, 8);
-        }
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [21, 23, 40, 49, 54, 60] {
             labels.insert(target, self.fresh_label());

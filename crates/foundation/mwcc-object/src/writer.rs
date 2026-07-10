@@ -279,7 +279,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Jump tables (dense switches) live in a `.data` section: one 4-byte entry per
     // index, every entry filled by an `ADDR32` relocation (so the file bytes are
     // zero). Each table is recorded at its offset; `.data` is 8-aligned.
-    let mut jump_data_size = 0u32;
+    let mut jump_data_size = u32::from(file_data_size).div_ceil(4) * 4;
     let mut jump_table_offset: Vec<Option<u32>> = Vec::new();
     for function in functions {
         if let Some(table) = &function.jump_table {
@@ -290,7 +290,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             jump_table_offset.push(None);
         }
     }
-    let has_jump_table = jump_data_size > 0;
+    // Strip the file-data prefix back off: `jump_data` holds only the tables;
+    // the offsets recorded above are SECTION-relative (past the file data).
+    let jump_tables_size = jump_data_size - u32::from(file_data_size).div_ceil(4) * 4;
+    let has_jump_table = jump_tables_size > 0;
     let jump_data = vec![0u8; jump_data_size as usize];
 
     // `.sdata2` constant pool — the const globals routed here (laid out above) come
@@ -353,9 +356,26 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // its `@N` block (below), so they are excluded from this base: `pooled - per-function strings` is
     // the file-scope remainder, and each function then advances by `string_count` before its
     // constants. (A non-string unit has `string_count = 0` throughout, so this is unchanged.)
+    let function_string_names: std::collections::HashSet<&str> = functions
+        .iter()
+        .flat_map(|function| function.string_names.iter().map(String::as_str))
+        .collect();
     let pooled_string_count = input.data_objects.iter().filter(|object| object.is_static && object.name.starts_with('@')).count() as u32;
     let function_string_total: u32 = functions.iter().map(|function| function.string_count).sum();
-    let mut counter = 5u32 + pooled_string_count - function_string_total;
+    // A FILE-SCOPE pooled string declared BETWEEN functions (`static const
+    // char* const p = "…"` mid-file — ansi_fp's strikers revision) numbers
+    // IN-STREAM at its source position, not up front: it consumes one number
+    // right before the next function's block (the resolver assigned its name
+    // the same way).
+    let is_in_stream_file_string = |object: &DataObject| {
+        object.is_static
+            && object.name.starts_with('@')
+            && object.static_local_owner.is_none()
+            && object.functions_before > 0
+            && !function_string_names.contains(object.name)
+    };
+    let in_stream_file_strings = input.data_objects.iter().filter(|object| is_in_stream_file_string(object)).count() as u32;
+    let mut counter = 5u32 + pooled_string_count - function_string_total - in_stream_file_strings;
     // The `@N` of a pooled constant a later function reuses is the one the first
     // function got — a deduped reuse consumes no new number, so the reusing
     // function's subsequent unwind `@N` shift down accordingly.
@@ -368,6 +388,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // owner's constants shift by the static count.
     let mut static_local_numbers: HashMap<&str, u32> = HashMap::new();
     for (function_index, function) in functions.iter().enumerate() {
+        // In-stream file strings declared right before this function consume
+        // their numbers here.
+        counter += input
+            .data_objects
+            .iter()
+            .filter(|object| is_in_stream_file_string(object) && object.functions_before == function_index)
+            .count() as u32;
         let owned_statics: Vec<&DataObject> = input
             .data_objects
             .iter()
@@ -626,10 +653,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // constants/unwind entries — so skip those objects in this grouped static run. (A FILE-SCOPE
     // string — `char *s = "…";` — is not in any function's `string_names`, so it stays here, numbered
     // ahead of the functions.)
-    let function_string_names: std::collections::HashSet<&str> = functions
-        .iter()
-        .flat_map(|function| function.string_names.iter().map(String::as_str))
-        .collect();
     let is_zero_section = |name: &str| matches!(data_section[name], ".sbss" | ".bss");
     // Initialized statics — plus EXPLICITLY zero-initialized small `.sbss` ones — first, in
     // FORWARD declaration order (same interleaving mwcc uses for exported globals).
@@ -653,6 +676,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && static_forward(object)
             && !function_string_names.contains(object.name)
             && object.static_local_owner.is_none()
+            // Declared BETWEEN functions -> emitted at its source position in
+            // the per-function run below (ansi_fp's `unused` + its string).
+            && object.functions_before == 0
         {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
@@ -775,7 +801,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }) {
         local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
-        comment_values.push((0, 0));
+        // The section-anchor .comment record — (1, 0x00100000), same as
+        // `...rodata.0` (measured on strikers ansi_fp).
+        comment_values.push((1, 0x0010_0000));
     }
     // Local `@N`: per function, its pooled constants (visible `.sdata2` objects)
     // then its hidden unwind entries.
@@ -784,6 +812,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut jump_table_symbols: Vec<u32> = Vec::new();
     let mut rodata_blob_symbols: Vec<u32> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
+        // FILE-SCOPE statics declared right before this function (ansi_fp's
+        // `static const char* const unused = "…"` between function bodies)
+        // emit at their source position, in declaration order — the string
+        // object then its pointer.
+        for object in &input.data_objects {
+            if object.is_static
+                && static_forward(object)
+                && !function_string_names.contains(object.name)
+                && object.static_local_owner.is_none()
+                && object.functions_before == index
+                && index > 0
+                && !local_data_symbols.contains_key(object.name)
+            {
+                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                comment_values.push((data_aligns[object.name], 0));
+            }
+        }
         // The function's STATIC LOCALS lead its `@N` block (they carry the
         // block's first numbers — displayed `name$K`, keyed by raw name).
         for object in &input.data_objects {
@@ -1305,9 +1352,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push(".rodata", SHT_PROGBITS, SHF_ALLOC, 0, 0, 8, 0, rodata, 0);
     }
     if has_data {
-        // `.data` holds either a function's jump table or the large initialized
-        // globals (the lowering keeps them from co-occurring).
-        let payload = if has_jump_table { jump_data } else { file_data };
+        // `.data` holds the large initialized globals (strings included) first,
+        // then any jump tables at 4-aligned offsets past them (ansi_fp's
+        // strikers revision has both; a table-only or data-only unit reduces
+        // to the old either/or shape).
+        let mut payload = file_data;
+        if has_jump_table {
+            payload.resize(jump_data.len(), 0);
+        }
         push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, payload, 0);
     }
     if has_bss {

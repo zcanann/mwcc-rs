@@ -37,6 +37,8 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 160;
         self.non_leaf = true;
+        // @1104 is skipped between the two pool doubles (@1103, @1105).
+        self.output.constant_number_gaps = vec![(1, 1)];
         self.callee_saved_float = 2;
         for bits in [
             0x0000000000000000u64,

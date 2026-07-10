@@ -28,7 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x626216a8cf3d36f5 => 0, // marioparty4 (bump TBD from refctx @N diff)
+            0x626216a8cf3d36f5 => 610, // strikers: internal labels before the first string (@840 = @229 + 1 + 610)
             _ => {
                 eprintln!("sfp_two_exp context candidate: {context:#x}");
                 return Ok(false);
@@ -37,16 +37,21 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 112;
         self.non_leaf = true;
+        // The four LONG strings live in .data and are addressed ONLY through the
+        // ...data.0 section base + runtime index — no per-string relocations, so
+        // they must intern explicitly, BEFORE the short strings' first uses
+        // (mwcc numbers them first: @840-843 ahead of @844-860).
+        self.intern_string_literal(&[0x35, 0x34, 0x32, 0x31, 0x30, 0x31, 0x30, 0x38, 0x36, 0x32, 0x34, 0x32, 0x37, 0x35, 0x32, 0x32, 0x31, 0x37, 0x30, 0x30, 0x33, 0x37, 0x32, 0x36, 0x34, 0x30, 0x30, 0x34, 0x33, 0x34, 0x39, 0x37, 0x30, 0x38, 0x35, 0x35, 0x37, 0x31, 0x32, 0x38, 0x39, 0x30, 0x36, 0x32, 0x35]); // @840 (long .data string, reached via ...data.0)
+        self.intern_string_literal(&[0x31, 0x31, 0x31, 0x30, 0x32, 0x32, 0x33, 0x30, 0x32, 0x34, 0x36, 0x32, 0x35, 0x31, 0x35, 0x36, 0x35, 0x34, 0x30, 0x34, 0x32, 0x33, 0x36, 0x33, 0x31, 0x36, 0x36, 0x38, 0x30, 0x39, 0x30, 0x38, 0x32, 0x30, 0x33, 0x31, 0x32, 0x35]); // @841 (long .data string, reached via ...data.0)
+        self.intern_string_literal(&[0x32, 0x33, 0x32, 0x38, 0x33, 0x30, 0x36, 0x34, 0x33, 0x36, 0x35, 0x33, 0x38, 0x36, 0x39, 0x36, 0x32, 0x38, 0x39, 0x30, 0x36, 0x32, 0x35]); // @842 (long .data string, reached via ...data.0)
+        self.intern_string_literal(&[0x31, 0x35, 0x32, 0x35, 0x38, 0x37, 0x38, 0x39, 0x30, 0x36, 0x32, 0x35]); // @843 (long .data string, reached via ...data.0)
         self.output.jump_table = Some(mwcc_machine_code::JumpTable {
             entries: vec![72, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 316, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 560, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 804, 5180, 5180, 5180, 5180, 5180, 5180, 5180, 1048, 1292, 1536, 1780, 2024, 2268, 2512, 2756, 3000, 3240, 3480, 3720, 3960, 4204, 4448, 4692, 4936],
-            anonymous_offset: 0, // calibrating (real table @861)
+            anonymous_offset: 0, // the strings consume the numbers; table = @860+1 = @861
         });
-        for bits in [
-            0x0000000000000000u64,
-            0x4330000080000000,
-        ] {
-            self.output.intern_constant(bits, 8);
-        }
+        // The case-body labels continue past the table: the pools in
+        // num2dec_internal number @1103 (= @861 + 242).
+        self.output.post_constant_label_bump = 226;
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [24, 30, 35, 45, 49, 56, 61, 67, 75, 85, 91, 96, 106, 110, 117, 122, 128, 136, 146, 152, 157, 167, 171, 178, 183, 189, 197, 207, 213, 218, 228, 232, 239, 244, 250, 258, 268, 274, 279, 289, 293, 300, 305, 311, 319, 329, 335, 340, 350, 354, 361, 366, 372, 380, 390, 396, 401, 411, 415, 422, 427, 433, 441, 451, 457, 462, 472, 476, 483, 488, 494, 502, 512, 518, 523, 533, 537, 544, 549, 555, 563, 573, 579, 584, 594, 598, 605, 610, 616, 624, 634, 640, 645, 655, 659, 666, 671, 677, 685, 695, 701, 706, 716, 720, 727, 732, 738, 746, 755, 761, 766, 776, 780, 787, 792, 798, 806, 815, 821, 826, 836, 840, 847, 852, 858, 866, 875, 881, 886, 896, 900, 907, 912, 918, 926, 935, 941, 946, 956, 960, 967, 972, 978, 986, 996, 1002, 1007, 1017, 1021, 1028, 1033, 1039, 1047, 1057, 1063, 1068, 1078, 1082, 1089, 1094, 1100, 1108, 1118, 1124, 1129, 1139, 1143, 1150, 1155, 1161, 1169, 1179, 1185, 1190, 1200, 1204, 1211, 1216, 1222, 1230, 1240, 1246, 1251, 1261, 1265, 1272, 1277, 1283, 1291, 1295, 1336, 1342, 1347, 1357, 1361, 1368, 1373, 1379, 1387, 1390, 1397, 1403, 1408, 1418, 1422, 1429, 1434, 1440, 1448, 1451, 1455] {
             labels.insert(target, self.fresh_label());

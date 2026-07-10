@@ -329,6 +329,9 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     // the running `@N` counter — deduplicated across the unit (mwcc `-str reuse`).
     let mut string_pool: std::collections::HashMap<Vec<u8>, String> = std::collections::HashMap::new();
     let mut string_counter: u32 = 0;
+    // File-scope strings declared BETWEEN functions: (functions_before,
+    // placeholder) — numbered in the resolver walk at their source position.
+    let mut pending_file_strings: Vec<(usize, String)> = Vec::new();
     // Strings pooled from STRUCT-member relocations collect here per global (the
     // enclosing push borrows `defined_globals`), then append after it.
     let mut pooled_string_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
@@ -399,12 +402,22 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                     PointerElement::Symbol(name) => name.clone(),
                     PointerElement::Str(string_bytes) => {
                         string_pool.get(string_bytes.as_slice()).cloned().unwrap_or_else(|| {
-                            string_counter += 1;
-                            let name = format!("@{string_counter}");
+                            // Declared BETWEEN functions: the string numbers
+                            // IN-STREAM at its source position (assigned in the
+                            // resolver walk below via a placeholder). Up-front
+                            // declarations keep the eager number.
+                            let name = if global.functions_before > 0 {
+                                let placeholder = format!("@@file{}", pending_file_strings.len());
+                                pending_file_strings.push((global.functions_before, placeholder.clone()));
+                                placeholder
+                            } else {
+                                string_counter += 1;
+                                format!("@{string_counter}")
+                            };
                             string_pool.insert(string_bytes.clone(), name.clone());
                             let mut object_bytes = string_bytes.clone();
                             object_bytes.push(0);
-                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0, functions_before: 0,
+                            defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal { section: None, anonymous_adjust: 0, static_local_owner: None, is_weak: false, non_static_functions_before: 0, functions_before: global.functions_before,
                                 name: name.clone(),
                                 size: object_bytes.len() as u32,
                                 alignment: 4,
@@ -610,7 +623,16 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     let mut counter = 5u32 + string_counter;
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> = std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
-    for machine_function in &mut machine_functions {
+    let mut file_string_renames: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (function_index, machine_function) in machine_functions.iter_mut().enumerate() {
+        // A file-scope string declared right before this function consumes its
+        // number here (mwcc rides ONE counter in compilation order).
+        for (functions_before, placeholder) in &pending_file_strings {
+            if *functions_before == function_index {
+                file_string_renames.insert(placeholder.clone(), format!("@{counter}"));
+                counter += 1;
+            }
+        }
         let bump = u32::from(machine_function.has_conversion)
             + if machine_function.has_float_branch { 3 } else { 0 }
             + machine_function.anonymous_label_bump;
@@ -678,6 +700,27 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             };
             if let Some(name) = resolved_target {
                 relocation.target = mwcc_machine_code::RelocationTarget::External(name);
+            }
+        }
+    }
+    if !file_string_renames.is_empty() {
+        for global in &mut defined_globals {
+            if let Some(name) = file_string_renames.get(&global.name) {
+                global.name = name.clone();
+            }
+            for relocation in &mut global.relocations {
+                if let Some(name) = file_string_renames.get(&relocation.target) {
+                    relocation.target = name.clone();
+                }
+            }
+        }
+        for machine_function in &mut machine_functions {
+            for relocation in &mut machine_function.relocations {
+                if let mwcc_machine_code::RelocationTarget::External(name) = &relocation.target {
+                    if let Some(resolved) = file_string_renames.get(name) {
+                        relocation.target = mwcc_machine_code::RelocationTarget::External(resolved.clone());
+                    }
+                }
             }
         }
     }

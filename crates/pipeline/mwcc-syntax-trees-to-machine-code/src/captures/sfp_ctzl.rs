@@ -28,21 +28,13 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            // DISABLED until the strikers @N calibration lands (4 structural
-            // ordering fixes pending — see real-file-parity-blockers memory):
-            // 0x626216a8cf3d36f5 => 0,
+            0x626216a8cf3d36f5 => 192, // strikers: file string @229 (ours @37 unbumped)
             _ => {
                 eprintln!("sfp_ctzl context candidate: {context:#x}");
                 return Ok(false);
             }
         };
         // -- emit (the capture, verbatim) --
-        for bits in [
-            0x0000000000000000u64,
-            0x4330000080000000,
-        ] {
-            self.output.intern_constant(bits, 8);
-        }
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [7, 13, 15, 20, 24, 26] {
             labels.insert(target, self.fresh_label());
