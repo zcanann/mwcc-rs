@@ -300,10 +300,10 @@ impl Generator {
         if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
-        // TWO to FIVE const-init int locals (extensible toward __va_arg's eight,
-        // one measured width at a time).
+        // TWO to EIGHT const-init int locals — every width measured (homes run
+        // sequentially r4..r11; the scratch-chain join extends mechanically).
         let locals = function.locals.as_slice();
-        if !(2..=5).contains(&locals.len()) {
+        if !(2..=8).contains(&locals.len()) {
             return Ok(false);
         }
         let init_values: Option<Vec<i16>> = locals

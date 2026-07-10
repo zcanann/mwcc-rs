@@ -28,3 +28,7 @@ int ncb4(unsigned char t) { int a = 8; int b = 4; int c = 1; int d = 6; if (t ==
 // Also fire 666: an UNMUTATED const-init local DEFERS (mwcc folds it into the join and compacts the
 // homes — measured; the handler previously DIFFed on that shape).
 int ncb5(unsigned char t) { int a = 8; int b = 4; int c = 1; int d = 6; int e = 3; if (t == 2) { a = 7; c = 5; e = 2; } if (t == 3) { b = 9; d = 4; } return a + b + c + d + e; }
+// WIDTHS 6-8 (fire 667): homes extend sequentially to r11; the scratch-chain join extends mechanically
+// (add r0,h1,h2; add r0,r0,h3..hN-2; add r3,r0,hN-1; add r3,h0,r3). The full __va_arg width range
+// (eight locals) is enabled, every width measured.
+int ncb8(unsigned char t) { int a = 8; int b = 4; int c = 1; int d = 6; int e = 3; int g = 2; int h = 9; int i = 5; if (t == 2) { a = 7; c = 5; e = 2; h = 1; } if (t == 3) { b = 9; d = 4; g = 1; i = 3; } return a + b + c + d + e + g + h + i; }
