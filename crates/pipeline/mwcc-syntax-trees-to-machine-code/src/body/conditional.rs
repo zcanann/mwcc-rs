@@ -3,6 +3,16 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// The participants of the measured __va_arg ALIGN-store arm (fire 672):
+/// `*reg = C; addr = list->member; addr = ALIGN(addr, size); list->member = addr + size;`.
+struct AlignStoreArm {
+    reg_register: u8,
+    store_constant: i16,
+    list_register: u8,
+    offset: i16,
+    size_register: u8,
+}
+
 impl Generator {
     /// A leaf `void` body that is purely constant stores: mwcc materializes a
     /// repeated store value once and reuses the register (`li r0,0; stw; stw; stw`
@@ -94,47 +104,61 @@ impl Generator {
         if self.locations.values().filter(|location| location.class == ValueClass::General).count() != 3 {
             return Ok(false);
         }
-        let [Statement::Store { target: store_target, value: store_value }, Statement::Assign { name: assign1, value: member_value }, Statement::Assign { name: assign2, value: align_value }, Statement::Store { target: back_target, value: back_value }] =
-            function.statements.as_slice()
-        else {
-            return Ok(false);
-        };
-        if assign1 != &local.name || assign2 != &local.name {
-            return Ok(false);
-        }
         if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
             return Ok(false);
         }
+        let Some(arm) = self.match_align_store_arm(function.statements.as_slice(), &local.name) else {
+            return Ok(false);
+        };
+        // -- emit (measured) --
+        let result = Eabi::general_result().number;
+        let value_register = [arm.list_register, arm.size_register, arm.reg_register].iter().max().unwrap() + 1;
+        let addr_home = arm.reg_register; // reclaimed once the store consumed it
+        self.emit_align_store_arm(&arm, value_register, addr_home);
+        self.output.instructions.push(Instruction::move_register(result, addr_home));
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// Match the four-statement ALIGN-arm body (`*reg = C; addr = list->member;
+    /// addr = ALIGN(addr, size); list->member = addr + size;`) and extract the
+    /// participating registers — shared by the whole-function form and the
+    /// g<max diamond's else arm.
+    fn match_align_store_arm(&self, statements: &[Statement], local_name: &str) -> Option<AlignStoreArm> {
+        let [Statement::Store { target: store_target, value: store_value }, Statement::Assign { name: assign1, value: member_value }, Statement::Assign { name: assign2, value: align_value }, Statement::Store { target: back_target, value: back_value }] =
+            statements
+        else {
+            return None;
+        };
+        if assign1 != local_name || assign2 != local_name {
+            return None;
+        }
         // `*reg = C` — a char store of an i16 constant through a general param.
-        let Expression::Dereference { pointer } = store_target else { return Ok(false) };
+        let Expression::Dereference { pointer } = store_target else { return None };
         let Some(&crate::generator::Location { class: ValueClass::General, register: reg_register, pointee: Some(reg_pointee), .. }) =
             leaf_name(pointer).and_then(|name| self.locations.get(name))
         else {
-            return Ok(false);
+            return None;
         };
         if !matches!(reg_pointee, mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar) {
-            return Ok(false);
+            return None;
         }
-        let Some(store_constant) = constant_value(store_value).and_then(|value| i16::try_from(value).ok()) else {
-            return Ok(false);
-        };
+        let store_constant = constant_value(store_value).and_then(|value| i16::try_from(value).ok())?;
         // `addr = list->area` — a char-pointer member of a struct param.
         let Expression::Member { base: member_base, offset, member_type, index_stride: None } = member_value else {
-            return Ok(false);
+            return None;
         };
         if !matches!(member_type, Type::Pointer(mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar)) {
-            return Ok(false);
+            return None;
         }
-        let Some(list_register) = leaf_name(member_base).and_then(|name| self.lookup_general(name)) else {
-            return Ok(false);
-        };
+        let list_register = leaf_name(member_base).and_then(|name| self.lookup_general(name))?;
         // `addr = (cast)((addr + (size-1)) & ~(size-1))` — the variable-s ALIGN.
         let mut align = align_value;
         while let Expression::Cast { operand, .. } = align {
             align = operand.as_ref();
         }
         let Expression::Binary { operator: BinaryOperator::BitAnd, left: align_left, right: align_right } = align else {
-            return Ok(false);
+            return None;
         };
         let size_minus_one = |expression: &Expression, generator: &Self| -> Option<u8> {
             let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = expression else {
@@ -150,51 +174,300 @@ impl Generator {
             sum = operand.as_ref();
         }
         let Expression::Binary { operator: BinaryOperator::Add, left: sum_left, right: sum_right } = sum else {
-            return Ok(false);
+            return None;
         };
         let mut sum_base = sum_left.as_ref();
         while let Expression::Cast { operand, .. } = sum_base {
             sum_base = operand.as_ref();
         }
-        if !matches!(sum_base, Expression::Variable(name) if name == &local.name) {
-            return Ok(false);
+        if !matches!(sum_base, Expression::Variable(name) if name == local_name) {
+            return None;
         }
-        let Some(size_register) = size_minus_one(sum_right, self) else { return Ok(false) };
+        let size_register = size_minus_one(sum_right, self)?;
         let Expression::Unary { operator: UnaryOperator::BitNot, operand: not_operand } = align_right.as_ref() else {
-            return Ok(false);
+            return None;
         };
         if size_minus_one(not_operand, self) != Some(size_register) {
-            return Ok(false);
+            return None;
         }
         // `list->area = addr + size` — the store-back to the SAME member.
+        let Expression::Member { base: back_base, offset: back_offset, index_stride: None, .. } = back_target else {
+            return None;
+        };
+        if leaf_name(back_base).and_then(|name| self.lookup_general(name)) != Some(list_register) || back_offset != offset {
+            return None;
+        }
+        if !matches!(back_value, Expression::Binary { operator: BinaryOperator::Add, left, right }
+            if matches!(left.as_ref(), Expression::Variable(name) if name == local_name)
+                && leaf_name(right).and_then(|name| self.lookup_general(name)) == Some(size_register))
+        {
+            return None;
+        }
+        Some(AlignStoreArm { reg_register, store_constant, list_register, offset: *offset as i16, size_register })
+    }
+
+    /// Emit the measured ALIGN-arm schedule (everything up to and including the
+    /// member store-back; the caller emits the join/return).
+    fn emit_align_store_arm(&mut self, arm: &AlignStoreArm, value_register: u8, addr_home: u8) {
+        self.load_integer_constant(value_register, i64::from(arm.store_constant));
+        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: arm.size_register, immediate: -1 });
+        self.output.instructions.push(Instruction::StoreByte { s: value_register, a: arm.reg_register, offset: 0 });
+        self.output.instructions.push(Instruction::Nor { a: value_register, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::LoadWord { d: GENERAL_SCRATCH, a: arm.list_register, offset: arm.offset });
+        self.output.instructions.push(Instruction::Add { d: addr_home, a: arm.size_register, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: addr_home, immediate: -1 });
+        self.output.instructions.push(Instruction::And { a: addr_home, s: value_register, b: GENERAL_SCRATCH });
+        self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: addr_home, b: arm.size_register });
+        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: arm.list_register, offset: arm.offset });
+    }
+
+    /// The __va_arg type==4 block at whole-function scale — the CONSTANT-size
+    /// ALIGN with a member store-back: `addr = (char*)(((unsigned long)list->area
+    /// + 15) & ~15); list->area = addr + 16; return addr;`. Measured: the member
+    /// load lands in the first free volatile as addr's home; the const mask folds
+    /// to clrrwi; the +stride fills the scratch for the store-back:
+    ///   lwz rA,off(list); addi r0,rA,K; clrrwi rA,r0,log2(K+1); addi r0,rA,S;
+    ///   stw r0,off(list); mr r3,rA; blr
+    pub(crate) fn try_const_align_store_return(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Pointer(_)) {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else { return Ok(false) };
+        if local.initializer.is_some() || local.array_length.is_some() {
+            return Ok(false);
+        }
+        let [Statement::Assign { name: assign_name, value: align_value }, Statement::Store { target: back_target, value: back_value }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if assign_name != &local.name {
+            return Ok(false);
+        }
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+            return Ok(false);
+        }
+        // `(cast)((list->member + K) & ~K)` — the const ALIGN of a char-pointer member.
+        let mut align = align_value;
+        while let Expression::Cast { operand, .. } = align {
+            align = operand.as_ref();
+        }
+        let Expression::Binary { operator: BinaryOperator::BitAnd, left: align_left, right: align_right } = align else {
+            return Ok(false);
+        };
+        let mut sum = align_left.as_ref();
+        while let Expression::Cast { operand, .. } = sum {
+            sum = operand.as_ref();
+        }
+        let Expression::Binary { operator: BinaryOperator::Add, left: sum_left, right: sum_right } = sum else {
+            return Ok(false);
+        };
+        let Some(mask) = constant_value(sum_right).and_then(|value| i16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        let size = i32::from(mask) + 1;
+        if size <= 0 || !(size as u32).is_power_of_two() {
+            return Ok(false);
+        }
+        let shift_bits = (size as u32).trailing_zeros() as u8;
+        // The mask side: `~K` — a BitNot of the same constant (or already folded).
+        let mask_matches = match align_right.as_ref() {
+            Expression::Unary { operator: UnaryOperator::BitNot, operand } => constant_value(operand) == Some(i64::from(mask)),
+            other => constant_value(other) == Some(!i64::from(mask)),
+        };
+        if !mask_matches {
+            return Ok(false);
+        }
+        let mut member = sum_left.as_ref();
+        while let Expression::Cast { operand, .. } = member {
+            member = operand.as_ref();
+        }
+        let Expression::Member { base: member_base, offset, member_type, index_stride: None } = member else {
+            return Ok(false);
+        };
+        if !matches!(member_type, Type::Pointer(mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar)) {
+            return Ok(false);
+        }
+        let Some(list_register) = leaf_name(member_base).and_then(|name| self.lookup_general(name)) else {
+            return Ok(false);
+        };
+        // `list->member = addr + S` — the const-stride store-back to the SAME member.
         let Expression::Member { base: back_base, offset: back_offset, index_stride: None, .. } = back_target else {
             return Ok(false);
         };
         if leaf_name(back_base).and_then(|name| self.lookup_general(name)) != Some(list_register) || back_offset != offset {
             return Ok(false);
         }
-        if !matches!(back_value, Expression::Binary { operator: BinaryOperator::Add, left, right }
-            if matches!(left.as_ref(), Expression::Variable(name) if name == &local.name)
-                && leaf_name(right).and_then(|name| self.lookup_general(name)) == Some(size_register))
-        {
+        let Expression::Binary { operator: BinaryOperator::Add, left: stride_left, right: stride_right } = back_value else {
+            return Ok(false);
+        };
+        if !matches!(stride_left.as_ref(), Expression::Variable(name) if name == &local.name) {
+            return Ok(false);
+        }
+        let Some(stride) = constant_value(stride_right).and_then(|value| i16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        // -- emit (measured) --
+        let result = Eabi::general_result().number;
+        let addr_home = (3u8..=10)
+            .find(|register| {
+                !self.locations.values().any(|location| location.class == ValueClass::General && location.register == *register)
+            })
+            .unwrap_or(3);
+        self.output.instructions.push(Instruction::LoadWord { d: addr_home, a: list_register, offset: *offset as i16 });
+        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: addr_home, immediate: mask });
+        self.output.instructions.push(Instruction::RotateAndMask { a: addr_home, s: GENERAL_SCRATCH, shift: 0, begin: 0, end: 31 - shift_bits });
+        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: addr_home, immediate: stride });
+        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: list_register, offset: *offset as i16 });
+        self.output.instructions.push(Instruction::move_register(result, addr_home));
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// The __va_arg g<max DIAMOND at parameter scale — the register-counter
+    /// then-arm against the fire-672 ALIGN else-arm, joining `addr` in the
+    /// store-base register:
+    ///   `if (g < max) { g += C1; addr = list->area + g*S; *reg = g + C2; }
+    ///    else { *reg = 8; addr = list->area; addr = ALIGN(addr, size);
+    ///           list->area = addr + size; } return addr;`
+    /// Measured (list r3, size r4, reg r5, g r6, max r7): the then-arm reclaims
+    /// size's register for the member load (size is dead there), list's register
+    /// for the scaled counter (dead after the load), and reg's for the join
+    /// value; the store value folds the mutation (`addi r0,g,C1+C2`); the
+    /// else-arm is exactly the fire-672 schedule with g's dead register as the
+    /// value register:
+    ///   cmpw g,max; bge ELSE; lwz r4,off(r3); addi r0,r6,C1+C2; addi r3,r6,C1;
+    ///   slwi r3,r3,log2(S); stb r0,0(r5); add r5,r4,r3; b JOIN;
+    ///   ELSE: li r6,8; addi r0,r4,-1; stb r6,0(r5); not r6,r0; lwz r0,off(r3);
+    ///   add r5,r4,r0; addi r0,r5,-1; and r5,r6,r0; add r0,r5,r4; stw r0,off(r3);
+    ///   JOIN: mr r3,r5; blr
+    pub(crate) fn try_va_arg_diamond(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function_makes_call(function) || !matches!(function.return_type, Type::Pointer(_)) {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else { return Ok(false) };
+        if local.initializer.is_some() || local.array_length.is_some() {
+            return Ok(false);
+        }
+        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+            return Ok(false);
+        }
+        // The condition: `g < max`, both signed word params.
+        let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition else {
+            return Ok(false);
+        };
+        let Some(g_name) = leaf_name(left) else { return Ok(false) };
+        let signed_word = |generator: &Self, name: &str| -> Option<u8> {
+            generator
+                .locations
+                .get(name)
+                .filter(|location| location.class == ValueClass::General && location.signed && location.width == 32)
+                .map(|location| location.register)
+        };
+        let Some(g_register) = signed_word(self, g_name) else { return Ok(false) };
+        let Some(max_register) = leaf_name(right).and_then(|name| signed_word(self, name)) else {
+            return Ok(false);
+        };
+        // The else arm: the fire-672 ALIGN-store shape over the same local.
+        let Some(arm) = self.match_align_store_arm(else_body.as_slice(), &local.name) else {
+            return Ok(false);
+        };
+        // The then arm: `g += C1; addr = list->area + g*S; *reg = g + C2;`.
+        let [Statement::Assign { name: mutate_name, value: mutate_value }, Statement::Assign { name: addr_name, value: addr_value }, Statement::Store { target: then_target, value: then_value }] =
+            then_body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if mutate_name != g_name || addr_name != &local.name {
+            return Ok(false);
+        }
+        let counter_add = |expression: &Expression| -> Option<i16> {
+            let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
+                return None;
+            };
+            if !matches!(left.as_ref(), Expression::Variable(name) if name == g_name) {
+                return None;
+            }
+            constant_value(right).and_then(|value| i16::try_from(value).ok())
+        };
+        let Some(pre_increment) = counter_add(mutate_value) else { return Ok(false) };
+        let Some(post_increment) = counter_add(then_value) else { return Ok(false) };
+        let Some(store_value) = pre_increment.checked_add(post_increment) else { return Ok(false) };
+        let Expression::Dereference { pointer: then_pointer } = then_target else { return Ok(false) };
+        if leaf_name(then_pointer).and_then(|name| self.lookup_general(name)) != Some(arm.reg_register) {
+            return Ok(false);
+        }
+        // `list->area + g*S` — the member plus the scaled counter (S a power of two).
+        let mut then_sum = addr_value;
+        while let Expression::Cast { operand, .. } = then_sum {
+            then_sum = operand.as_ref();
+        }
+        let Expression::Binary { operator: BinaryOperator::Add, left: sum_left, right: sum_right } = then_sum else {
+            return Ok(false);
+        };
+        let Expression::Member { base: then_base, offset: then_offset, member_type: then_member_type, index_stride: None } =
+            sum_left.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(then_member_type, Type::Pointer(mwcc_syntax_trees::Pointee::Char | mwcc_syntax_trees::Pointee::UnsignedChar)) {
+            return Ok(false);
+        }
+        if leaf_name(then_base).and_then(|name| self.lookup_general(name)) != Some(arm.list_register) {
+            return Ok(false);
+        }
+        let Expression::Binary { operator: BinaryOperator::Multiply, left: scale_left, right: scale_right } = sum_right.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(scale_left.as_ref(), Expression::Variable(name) if name == g_name) {
+            return Ok(false);
+        }
+        let Some(scale) = constant_value(scale_right).filter(|value| *value > 0 && (*value as u64).is_power_of_two()) else {
+            return Ok(false);
+        };
+        let shift = (scale as u64).trailing_zeros() as u8;
+        // The register-reclaim schedule is measured for the natural 5-param
+        // arrangement only — anything else defers.
+        if arm.list_register != 3 || arm.size_register != 4 || arm.reg_register != 5 || g_register != 6 || max_register != 7 {
             return Ok(false);
         }
         // -- emit (measured) --
         let result = Eabi::general_result().number;
-        let value_register = [list_register, size_register, reg_register].iter().max().unwrap() + 1;
-        let addr_home = reg_register; // reclaimed once the store consumed it
-        self.load_integer_constant(value_register, i64::from(store_constant));
-        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: size_register, immediate: -1 });
-        self.output.instructions.push(Instruction::StoreByte { s: value_register, a: reg_register, offset: 0 });
-        self.output.instructions.push(Instruction::Nor { a: value_register, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
-        self.output.instructions.push(Instruction::LoadWord { d: GENERAL_SCRATCH, a: list_register, offset: *offset as i16 });
-        self.output.instructions.push(Instruction::Add { d: addr_home, a: size_register, b: GENERAL_SCRATCH });
-        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: addr_home, immediate: -1 });
-        self.output.instructions.push(Instruction::And { a: addr_home, s: value_register, b: GENERAL_SCRATCH });
-        self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: addr_home, b: size_register });
-        self.output.instructions.push(Instruction::StoreWord { s: GENERAL_SCRATCH, a: list_register, offset: *offset as i16 });
-        self.output.instructions.push(Instruction::move_register(result, addr_home));
+        self.output.instructions.push(Instruction::CompareWord { a: g_register, b: max_register });
+        let branch_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 }); // bge
+        // Then arm: the member load reclaims size's register; the scaled counter
+        // reclaims list's; the join value lands in reg's.
+        self.output.instructions.push(Instruction::LoadWord { d: arm.size_register, a: arm.list_register, offset: *then_offset as i16 });
+        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: g_register, immediate: store_value });
+        self.output.instructions.push(Instruction::AddImmediate { d: arm.list_register, a: g_register, immediate: pre_increment });
+        if shift > 0 {
+            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: arm.list_register, s: arm.list_register, shift });
+        }
+        self.output.instructions.push(Instruction::StoreByte { s: GENERAL_SCRATCH, a: arm.reg_register, offset: 0 });
+        self.output.instructions.push(Instruction::Add { d: arm.reg_register, a: arm.size_register, b: arm.list_register });
+        let skip_index = self.output.instructions.len();
+        self.output.instructions.push(Instruction::Branch { target: 0 });
+        let else_start = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            *target = else_start;
+        }
+        // Else arm: the fire-672 schedule; g's register (dead past the compare)
+        // is the value register, reg's the join home.
+        self.emit_align_store_arm(&arm, g_register, arm.reg_register);
+        let join = self.output.instructions.len();
+        if let Instruction::Branch { target } = &mut self.output.instructions[skip_index] {
+            *target = join;
+        }
+        self.output.instructions.push(Instruction::move_register(result, arm.reg_register));
         self.output.instructions.push(Instruction::BranchToLinkRegister);
+        // The diamond's else target and join advance mwcc's anonymous-@N counter
+        // by 2 each.
+        self.output.anonymous_label_bump += 4;
         Ok(true)
     }
 
