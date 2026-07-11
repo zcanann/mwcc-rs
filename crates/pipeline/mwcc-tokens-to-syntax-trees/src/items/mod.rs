@@ -1474,7 +1474,13 @@ impl Parser {
                         is_variadic = true;
                         break;
                     }
-                    let parameter_type = self.parse_type()?;
+                    let mut parameter_type = self.parse_type()?;
+                    // Extra declarator stars — `wchar_t ** end` is a pointer to
+                    // pointer; each further `*` deepens to a plain pointer.
+                    while *self.peek() == Token::Star {
+                        self.advance();
+                        parameter_type = Type::Pointer(Pointee::Pointer);
+                    }
                     let struct_tag = self.last_struct_tag.take();
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.

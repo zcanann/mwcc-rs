@@ -212,7 +212,14 @@ impl Parser {
             Token::KeywordWhile => {
                 self.advance();
                 self.expect(Token::ParenOpen)?;
-                let condition = Some(self.expression()?);
+                // The comma operator is legal in condition position —
+                // `while (c = *s++, c != 0)` (strikers char_io puts).
+                let mut condition = self.expression()?;
+                while self.eat_keyword(Token::Comma) {
+                    let right = self.expression()?;
+                    condition = Expression::Comma { left: Box::new(condition), right: Box::new(right) };
+                }
+                let condition = Some(condition);
                 self.expect(Token::ParenClose)?;
                 let body = self.parse_block_or_statement(local_names, block_locals)?;
                 Ok(Statement::Loop { kind: LoopKind::While, initializer: None, condition, step: None, body })

@@ -549,6 +549,27 @@ impl Parser {
                 // `(*fp)(args)` — an indirect call through a function-pointer
                 // variable. The Call carries the VARIABLE's name; codegen
                 // resolves locals/parameters (and defers the unallocated).
+                // `(iswspace)(args)` — a parenthesized DIRECT callee. The parens
+                // produce a bare Variable; the postfix call binds by name exactly
+                // like the unparenthesized spelling (strikers wscanf).
+                Token::ParenOpen if matches!(&expression, Expression::Variable(_)) => {
+                    let Expression::Variable(name) = &expression else { unreachable!() };
+                    let name = name.clone();
+                    self.advance(); // `(`
+                    let mut arguments = Vec::new();
+                    if *self.peek() != Token::ParenClose {
+                        loop {
+                            arguments.push(self.expression()?);
+                            if *self.peek() == Token::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Token::ParenClose)?;
+                    expression = Expression::Call { name, arguments };
+                }
                 Token::ParenOpen
                     if matches!(&expression, Expression::Dereference { pointer }
                         if matches!(pointer.as_ref(), Expression::Variable(_))) =>
