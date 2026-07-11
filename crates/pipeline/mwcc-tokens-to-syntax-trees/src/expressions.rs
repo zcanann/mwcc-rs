@@ -324,12 +324,22 @@ impl Parser {
             self.advance();
             self.expect(Token::ParenOpen)?;
             let target_type = self.parse_type()?;
+            // A POINTER type argument (`_var_arg_typeof(wchar_t*)` — printf's
+            // %ls arm): stars make it a gpr pointer, class 1.
+            let mut starred = false;
+            while self.eat_keyword(Token::Star) {
+                starred = true;
+            }
             self.expect(Token::ParenClose)?;
-            let code = match target_type {
-                Type::Struct { .. } => 0,
-                Type::LongLong | Type::UnsignedLongLong => 2,
-                Type::Float | Type::Double => 3,
-                _ => 1,
+            let code = if starred {
+                1
+            } else {
+                match target_type {
+                    Type::Struct { .. } => 0,
+                    Type::LongLong | Type::UnsignedLongLong => 2,
+                    Type::Float | Type::Double => 3,
+                    _ => 1,
+                }
             };
             return Ok(Expression::IntegerLiteral(code));
         }
@@ -480,6 +490,11 @@ impl Parser {
                             }
                         }
                         target_type = mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Int);
+                    }
+                    // Extra stars past parse_type's one (`(wchar_t**)` — printf's
+                    // %ls arm): a pointer-to-pointer cast is a word pointer.
+                    while self.eat_keyword(Token::Star) {
+                        target_type = mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Pointer);
                     }
                     self.expect(Token::ParenClose)?;
                     // Capture the cast's struct tag before parsing the operand (which may

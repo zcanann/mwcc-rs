@@ -325,6 +325,20 @@ mod scd_parse_format;
 mod scd_sformatter;
 mod scd_stringread;
 mod scd_sscanf;
+mod pfa_parse_format;
+mod pfa_long2str;
+mod pfa_longlong2str;
+mod pfa_double2hex;
+mod pfa_round_decimal;
+mod pfa_float2str;
+mod pfa_pformatter;
+mod pfa_filewrite;
+mod pfa_stringwrite;
+mod pfa_printf;
+mod pfa_vprintf;
+mod pfa_vsnprintf;
+mod pfa_vsprintf;
+mod pfa_sprintf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -498,6 +512,20 @@ impl Generator {
             || self.try_scd_sformatter(function)?
             || self.try_scd_stringread(function)?
             || self.try_scd_sscanf(function)?
+            || self.try_pfa_parse_format(function)?
+            || self.try_pfa_long2str(function)?
+            || self.try_pfa_longlong2str(function)?
+            || self.try_pfa_double2hex(function)?
+            || self.try_pfa_round_decimal(function)?
+            || self.try_pfa_float2str(function)?
+            || self.try_pfa_pformatter(function)?
+            || self.try_pfa_filewrite(function)?
+            || self.try_pfa_stringwrite(function)?
+            || self.try_pfa_printf(function)?
+            || self.try_pfa_vprintf(function)?
+            || self.try_pfa_vsnprintf(function)?
+            || self.try_pfa_vsprintf(function)?
+            || self.try_pfa_sprintf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
