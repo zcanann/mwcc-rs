@@ -397,6 +397,7 @@ mod gcn_sys_alloc;
 mod esq_sqrt;
 mod ktn_tan;
 mod eac_acos;
+mod erp_rempio2;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -642,6 +643,7 @@ impl Generator {
             || self.try_esq_sqrt(function)?
             || self.try_ktn_tan(function)?
             || self.try_eac_acos(function)?
+            || self.try_erp_rempio2(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
