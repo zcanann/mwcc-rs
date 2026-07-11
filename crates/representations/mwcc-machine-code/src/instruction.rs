@@ -146,6 +146,10 @@ pub enum Instruction {
     StoreFloatDoubleIndexed { s: u8, a: u8, b: u8 },
     /// `lfdu` — load float-double AND update the base register (op 51).
     LoadFloatDoubleWithUpdate { d: u8, a: u8, offset: i16 },
+    /// `lfsu fD, offset(rA)` — load float single, update rA.
+    LoadFloatSingleWithUpdate { d: u8, a: u8, offset: i16 },
+    /// `stfsu fS, offset(rA)` — store float single, update rA.
+    StoreFloatSingleWithUpdate { s: u8, a: u8, offset: i16 },
     /// `stfdu` — store float-double AND update the base register (op 55).
     StoreFloatDoubleWithUpdate { s: u8, a: u8, offset: i16 },
     /// `clrlwi rA, rS, n` — clear the high `n` bits (mask to the low `32-n`), via `rlwinm`.
@@ -190,6 +194,8 @@ pub enum Instruction {
     FloatMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
     /// `fnmsubs frD, frA, frC, frB` => frD = frB - frA*frC.
     FloatNegativeMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
+    /// `fnmadds fD, fA, fC, fB` — negative multiply-add single.
+    FloatNegativeMultiplyAddSingle { d: u8, a: u8, c: u8, b: u8 },
     /// Double-precision arithmetic (opcode 63 vs the single forms' 59).
     /// `fadd frD, frA, frB`
     FloatAddDouble { d: u8, a: u8, b: u8 },

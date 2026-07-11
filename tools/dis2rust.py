@@ -63,6 +63,9 @@ for idx, mn, ops in instrs:
         if mn == "lfd" and rl[1] in POOL:
             out.append(f"        self.load_double_constant({ops[0][1:]}, 0x{POOL[rl[1]]});")
             continue
+        if mn == "lfs" and rl[1] in POOL:
+            out.append(f"        self.load_float_constant({ops[0][1:]}, f32::from_bits(0x{POOL[rl[1]][:8]}));")
+            continue
         if mn == "lwz" and rl[1] in POOL:
             out.append(f"        self.load_word_constant({R(ops[0])}, 0x{POOL[rl[1]][:8]});")
             continue
@@ -179,12 +182,19 @@ for idx, mn, ops in instrs:
     elif mn=="bctr": push("BranchToCountRegister")
     elif mn=="mtctr": push(f"MoveToCountRegister {{ s: {R(ops[0])} }}")
     elif mn=="fmul": push(f"FloatMultiplyDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]} }}")
+    elif mn=="fmuls": push(f"FloatMultiplySingle {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]} }}")
     elif mn=="fdiv": push(f"FloatDivideDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
+    elif mn=="fdivs": push(f"FloatDivideSingle {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
     elif mn=="fadd": push(f"FloatAddDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
+    elif mn=="fadds": push(f"FloatAddSingle {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
     elif mn=="fsub": push(f"FloatSubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
+    elif mn=="fsubs": push(f"FloatSubtractSingle {{ d: {ops[0][1:]}, a: {ops[1][1:]}, b: {ops[2][1:]} }}")
     elif mn=="fmadd": push(f"FloatMultiplyAddDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
+    elif mn=="fmadds": push(f"FloatMultiplyAddSingle {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
     elif mn=="fmsub": push(f"FloatMultiplySubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
     elif mn=="fnmsub": push(f"FloatNegativeMultiplySubtractDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
+    elif mn=="fnmsubs": push(f"FloatNegativeMultiplySubtractSingle {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
+    elif mn=="fnmadds": push(f"FloatNegativeMultiplyAddSingle {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]}, b: {ops[3][1:]} }}")
     elif mn=="fneg": push(f"FloatNegate {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="frsp": push(f"RoundToSingle {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="stfs": push(f"StoreFloatSingle {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
@@ -195,6 +205,8 @@ for idx, mn, ops in instrs:
     elif mn=="psq_l": push(f"PairedSingleQuantizedLoad {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]}, w: {ops[2]}, i: {ops[3]} }}")
     elif mn=="psq_st": push(f"PairedSingleQuantizedStore {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]}, w: {ops[2]}, i: {ops[3]} }}")
     elif mn=="lfs":  push(f"LoadFloatSingle {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="lfsu": push(f"LoadFloatSingleWithUpdate {{ d: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
+    elif mn=="stfsu": push(f"StoreFloatSingleWithUpdate {{ s: {ops[0][1:]}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="fcmpu": push(f"FloatCompareUnordered {{ a: {ops[-2][1:]}, b: {ops[-1][1:]} }}")
     elif mn=="frsqrte": push(f"FloatReciprocalSqrtEstimate {{ d: {ops[0][1:]}, b: {ops[1][1:]} }}")
     elif mn=="srawi.": push(f"ShiftRightAlgebraicImmediateRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, shift: {ops[2]} }}")
@@ -230,6 +242,7 @@ for idx, mn, ops in instrs:
     elif mn=="subfe": push(f"SubtractFromExtended {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="lbzx": push(f"LoadByteZeroIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="lwzx": push(f"LoadWordIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="lfsx": push(f"LoadFloatSingleIndexed {{ d: {ops[0][1:]}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="lhzx": push(f"LoadHalfwordZeroIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="stwx": push(f"StoreWordIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="crclr":

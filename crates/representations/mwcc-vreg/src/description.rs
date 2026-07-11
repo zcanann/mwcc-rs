@@ -132,12 +132,12 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             if *a != 0 { visit(U, G, a); }
         }
         // The update form reads AND rewrites the general base.
-        LoadFloatDoubleWithUpdate { d, a, .. } => {
+        LoadFloatDoubleWithUpdate { d, a, .. } | LoadFloatSingleWithUpdate { d, a, .. } => {
             visit(D, F, d);
             visit(U, G, a);
             visit(D, G, a);
         }
-        StoreFloatDoubleWithUpdate { s, a, .. } => {
+        StoreFloatDoubleWithUpdate { s, a, .. } | StoreFloatSingleWithUpdate { s, a, .. } => {
             visit(U, F, s);
             visit(U, G, a);
             visit(D, G, a);
@@ -188,6 +188,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         }
         FloatMultiplyAddSingle { d, a, c, b } | FloatMultiplySubtractSingle { d, a, c, b }
         | FloatNegativeMultiplySubtractSingle { d, a, c, b }
+        | FloatNegativeMultiplyAddSingle { d, a, c, b }
         | FloatMultiplyAddDouble { d, a, c, b } | FloatMultiplySubtractDouble { d, a, c, b }
         | FloatNegativeMultiplySubtractDouble { d, a, c, b } => {
             visit(D, F, d);

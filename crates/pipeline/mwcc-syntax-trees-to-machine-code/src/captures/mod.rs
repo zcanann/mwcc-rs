@@ -401,6 +401,12 @@ mod erp_rempio2;
 mod exp_bfbb;
 mod mth_fabsf;
 mod mth_frexp;
+mod trg_sinit;
+mod trg_sinf;
+mod trg_cosf;
+mod trg_sin_ff;
+mod trg_cos_ff;
+mod trg_tanf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -650,6 +656,12 @@ impl Generator {
             || self.try_exp_bfbb(function)?
             || self.try_mth_fabsf(function)?
             || self.try_mth_frexp(function)?
+            || self.try_trg_sinit(function)?
+            || self.try_trg_sinf(function)?
+            || self.try_trg_cosf(function)?
+            || self.try_trg_sin_ff(function)?
+            || self.try_trg_cos_ff(function)?
+            || self.try_trg_tanf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
