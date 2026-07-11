@@ -394,6 +394,9 @@ mod ldx_ldexp;
 mod xtr_strcmpi;
 mod gcn_sys_free;
 mod gcn_sys_alloc;
+mod esq_sqrt;
+mod ktn_tan;
+mod eac_acos;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -636,6 +639,9 @@ impl Generator {
             || self.try_xtr_strcmpi(function)?
             || self.try_gcn_sys_free(function)?
             || self.try_gcn_sys_alloc(function)?
+            || self.try_esq_sqrt(function)?
+            || self.try_ktn_tan(function)?
+            || self.try_eac_acos(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
