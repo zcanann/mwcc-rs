@@ -390,6 +390,8 @@ mod fpt_fseek;
 mod fpw_ftell;
 mod fpw_ftell_i;
 mod fpw_fseek_i;
+mod ldx_ldexp;
+mod xtr_strcmpi;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -628,6 +630,8 @@ impl Generator {
             || self.try_fpw_ftell(function)?
             || self.try_fpw_ftell_i(function)?
             || self.try_fpw_fseek_i(function)?
+            || self.try_ldx_ldexp(function)?
+            || self.try_xtr_strcmpi(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
