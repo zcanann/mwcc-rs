@@ -229,6 +229,8 @@ pub enum Instruction {
     /// `lbzu` — load byte (zero-extended) AND update the base register with
     /// the effective address (op 35).
     LoadByteZeroWithUpdate { d: u8, a: u8, offset: i16 },
+    /// `lhzu d, offset(a)` — load half-word zero-extended, update `a`.
+    LoadHalfZeroWithUpdate { d: u8, a: u8, offset: i16 },
     /// `stbu` — store byte AND update the base register (op 39).
     StoreByteWithUpdate { s: u8, a: u8, offset: i16 },
     /// `lwzu` — load word AND update the base register with the effective

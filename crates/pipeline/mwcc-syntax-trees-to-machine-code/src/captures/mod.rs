@@ -367,6 +367,15 @@ mod sig_raise;
 mod qst_qsort;
 mod wcs_wcstoul_i;
 mod wcs_wcstoul;
+mod wsc_parse_format;
+mod wsc_wsformatter;
+mod wsc_wfileread;
+mod wsc_wstringread;
+mod wsc_fwscanf;
+mod wsc_wscanf;
+mod wsc_vwscanf;
+mod wsc_vswscanf;
+mod wsc_swscanf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -582,6 +591,15 @@ impl Generator {
             || self.try_qst_qsort(function)?
             || self.try_wcs_wcstoul_i(function)?
             || self.try_wcs_wcstoul(function)?
+            || self.try_wsc_parse_format(function)?
+            || self.try_wsc_wsformatter(function)?
+            || self.try_wsc_wfileread(function)?
+            || self.try_wsc_wstringread(function)?
+            || self.try_wsc_fwscanf(function)?
+            || self.try_wsc_wscanf(function)?
+            || self.try_wsc_vwscanf(function)?
+            || self.try_wsc_vswscanf(function)?
+            || self.try_wsc_swscanf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
