@@ -1,4 +1,4 @@
-//! fps_fseek: an exact-match whole-function capture (fire 702).
+//! fpw_ftell: an exact-match whole-function capture (fire 704).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,20 +7,20 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const FPS_FSEEK_AST_HASH: u64 = 0xc8a2a523888885e3;
+const FPW_FTELL_AST_HASH: u64 = 0xc36bd2549f20eb75;
 
 impl Generator {
-    pub(super) fn try_fps_fseek(&mut self, function: &Function) -> Compilation<bool> {
-        if function.name != "fseek"
+    pub(super) fn try_fpw_ftell(&mut self, function: &Function) -> Compilation<bool> {
+        if function.name != "ftell"
             || function.return_type != Type::Int
-            || function.parameters.len() != 3
+            || function.parameters.len() != 1
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != FPS_FSEEK_AST_HASH {
-            eprintln!("fps_fseek hash candidate: {hash:#x}");
+        if hash != FPW_FTELL_AST_HASH {
+            eprintln!("fpw_ftell hash candidate: {hash:#x}");
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -28,10 +28,9 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0xbd60acb658c79e45 => 0, // wind_waker
-            0x33405ea3d804990f => 0, // marioparty4 (bump TBD from refctx @N diff)
+            0xbd60acb658c79e45 => 0, // marioparty4 (bump TBD from refctx @N diff)
             _ => {
-                eprintln!("fps_fseek context candidate: {context:#x}");
+                eprintln!("fpw_ftell context candidate: {context:#x}");
                 return Ok(false);
             }
         };
@@ -45,8 +44,8 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.record_relocation(RelocationKind::Rel24, "_fseek");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "_fseek".to_string() });
+        self.record_relocation(RelocationKind::Rel24, "_ftell");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "_ftell".to_string() });
         self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
