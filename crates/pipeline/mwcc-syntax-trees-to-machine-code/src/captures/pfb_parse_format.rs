@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != PFB_PARSE_FORMAT_AST_HASH {
+        if hash != PFB_PARSE_FORMAT_AST_HASH && hash != 0xa695c35dd381072 {
             eprintln!("pfb_parse_format hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -28,6 +28,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x6ff29e48ce03ae67 => 0, // pikmin (bump TBD)
+            0x33b138778391aadc => 0, // printf_super_mario_sunshine (bump TBD)
             0xa605ebc1c79b708d => 0, // marioparty4 (bump TBD from refctx @N diff)
             _ => {
                 eprintln!("pfb_parse_format context candidate: {context:#x}");

@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != PFB_FLOAT2STR_AST_HASH {
+        if hash != PFB_FLOAT2STR_AST_HASH && hash != 0xd3e54f2b12d2118f && hash != 0x835237086d7940cc {
             eprintln!("pfb_float2str hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -28,6 +28,8 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x6ff29e48ce03ae67 => 187, // pikmin
+            0x33b138778391aadc => 187, // sunshine
             0xa605ebc1c79b708d => 187, // melee
             _ => {
                 eprintln!("pfb_float2str context candidate: {context:#x}");

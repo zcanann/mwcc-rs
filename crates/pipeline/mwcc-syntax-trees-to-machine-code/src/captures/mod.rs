@@ -352,6 +352,14 @@ mod pfb_vsnprintf;
 mod pfb_printf;
 mod pfb_vsprintf;
 mod pfb_sprintf;
+mod pfb_snprintf;
+mod pfb_fprintf;
+mod pfb_snprintf_pik;
+mod pfa_snprintf;
+mod pfc_printf;
+mod pfc_vprintf;
+mod pfd_printf;
+mod pfd_fprintf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -552,6 +560,14 @@ impl Generator {
             || self.try_pfb_printf(function)?
             || self.try_pfb_vsprintf(function)?
             || self.try_pfb_sprintf(function)?
+            || self.try_pfb_snprintf(function)?
+            || self.try_pfb_fprintf(function)?
+            || self.try_pfb_snprintf_pik(function)?
+            || self.try_pfa_snprintf(function)?
+            || self.try_pfc_printf(function)?
+            || self.try_pfc_vprintf(function)?
+            || self.try_pfd_printf(function)?
+            || self.try_pfd_fprintf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?

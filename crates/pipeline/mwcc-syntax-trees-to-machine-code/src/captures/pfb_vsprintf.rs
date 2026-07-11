@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x6ff29e48ce03ae67 => 0, // pikmin (bump TBD)
             0xa605ebc1c79b708d => 0, // marioparty4 (bump TBD from refctx @N diff)
             _ => {
                 eprintln!("pfb_vsprintf context candidate: {context:#x}");

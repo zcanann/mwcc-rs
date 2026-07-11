@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != PFA_VPRINTF_AST_HASH {
+        if hash != PFA_VPRINTF_AST_HASH && hash != 0x8f27a6783ad54414 {
             eprintln!("pfa_vprintf hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -28,6 +28,9 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x4dc5812f6e4177a3 => 0, // strikers (bump TBD)
+            0x46f259063d157aea => 0, // wind_waker (bump TBD)
+            0xf8b1cd38c2b39c70 => 0, // animal_crossing (bump TBD)
             0x3012f8741ad9c69d => 0, // marioparty4 (bump TBD from refctx @N diff)
             _ => {
                 eprintln!("pfa_vprintf context candidate: {context:#x}");

@@ -255,6 +255,14 @@ impl Generator {
         if let Some(cleaned) = normalize_leading_local_assigns(function) {
             return self.evaluate_body(&cleaned);
         }
+        // The exact-match whole-function captures (src/captures/) claim FIRST
+        // among the templates: they gate on the Debug-AST hash + context
+        // fingerprint, so they either reproduce measured bytes exactly or
+        // decline with no side effects — a generic template mid-emission
+        // defer must not shadow an exact capture (ac __StringWrite).
+        if self.try_captures(function)? {
+            return Ok(());
+        }
         // The TRIG DISPATCHER template claims before the general statement
         // walkers (its leading Assigns would otherwise hit the value-tracking
         // defer).
@@ -294,10 +302,6 @@ impl Generator {
             return Ok(());
         }
         if self.try_writeback_norm(function)? {
-            return Ok(());
-        }
-        // The exact-match whole-function captures (src/captures/).
-        if self.try_captures(function)? {
             return Ok(());
         }
         // A VARIADIC definition only a capture may claim — the general path

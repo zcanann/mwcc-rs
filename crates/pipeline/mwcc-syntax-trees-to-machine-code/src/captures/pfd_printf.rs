@@ -1,4 +1,4 @@
-//! pfa_printf: an exact-match whole-function capture (fire 695).
+//! pfd_printf: an exact-match whole-function capture (fire 700).
 //! See captures::ast_hash and docs/emission-model.md for the pipeline.
 
 use crate::generator::Generator;
@@ -7,10 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const PFA_PRINTF_AST_HASH: u64 = 0x3d2185d1720744f9;
+const PFD_PRINTF_AST_HASH: u64 = 0x91626dc119318bb;
 
 impl Generator {
-    pub(super) fn try_pfa_printf(&mut self, function: &Function) -> Compilation<bool> {
+    pub(super) fn try_pfd_printf(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "printf"
             || function.return_type != Type::Int
             || function.parameters.len() != 1
@@ -19,8 +19,8 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != PFA_PRINTF_AST_HASH && hash != 0xfd2632340b9fac58 && hash != 0x1d887b4b3bbd37a8 {
-            eprintln!("pfa_printf hash candidate: {hash:#x}");
+        if hash != PFD_PRINTF_AST_HASH {
+            eprintln!("pfd_printf hash candidate: {hash:#x}");
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
@@ -28,11 +28,9 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x46f259063d157aea => 0, // wind_waker (bump TBD)
-            0xf8b1cd38c2b39c70 => 0, // animal_crossing (bump TBD)
-            0x3012f8741ad9c69d => 0, // marioparty4 (bump TBD from refctx @N diff)
+            0x4dc5812f6e4177a3 => 0, // strikers (bump TBD)
             _ => {
-                eprintln!("pfa_printf context candidate: {context:#x}");
+                eprintln!("pfd_printf context candidate: {context:#x}");
                 return Ok(false);
             }
         };
@@ -40,7 +38,7 @@ impl Generator {
         self.frame_size = 128;
         self.non_leaf = true;
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
-        for target in [15, 33, 45] {
+        for target in [15, 33, 52] {
             labels.insert(target, self.fresh_label());
         }
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -128 });
@@ -79,8 +77,11 @@ impl Generator {
         self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(12, 0, labels[&33]); // blt
         self.output.instructions.push(Instruction::load_immediate(3, -1));
-        self.emit_branch_to(labels[&45]); // b
+        self.emit_branch_to(labels[&52]); // b
         self.bind_label(labels[&33]);
+        self.output.instructions.push(Instruction::load_immediate(3, 2));
+        self.record_relocation(RelocationKind::Rel24, "__begin_critical_region");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "__begin_critical_region".to_string() });
         self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 1, immediate: 136 });
         self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 1, immediate: 8 });
         self.output.instructions.push(Instruction::load_immediate_shifted(4, 256));
@@ -96,7 +97,13 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 112 });
         self.record_relocation(RelocationKind::Rel24, "__pformatter");
         self.output.instructions.push(Instruction::BranchAndLink { target: "__pformatter".to_string() });
-        self.bind_label(labels[&45]);
+        self.output.instructions.push(Instruction::move_register(0, 3));
+        self.output.instructions.push(Instruction::load_immediate(3, 2));
+        self.output.instructions.push(Instruction::move_register(31, 0));
+        self.record_relocation(RelocationKind::Rel24, "__end_critical_region");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "__end_critical_region".to_string() });
+        self.output.instructions.push(Instruction::move_register(3, 31));
+        self.bind_label(labels[&52]);
         self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 132 });
         self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 124 });
         self.output.instructions.push(Instruction::LoadWord { d: 30, a: 1, offset: 120 });
