@@ -919,6 +919,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
         constant_symbols.push(symbols);
+        // A split point at (or past) the END of the constant list emits the
+        // string symbols after the last constant (mirrors the numbering walk's
+        // post-loop catch above).
+        if let Some(position) = function.string_number_after_constants {
+            if position as usize >= function.constants.len() {
+                for name in &function.string_names {
+                    local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                    let section = index_of(data_section[name.as_str()]) as u16;
+                    write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                    comment_values.push((data_aligns[name.as_str()], 0));
+                }
+            }
+        }
         if let Some(frame) = &frame_numbers[index] {
             extab_entry_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
             let extab_name = strtab.add(&format!("@{}", frame.extab));

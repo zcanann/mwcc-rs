@@ -339,6 +339,19 @@ mod pfa_vprintf;
 mod pfa_vsnprintf;
 mod pfa_vsprintf;
 mod pfa_sprintf;
+mod pfb_parse_format;
+mod pfb_long2str;
+mod pfb_longlong2str;
+mod pfb_round_decimal;
+mod pfb_float2str;
+mod pfb_pformatter;
+mod pfb_filewrite;
+mod pfb_stringwrite;
+mod pfb_vprintf;
+mod pfb_vsnprintf;
+mod pfb_printf;
+mod pfb_vsprintf;
+mod pfb_sprintf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -526,6 +539,19 @@ impl Generator {
             || self.try_pfa_vsnprintf(function)?
             || self.try_pfa_vsprintf(function)?
             || self.try_pfa_sprintf(function)?
+            || self.try_pfb_parse_format(function)?
+            || self.try_pfb_long2str(function)?
+            || self.try_pfb_longlong2str(function)?
+            || self.try_pfb_round_decimal(function)?
+            || self.try_pfb_float2str(function)?
+            || self.try_pfb_pformatter(function)?
+            || self.try_pfb_filewrite(function)?
+            || self.try_pfb_stringwrite(function)?
+            || self.try_pfb_vprintf(function)?
+            || self.try_pfb_vsnprintf(function)?
+            || self.try_pfb_printf(function)?
+            || self.try_pfb_vsprintf(function)?
+            || self.try_pfb_sprintf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
