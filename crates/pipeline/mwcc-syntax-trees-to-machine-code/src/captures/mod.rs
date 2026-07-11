@@ -362,6 +362,11 @@ mod pfd_printf;
 mod pfd_fprintf;
 mod sfa_two_exp;
 mod sfa_dec2num;
+mod bsr_bsearch;
+mod sig_raise;
+mod qst_qsort;
+mod wcs_wcstoul_i;
+mod wcs_wcstoul;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -572,6 +577,11 @@ impl Generator {
             || self.try_pfd_fprintf(function)?
             || self.try_sfa_two_exp(function)?
             || self.try_sfa_dec2num(function)?
+            || self.try_bsr_bsearch(function)?
+            || self.try_sig_raise(function)?
+            || self.try_qst_qsort(function)?
+            || self.try_wcs_wcstoul_i(function)?
+            || self.try_wcs_wcstoul(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
