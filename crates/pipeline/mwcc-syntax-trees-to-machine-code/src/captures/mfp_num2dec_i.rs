@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x2f48e587b0c6ec95 => 240, // strikers ansi_fp
             0x634c2c214dc5e7a9 => 249, // metroid_prime
             _ => {
                 eprintln!("mfp_num2dec_i context candidate: {context:#x}");
@@ -36,6 +37,11 @@ impl Generator {
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 176;
+        if context == 0x2f48e587b0c6ec95 {
+            // strikers: pow_10$ numbers 71 past the pool constant (prime reuses
+            // an earlier 0.0, strikers interns fresh at the same walk point).
+            self.output.post_constant_label_bump = 71;
+        }
         self.non_leaf = true;
         self.callee_saved_float = 2;
         for bits in [

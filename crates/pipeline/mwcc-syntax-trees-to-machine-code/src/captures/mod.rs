@@ -360,6 +360,8 @@ mod pfc_printf;
 mod pfc_vprintf;
 mod pfd_printf;
 mod pfd_fprintf;
+mod sfa_two_exp;
+mod sfa_dec2num;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -568,6 +570,8 @@ impl Generator {
             || self.try_pfc_vprintf(function)?
             || self.try_pfd_printf(function)?
             || self.try_pfd_fprintf(function)?
+            || self.try_sfa_two_exp(function)?
+            || self.try_sfa_dec2num(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
