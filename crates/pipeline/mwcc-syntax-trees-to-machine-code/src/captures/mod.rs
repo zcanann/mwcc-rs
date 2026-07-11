@@ -376,6 +376,13 @@ mod wsc_wscanf;
 mod wsc_vwscanf;
 mod wsc_vswscanf;
 mod wsc_swscanf;
+mod cio_fgets;
+mod cio_put_char;
+mod cio_fputs;
+mod fps_ftell_i;
+mod fps_ftell;
+mod fps_fseek_i;
+mod fps_fseek;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -600,6 +607,13 @@ impl Generator {
             || self.try_wsc_vwscanf(function)?
             || self.try_wsc_vswscanf(function)?
             || self.try_wsc_swscanf(function)?
+            || self.try_cio_fgets(function)?
+            || self.try_cio_put_char(function)?
+            || self.try_cio_fputs(function)?
+            || self.try_fps_ftell_i(function)?
+            || self.try_fps_ftell(function)?
+            || self.try_fps_fseek_i(function)?
+            || self.try_fps_fseek(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
