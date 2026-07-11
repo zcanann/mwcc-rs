@@ -219,7 +219,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(D, G, d);
             visit(U, G, a);
         }
-        ConditionRegisterOr { .. } => {}
+        ConditionRegisterOr { .. } | ConditionRegisterClear { .. } => {}
         CompareWord { a, b } | CompareLogicalWord { a, b } | CompareWordField { a, b, .. } => {
             visit(U, G, a);
             visit(U, G, b);

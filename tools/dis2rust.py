@@ -232,6 +232,16 @@ for idx, mn, ops in instrs:
     elif mn=="lwzx": push(f"LoadWordIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="lhzx": push(f"LoadHalfwordZeroIndexed {{ d: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="stwx": push(f"StoreWordIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
+    elif mn=="crclr":
+        bitmap={"lt":0,"gt":1,"eq":2,"so":3,"un":3}
+        spec=ops[0]
+        if "*" in spec:
+            n,rest=spec.split("*",1); crn=int(rest.split("+")[0].replace("cr",""))
+            bit=4*crn+bitmap[rest.split("+")[1]]
+        else:
+            bit=bitmap.get(spec, None)
+            if bit is None: bit=int(spec)
+        push(f"ConditionRegisterClear {{ d: {bit} }}")
     elif mn=="stbx": push(f"StoreByteIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="sthx": push(f"StoreHalfwordIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="ori": push(f"OrImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")

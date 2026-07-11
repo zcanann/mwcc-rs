@@ -163,6 +163,7 @@ impl Instruction {
             // lmw rD,d(rA) (opcode 46; measured b9 a3 00 14 for r13,20(r3))
             Instruction::LoadMultipleWord { d, a, offset } => (46 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | (offset as u16 as u32),
             Instruction::ConditionRegisterOr { d, a, b } => (19 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | (449 << 1),
+            Instruction::ConditionRegisterClear { d } => 0x4C00_0182 | ((d as u32) << 21) | ((d as u32) << 16) | ((d as u32) << 11),
             Instruction::CompareWordImmediate { a, immediate } => (11 << 26) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWordImmediateField { crf, a, immediate } => (11 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | (immediate as u16 as u32),
             Instruction::CompareWordField { crf, a, b } => (31 << 26) | ((crf as u32) << 23) | ((a as u32) << 16) | ((b as u32) << 11),
