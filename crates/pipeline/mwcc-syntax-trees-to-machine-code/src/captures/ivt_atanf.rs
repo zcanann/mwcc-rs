@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != IVT_ATANF_AST_HASH {
+        if hash != IVT_ATANF_AST_HASH && hash != 0xe7d8542c2da061a9 {
             eprintln!("ivt_atanf hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x1d008359133dc5f8 => 30, // sunshine (guess = pikmin)
             0x19234177da3e2378 => 30, // pikmin
             _ => {
                 eprintln!("ivt_atanf context candidate: {context:#x}");

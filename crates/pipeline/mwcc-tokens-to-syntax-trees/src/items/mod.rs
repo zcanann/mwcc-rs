@@ -336,6 +336,12 @@ impl Parser {
                 if braced {
                     continue; // dead after full-return diamonds; end-of-arm otherwise
                 }
+                // Dead consecutive breaks (`break; break;` — sunshine's
+                // inverse_trig index ladder) all belong to this arm.
+                while matches!(self.peek(), Token::Identifier(word) if word == "break") {
+                    self.advance();
+                    self.expect(Token::Semicolon)?;
+                }
                 break; // an unbraced arm ends at its break
             }
             if !braced
