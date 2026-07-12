@@ -407,6 +407,11 @@ mod trg_cosf;
 mod trg_sin_ff;
 mod trg_cos_ff;
 mod trg_tanf;
+mod ivt_atanf;
+mod ivt_atan2f;
+mod ivt_inv_sqrtf;
+mod ivt_atan_ff;
+mod ivt_acosf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -662,6 +667,11 @@ impl Generator {
             || self.try_trg_sin_ff(function)?
             || self.try_trg_cos_ff(function)?
             || self.try_trg_tanf(function)?
+            || self.try_ivt_atanf(function)?
+            || self.try_ivt_atan2f(function)?
+            || self.try_ivt_inv_sqrtf(function)?
+            || self.try_ivt_atan_ff(function)?
+            || self.try_ivt_acosf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?

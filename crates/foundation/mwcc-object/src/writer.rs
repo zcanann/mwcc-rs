@@ -844,6 +844,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 };
                 write_symbol(&mut symtab, display, data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
                 comment_values.push((data_aligns[object.name], 0));
+                // The `...rodata.0` anchor also follows the FIRST .rodata
+                // static LOCAL (pikmin inverse_trig's atan_coeff$N).
+                if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
+                    local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                    write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
+                    comment_values.push((1, 0x0010_0000));
+                    rodata_anchor_emitted = true;
+                }
             }
         }
         // The implicit-materialization's LOCAL FUNC symbol trails its own
@@ -974,6 +982,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     };
                     write_symbol(&mut symtab, display, data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
                     comment_values.push((data_aligns[object.name], 0));
+                    // The `...rodata.0` anchor also follows the FIRST .rodata
+                    // static LOCAL (pikmin inverse_trig's atan_coeff$N).
+                    if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
+                        local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                        write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
+                        comment_values.push((1, 0x0010_0000));
+                        rodata_anchor_emitted = true;
+                    }
                 }
             }
         }
