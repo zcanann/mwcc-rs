@@ -92,6 +92,9 @@ pub(crate) fn fold_constant_float(expression: &Expression) -> Compilation<f64> {
                 Add => left + right,
                 Subtract => left - right,
                 Multiply => left * right,
+                // mwcc folds 0.0/0.0 to the PowerPC HARDWARE NaN — sign bit
+                // SET (melee math.c's `float_nan = 0.0 / 0.0` images FFC00000).
+                Divide if left == 0.0 && right == 0.0 => f64::from_bits(0xFFF8_0000_0000_0000),
                 Divide => left / right,
                 _ => return Err(Diagnostic::error("unsupported operator in a float constant initializer (roadmap)")),
             }

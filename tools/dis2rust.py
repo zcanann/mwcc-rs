@@ -76,6 +76,11 @@ for idx, mn, ops in instrs:
             out.append(f'        self.record_relocation(RelocationKind::EmbSda21, "{target}");')
             out.append(f"        self.output.instructions.push(Instruction::LoadFloatDouble {{ d: {ops[0][1:]}, a: 0, offset: 0 }});")
             continue
+        if mn == "lfs" and not rl[1].startswith("@"):
+            target = re.sub(r'\$\d+$', '', rl[1])
+            out.append(f'        self.record_relocation(RelocationKind::EmbSda21, "{target}");')
+            out.append(f"        self.output.instructions.push(Instruction::LoadFloatSingle {{ d: {ops[0][1:]}, a: 0, offset: 0 }});")
+            continue
         if mn in ("stw","lwz") and not rl[1].startswith("@"):
             # a function-scoped static displays as name$K — the writer keys the
             # local object on the RAW name and assigns K itself.

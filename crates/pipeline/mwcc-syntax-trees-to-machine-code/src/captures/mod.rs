@@ -415,6 +415,7 @@ mod ivt_acosf;
 mod epw_scalbn;
 mod epw_pow;
 mod epx_pow;
+mod mtc_logf;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -678,6 +679,7 @@ impl Generator {
             || self.try_epw_scalbn(function)?
             || self.try_epw_pow(function)?
             || self.try_epx_pow(function)?
+            || self.try_mtc_logf(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
