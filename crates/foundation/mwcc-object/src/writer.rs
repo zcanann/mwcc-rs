@@ -1003,7 +1003,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push((data_aligns[object.name], flags));
             for relocation in object.relocations.iter().rev() {
                 let target = relocation.target.as_str();
-                if global_symbols.contains_key(target) || local_data_symbols.contains_key(target) {
+                // A STATIC function's LOCAL symbol satisfies a data reloc too —
+                // pikmin trigf's `.ctors` reference to its static sinit must
+                // not mint a spurious UND duplicate.
+                if global_symbols.contains_key(target)
+                    || local_data_symbols.contains_key(target)
+                    || local_function_symbols.contains_key(target)
+                {
                     continue;
                 }
                 global_symbols.insert(target, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -1290,7 +1296,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // `.data` for large arrays.
     let mut rela_sdata = Vec::new();
     let resolve_data_target = |name: &str| -> u32 {
-        *local_data_symbols.get(name).unwrap_or_else(|| &global_symbols[name])
+        *local_data_symbols
+            .get(name)
+            .or_else(|| local_function_symbols.get(name))
+            .unwrap_or_else(|| &global_symbols[name])
     };
     for object in &input.data_objects {
         if data_section[object.name] != ".sdata" {

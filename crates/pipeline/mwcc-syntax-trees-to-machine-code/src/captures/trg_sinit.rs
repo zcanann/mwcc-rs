@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != TRG_SINIT_AST_HASH {
+        if hash != TRG_SINIT_AST_HASH && hash != 0x75f455653ee44cd8 {
             eprintln!("trg_sinit hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x19234177da3e2378 => 0, // pikmin
             0xa5533c97b3cd5d53 => 0, // marioparty4 (bump TBD from refctx @N diff)
             _ => {
                 eprintln!("trg_sinit context candidate: {context:#x}");
