@@ -825,6 +825,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 let section = index_of(data_section[object.name]) as u16;
                 write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
                 comment_values.push((data_aligns[object.name], 0));
+                // The `...rodata.0` anchor also follows the FIRST .rodata
+                // static in the INTERLEAVED source-position run (pikmin
+                // e_pow's `bp`, declared after scalbn).
+                if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
+                    local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                    write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
+                    comment_values.push((1, 0x0010_0000));
+                    rodata_anchor_emitted = true;
+                }
             }
         }
         // An IMPLICIT function's STATIC LOCALS lead its block (its FUNC symbol

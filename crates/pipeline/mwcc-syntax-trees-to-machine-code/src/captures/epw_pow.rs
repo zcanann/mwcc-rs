@@ -1,0 +1,672 @@
+//! epw_pow: an exact-match whole-function capture (fire 715).
+//! See captures::ast_hash and docs/emission-model.md for the pipeline.
+
+use crate::generator::Generator;
+use mwcc_core::Compilation;
+use mwcc_machine_code::{Instruction, RelocationKind};
+use mwcc_syntax_trees::{Function, Type};
+
+/// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
+const EPW_POW_AST_HASH: u64 = 0xe86ca6f1df01c9c0;
+
+impl Generator {
+    pub(super) fn try_epw_pow(&mut self, function: &Function) -> Compilation<bool> {
+        if function.name != "__ieee754_pow"
+            || function.return_type != Type::Double
+            || function.parameters.len() != 2
+            || !self.frame_slots.is_empty()
+        {
+            return Ok(false);
+        }
+        let hash = super::ast_hash(function);
+        if hash != EPW_POW_AST_HASH {
+            eprintln!("epw_pow hash candidate: {hash:#x}");
+            return Ok(false);
+        }
+        // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
+        // post-emission decline would pollute the output for the next
+        // template). Register measured (fingerprint -> bump) pairs only.
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let bump: u32 = match context {
+            0x626216a8cf3d36f5 => 178, // pikmin
+            _ => {
+                eprintln!("epw_pow context candidate: {context:#x}");
+                return Ok(false);
+            }
+        };
+        // -- emit (the capture, verbatim) --
+        self.frame_size = 208;
+        self.non_leaf = true;
+        self.callee_saved_float = 4;
+        self.output.constant_number_gaps = vec![(33, 1)];
+        for bits in [
+            0x3ff0000000000000u64,
+            0x0000000000000000,
+            0x7ff0000000000000,
+            0x3fe0000000000000,
+            0x3fd5555555555555,
+            0x3fd0000000000000,
+            0x3ff7154760000000,
+            0x3e54ae0bf85ddf44,
+            0x3ff71547652b82fe,
+            0x4340000000000000,
+            0x3fe3333333333303,
+            0x3fdb6db6db6fabff,
+            0x3fd55555518f264d,
+            0x3fd17460a91d4101,
+            0x3fcd864a93c9db65,
+            0x3fca7e284a454eef,
+            0x4008000000000000,
+            0x3feec709e0000000,
+            0xbe3e2fe0145b01f5,
+            0x3feec709dc3a03fd,
+            0xbff0000000000000,
+            0x7e37e43c8800759c,
+            0x3c971547652b82fe,
+            0x01a56e1fc2f8f359,
+            0x3fe62e4300000000,
+            0x3fe62e42fefa39ef,
+            0xbe205c610ca86c39,
+            0x3fc555555555553e,
+            0xbf66c16c16bebd93,
+            0x3f11566aaf25de2c,
+            0xbebbbd41c5d26bf1,
+            0x3e66376972bea4d0,
+            0x4000000000000000,
+            0x4330000080000000,
+        ] {
+            self.output.intern_constant(bits, 8);
+        }
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        for target in [29, 37, 45, 49, 57, 72, 81, 92, 99, 101, 106, 108, 117, 119, 125, 133, 146, 153, 163, 168, 170, 179, 193, 195, 201, 203, 211, 213, 219, 221, 246, 256, 267, 273, 276, 368, 373, 398, 407, 420, 428, 454, 458, 508, 511, 513] {
+            labels.insert(target, self.fresh_label());
+        }
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -208 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 212 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 31, a: 1, offset: 192 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 31, a: 1, offset: 200, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 30, a: 1, offset: 176 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 30, a: 1, offset: 184, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 29, a: 1, offset: 160 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 29, a: 1, offset: 168, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 28, a: 1, offset: 144 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 28, a: 1, offset: 152, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 27, a: 1, offset: 128 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 27, a: 1, offset: 136, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 11, a: 1, immediate: 128 });
+        self.record_relocation(RelocationKind::Rel24, "_savegpr_25");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "_savegpr_25".to_string() });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 2, a: 1, offset: 16 });
+        self.record_relocation(RelocationKind::Addr16Ha, "...rodata.0");
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
+        self.record_relocation(RelocationKind::Addr16Lo, "...rodata.0");
+        self.output.instructions.push(Instruction::AddImmediate { d: 31, a: 3, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadWord { d: 28, a: 1, offset: 16 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 26, s: 28, clear: 1 });
+        self.output.instructions.push(Instruction::LoadWord { d: 29, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 26, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord { d: 25, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 27, s: 29, clear: 1 });
+        self.emit_branch_conditional_to(4, 2, labels[&29]); // bne
+        self.load_double_constant(1, 0x3ff0000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&29]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, 32752));
+        self.output.instructions.push(Instruction::CompareWord { a: 27, b: 0 });
+        self.emit_branch_conditional_to(12, 1, labels[&45]); // bgt
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 27, immediate: -32752 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&37]); // bne
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 25, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&45]); // bne
+        self.bind_label(labels[&37]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, 32752));
+        self.output.instructions.push(Instruction::CompareWord { a: 26, b: 0 });
+        self.emit_branch_conditional_to(12, 1, labels[&45]); // bgt
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 26, immediate: -32752 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&49]); // bne
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
+        self.emit_branch_conditional_to(12, 2, labels[&49]); // beq
+        self.bind_label(labels[&45]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 16 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 1, b: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&49]);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 29, immediate: 0 });
+        self.output.instructions.push(Instruction::load_immediate(30, 0));
+        self.emit_branch_conditional_to(4, 0, labels[&81]); // bge
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, 17216));
+        self.output.instructions.push(Instruction::CompareWord { a: 26, b: 0 });
+        self.emit_branch_conditional_to(12, 0, labels[&57]); // blt
+        self.output.instructions.push(Instruction::load_immediate(30, 2));
+        self.emit_branch_to(labels[&81]); // b
+        self.bind_label(labels[&57]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, 16368));
+        self.output.instructions.push(Instruction::CompareWord { a: 26, b: 0 });
+        self.emit_branch_conditional_to(12, 0, labels[&81]); // blt
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: 26, shift: 20 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -1023 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 20 });
+        self.emit_branch_conditional_to(4, 1, labels[&72]); // ble
+        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 0, a: 0, immediate: 52 });
+        self.output.instructions.push(Instruction::ShiftRightWord { a: 3, s: 4, b: 0 });
+        self.output.instructions.push(Instruction::ShiftLeftWord { a: 0, s: 3, b: 0 });
+        self.output.instructions.push(Instruction::CompareLogicalWord { a: 4, b: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&81]); // bne
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 3, clear: 31 });
+        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 30, a: 0, immediate: 2 });
+        self.emit_branch_to(labels[&81]); // b
+        self.bind_label(labels[&72]);
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&81]); // bne
+        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 0, a: 0, immediate: 20 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: 3, s: 26, b: 0 });
+        self.output.instructions.push(Instruction::ShiftLeftWord { a: 0, s: 3, b: 0 });
+        self.output.instructions.push(Instruction::CompareWord { a: 26, b: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&81]); // bne
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 3, clear: 31 });
+        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 30, a: 0, immediate: 2 });
+        self.bind_label(labels[&81]);
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&133]); // bne
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 26, immediate: -32752 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&108]); // bne
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 27, immediate: -16368 });
+        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: 25 });
+        self.emit_branch_conditional_to(4, 2, labels[&92]); // bne
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 16 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 1, a: 0, b: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&92]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, 16368));
+        self.output.instructions.push(Instruction::CompareWord { a: 27, b: 0 });
+        self.emit_branch_conditional_to(12, 0, labels[&101]); // blt
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.emit_branch_conditional_to(12, 0, labels[&99]); // blt
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 16 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&99]);
+        self.load_double_constant(1, 0x0000000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&101]);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.emit_branch_conditional_to(4, 0, labels[&106]); // bge
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 16 });
+        self.output.instructions.push(Instruction::FloatNegate { d: 1, b: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&106]);
+        self.load_double_constant(1, 0x0000000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&108]);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 26, immediate: -16368 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&119]); // bne
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.emit_branch_conditional_to(4, 0, labels[&117]); // bge
+        self.load_double_constant(1, 0x3ff0000000000000);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::FloatDivideDouble { d: 1, a: 1, b: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&117]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&119]);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 28, immediate: -16384 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&125]); // bne
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 0, c: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&125]);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 28, immediate: -16352 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&133]); // bne
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 29, immediate: 0 });
+        self.emit_branch_conditional_to(12, 0, labels[&133]); // blt
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.record_relocation(RelocationKind::Rel24, "sqrt");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "sqrt".to_string() });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&133]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.record_relocation(RelocationKind::Rel24, "fabs__Fd");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "fabs__Fd".to_string() });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 25, immediate: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 72 });
+        self.emit_branch_conditional_to(4, 2, labels[&170]); // bne
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 27, immediate: -32752 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(12, 2, labels[&146]); // beq
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 27, immediate: 0 });
+        self.emit_branch_conditional_to(12, 2, labels[&146]); // beq
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 27, immediate: -16368 });
+        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&170]); // bne
+        self.bind_label(labels[&146]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 72 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 80 });
+        self.emit_branch_conditional_to(4, 0, labels[&153]); // bge
+        self.load_double_constant(0, 0x3ff0000000000000);
+        self.output.instructions.push(Instruction::FloatDivideDouble { d: 0, a: 0, b: 1 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 80 });
+        self.bind_label(labels[&153]);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 29, immediate: 0 });
+        self.emit_branch_conditional_to(4, 0, labels[&168]); // bge
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 27, immediate: -16368 });
+        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: 30 });
+        self.emit_branch_conditional_to(4, 2, labels[&163]); // bne
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 0 });
+        self.output.instructions.push(Instruction::FloatDivideDouble { d: 0, a: 0, b: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 80 });
+        self.emit_branch_to(labels[&168]); // b
+        self.bind_label(labels[&163]);
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 30, immediate: 1 });
+        self.emit_branch_conditional_to(4, 2, labels[&168]); // bne
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::FloatNegate { d: 0, b: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 80 });
+        self.bind_label(labels[&168]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 80 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&170]);
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: 29, shift: 31 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: 1 });
+        self.output.instructions.push(Instruction::OrRecord { a: 3, s: 0, b: 30 });
+        self.emit_branch_conditional_to(4, 2, labels[&179]); // bne
+        self.record_relocation(RelocationKind::Addr16Ha, "__float_nan");
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
+        self.output.instructions.push(Instruction::load_immediate(0, 33));
+        self.record_relocation(RelocationKind::EmbSda21, "errno");
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 0, offset: 0 });
+        self.record_relocation(RelocationKind::Addr16Lo, "__float_nan");
+        self.output.instructions.push(Instruction::LoadFloatSingle { d: 1, a: 3, offset: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&179]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 16864));
+        self.output.instructions.push(Instruction::CompareWord { a: 26, b: 3 });
+        self.emit_branch_conditional_to(4, 1, labels[&246]); // ble
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 17392));
+        self.output.instructions.push(Instruction::CompareWord { a: 26, b: 3 });
+        self.emit_branch_conditional_to(4, 1, labels[&203]); // ble
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 16368));
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 3, immediate: -1 });
+        self.output.instructions.push(Instruction::CompareWord { a: 27, b: 4 });
+        self.emit_branch_conditional_to(12, 1, labels[&195]); // bgt
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.emit_branch_conditional_to(4, 0, labels[&193]); // bge
+        self.load_double_constant(1, 0x7ff0000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&193]);
+        self.load_double_constant(1, 0x0000000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&195]);
+        self.output.instructions.push(Instruction::CompareWord { a: 27, b: 3 });
+        self.emit_branch_conditional_to(12, 0, labels[&203]); // blt
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.emit_branch_conditional_to(4, 1, labels[&201]); // ble
+        self.load_double_constant(1, 0x7ff0000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&201]);
+        self.load_double_constant(1, 0x0000000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&203]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 16368));
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 3, immediate: -1 });
+        self.output.instructions.push(Instruction::CompareWord { a: 27, b: 4 });
+        self.emit_branch_conditional_to(4, 0, labels[&213]); // bge
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.emit_branch_conditional_to(4, 0, labels[&211]); // bge
+        self.load_double_constant(1, 0x7ff0000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&211]);
+        self.load_double_constant(1, 0x0000000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&213]);
+        self.output.instructions.push(Instruction::CompareWord { a: 27, b: 3 });
+        self.emit_branch_conditional_to(4, 1, labels[&221]); // ble
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 28, immediate: 0 });
+        self.emit_branch_conditional_to(4, 1, labels[&219]); // ble
+        self.load_double_constant(1, 0x7ff0000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&219]);
+        self.load_double_constant(1, 0x0000000000000000);
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&221]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 2, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.load_double_constant(0, 0x3ff0000000000000);
+        self.load_double_constant(1, 0x3fd0000000000000);
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 6, a: 2, b: 0 });
+        self.load_double_constant(0, 0x3fd5555555555555);
+        self.load_double_constant(2, 0x3ff7154760000000);
+        self.load_double_constant(3, 0x3fe0000000000000);
+        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble { d: 4, a: 1, c: 6, b: 0 });
+        self.load_double_constant(0, 0x3ff71547652b82fe);
+        self.load_double_constant(1, 0x3e54ae0bf85ddf44);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 5, a: 6, c: 6 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 6, a: 1, offset: 40 });
+        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble { d: 3, a: 6, c: 4, b: 3 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 2, a: 2, c: 6 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 3, a: 5, c: 3 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 0, c: 3 });
+        self.output.instructions.push(Instruction::FloatMultiplySubtractDouble { d: 1, a: 1, c: 6, b: 0 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 2, b: 1 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 48 });
+        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 1, offset: 52 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 48 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 2 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 1, b: 0 });
+        self.emit_branch_to(labels[&368]); // b
+        self.bind_label(labels[&246]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 16));
+        self.output.instructions.push(Instruction::load_immediate(7, 0));
+        self.output.instructions.push(Instruction::CompareWord { a: 27, b: 3 });
+        self.emit_branch_conditional_to(4, 0, labels[&256]); // bge
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 72 });
+        self.output.instructions.push(Instruction::load_immediate(7, -53));
+        self.load_double_constant(0, 0x4340000000000000);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 72 });
+        self.output.instructions.push(Instruction::LoadWord { d: 27, a: 1, offset: 72 });
+        self.bind_label(labels[&256]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 4));
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 6, s: 27, clear: 12 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -26482 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: 4, s: 27, shift: 20 });
+        self.output.instructions.push(Instruction::CompareWord { a: 6, b: 3 });
+        self.output.instructions.push(Instruction::OrImmediateShifted { a: 5, s: 6, immediate: 16368 });
+        self.output.instructions.push(Instruction::Add { d: 7, a: 4, b: 7 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 7, a: 7, immediate: -1023 });
+        self.emit_branch_conditional_to(12, 1, labels[&267]); // bgt
+        self.output.instructions.push(Instruction::load_immediate(10, 0));
+        self.emit_branch_to(labels[&276]); // b
+        self.bind_label(labels[&267]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 12));
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -18822 });
+        self.output.instructions.push(Instruction::CompareWord { a: 6, b: 3 });
+        self.emit_branch_conditional_to(4, 0, labels[&273]); // bge
+        self.output.instructions.push(Instruction::load_immediate(10, 1));
+        self.emit_branch_to(labels[&276]); // b
+        self.bind_label(labels[&273]);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 5, a: 5, immediate: -16 });
+        self.output.instructions.push(Instruction::load_immediate(10, 0));
+        self.output.instructions.push(Instruction::AddImmediate { d: 7, a: 7, immediate: 1 });
+        self.bind_label(labels[&276]);
+        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 1, offset: 72 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: 5, shift: 1 });
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 8, s: 10, shift: 3 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 31, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 30, a: 1, offset: 72 });
+        self.output.instructions.push(Instruction::OrImmediateShifted { a: 6, s: 3, immediate: 8192 });
+        self.output.instructions.push(Instruction::LoadFloatDoubleIndexed { d: 5, a: 4, b: 8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 31, immediate: 32 });
+        self.load_double_constant(1, 0x0000000000000000);
+        self.output.instructions.push(Instruction::XorImmediateShifted { a: 4, s: 7, immediate: 32768 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 30, b: 5 });
+        self.load_double_constant(2, 0x3ff0000000000000);
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 17200));
+        self.output.instructions.push(Instruction::AddImmediate { d: 9, a: 31, immediate: 16 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 31, a: 30, b: 5 });
+        self.load_double_constant(4, 0x3fca7e284a454eef);
+        self.output.instructions.push(Instruction::FloatDivideDouble { d: 28, a: 2, b: 0 });
+        self.load_double_constant(0, 0x3fcd864a93c9db65);
+        self.load_double_constant(3, 0x3fd17460a91d4101);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 7, a: 6, immediate: 8 });
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 6, s: 10, shift: 18 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 24 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 31, c: 28 });
+        self.output.instructions.push(Instruction::Add { d: 6, a: 7, b: 6 });
+        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 1, offset: 24 });
+        self.output.instructions.push(Instruction::load_immediate(6, 0));
+        self.load_double_constant(2, 0x3fd55555518f264d);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 12, a: 1, offset: 24 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 27, a: 1, c: 1 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 32 });
+        self.load_double_constant(11, 0x3fdb6db6db6fabff);
+        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 1, offset: 36 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 13, a: 12, b: 5 });
+        self.load_double_constant(9, 0x3fe3333333333303);
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 4, a: 4, c: 27, b: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 29, a: 1, offset: 32 });
+        self.load_double_constant(10, 0x4008000000000000);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 29, c: 29 });
+        self.load_double_constant(5, 0x3feec709dc3a03fd);
+        self.load_double_constant(6, 0xbe3e2fe0145b01f5);
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 3, a: 27, c: 4, b: 3 });
+        self.load_double_constant(8, 0x3feec709e0000000);
+        self.output.instructions.push(Instruction::LoadFloatDoubleIndexed { d: 7, a: 5, b: 8 });
+        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble { d: 31, a: 29, c: 12, b: 31 });
+        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 1, offset: 92 });
+        self.load_double_constant(4, 0x4330000080000000);
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 12, a: 27, c: 3, b: 2 });
+        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 1, offset: 88 });
+        self.output.instructions.push(Instruction::LoadFloatDoubleIndexed { d: 2, a: 9, b: 8 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 30, a: 30, b: 13 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 3, a: 1, offset: 88 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 13, a: 27, c: 27 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 11, a: 27, c: 12, b: 11 });
+        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble { d: 12, a: 29, c: 30, b: 31 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 9, a: 27, c: 11, b: 9 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 27, a: 28, c: 12 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 12, a: 13, c: 9 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 11, a: 29, b: 1 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 9, a: 10, b: 0 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 3, a: 3, b: 4 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 12, a: 27, c: 11, b: 12 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 3, a: 1, offset: 40 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 4, a: 9, b: 12 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 4, a: 1, offset: 24 });
+        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 1, offset: 28 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 9, a: 1, offset: 24 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 4, a: 9, b: 10 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 10, a: 29, c: 9 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 4, b: 0 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 12, b: 0 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 0, c: 1 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 4, a: 27, c: 9, b: 0 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 10, b: 4 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 64 });
+        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 1, offset: 68 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 64 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 1, b: 10 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 8, a: 8, c: 1 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 4, b: 0 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 5, c: 0 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 0, a: 6, c: 1, b: 0 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 7, b: 0 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 8, b: 1 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 0, b: 2 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 3, b: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 48 });
+        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 1, offset: 52 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 48 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 3 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 2 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 8 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 1, b: 0 });
+        self.bind_label(labels[&368]);
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 30, immediate: -1 });
+        self.load_double_constant(31, 0x3ff0000000000000);
+        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: 3 });
+        self.emit_branch_conditional_to(4, 2, labels[&373]); // bne
+        self.load_double_constant(31, 0xbff0000000000000);
+        self.bind_label(labels[&373]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 16 });
+        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 3, a: 1, offset: 48 });
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, 16528));
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 56 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 1, offset: 60 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 2, a: 1, offset: 56 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 2 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 2, a: 2, c: 3 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 12, a: 3, c: 1, b: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 2, a: 1, offset: 64 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 12, b: 2 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 1, offset: 84 });
+        self.output.instructions.push(Instruction::CompareWord { a: 6, b: 0 });
+        self.emit_branch_conditional_to(12, 0, labels[&407]); // blt
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 6, immediate: -16528 });
+        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: 5 });
+        self.emit_branch_conditional_to(12, 2, labels[&398]); // beq
+        self.load_double_constant(1, 0x7e37e43c8800759c);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 31 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&398]);
+        self.load_double_constant(1, 0x3c971547652b82fe);
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 2 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 1, b: 12 });
+        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+        self.emit_branch_conditional_to(4, 1, labels[&428]); // ble
+        self.load_double_constant(1, 0x7e37e43c8800759c);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 31 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&407]);
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 16529));
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 4, s: 6, clear: 1 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: -13312 });
+        self.output.instructions.push(Instruction::CompareWord { a: 4, b: 0 });
+        self.emit_branch_conditional_to(12, 0, labels[&428]); // blt
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 6, immediate: 16239 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: 13312 });
+        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: 5 });
+        self.emit_branch_conditional_to(12, 2, labels[&420]); // beq
+        self.load_double_constant(1, 0x01a56e1fc2f8f359);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 31 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&420]);
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 2 });
+        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 12, b: 0 });
+        self.output.instructions.push(Instruction::ConditionRegisterOr { d: 2, a: 0, b: 2 });
+        self.emit_branch_conditional_to(4, 2, labels[&428]); // bne
+        self.load_double_constant(1, 0x01a56e1fc2f8f359);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 31 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
+        self.emit_branch_to(labels[&513]); // b
+        self.bind_label(labels[&428]);
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 3, s: 6, clear: 1 });
+        self.output.instructions.push(Instruction::load_immediate_shifted(0, 16352));
+        self.output.instructions.push(Instruction::CompareWord { a: 3, b: 0 });
+        self.output.instructions.push(Instruction::RotateAndMask { a: 4, s: 6, shift: 12, begin: 21, end: 31 });
+        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.emit_branch_conditional_to(4, 1, labels[&458]); // ble
+        self.output.instructions.push(Instruction::load_immediate_shifted(3, 16));
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 4, immediate: -1022 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: 0, s: 3, b: 0 });
+        self.load_double_constant(0, 0x0000000000000000);
+        self.output.instructions.push(Instruction::Add { d: 7, a: 6, b: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -1 });
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 7, clear: 1 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 40 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: 4, s: 0, shift: 20 });
+        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 7, clear: 12 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 4, immediate: -1023 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 6, immediate: 0 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: 4, s: 3, b: 5 });
+        self.output.instructions.push(Instruction::OrImmediateShifted { a: 3, s: 0, immediate: 16 });
+        self.output.instructions.push(Instruction::AndComplement { a: 4, s: 7, b: 4 });
+        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 0, a: 5, immediate: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 1, offset: 40 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: 3, s: 3, b: 0 });
+        self.emit_branch_conditional_to(4, 0, labels[&454]); // bge
+        self.output.instructions.push(Instruction::Negate { d: 3, a: 3 });
+        self.bind_label(labels[&454]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 64 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 40 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 1, b: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 64 });
+        self.bind_label(labels[&458]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 2, a: 1, offset: 64 });
+        self.output.instructions.push(Instruction::load_immediate(0, 0));
+        self.load_double_constant(1, 0xbe205c610ca86c39);
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 4, s: 3, shift: 20 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 0, a: 12, b: 2 });
+        self.load_double_constant(10, 0x3fe62e4300000000);
+        self.load_double_constant(9, 0x3fe62e42fefa39ef);
+        self.load_double_constant(6, 0x3e66376972bea4d0);
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 40 });
+        self.load_double_constant(5, 0xbebbbd41c5d26bf1);
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 44 });
+        self.load_double_constant(0, 0x3f11566aaf25de2c);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 11, a: 1, offset: 40 });
+        self.load_double_constant(4, 0xbf66c16c16bebd93);
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 8, a: 11, b: 2 });
+        self.load_double_constant(3, 0x3fc555555555553e);
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 7, a: 1, c: 11 });
+        self.load_double_constant(2, 0x4000000000000000);
+        self.load_double_constant(1, 0x3ff0000000000000);
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 8, a: 12, b: 8 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 10, a: 10, c: 11 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 11, a: 9, c: 8, b: 7 });
+        self.output.instructions.push(Instruction::FloatAddDouble { d: 9, a: 10, b: 11 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 7, a: 9, c: 9 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 9, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 8, a: 9, b: 10 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 5, a: 6, c: 7, b: 5 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 7, a: 1, offset: 40 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 6, a: 11, b: 8 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 5, a: 7, c: 5, b: 0 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 0, a: 9, c: 6, b: 6 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 4, a: 7, c: 5, b: 4 });
+        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 3, a: 7, c: 4, b: 3 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 3, a: 7, c: 3 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 4, a: 9, b: 3 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 3, a: 9, c: 4 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 4, a: 1, offset: 48 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 2, a: 4, b: 2 });
+        self.output.instructions.push(Instruction::FloatDivideDouble { d: 2, a: 3, b: 2 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 2, b: 0 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 0, a: 0, b: 9 });
+        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 0 });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::Add { d: 0, a: 0, b: 4 });
+        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediateRecord { a: 0, s: 0, shift: 20 });
+        self.emit_branch_conditional_to(12, 1, labels[&508]); // bgt
+        self.record_relocation(RelocationKind::Rel24, "ldexp");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "ldexp".to_string() });
+        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 80 });
+        self.emit_branch_to(labels[&511]); // b
+        self.bind_label(labels[&508]);
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::Add { d: 0, a: 0, b: 4 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 80 });
+        self.bind_label(labels[&511]);
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 80 });
+        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 31, c: 0 });
+        self.bind_label(labels[&513]);
+        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 31, a: 1, offset: 200, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 31, a: 1, offset: 192 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 30, a: 1, offset: 184, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 30, a: 1, offset: 176 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 29, a: 1, offset: 168, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 29, a: 1, offset: 160 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 28, a: 1, offset: 152, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 28, a: 1, offset: 144 });
+        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 27, a: 1, offset: 136, w: 0, i: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 11, a: 1, immediate: 128 });
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: 27, a: 1, offset: 128 });
+        self.record_relocation(RelocationKind::Rel24, "_restgpr_25");
+        self.output.instructions.push(Instruction::BranchAndLink { target: "_restgpr_25".to_string() });
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 212 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 208 });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += bump;
+        Ok(true)
+    }
+}

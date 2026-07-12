@@ -412,6 +412,8 @@ mod ivt_atan2f;
 mod ivt_inv_sqrtf;
 mod ivt_atan_ff;
 mod ivt_acosf;
+mod epw_scalbn;
+mod epw_pow;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -672,6 +674,8 @@ impl Generator {
             || self.try_ivt_inv_sqrtf(function)?
             || self.try_ivt_atan_ff(function)?
             || self.try_ivt_acosf(function)?
+            || self.try_epw_scalbn(function)?
+            || self.try_epw_pow(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
