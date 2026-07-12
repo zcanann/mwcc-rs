@@ -514,6 +514,54 @@ impl Parser {
             }
 
         }
+        // Non-constant float-array globals synthesize a startup initializer:
+        // `__sinit_ctx_c` (named for the TU) assigns each unfolded element,
+        // appended LAST among the functions, plus an ANONYMOUS `.ctors` entry
+        // holding an ADDR32 to it (measured: sunshine trigf — the sinit is a
+        // LOCAL symbol at the end of .text; the .ctors word has no own symbol).
+        if !self.pending_sinit.is_empty() {
+            let statements: Vec<Statement> = self
+                .pending_sinit
+                .drain(..)
+                .map(|(array, index, expression)| Statement::Store {
+                    target: Expression::Index {
+                        base: Box::new(Expression::Variable(array)),
+                        index: Box::new(Expression::IntegerLiteral(index as i64)),
+                    },
+                    value: expression,
+                })
+                .collect();
+            functions.push(Function {
+                return_type: Type::Void,
+                name: "__sinit_ctx_c".to_string(),
+                is_static: true,
+                is_weak: false,
+                parameters: Vec::new(),
+                locals: Vec::new(),
+                statements,
+                guards: Vec::new(),
+                return_expression: None,
+                section: None,
+                asm_body: None,
+                force_active: false,
+            });
+            globals.push(GlobalDeclaration {
+                declared_type: Type::Int,
+                name: String::new(),
+                is_extern: false,
+                is_static: false,
+                is_weak: false,
+                non_static_functions_before: functions.iter().filter(|f| !f.is_static).count(),
+                functions_before: functions.len(),
+                array_length: None,
+                initializer: None,
+                is_const: true,
+                address_initializer: Some(vec![PointerElement::Symbol("__sinit_ctx_c".to_string())]),
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                section: Some(".ctors".to_string()),
+            });
+        }
         Ok(TranslationUnit {
             globals,
             functions,
@@ -1297,7 +1345,7 @@ impl Parser {
                 if let Some(tag) = &global_struct_tag {
                     self.global_structs.insert(name.clone(), tag.clone());
                 }
-                let mut declarator_name = name;
+                let mut declarator_name = name.clone();
                 loop {
                     // Array dimensions `[A][B]…`: each `[N]` is an explicit length,
                     // `[]` (only the first dimension) is inferred from the
@@ -1350,6 +1398,12 @@ impl Parser {
                     } else if self.eat_keyword(Token::Equals) {
                         // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).
                         initializer = Some(self.parse_constant_initializer(return_type)?);
+                        // Non-constant float elements zero-fill the image and
+                        // become startup assignments in the synthesized
+                        // `__sinit_ctx_c` (sunshine trigf's __four_over_pi_m1).
+                        for (index, expression) in self.initializer_pending.drain(..) {
+                            self.pending_sinit.push((name.clone(), index, expression));
+                        }
                     } else if *self.peek() == Token::Colon {
                         // A MWERKS absolute-placement declaration `T name[dims] : <address>;`
                         // binds the name to a FIXED address (memory-mapped hardware registers —

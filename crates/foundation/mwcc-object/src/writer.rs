@@ -994,13 +994,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     macro_rules! emit_initialized_object {
         ($object:expr) => {{
             let object = $object;
-            global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-            let section = index_of(data_section[object.name]) as u16;
-            let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
-            // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
-            let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
-            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
-            comment_values.push((data_aligns[object.name], flags));
+            // An ANONYMOUS object (the synthesized `.ctors` sinit reference)
+            // lays out and relocates but has NO symbol or .comment record.
+            if !object.name.is_empty() {
+                global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
+                // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
+                let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+                write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
+                comment_values.push((data_aligns[object.name], flags));
+            }
             for relocation in object.relocations.iter().rev() {
                 let target = relocation.target.as_str();
                 // A STATIC function's LOCAL symbol satisfies a data reloc too —
@@ -1220,7 +1224,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // mixed .bss/.sbss set reverses too, independent of section). `static` objects
     // are local and never appear here.
     for object in input.data_objects.iter().rev() {
-        if !object.is_static && !global_symbols.contains_key(object.name) {
+        if !object.is_static && !object.name.is_empty() && !global_symbols.contains_key(object.name) {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };

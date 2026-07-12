@@ -69,6 +69,17 @@ pub(crate) struct Parser {
     pub(crate) typedefs: HashMap<String, Type>,
     /// Names of variadic function DEFINITIONS (side-set — never in the hashed AST).
     pub(crate) variadic_definitions: std::collections::HashSet<String>,
+    /// A float-array element whose initializer did NOT fold to a constant —
+    /// stashed by `parse_scalar_constant` for the caller to attribute to an
+    /// element index (mwcc zero-fills the image and synthesizes a `__sinit`
+    /// startup initializer instead).
+    pub(crate) unfolded_float_element: Option<mwcc_syntax_trees::Expression>,
+    /// (element index, expression) pairs of the CURRENT initializer that need
+    /// startup assignment; drained by the global-declaration parser.
+    pub(crate) initializer_pending: Vec<(usize, mwcc_syntax_trees::Expression)>,
+    /// (array name, element index, expression) triples across the unit — the
+    /// synthesized `__sinit_ctx_c`'s assignment list (side-table, hash-safe).
+    pub(crate) pending_sinit: Vec<(String, usize, mwcc_syntax_trees::Expression)>,
     /// The current inline-`asm` function's REGISTER PARAMETERS: `(name, gpr,
     /// struct tag)` in declaration order (r3, r4, … positional). An asm operand
     /// naming a parameter resolves to its register (`mr r3,val`), and

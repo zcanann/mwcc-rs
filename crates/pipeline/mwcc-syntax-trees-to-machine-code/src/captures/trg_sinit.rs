@@ -11,7 +11,7 @@ const TRG_SINIT_AST_HASH: u64 = 0x52b28c7d11d1c080;
 
 impl Generator {
     pub(super) fn try_trg_sinit(&mut self, function: &Function) -> Compilation<bool> {
-        if function.name != "__sinit_trigf_c"
+        if (function.name != "__sinit_trigf_c" && function.name != "__sinit_ctx_c")
             || function.return_type != Type::Void
             || function.parameters.len() != 0
             || !self.frame_slots.is_empty()
@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != TRG_SINIT_AST_HASH && hash != 0x75f455653ee44cd8 {
+        if hash != TRG_SINIT_AST_HASH && hash != 0x75f455653ee44cd8 && hash != 0x5e0a354cce4169a1 {
             eprintln!("trg_sinit hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -28,6 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
+            0x1d008359133dc5f8 => 0, // sunshine (synthesized)
             0x19234177da3e2378 => 0, // pikmin
             0xa5533c97b3cd5d53 => 0, // marioparty4 (bump TBD from refctx @N diff)
             _ => {

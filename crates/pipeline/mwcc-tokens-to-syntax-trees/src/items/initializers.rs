@@ -167,6 +167,9 @@ impl Parser {
                     values.extend(self.parse_constant_initializer(element_type)?);
                 } else {
                     values.push(self.parse_scalar_constant(element_type)?);
+                    if let Some(expression) = self.unfolded_float_element.take() {
+                        self.initializer_pending.push((values.len() - 1, expression));
+                    }
                 }
                 if !self.eat_keyword(Token::Comma) {
                     break;
@@ -192,7 +195,16 @@ impl Parser {
                 // the element width. Parse and fold it rather than accepting only a single
                 // literal.
                 let expression = self.expression()?;
-                let value = crate::expressions::fold_constant_float(&expression)?;
+                let value = match crate::expressions::fold_constant_float(&expression) {
+                    Ok(value) => value,
+                    // A non-constant element (`tmp_float[0]` — sunshine trigf):
+                    // mwcc zero-fills the image and synthesizes a `__sinit`
+                    // startup assignment. Stash for the caller to attribute.
+                    Err(_) => {
+                        self.unfolded_float_element = Some(expression);
+                        0.0
+                    }
+                };
                 Ok(if element_type == Type::Float { (value as f32).to_bits() as i64 } else { value.to_bits() as i64 })
             }
             _ => {
