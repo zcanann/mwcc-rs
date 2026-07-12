@@ -418,6 +418,12 @@ mod epx_pow;
 mod mtc_logf;
 mod eat_atan2;
 mod xt2_stricmp;
+mod mpc_powf;
+mod mpc_sinf;
+mod mpc_cosf;
+mod mpc_atanf;
+mod mpc_fpclassifyf;
+mod mpc_fpclassifyd;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -684,6 +690,12 @@ impl Generator {
             || self.try_mtc_logf(function)?
             || self.try_eat_atan2(function)?
             || self.try_xt2_stricmp(function)?
+            || self.try_mpc_powf(function)?
+            || self.try_mpc_sinf(function)?
+            || self.try_mpc_cosf(function)?
+            || self.try_mpc_atanf(function)?
+            || self.try_mpc_fpclassifyf(function)?
+            || self.try_mpc_fpclassifyd(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
