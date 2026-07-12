@@ -403,7 +403,47 @@ impl Parser {
                     };
                     if *self.peek() == Token::BracketOpen {
                         if !is_static {
-                            return Err(Diagnostic::error("a block-scoped array is not supported yet (roadmap)"));
+                            // `u8 text[36];` — an automatic block-scoped array
+                            // hoists exactly like a function-level local array:
+                            // a frame slot of N elements (strtold's digit buffer).
+                            // A braced initializer here is still deferred.
+                            self.advance();
+                            let explicit = if *self.peek() == Token::BracketClose { None } else { Some(self.parse_integer_constant()? as u16) };
+                            self.expect(Token::BracketClose)?;
+                            // `char model[] = "INFINITY";` — the string image
+                            // (with NUL) sizes the array; mwcc block-copies it
+                            // into the frame slot (codegen defers un-captured).
+                            let mut data_bytes = None;
+                            if *self.peek() == Token::Equals {
+                                self.advance();
+                                match self.advance().clone() {
+                                    Token::StringLiteral(bytes) => {
+                                        let mut image = bytes.clone();
+                                        image.push(0);
+                                        data_bytes = Some(image);
+                                    }
+                                    _ => return Err(Diagnostic::error("a block-scoped array initializer is not supported yet (roadmap)")),
+                                }
+                            }
+                            let length = match (explicit, &data_bytes) {
+                                (Some(length), _) => length,
+                                (None, Some(image)) => image.len() as u16,
+                                (None, None) => return Err(Diagnostic::error("an unsized block-scoped array needs an initializer (roadmap)")),
+                            };
+                            block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: Some(length), is_static: false, data_bytes, is_const: false });
+                            local_names.insert(name.clone());
+                            self.variable_types.insert(name.clone(), declared_type);
+                            let element_bytes = match declared_type {
+                                Type::Struct { size, .. } => size as u32,
+                                Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                                other => other.width() as u32 / 8,
+                            };
+                            self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
+                            if !self.eat_keyword(Token::Comma) {
+                                self.expect(Token::Semicolon)?;
+                                return Ok(());
+                            }
+                            continue;
                         }
                         // `static double pow_10[8] = { 1e1, … };` — parse the
                         // image exactly like a function-level static array.
