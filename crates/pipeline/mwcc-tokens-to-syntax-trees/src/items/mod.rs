@@ -289,7 +289,7 @@ impl Parser {
                 last.body = mwcc_syntax_trees::ArmBody::Statements(statements);
                 last.falls_through = falls_through;
             } else {
-                return Err(Diagnostic::error("a switch arm must be `case <int>: return …;` or `default: return …;` (roadmap)"));
+                return Err(Diagnostic::error(format!("a switch arm must be `case <int>: return …;` or `default: return …;` (roadmap; found {})", self.peek())));
             }
         }
         self.expect(Token::BraceClose)?;
@@ -313,6 +313,12 @@ impl Parser {
                     self.expect(Token::Semicolon)?;
                 }
                 self.expect(Token::BraceClose)?;
+                // `case X: { return E; } break;` — a redundant break AFTER the
+                // braces still belongs to this arm.
+                if matches!(self.peek(), Token::Identifier(word) if word == "break") {
+                    self.advance();
+                    self.expect(Token::Semicolon)?;
+                }
             }
             return Ok((ArmBody::Return(result), false));
         }
@@ -342,10 +348,23 @@ impl Parser {
             }
             if braced && *self.peek() == Token::BraceClose {
                 self.advance();
+                // `case X: { ... } break;` — a break AFTER the braces ends
+                // this arm (strtold's per-state blocks).
+                if matches!(self.peek(), Token::Identifier(word) if word == "break") {
+                    self.advance();
+                    self.expect(Token::Semicolon)?;
+                    saw_break = true;
+                }
                 break;
             }
             if *self.peek() == Token::KeywordIf {
                 statements.push(self.parse_if_statement(local_names, block_locals)?);
+                continue;
+            }
+            // A NESTED switch inside an arm (strtold's per-state character
+            // dispatch) recurses like any other statement.
+            if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
+                statements.push(self.parse_switch(local_names, block_locals)?);
                 continue;
             }
             if *self.peek() == Token::KeywordReturn {
