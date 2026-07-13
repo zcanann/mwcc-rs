@@ -250,6 +250,25 @@ impl Generator {
                     return Ok(());
                 }
             }
+            // EQUALITY of two long-long params (`return a == b;`): XOR the words,
+            // OR them, and turn the is-zero test into 0/1 with `cntlzw; srwi 5`
+            // (measured: xor r0,al,bl; xor r3,ah,bh; or r3,r0,r3; cntlzw r3,r3;
+            // srwi r3,r3,5). r3 = 1 iff all 64 bits match.
+            if let Expression::Binary { operator: BinaryOperator::Equal, left, right } = return_expression {
+                if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
+                    if let (Some(&(left_high, Some(left_low))), Some(&(right_high, Some(right_low)))) =
+                        (param_pair.get(left_name.as_str()), param_pair.get(right_name.as_str()))
+                    {
+                        self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: left_low, b: right_low });
+                        self.output.instructions.push(Instruction::Xor { a: high, s: left_high, b: right_high });
+                        self.output.instructions.push(Instruction::Or { a: high, s: GENERAL_SCRATCH, b: high });
+                        self.output.instructions.push(Instruction::CountLeadingZeros { a: high, s: high });
+                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: high, s: high, shift: 5 });
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
             return Err(Diagnostic::error("this long long truncation is not modeled yet (roadmap)"));
         }
         if !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong) {
