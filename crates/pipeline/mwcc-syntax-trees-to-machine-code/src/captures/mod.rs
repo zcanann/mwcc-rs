@@ -411,6 +411,10 @@ mod alm_unlink;
 mod alm_merge_prev;
 mod alm_pool_free;
 mod gcn_sys_free;
+mod osm_initqueue;
+mod osm_send;
+mod osm_receive;
+mod osm_jam;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -713,6 +717,10 @@ impl Generator {
             || self.try_alm_unlink(function)?
             || self.try_alm_merge_prev(function)?
             || self.try_alm_pool_free(function)?
+            || self.try_osm_initqueue(function)?
+            || self.try_osm_send(function)?
+            || self.try_osm_receive(function)?
+            || self.try_osm_jam(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
