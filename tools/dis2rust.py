@@ -288,6 +288,9 @@ for idx, mn, ops in instrs:
     elif mn=="mr.": push(f"OrRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[1])} }}")
     elif mn=="neg.": push(f"NegateRecord {{ d: {R(ops[0])}, a: {R(ops[1])} }}")
     elif mn=="blr": push("BranchToLinkRegister")
+    elif mn=="sync" or mn=="hwsync": push("Synchronize")
+    elif mn=="isync": push("InstructionSynchronize")
+    elif mn=="eieio": push("EnforceInOrderIo")
     elif mn=="b":
         t=int(ops[0],16)//4
         out.append(f"        self.emit_branch_to(labels[&{t}]); // b")

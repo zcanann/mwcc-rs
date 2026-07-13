@@ -109,8 +109,11 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
         }
     }
     // mwcc appends an implicit `blr` unless the body already ends in a control
-    // transfer (an explicit `blr`, an unconditional branch, …).
-    if !instructions.last().is_some_and(is_terminator) {
+    // transfer (an explicit `blr`, an unconditional branch, …). A `nofralloc`
+    // body is emitted fully VERBATIM — mwcc synthesizes no epilogue, so no
+    // implicit `blr` even when the last instruction is not a terminator (measured:
+    // OSSync.c's SystemCallVector, which ends `rfi; entry …End; nop`).
+    if !mnemonics("nofralloc") && !instructions.last().is_some_and(is_terminator) {
         instructions.push(Instruction::BranchToLinkRegister);
     }
     // mwcc's asm branch peepholes (both discovered by probe): a branch whose target

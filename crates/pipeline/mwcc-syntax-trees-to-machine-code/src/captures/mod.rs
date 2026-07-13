@@ -438,6 +438,8 @@ mod cck_checkexasync;
 mod cck_checkasync;
 mod cck_checkex;
 mod cck_check;
+mod osy_resetsw;
+mod osy_initsc;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -767,6 +769,8 @@ impl Generator {
             || self.try_cck_checkasync(function)?
             || self.try_cck_checkex(function)?
             || self.try_cck_check(function)?
+            || self.try_osy_resetsw(function)?
+            || self.try_osy_initsc(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
