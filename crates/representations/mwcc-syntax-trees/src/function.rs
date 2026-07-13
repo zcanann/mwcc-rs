@@ -279,6 +279,11 @@ pub struct Function {
     /// wraps its register save/restore in it. Also AFTER `section` so the `ast_hash`
     /// strip elides it. `false` for the common case.
     pub force_active: bool,
+    /// A static inline MATERIALIZED by the call-count heuristic: its `.text`
+    /// bytes lay out AFTER the next real function while its SYMBOL stays at
+    /// the source position (measured: ww alloc's dealloc_var/__pool_free).
+    /// AFTER `section` in declaration order — the ast_hash strip excludes it.
+    pub text_deferred: bool,
 }
 
 /// One line of an inline-`asm` body: either a label definition (`name:`) or an

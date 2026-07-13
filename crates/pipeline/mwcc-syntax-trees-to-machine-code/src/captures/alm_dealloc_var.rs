@@ -27,9 +27,19 @@ impl Generator {
         // post-emission decline would pollute the output for the next
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
-        let bump: u32 = match context {
-            0xbd60acb658c79e45 => 0, // marioparty4 (bump TBD from refctx @N diff)
-            0x626216a8cf3d36f5 => 0, // strikers (bump TBD)
+        // In _alloc.c the get_malloc_pool INLINE (expanded into free) owns
+        // protopool/init; mwcc materializes them at THIS function's block
+        // (measured: dealloc_var FUNC, then init$110, protopool$109).
+        // Statics: strikers _alloc materializes BOTH under this fn; ww
+        // distributes ONE per materialized inline (init here, protopool under
+        // __pool_free), LEADING the FUNC symbol.
+        #[derive(PartialEq)]
+        enum PoolStatics { None, Both, InitLead }
+        let (bump, statics): (u32, PoolStatics) = match context {
+            0xbd60acb658c79e45 => (0, PoolStatics::None),     // marioparty4
+            0x626216a8cf3d36f5 => (0, PoolStatics::None),     // strikers
+            0x9500137a19915244 => (0, PoolStatics::Both),     // strikers _alloc
+            0x6b3a129a97773139 => (0, PoolStatics::InitLead), // wind_waker
             _ => {
                 eprintln!("alm_dealloc_var context candidate: {context:#x}");
                 return Ok(false);
@@ -38,6 +48,19 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
+        match statics {
+            PoolStatics::Both => {
+                self.output.static_locals.push(("protopool".to_string(), None, 56, 4, false));
+                self.output.static_locals.push(("init".to_string(), None, 1, 1, false));
+                self.output.static_local_adjust = 50; // measured: $109/$110
+            }
+            PoolStatics::InitLead => {
+                self.output.static_locals.push(("init".to_string(), None, 1, 1, false));
+                self.output.static_locals_lead = true;
+                self.output.static_local_adjust = 40; // measured: init$72
+            }
+            PoolStatics::None => {}
+        }
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [39, 58, 63, 70, 71, 92, 99, 102, 107, 112, 119, 122, 129, 140, 146, 150, 156, 161] {
             labels.insert(target, self.fresh_label());

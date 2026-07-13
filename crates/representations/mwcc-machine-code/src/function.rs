@@ -93,6 +93,10 @@ pub struct MachineFunction {
     /// mp4 alloc's get_malloc_pool: protopool$129, init$130, then the FUNC).
     /// ac uart measured the opposite (FUNC first), so this is per-capture.
     pub static_locals_lead: bool,
+    /// See mwcc_syntax_trees::Function::text_deferred — `.text` lays out
+    /// AFTER the next non-deferred function; the symbol stays at source
+    /// position.
+    pub text_deferred: bool,
     /// A static function MATERIALIZED from an implicitly-declared inline: its
     /// call relocations bind the UND ghost and its local symbol trails its
     /// static locals (ww uart).
@@ -105,6 +109,10 @@ pub struct MachineFunction {
     /// byte size, alignment, is_const). Emitted as `name$K` LOCAL objects,
     /// K taken from the function's @N sequence front.
     pub static_locals: Vec<(String, Option<Vec<u8>>, u32, u32, bool)>,
+    /// Extra `$N` adjustment for THIS function's capture-pushed static locals
+    /// (unmeasured inline label consumption before the owner — _alloc's
+    /// protopool$109/init$110 sit +50 past the natural counter).
+    pub static_local_adjust: i64,
     /// Whether the function performs an int<->float conversion. mwcc's anonymous
     /// `@N` counter starts one higher for such functions.
     pub has_conversion: bool,
@@ -194,10 +202,12 @@ impl MachineFunction {
             new_string_names: Vec::new(),
             is_static: false,
             static_locals_lead: false,
+            text_deferred: false,
             implicit_materialized: false,
             weak_inline: false,
             is_weak: false,
             static_locals: Vec::new(),
+            static_local_adjust: 0,
             has_conversion: false,
             constant_number_gaps: Vec::new(),
             keep_named_const_scalars: Vec::new(),

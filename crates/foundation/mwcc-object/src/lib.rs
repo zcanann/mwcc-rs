@@ -100,6 +100,8 @@ pub struct FunctionObject<'a> {
     pub is_static: bool,
     /// See MachineFunction::static_locals_lead.
     pub static_locals_lead: bool,
+    /// See MachineFunction::text_deferred.
+    pub text_deferred: bool,
     pub is_weak: bool,
     /// An explicit `__declspec(section "…")` code section (e.g. `.init`), overriding
     /// the default `.text`/`.mwcats.text` placement. `None` = `.text`.

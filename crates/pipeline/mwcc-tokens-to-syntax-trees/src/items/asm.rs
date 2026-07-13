@@ -110,6 +110,7 @@ impl Parser {
         self.asm_parameters = Vec::new();
         let asm_body = asm_body?;
         Ok(Some(Function {
+            text_deferred: false,
             return_type,
             name,
             is_static,

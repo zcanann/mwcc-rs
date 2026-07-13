@@ -262,7 +262,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 Some(&prebump) if function_index == 0 => prebump as i64,
                 Some(&prebump) => prebump as i64 - total_inline_bump,
                 None => 0,
-            };
+            } + function.static_local_adjust;
             static_local_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
                 anonymous_adjust,
                 static_local_owner: Some(function_index),

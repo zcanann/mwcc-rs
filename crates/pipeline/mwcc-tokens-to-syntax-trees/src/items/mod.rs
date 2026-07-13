@@ -560,7 +560,7 @@ impl Parser {
                 return_type: Type::Void,
                 name: "__sinit_ctx_c".to_string(),
                 is_static: true,
-                is_weak: false,
+                is_weak: false, text_deferred: false,
                 parameters: Vec::new(),
                 locals: Vec::new(),
                 statements,
@@ -857,7 +857,13 @@ impl Parser {
                         }
                         index += 1;
                     }
-                    // The type: one keyword/typedef token (compound int forms defer).
+                    // The type: one keyword/typedef token (compound int forms defer),
+                    // plus the `unsigned char`/`unsigned int` pairs.
+                    if matches!(self.tokens.get(index), Some(Token::KeywordUnsigned))
+                        && matches!(self.tokens.get(index + 1), Some(Token::KeywordChar | Token::KeywordInt))
+                    {
+                        index += 1;
+                    }
                     let declared_type = match self.tokens.get(index) {
                         Some(Token::Identifier(word)) if word == "double" => Type::Double,
                         Some(Token::KeywordFloat) => Type::Float,
@@ -866,6 +872,22 @@ impl Parser {
                         Some(Token::Identifier(word)) if self.typedefs.get(word) == Some(&Type::Float) => Type::Float,
                         Some(Token::Identifier(word)) if self.typedefs.get(word) == Some(&Type::Int) => Type::Int,
                         Some(Token::Identifier(word)) if self.typedefs.get(word) == Some(&Type::UnsignedInt) => Type::UnsignedInt,
+                        // A char static (strikers _alloc's `static char init;`).
+                        Some(Token::KeywordChar) => Type::Char,
+                        // A struct-typed static (`static __mem_pool protopool;`)
+                        // carries its own layout size (typedef name -> tag ->
+                        // declared layout).
+                        Some(Token::Identifier(word)) if matches!(self.typedefs.get(word), Some(Type::Struct { .. })) => *self.typedefs.get(word).unwrap(),
+                        Some(Token::Identifier(word))
+                            if self
+                                .struct_typedefs
+                                .get(word)
+                                .and_then(|tag| self.structs.get(tag))
+                                .is_some() =>
+                        {
+                            let layout = &self.structs[&self.struct_typedefs[word]];
+                            Type::Struct { size: layout.size, align: layout.align }
+                        }
                         _ => return Err(Diagnostic::error("a static local of this type in an inline function is not supported yet (roadmap)")),
                     };
                     index += 1;
@@ -900,6 +922,10 @@ impl Parser {
                                     let value = if negative { -*value } else { *value };
                                     Some((value as f32).to_be_bytes().to_vec())
                                 }
+                                (Some(Token::IntegerLiteral(value)), Type::Char | Type::UnsignedChar) => {
+                                    let value = if negative { -*value } else { *value };
+                                    if value == 0 { None } else { Some(vec![value as u8]) }
+                                }
                                 (Some(Token::IntegerLiteral(value)), Type::Int | Type::UnsignedInt) => {
                                     let value = if negative { -*value } else { *value };
                                     let all_zero = value == 0;
@@ -917,6 +943,8 @@ impl Parser {
                     };
                     let byte_size = match declared_type {
                         Type::Double => 8u16,
+                        Type::Char | Type::UnsignedChar => 1,
+                        Type::Struct { size, .. } => size,
                         _ => 4,
                     };
                     statics.push(SkippedStaticLocal { name: local_name, declared_type, is_const, bytes, byte_size });
@@ -1642,6 +1670,7 @@ impl Parser {
             // PRIOR PROTOTYPE the call sites precede the body, so mwcc cannot
             // inline it: it MATERIALIZES out-of-line as a local function at the
             // definition's source position (measured: AC/ww/sunshine uart).
+            let mut materialize_by_calls = false;
             if is_inline {
                 // Referenced EARLIER (a prototype, or a call already parsed into a
                 // previous function — uart_8's IMPLICIT-declaration shape) means the
@@ -1656,14 +1685,29 @@ impl Parser {
                 // The trigger is a CALL compiled before the definition — a
                 // prototype alone does NOT materialize (p2's wctomb: prototyped,
                 // defined, THEN called — mwcc inlines it at the later call).
-                if !had_call {
+                // A static inline mwcc declines to inline MATERIALIZES even
+                // with no earlier call: measured on ww alloc.c, the trigger is
+                // TWO-PLUS calls to real (non-skipped-inline) functions in the
+                // body (dealloc_var: Block_link+__sys_free; __pool_free:
+                // dealloc_fixed+dealloc_var). It emits AFTER the next real
+                // function (the deferred-materialization queue).
+                // TU-local functions seen so far: DEFINITIONS and already-skipped
+                // inlines only. Merely-PROTOTYPED names (extern OSReport in the
+                // dolphin headers) are EXTERNAL — excluded, so a heap-init inline
+                // calling only OS* helpers (GCN InitDefaultHeap) stays inlinable.
+                let mut tu_local: std::collections::HashSet<String> = self.skipped_inline_names.clone();
+                for function in functions.iter() { tu_local.insert(function.name.clone()); }
+                materialize_by_calls = !had_call && is_static && self.body_local_statement_call_count(&tu_local) >= 2;
+                if !had_call && !materialize_by_calls {
                     return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
                 }
                 if is_static {
                     // Implicit-declaration materialization (no prototype): the call
                     // relocations bind the surviving UND ghost, and the local FUNC
                     // symbol trails its own static locals (measured: ww uart).
-                    if !had_prototype {
+                    // A materialize-by-CALLS function instead binds its local
+                    // FUNC directly (measured: ww alloc — no UND ghost).
+                    if !had_prototype && !materialize_by_calls {
                         self.implicitly_materialized.push(name.clone());
                     }
                 } else {
@@ -1684,9 +1728,81 @@ impl Parser {
             let mut function = self.function_body(return_type, name, is_static, parameters)?;
             function.is_weak = function_is_weak;
             function.section = declspec_section.clone().or(proto_section);
+            function.text_deferred = materialize_by_calls;
             functions.push(function);
         }
         Ok(())
+    }
+
+    /// Count STATEMENT-LEVEL call sites in the definition body at the cursor
+    /// (`name ( … ) ;` — a bare, side-effecting call) that target a TU-LOCAL
+    /// function (in `local_names`: a definition, prototype, or skipped inline).
+    /// mwcc's inline-cost heuristic bails on a body with two-plus such calls,
+    /// MATERIALIZING it out-of-line (measured: ww alloc's dealloc_var calls
+    /// Block_link+__unlink; __pool_free calls dealloc_fixed+dealloc_var). Calls
+    /// to EXTERNALS (GCN InitDefaultHeap's OSReport/OSGetArenaLo) and
+    /// expression-buried calls (fpclassify's `__HI(x)`, `return f()`) do NOT
+    /// count — those stay inlinable. Pure lookahead.
+    pub(crate) fn body_local_statement_call_count(&self, local_names: &std::collections::HashSet<String>) -> usize {
+        let mut index = self.position;
+        // Find the body's opening brace.
+        while !matches!(self.tokens.get(index), Some(Token::BraceOpen) | Some(Token::EndOfFile) | None) {
+            index += 1;
+        }
+        let mut braces = 0i32;
+        let mut count = 0usize;
+        loop {
+            match self.tokens.get(index) {
+                Some(Token::BraceOpen) => braces += 1,
+                Some(Token::BraceClose) => {
+                    braces -= 1;
+                    if braces == 0 {
+                        break;
+                    }
+                }
+                Some(Token::Identifier(word))
+                    if matches!(self.tokens.get(index + 1), Some(Token::ParenOpen))
+                        && local_names.contains(word)
+                        && !matches!(word.as_str(), "sizeof" | "if" | "while" | "for" | "switch" | "return")
+                        // A BARE statement call starts at a statement boundary:
+                        // the preceding token is `;`/`{`/`}`/`:` — NOT `return`,
+                        // `=`, or an operator (which make it an expression call,
+                        // e.g. `return f();` / `x = f();` — mwcc still inlines).
+                        && matches!(
+                            self.tokens.get(index.wrapping_sub(1)),
+                            Some(Token::Semicolon) | Some(Token::BraceOpen) | Some(Token::BraceClose) | Some(Token::Colon)
+                        ) =>
+                {
+                    // A STATEMENT call closes with `) ;` at the same paren depth:
+                    // walk to the matching close-paren and check the next token.
+                    let mut cursor = index + 1;
+                    let mut parens = 0i32;
+                    let mut is_statement_call = false;
+                    while let Some(token) = self.tokens.get(cursor) {
+                        match token {
+                            Token::ParenOpen => parens += 1,
+                            Token::ParenClose => {
+                                parens -= 1;
+                                if parens == 0 {
+                                    is_statement_call = matches!(self.tokens.get(cursor + 1), Some(Token::Semicolon));
+                                    break;
+                                }
+                            }
+                            Token::Semicolon | Token::BraceOpen | Token::BraceClose => break,
+                            _ => {}
+                        }
+                        cursor += 1;
+                    }
+                    if is_statement_call {
+                        count += 1;
+                    }
+                }
+                Some(Token::EndOfFile) | None => break,
+                _ => {}
+            }
+            index += 1;
+        }
+        count
     }
 
     /// Whether the item at the cursor is an initialized data *definition* — a
@@ -2400,7 +2516,7 @@ impl Parser {
 
         let mut locals = locals;
         locals.extend(block_locals);
-        Ok(Function { return_type, name, is_static, is_weak: false, parameters, locals, statements, guards, return_expression, section: None, asm_body: None, force_active: self.force_active })
+        Ok(Function { return_type, name, is_static, is_weak: false, text_deferred: false, parameters, locals, statements, guards, return_expression, section: None, asm_body: None, force_active: self.force_active })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

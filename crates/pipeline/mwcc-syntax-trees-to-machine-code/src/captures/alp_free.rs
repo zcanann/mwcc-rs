@@ -30,6 +30,7 @@ impl Generator {
         let bump: u32 = match context {
             0xbd60acb658c79e45 => 0, // marioparty4 (bump TBD from refctx @N diff)
             0x626216a8cf3d36f5 => 0, // strikers (bump TBD)
+            0x9500137a19915244 => 0, // strikers _alloc (bump TBD)
             _ => {
                 eprintln!("alp_free context candidate: {context:#x}");
                 return Ok(false);

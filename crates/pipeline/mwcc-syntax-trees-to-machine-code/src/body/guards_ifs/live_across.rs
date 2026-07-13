@@ -417,6 +417,7 @@ impl Generator {
                 name: function.name.clone(),
                 is_static: function.is_static,
                 is_weak: function.is_weak,
+                text_deferred: false,
                 parameters: pseudo,
                 locals: Vec::new(),
                 statements: tail_stores.iter().map(|&statement| statement.clone()).collect(),

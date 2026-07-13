@@ -106,12 +106,30 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // size is a multiple of 4, so they pack contiguously). Track each function's
     // byte offset and size for its symbol, relocations, and `.mwcats` record.
     let mut text = Vec::new();
-    let mut function_offset: Vec<u32> = Vec::new();
-    let mut function_size: Vec<u32> = Vec::new();
-    for function in functions {
-        function_offset.push(text.len() as u32);
-        function_size.push(function.text.len() as u32);
-        text.extend_from_slice(function.text);
+    // `.text` LAYOUT order: a text_deferred function (a materialized static
+    // inline) lays out AFTER the next non-deferred function — mwcc's deferred
+    // materialization queue (measured: ww alloc's dealloc_var after
+    // dealloc_fixed, __pool_free after free). Symbols keep source position.
+    let layout_order: Vec<usize> = {
+        let mut order = Vec::with_capacity(functions.len());
+        let mut pending: Vec<usize> = Vec::new();
+        for (index, function) in functions.iter().enumerate() {
+            if function.text_deferred {
+                pending.push(index);
+            } else {
+                order.push(index);
+                order.append(&mut pending);
+            }
+        }
+        order.append(&mut pending);
+        order
+    };
+    let mut function_offset: Vec<u32> = vec![0; functions.len()];
+    let mut function_size: Vec<u32> = vec![0; functions.len()];
+    for &index in &layout_order {
+        function_offset[index] = text.len() as u32;
+        function_size[index] = functions[index].text.len() as u32;
+        text.extend_from_slice(functions[index].text);
     }
 
     let has_text_relocations = functions.iter().any(|function| !function.relocations.is_empty());
@@ -1042,13 +1060,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 function_symbols[index] = symbol;
                 local_function_symbols.insert(function.name, symbol);
             }
-            // Under static_locals_lead the statics emit in REVERSE declaration
-            // order (measured: init$130 then protopool$129).
-            let owned: Vec<&DataObject> = if function.static_locals_lead {
-                input.data_objects.iter().rev().collect()
-            } else {
-                input.data_objects.iter().collect()
-            };
+            // Owned statics emit in REVERSE declaration order (measured:
+            // init$130 then protopool$129 on alloc.c; init$110 then
+            // protopool$109 on _alloc.c's default FUNC-first path).
+            let owned: Vec<&DataObject> = input.data_objects.iter().rev().collect();
             for object in owned {
                 if object.static_local_owner == Some(index) {
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -1339,7 +1354,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    `.text` relocations are rebased by its `.text` offset; a relocation
     //    targets either an external or one of that function's pooled constants.
     let mut rela_text = Vec::new();
-    for (index, function) in functions.iter().enumerate() {
+    for &index in &layout_order {
+        let function = &functions[index];
         for relocation in &function.relocations {
             let mut rela_addend: u32 = 0;
             let symbol = match &relocation.target {
@@ -1393,7 +1409,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // function index).
     let mut rela_mwcats = Vec::new();
     let mut mwcats_position = 0u32;
-    for (index, function) in functions.iter().enumerate() {
+    for &index in &layout_order {
+        let function = &functions[index];
         if function.is_asm {
             continue;
         }
@@ -1462,7 +1479,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    the saved-register shape; each `extabindex` entry is (function, function
     //    size, extab entry).
     let mut mwcats = Vec::new();
-    for (index, function) in functions.iter().enumerate() {
+    for &index in &layout_order {
+        let function = &functions[index];
         if function.is_asm {
             continue;
         }
