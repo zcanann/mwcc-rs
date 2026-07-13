@@ -136,6 +136,21 @@ impl Parser {
             self.advance();
             return Ok(PointerElement::Null);
         }
+        // A NON-ZERO integer constant cast to a pointer (`(void *)-1` — the arena
+        // sentinel `__OSArenaLo`): the literal value's bytes, no relocation. An
+        // optional leading `-` negates.
+        {
+            let negative = *self.peek() == Token::Minus;
+            let literal_at = if negative { self.peek_at(1) } else { self.peek() };
+            if let Token::IntegerLiteral(value) = literal_at {
+                let value = *value;
+                if negative {
+                    self.advance();
+                }
+                self.advance();
+                return Ok(PointerElement::Scalar(if negative { -value } else { value }));
+            }
+        }
         if let Token::Identifier(name) = self.peek() {
             let name = name.clone();
             self.advance();
