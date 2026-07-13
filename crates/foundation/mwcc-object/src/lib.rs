@@ -146,6 +146,8 @@ pub struct FunctionObject<'a> {
     pub string_count: u32,
     /// See MachineFunction::string_number_after_constants.
     pub string_number_after_constants: Option<u32>,
+    /// See MachineFunction::string_number_after_rodata.
+    pub string_number_after_rodata: Option<(u32, u32)>,
     /// The `@N` names of those NEW strings, in front-of-block order. The writer emits a
     /// LOCAL object symbol for each at the FRONT of this function's `@N` block (its bytes
     /// and section/offset come from the matching `.sdata`/`.data` data object), so the
@@ -159,7 +161,7 @@ pub struct FunctionObject<'a> {
     /// An anonymous `.rodata` blob (`@N` via ADDR16_HA/LO): raw bytes plus the
     /// blob's offset past the function's running `@N` counter (numbered BEFORE
     /// the pool constants — measured on __strtold: table @26, pool @147).
-    pub anonymous_rodata: Option<(Vec<u8>, i32)>,
+    pub anonymous_rodata: Vec<(Vec<u8>, i32)>,
     /// Callees emitting LOCAL UND symbols in the explicit extern run.
     pub local_undefined_callees: Vec<String>,
     /// The names this function references (globals/callees) in mwcc's symbol-table
@@ -192,6 +194,8 @@ pub enum RelocationTarget {
     Constant(usize),
     /// This function's own jump table (the anonymous `@N` object in `.data`).
     JumpTable,
+    /// The i-th of this function's `.rodata` blobs.
+    AnonymousRodataAt(usize),
     /// This function's anonymous `.rodata` blob (`FunctionObject::anonymous_rodata`).
     AnonymousRodata,
 }
@@ -213,6 +217,8 @@ pub struct Sdata2Constant {
     pub static_slot: bool,
     /// The symbol leads the owning static function's FUNC symbol.
     pub image: bool,
+    /// A fresh slot even when an equal constant exists (twin zero doubles).
+    pub force_new: bool,
 }
 
 /// The `extab`/`extabindex` unwind tables a stack-frame function carries. The

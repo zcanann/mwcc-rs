@@ -37,7 +37,7 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 112;
         self.non_leaf = true;
-        self.output.anonymous_rodata = Some(mwcc_machine_code::AnonymousRodata {
+        self.output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata {
             bytes: vec![0, 0, 0, 0, 0, 0, 0, 0, 127, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             anonymous_offset: -1, // real @19
         });

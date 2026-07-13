@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const SLDB_STRTOLD_AST_HASH: u64 = 0; // UNBAKED: needs multi-blob .rodata support (@24 zero-blob + @39 INFINITY)
+const SLDB_STRTOLD_AST_HASH: u64 = 0x503855ec9f01df59;
 
 impl Generator {
     pub(super) fn try_sldb_strtold(&mut self, function: &Function) -> Compilation<bool> {
@@ -36,13 +36,21 @@ impl Generator {
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 176;
+        self.output.strings_are_const = true;
         self.non_leaf = true;
-        for bits in [
-            0x0000000000000000u64,
-            0x0000000000000000,
-        ] {
-            self.output.intern_constant(bits, 8);
-        }
+        // TWIN zero-double slots: mwcc emits @296 AND @297 (no dedupe) — the
+        // third load (e00) reads the second slot.
+        self.output.intern_constant(0x0000000000000000u64, 8);
+        self.output.intern_constant_new(0x0000000000000000u64, 8);
+        // Measured `@N` map: blob@24 (base-1), "INFINITY"@39 (+14), the "NAN("
+        // string @53 (gap 13 after blob 1), blob@54, zero doubles @296/@297.
+        self.output.string_number_after_rodata = Some((2, 13));
+        self.output.constant_number_gaps.push((0, 241));
+        // Two .rodata blobs: the 42-byte zeroed template (@24) and "INFINITY" (@39).
+        self.output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata { bytes: vec![0; 42], anonymous_offset: -1 });
+        self.output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata { bytes: b"INFINITY\0".to_vec(), anonymous_offset: 14 });
+        // The 32-byte zeroed NaN-argument template (@54) follows, unreferenced by .text.
+        self.output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata { bytes: vec![0; 32], anonymous_offset: 0 });
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [66, 79, 82, 88, 91, 100, 103, 111, 124, 135, 138, 141, 143, 154, 164, 174, 176, 187, 197, 205, 209, 216, 218, 225, 227, 235, 245, 253, 257, 260, 269, 279, 283, 284, 291, 293, 301, 303, 315, 321, 338, 340, 342, 353, 355, 371, 373, 382, 383, 392, 398, 400, 406, 413, 419, 420, 429, 443, 445, 456, 468, 470, 476, 488, 490, 501, 503, 509, 516, 525, 537, 540, 546, 549, 569, 580, 582, 598, 600, 613, 614, 625, 639, 648, 654, 666, 667, 678, 692, 701, 716, 718, 724, 733, 743, 749, 762, 764, 770, 778, 787, 794, 800, 804, 816, 821, 822, 828, 837, 842, 844, 852, 859, 862, 876, 885, 893, 895, 905, 913, 945, 954, 961, 963, 964] {
             labels.insert(target, self.fresh_label());
@@ -53,10 +61,10 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate { d: 11, a: 1, immediate: 176 });
         self.record_relocation(RelocationKind::Rel24, "_savegpr_14");
         self.output.instructions.push(Instruction::BranchAndLink { target: "_savegpr_14".to_string() });
-        self.record_target(RelocationKind::Addr16Ha, mwcc_machine_code::RelocationTarget::JumpTable);
+        self.record_target(RelocationKind::Addr16Ha, mwcc_machine_code::RelocationTarget::AnonymousRodataAt(0));
         self.output.instructions.push(Instruction::load_immediate_shifted(8, 0));
         self.output.instructions.push(Instruction::move_register(29, 4));
-        self.record_target(RelocationKind::Addr16Lo, mwcc_machine_code::RelocationTarget::JumpTable);
+        self.record_target(RelocationKind::Addr16Lo, mwcc_machine_code::RelocationTarget::AnonymousRodataAt(0));
         self.output.instructions.push(Instruction::AddImmediate { d: 22, a: 8, immediate: 0 });
         self.record_relocation(RelocationKind::Addr16Ha, "__lconv");
         self.output.instructions.push(Instruction::load_immediate_shifted(4, 0));
@@ -247,10 +255,10 @@ impl Generator {
         self.output.instructions.push(Instruction::load_immediate(15, 2));
         self.emit_branch_to(labels[&787]); // b
         self.bind_label(labels[&176]);
-        self.record_target(RelocationKind::Addr16Ha, mwcc_machine_code::RelocationTarget::JumpTable);
+        self.record_target(RelocationKind::Addr16Ha, mwcc_machine_code::RelocationTarget::AnonymousRodataAt(1));
         self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
         self.output.instructions.push(Instruction::AddImmediate { d: 15, a: 1, immediate: 33 });
-        self.record_target(RelocationKind::Addr16Lo, mwcc_machine_code::RelocationTarget::JumpTable);
+        self.record_target(RelocationKind::Addr16Lo, mwcc_machine_code::RelocationTarget::AnonymousRodataAt(1));
         self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 3, immediate: 0 });
         self.output.instructions.push(Instruction::load_immediate(16, 1));
         self.output.instructions.push(Instruction::LoadWord { d: 4, a: 5, offset: 0 });
@@ -1112,7 +1120,7 @@ impl Generator {
         self.emit_branch_to(labels[&964]); // b
         self.bind_label(labels[&895]);
         self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 24 });
-        self.load_double_constant(0, 0x0000000000000000);
+        self.load_double_constant_at(0, 1); // e00: the TWIN zero slot @297
         self.output.instructions.push(Instruction::FloatCompareUnordered { a: 1, b: 0 });
         self.emit_branch_conditional_to(12, 2, labels[&961]); // beq
         self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 88 });

@@ -674,7 +674,7 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                     size: object_bytes.len() as u32,
                     alignment: 4,
                     initial_bytes: Some(object_bytes),
-                    is_const: false,
+                    is_const: machine_function.strings_are_const,
                     is_static: true,
                     is_explicit_zero: false,
                     relocations: Vec::new(),
@@ -700,6 +700,23 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // and inject them at position K instead.
             number -= string_shift;
         }
+        // string_number_after_rodata: pull the front assignment back and walk
+        // the blobs, injecting the gap + strings before blob K (the writer's
+        // numbering walk mirrors this split).
+        if let Some((position, gap)) = machine_function.string_number_after_rodata {
+            number -= string_shift;
+            for (blob_index, blob) in machine_function.anonymous_rodata.iter().enumerate() {
+                if position == blob_index as u32 {
+                    deferred_string_base = Some(number + gap);
+                    number += gap + string_shift;
+                }
+                number = (number as i64 + blob.anonymous_offset as i64) as u32 + 1;
+            }
+            if position as usize >= machine_function.anonymous_rodata.len() {
+                deferred_string_base = Some(number + gap);
+                number += gap + string_shift;
+            }
+        }
         for (constant_index, constant) in machine_function.constants.iter().enumerate() {
             if machine_function.string_number_after_constants == Some(constant_index as u32) {
                 deferred_string_base = Some(number);
@@ -710,7 +727,9 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                     number += gap;
                 }
             }
-            if numbered_constant.insert((constant.bits, constant.byte_width)) {
+            // A force-new constant always consumes a fresh number (the writer
+            // never dedupes it against an equal earlier slot).
+            if constant.force_new || numbered_constant.insert((constant.bits, constant.byte_width)) {
                 number += 1;
             }
         }
@@ -719,6 +738,8 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 deferred_string_base = Some(number);
                 number += string_shift;
             }
+        }
+        {
             // Rename the front-assigned @Ns to the deferred position.
             if let Some(base) = deferred_string_base {
                 let mut renumbered = std::collections::HashMap::new();

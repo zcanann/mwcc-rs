@@ -91,13 +91,14 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                         MachineTarget::JumpTable => RelocationTarget::JumpTable,
                         MachineTarget::JumpTableAt(table_index) => RelocationTarget::JumpTableAt(*table_index),
                         MachineTarget::AnonymousRodata => RelocationTarget::AnonymousRodata,
+                        MachineTarget::AnonymousRodataAt(blob_index) => RelocationTarget::AnonymousRodataAt(*blob_index),
                     },
                 })
                 .collect(),
             constants: function
                 .constants
                 .iter()
-                .map(|constant| Sdata2Constant { bits: constant.bits, byte_width: constant.byte_width, static_slot: constant.static_slot, image: constant.image })
+                .map(|constant| Sdata2Constant { bits: constant.bits, byte_width: constant.byte_width, static_slot: constant.static_slot, image: constant.image, force_new: constant.force_new })
                 .collect(),
             frame: function.frame.map(|frame| FrameLayout { extab_header: frame.extab_header() }),
             // The anonymous-`@N` counter is bumped by one for an int<->float
@@ -114,6 +115,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             // `@N` block (interleaved per-function with its constants and unwind entries).
             string_count: function.new_string_count,
             string_number_after_constants: function.string_number_after_constants,
+            string_number_after_rodata: function.string_number_after_rodata,
             string_names: function.new_string_names.clone(),
             jump_tables: function
                 .jump_tables
@@ -122,8 +124,9 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 .collect(),
             anonymous_rodata: function
                 .anonymous_rodata
-                .as_ref()
-                .map(|blob| (blob.bytes.clone(), blob.anonymous_offset)),
+                .iter()
+                .map(|blob| (blob.bytes.clone(), blob.anonymous_offset))
+                .collect(),
             local_undefined_callees: function.local_undefined_callees.clone(),
             symbol_order: function.symbol_order.clone(),
             implicit_external_callees: function.implicit_external_callees.clone(),

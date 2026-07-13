@@ -18,6 +18,10 @@ pub struct PoolConstant {
     /// leads the owning static function's FUNC symbol regardless of where it
     /// NUMBERS (mp4 @4 static-slot; ww @47 pool-block — both lead).
     pub image: bool,
+    /// NEVER dedupe this entry against an equal earlier constant — mwcc can
+    /// emit twin pool slots for the same value (strtold's two zero doubles
+    /// @296/@297 at distinct `.sdata2` offsets).
+    pub force_new: bool,
 }
 
 /// An anonymous `.rodata` blob (`@N`): raw bytes the writer materializes as a
@@ -71,6 +75,10 @@ pub struct MachineFunction {
     /// (bfbb's __dec2num: constants @1539-1541, THEN the string @1542 —
     /// creation order inside the body).
     pub string_number_after_constants: Option<u32>,
+    /// Number (and emit) this function's NEW strings after the first K of its
+    /// anonymous `.rodata` blobs, with a GAP first: `Some((k, gap))` — strtold's
+    /// "NAN(" @53 sits between "INFINITY" @39 and the 32-byte template @54.
+    pub string_number_after_rodata: Option<(u32, u32)>,
     /// The `@N` names of the NEW strings this function introduces, in front-of-block
     /// order — set by the unit's string resolver alongside `new_string_count`. The
     /// object writer emits a LOCAL symbol for each at the FRONT of the function's `@N`
@@ -130,7 +138,10 @@ pub struct MachineFunction {
     /// `.rodata` via ADDR16_HA/LO — e.g. __strtold's 42-byte zero table).
     /// Numbered like the jump table: `anonymous_offset` past the function's
     /// running `@N` counter, BEFORE its pool constants.
-    pub anonymous_rodata: Option<AnonymousRodata>,
+    pub anonymous_rodata: Vec<AnonymousRodata>,
+    /// This function's NEW string literals are CONST (`.sdata2`) — a const
+    /// char array read as data (strtold's "NAN(").
+    pub strings_are_const: bool,
     /// Callees that order with the PROTOTYPED externals despite being
     /// unprototyped in OUR model: a `#pragma cplusplus` inline helper called
     /// under its MANGLED name (pikmin s_ldexp's __fpclassifyd__Fd) — its
@@ -174,6 +185,7 @@ impl MachineFunction {
             string_literals: Vec::new(),
             new_string_count: 0,
             string_number_after_constants: None,
+            string_number_after_rodata: None,
             new_string_names: Vec::new(),
             is_static: false,
             implicit_materialized: false,
@@ -190,7 +202,8 @@ impl MachineFunction {
             pre_scheduled: false,
             frame: None,
             jump_tables: Vec::new(),
-            anonymous_rodata: None,
+            anonymous_rodata: Vec::new(),
+            strings_are_const: false,
             local_undefined_callees: Vec::new(),
             symbol_order: Vec::new(),
             implicit_external_callees: Vec::new(),
@@ -218,8 +231,15 @@ impl MachineFunction {
         self.intern_constant_slotted(bits, byte_width, false, true)
     }
 
+    /// Intern a FRESH pool slot even when an equal constant already exists
+    /// (mwcc's occasional twin slots for one value — strtold's zero doubles).
+    pub fn intern_constant_new(&mut self, bits: u64, byte_width: u8) -> usize {
+        self.constants.push(PoolConstant { bits, byte_width, static_slot: false, image: false, force_new: true });
+        self.constants.len() - 1
+    }
+
     fn intern_constant_slotted(&mut self, bits: u64, byte_width: u8, static_slot: bool, image: bool) -> usize {
-        let constant = PoolConstant { bits, byte_width, static_slot, image };
+        let constant = PoolConstant { bits, byte_width, static_slot, image, force_new: false };
         if let Some(index) = self.constants.iter().position(|existing| *existing == constant) {
             return index;
         }

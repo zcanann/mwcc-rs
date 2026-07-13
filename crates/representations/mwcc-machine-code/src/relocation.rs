@@ -64,6 +64,8 @@ pub enum RelocationTarget {
     JumpTableAt(usize),
     /// This function's anonymous `.rodata` blob (`MachineFunction::anonymous_rodata`).
     AnonymousRodata,
+    /// The i-th of this function's `.rodata` blobs (strtold carries two).
+    AnonymousRodataAt(usize),
 }
 
 /// A relocation against `.text`, located by the instruction it patches (byte

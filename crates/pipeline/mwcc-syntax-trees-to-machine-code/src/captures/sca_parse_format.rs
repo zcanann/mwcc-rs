@@ -37,7 +37,7 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 64;
         // The scan_format default image (@4): 0x28 bytes, `7fffffff` at +4.
-        self.output.anonymous_rodata = Some(mwcc_machine_code::AnonymousRodata {
+        self.output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata {
             bytes: {
                 let mut bytes = vec![0u8; 0x28];
                 bytes[4..8].copy_from_slice(&0x7fff_ffffu32.to_be_bytes());

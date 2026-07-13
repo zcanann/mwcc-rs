@@ -148,7 +148,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let has_sdata = input.data_objects.iter().any(|object| section_of(object) == ".sdata");
     let has_sbss = input.data_objects.iter().any(|object| section_of(object) == ".sbss");
     let has_rodata = input.data_objects.iter().any(|object| section_of(object) == ".rodata")
-        || input.functions.iter().any(|function| function.anonymous_rodata.is_some());
+        || input.functions.iter().any(|function| !function.anonymous_rodata.is_empty());
     let has_const_sdata2 = input.data_objects.iter().any(|object| section_of(object) == ".sdata2");
     let has_file_data = input.data_objects.iter().any(|object| section_of(object) == ".data");
     let has_bss = input.data_objects.iter().any(|object| section_of(object) == ".bss");
@@ -190,16 +190,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input.data_objects.iter().filter(|object| section_of(object) == ".rodata") {
         place(object, ".rodata", &mut rodata_size);
     }
-    // Anonymous `.rodata` blobs follow the named const objects, 8-aligned.
-    let mut rodata_blob_offset: Vec<Option<u32>> = Vec::new();
+    // Anonymous `.rodata` blobs follow the named const objects, 4-aligned
+    // (measured on strtold: "INFINITY" at 0x2c right after the 42-byte
+    // template, the 32-byte template at 0x38).
+    let mut rodata_blob_offset: Vec<Vec<u32>> = Vec::new();
     for function in &input.functions {
-        if let Some((bytes, _)) = &function.anonymous_rodata {
-            rodata_size = rodata_size.div_ceil(8) * 8;
-            rodata_blob_offset.push(Some(rodata_size));
+        let mut offsets = Vec::new();
+        for (bytes, _) in &function.anonymous_rodata {
+            rodata_size = rodata_size.div_ceil(4) * 4;
+            offsets.push(rodata_size);
             rodata_size += bytes.len() as u32;
-        } else {
-            rodata_blob_offset.push(None);
         }
+        rodata_blob_offset.push(offsets);
     }
     // Large initialized `.data` is laid out in CREATION order: file-scope
     // objects (declaration order) first, then per function its pooled `.data`
@@ -303,8 +305,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     for (function_index, function) in input.functions.iter().enumerate() {
-        if let Some((bytes, _)) = &function.anonymous_rodata {
-            let offset = rodata_blob_offset[function_index].unwrap() as usize;
+        for (blob_index, (bytes, _)) in function.anonymous_rodata.iter().enumerate() {
+            let offset = rodata_blob_offset[function_index][blob_index] as usize;
             rodata[offset..offset + bytes.len()].copy_from_slice(bytes);
         }
     }
@@ -336,7 +338,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for function in functions {
         let mut offsets = Vec::new();
         for constant in &function.constants {
-            let offset = *pooled_offset.entry((constant.bits, constant.byte_width)).or_insert_with(|| {
+            let fresh_slot = |sdata2: &mut Vec<u8>| {
                 let alignment = constant.byte_width as usize;
                 while sdata2.len() % alignment != 0 {
                     sdata2.push(0);
@@ -347,7 +349,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     _ => sdata2.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
                 }
                 offset
-            });
+            };
+            // A FORCE-NEW slot never joins the dedup map: it takes a fresh
+            // offset and leaves the first slot as the shared one.
+            let offset = if constant.force_new {
+                fresh_slot(&mut sdata2)
+            } else {
+                *pooled_offset.entry((constant.bits, constant.byte_width)).or_insert_with(|| fresh_slot(&mut sdata2))
+            };
             offsets.push(offset);
         }
         constant_offsets.push(offsets);
@@ -366,7 +375,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut constant_numbers: Vec<Vec<u32>> = Vec::new();
     let mut frame_numbers: Vec<Option<FrameNumbers>> = Vec::new();
     let mut jump_table_numbers: Vec<Vec<u32>> = Vec::new();
-    let mut rodata_blob_numbers: Vec<Option<u32>> = Vec::new();
+    let mut rodata_blob_numbers: Vec<Vec<u32>> = Vec::new();
     let mut extab_payload_offset = 0u32;
     let mut extabindex_payload_offset = 0u32;
     // The functions' anonymous `@N` numbering starts at 5, past any FILE-SCOPE anonymous objects
@@ -433,17 +442,32 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // This function's own strings sit at the front of its `@N` block, before
         // its constants — unless string_number_after_constants places them
         // after the first K constants (creation order — bfbb's __dec2num).
-        if function.string_number_after_constants.is_none() {
+        if function.string_number_after_constants.is_none() && function.string_number_after_rodata.is_none() {
             number += function.string_count;
         }
         // The anonymous rodata blob numbers BEFORE the pool constants
         // (measured: __strtold's table @26 precedes its pool double @147).
-        if let Some((_, anonymous_offset)) = &function.anonymous_rodata {
-            let number_of_blob = (number as i64 + *anonymous_offset as i64) as u32;
-            number = number_of_blob + 1;
-            rodata_blob_numbers.push(Some(number_of_blob));
-        } else {
-            rodata_blob_numbers.push(None);
+        {
+            let mut numbers_of_blobs = Vec::new();
+            for (blob_index, (_, anonymous_offset)) in function.anonymous_rodata.iter().enumerate() {
+                // string_number_after_rodata: the strings (and a gap before
+                // them) number between blob K-1 and blob K (strtold's "NAN("
+                // @53 between "INFINITY" @39 and the template @54).
+                if let Some((position, gap)) = function.string_number_after_rodata {
+                    if position == blob_index as u32 {
+                        number += gap + function.string_count;
+                    }
+                }
+                let number_of_blob = (number as i64 + *anonymous_offset as i64) as u32;
+                number = number_of_blob + 1;
+                numbers_of_blobs.push(number_of_blob);
+            }
+            if let Some((position, gap)) = function.string_number_after_rodata {
+                if position as usize >= function.anonymous_rodata.len() {
+                    number += gap + function.string_count;
+                }
+            }
+            rodata_blob_numbers.push(numbers_of_blobs);
         }
         let mut numbers = Vec::new();
         let mut static_slot_seen = 0u32;
@@ -474,9 +498,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
             match numbered_constant.get(&(constant.bits, constant.byte_width)) {
-                Some(&existing) => numbers.push(existing),
-                None => {
-                    numbered_constant.insert((constant.bits, constant.byte_width), number);
+                Some(&existing) if !constant.force_new => numbers.push(existing),
+                _ => {
+                    if !constant.force_new {
+                        numbered_constant.insert((constant.bits, constant.byte_width), number);
+                    }
                     numbers.push(number);
                     number += 1;
                 }
@@ -796,7 +822,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut constant_symbols: Vec<Vec<u32>> = Vec::new();
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
     let mut jump_table_symbols: Vec<Vec<u32>> = Vec::new();
-    let mut rodata_blob_symbols: Vec<u32> = Vec::new();
+    let mut rodata_blob_symbols: Vec<Vec<u32>> = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         // FILE-SCOPE statics declared right before this function (ansi_fp's
         // `static const char* const unused = "…"` between function bodies)
@@ -876,9 +902,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // unwind entries. Each `@N` name already has a laid-out data object (`.sdata`/`.data`); emit
         // its LOCAL symbol here and record it so relocations (this function's, and a later function
         // reusing the same pooled string) resolve to it.
-        // (When string_number_after_constants is set, the string SYMBOLS also
-        // emit mid-constants — handled inside the constants loop below.)
-        if function.string_number_after_constants.is_none() {
+        // (When string_number_after_constants / string_number_after_rodata is
+        // set, the string SYMBOLS also emit at the deferred position — handled
+        // inside the constants loop below / the blob loop.)
+        if function.string_number_after_constants.is_none() && function.string_number_after_rodata.is_none() {
             for name in &function.string_names {
                 if data_marker_pending && data_section[name.as_str()] == ".data" {
                     local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
@@ -894,15 +921,39 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         // The anonymous rodata blob's LOCAL `@N` symbol precedes the pool
         // constants' (symtab order measured on __strtold: @26 then @147).
-        if let Some(number) = rodata_blob_numbers[index] {
-            rodata_blob_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
-            let name = strtab.add(&format!("@{}", number));
-            let size = function.anonymous_rodata.as_ref().unwrap().0.len() as u32;
-            write_symbol(&mut symtab, name, rodata_blob_offset[index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".rodata") as u16);
-            // The blob's `.comment` alignment record is 4 (measured on __strtold's @26).
-            comment_values.push((4, 0));
-        } else {
-            rodata_blob_symbols.push(0);
+        {
+            let mut symbols_of_blobs = Vec::new();
+            for (blob_index, &number) in rodata_blob_numbers[index].iter().enumerate() {
+                // string_number_after_rodata: the string symbols emit between
+                // blob K-1 and blob K, matching their numbering.
+                if let Some((position, _)) = function.string_number_after_rodata {
+                    if position == blob_index as u32 {
+                        for name in &function.string_names {
+                            local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                            let section = index_of(data_section[name.as_str()]) as u16;
+                            write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                            comment_values.push((data_aligns[name.as_str()], 0));
+                        }
+                    }
+                }
+                symbols_of_blobs.push((symtab.len() / SYMBOL_SIZE) as u32);
+                let name = strtab.add(&format!("@{}", number));
+                let size = function.anonymous_rodata[blob_index].0.len() as u32;
+                write_symbol(&mut symtab, name, rodata_blob_offset[index][blob_index], size, STB_LOCAL_OBJECT, 0, index_of(".rodata") as u16);
+                // The blob's `.comment` alignment record is 4 (measured on __strtold's @26).
+                comment_values.push((4, 0));
+            }
+            if let Some((position, _)) = function.string_number_after_rodata {
+                if position as usize >= function.anonymous_rodata.len() {
+                    for name in &function.string_names {
+                        local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                        let section = index_of(data_section[name.as_str()]) as u16;
+                        write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                        comment_values.push((data_aligns[name.as_str()], 0));
+                    }
+                }
+            }
+            rodata_blob_symbols.push(symbols_of_blobs);
         }
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
@@ -924,10 +975,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
             match constant_symbol.get(&(constant.bits, constant.byte_width)) {
-                Some(&existing) => symbols.push(existing),
-                None => {
+                Some(&existing) if !constant.force_new => symbols.push(existing),
+                _ => {
                     let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                    constant_symbol.insert((constant.bits, constant.byte_width), symbol);
+                    if !constant.force_new {
+                        constant_symbol.insert((constant.bits, constant.byte_width), symbol);
+                    }
                     symbols.push(symbol);
                     let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
                     write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
@@ -1286,7 +1339,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
                 RelocationTarget::JumpTable => jump_table_symbols[index][0],
                 RelocationTarget::JumpTableAt(table_index) => jump_table_symbols[index][*table_index],
-                RelocationTarget::AnonymousRodata => rodata_blob_symbols[index],
+                RelocationTarget::AnonymousRodata => rodata_blob_symbols[index][0],
+                RelocationTarget::AnonymousRodataAt(blob_index) => rodata_blob_symbols[index][*blob_index],
             };
             write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, rela_addend);
         }

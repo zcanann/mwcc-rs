@@ -36,7 +36,7 @@ impl Generator {
         self.callee_saved = vec![16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]; // via _savegpr_16
         // The 42-byte zeroed `.rodata` table (@26 in the real object; the
         // anonymous_offset is the dev-loop placeholder until measured).
-        self.output.anonymous_rodata = Some(mwcc_machine_code::AnonymousRodata {
+        self.output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata {
             bytes: vec![0u8; 0x2a],
             anonymous_offset: -1, // measured: @26 against the running counter 27
         });

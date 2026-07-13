@@ -412,6 +412,13 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 });
     }
 
+    /// Emit a pooled-double load against a SPECIFIC pool slot (a capture that
+    /// interned twin slots for one value — strtold's zero doubles @296/@297).
+    pub(crate) fn load_double_constant_at(&mut self, destination: u8, index: usize) {
+        self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
+        self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 });
+    }
+
     /// Load a float-literal operand, choosing 8-byte `lfd` in a double context and
     /// 4-byte `lfs` (the value rounded to single) otherwise.
     pub(crate) fn load_float_literal(&mut self, destination: u8, value: f64, double: bool) {
