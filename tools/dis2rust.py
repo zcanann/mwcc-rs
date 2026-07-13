@@ -109,6 +109,14 @@ for idx, mn, ops in instrs:
             out.append(f'        self.record_relocation(RelocationKind::EmbSda21, &format!("@@str{{index}}"));')
             out.append(f"        self.output.instructions.push(Instruction::AddImmediate {{ d: {R(ops[0])}, a: 0, immediate: 0 }});")
             continue
+        # the ADDRESS of a NAMED small-data global via SDA21 (`li rD,0` + reloc ->
+        # `addi rD, r13, sym@sda21` after linking; the object emits addi rD,0,0).
+        # A `name$K` static displays with a suffix the writer strips.
+        if mn == "li" and not rl[1].startswith("@"):
+            target = re.sub(r'\$\d+$', '', rl[1])
+            out.append(f'        self.record_relocation(RelocationKind::EmbSda21, "{target}");')
+            out.append(f"        self.output.instructions.push(Instruction::AddImmediate {{ d: {R(ops[0])}, a: 0, immediate: 0 }});")
+            continue
         out.append(f"        // UNHANDLED SDA21: {mn} {ops} -> {rl[1]}")
         continue
     if rl and rl[0] == "R_PPC_REL24":
