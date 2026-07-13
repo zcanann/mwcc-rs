@@ -440,6 +440,11 @@ mod cck_checkex;
 mod cck_check;
 mod osy_resetsw;
 mod osy_initsc;
+mod ose_init;
+mod ose_wait;
+mod ose_trywait;
+mod ose_signal;
+mod ose_count;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -771,6 +776,11 @@ impl Generator {
             || self.try_cck_check(function)?
             || self.try_osy_resetsw(function)?
             || self.try_osy_initsc(function)?
+            || self.try_ose_init(function)?
+            || self.try_ose_wait(function)?
+            || self.try_ose_trywait(function)?
+            || self.try_ose_signal(function)?
+            || self.try_ose_count(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
