@@ -254,6 +254,32 @@ impl Generator {
             }
         }
 
+        // (e2) UNARY negate / bitwise-not of a single long-long parameter — the
+        // LOW word first, then the HIGH (measured). Negate borrows: `subfic
+        // r4,r4,0; subfze r3,r3`. Bitwise-not is word-parallel: `not r4,r4; not
+        // r3,r3` (`not` == `nor rD,rS,rS`).
+        if let Expression::Unary { operator, operand } = return_expression {
+            if let Expression::Variable(name) = operand.as_ref() {
+                if let Some(&(param_high, Some(param_low))) = param_pair.get(name.as_str()) {
+                    match operator {
+                        UnaryOperator::Negate => {
+                            self.output.instructions.push(Instruction::SubtractFromImmediate { d: low, a: param_low, immediate: 0 });
+                            self.output.instructions.push(Instruction::SubtractFromZeroExtended { d: high, a: param_high });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        UnaryOperator::BitNot => {
+                            self.output.instructions.push(Instruction::Nor { a: low, s: param_low, b: param_low });
+                            self.output.instructions.push(Instruction::Nor { a: high, s: param_high, b: param_high });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        UnaryOperator::LogicalNot => {}
+                    }
+                }
+            }
+        }
+
         // (f) ADD/SUBTRACT a small CONSTANT to a single long-long parameter. mwcc materializes the
         // 64-bit constant — its LOW word into the next free GPR (r5) and its HIGH word into r0, or
         // just r0 when both words are equal — then `addc`/`adde`. `a - C` lowers as `a + (-C)`.
