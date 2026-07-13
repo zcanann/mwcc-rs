@@ -298,8 +298,21 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
         "lwzx" => { let [d, a, b] = gprs(mnemonic, operands)?; Instruction::LoadWordIndexed { d, a, b } }
         // Branch to the count register (`mtctr r12; bctr` — the ptmf tail dispatch).
         "bctr" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::BranchToCountRegister }
-        // Unconditional branch to a label.
-        "b" => Instruction::Branch { target: label_target(mnemonic, operands, labels)? },
+        // Unconditional branch to a label, or a tail branch to an external symbol.
+        "b" => {
+            expect_operand_count(mnemonic, operands, 1)?;
+            match &operands[0] {
+                // A local label resolves to its instruction index.
+                AsmOperand::Label(name) if labels.contains_key(name.as_str()) => {
+                    Instruction::Branch { target: labels[name.as_str()] }
+                }
+                // A name with no local label is a tail branch to an external
+                // function (`b func`): an offset-0 placeholder (`48 00 00 00`)
+                // patched by the `R_PPC_REL24` relocation recorded in `mod.rs`.
+                AsmOperand::Label(_) => Instruction::Branch { target: instruction_index },
+                _ => return Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a label operand"))),
+            }
+        }
         // Conditional branches; an optional leading `crN` selects the condition
         // field (`BI = crN*4 + bit`). The target is a label.
         "beq" | "bne" | "blt" | "bge" | "bgt" | "ble" | "bdnz" => {

@@ -841,6 +841,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut extab_entry_symbols: Vec<u32> = Vec::new();
     let mut jump_table_symbols: Vec<Vec<u32>> = Vec::new();
     let mut rodata_blob_symbols: Vec<Vec<u32>> = Vec::new();
+    // A `static` function forward-declared by a prototype had its LOCAL FUNC
+    // symbol created at that first declaration — so it emits here (after the
+    // static data run, before the per-function `@N`/FUNC blocks), in prototype
+    // order, ahead of statics first seen at their definition. The per-function
+    // loop below skips any function emitted here (measured: OSAlarm's
+    // `DecrementerExceptionHandler`, prototyped at the top of the file).
+    let mut emitted_early_func: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for name in input.forward_declared_statics {
+        if let Some(index) = functions
+            .iter()
+            .position(|function| function.is_static && !function.implicit_local && function.name == name.as_str())
+        {
+            if emitted_early_func.insert(index) {
+                let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                write_symbol(&mut symtab, strtab.add(functions[index].name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
+                comment_values.push((4, if functions[index].force_active { FORCE_ACTIVE_FLAG } else { 0 }));
+                function_symbols[index] = symbol;
+                local_function_symbols.insert(functions[index].name, symbol);
+            }
+        }
+    }
     for (index, function) in functions.iter().enumerate() {
         // FILE-SCOPE statics declared right before this function (ansi_fp's
         // `static const char* const unused = "…"` between function bodies)
@@ -1048,7 +1069,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // followed by its own static locals (measured: ac uart) — unless
         // static_locals_lead flips the pair (mp4 alloc's get_malloc_pool:
         // protopool$129, init$130, then the FUNC).
-        if function.is_static && !function.implicit_local {
+        if function.is_static && !function.implicit_local && !emitted_early_func.contains(&index) {
             let emit_func = |symtab: &mut Vec<u8>, strtab: &mut StringTable, comment_values: &mut Vec<(u32, u32)>| {
                 let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
                 write_symbol(symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);

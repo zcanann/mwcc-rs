@@ -832,7 +832,38 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);
 
-    let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, source_name, config.build.version, config.build.build, small_data);
+    // A `static` function whose ADDRESS is taken in a `.text` body before its
+    // definition gets its LOCAL FUNC symbol created at that reference — so it sorts
+    // ahead of statics first seen at their definition (measured: OSAlarm's
+    // `DecrementerExceptionHandler`, prototyped at the top and passed to
+    // `__OSSetExceptionHandler` in OSInitAlarm — an ADDR16_HA/LO reference, not a
+    // call). A forward-declared static that is only CALLED (REL24) keeps its symbol
+    // at the definition (measured: alloc.c's SubBlock_merge_prev/link_new_block).
+    // Detect the address-of by a non-REL24 relocation against the name; require a
+    // prototype (an address taken before the definition needs one), in prototype order.
+    let forward_declared_statics: Vec<String> = {
+        let static_defined: std::collections::HashSet<&str> =
+            unit.functions.iter().filter(|function| function.is_static).map(|function| function.name.as_str()).collect();
+        let address_taken: std::collections::HashSet<&str> = machine_functions
+            .iter()
+            .flat_map(|function| function.relocations.iter())
+            .filter(|relocation| !matches!(relocation.kind, mwcc_machine_code::RelocationKind::Rel24))
+            .filter_map(|relocation| match &relocation.target {
+                mwcc_machine_code::RelocationTarget::External(name) | mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        unit.prototypes
+            .iter()
+            .map(|(name, _, _)| name)
+            .filter(|name| static_defined.contains(name.as_str()) && address_taken.contains(name.as_str()))
+            .filter(|name| seen.insert((*name).clone()))
+            .cloned()
+            .collect()
+    };
+
+    let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, &forward_declared_statics, source_name, config.build.version, config.build.build, small_data);
 
     if let Some(directory) = artifacts {
         write_artifacts(directory, config, &tokens, &unit.functions, &machine_functions, &object);

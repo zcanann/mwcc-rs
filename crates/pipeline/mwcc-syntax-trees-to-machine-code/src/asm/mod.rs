@@ -88,6 +88,23 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
                         }
                     }
                 }
+                // A `b func` whose target is not a local label is a tail branch to
+                // an external function: record its `R_PPC_REL24` relocation (the word
+                // itself assembled to the `48 00 00 00` offset-0 placeholder).
+                if line.mnemonic == "b" {
+                    if let Some(AsmOperand::Label(name)) = line.operands.first() {
+                        if !labels.contains_key(name.as_str()) {
+                            relocations.push(Relocation {
+                                instruction_index,
+                                kind: RelocationKind::Rel24,
+                                target: RelocationTarget::External(name.clone()),
+                            });
+                            if !symbol_order.contains(name) {
+                                symbol_order.push(name.clone());
+                            }
+                        }
+                    }
+                }
             }
         }
     }

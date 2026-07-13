@@ -422,6 +422,13 @@ mod dq_pop;
 mod dq_check;
 mod dq_dequeue;
 mod dq_isin;
+mod oal_init;
+mod oal_set;
+mod oal_setperiodic;
+mod oal_cancel;
+mod oal_settimer;
+mod oal_insert;
+mod oal_callback;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -735,6 +742,13 @@ impl Generator {
             || self.try_dq_check(function)?
             || self.try_dq_dequeue(function)?
             || self.try_dq_isin(function)?
+            || self.try_oal_init(function)?
+            || self.try_oal_set(function)?
+            || self.try_oal_setperiodic(function)?
+            || self.try_oal_cancel(function)?
+            || self.try_oal_settimer(function)?
+            || self.try_oal_insert(function)?
+            || self.try_oal_callback(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?

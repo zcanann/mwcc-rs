@@ -35,6 +35,11 @@ pub struct ObjectInput<'a> {
     /// declaration order. Each becomes a local *undefined* symbol (mwcc keeps
     /// inline-asm helpers as deferred symbols even when unused).
     pub inline_asm_symbols: &'a [String],
+    /// Names of `static` functions forward-declared by a prototype (in prototype
+    /// source order). mwcc creates their LOCAL FUNC symbol at that first
+    /// declaration, so they emit ahead of statics first seen at their definition
+    /// (measured: OSAlarm's `DecrementerExceptionHandler`).
+    pub forward_declared_statics: &'a [String],
 }
 
 /// A file-scope variable defined in this object: its name, byte size, natural
