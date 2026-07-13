@@ -378,6 +378,26 @@ impl Generator {
             }
         }
 
+        // (e1a) ADD a WIDENED signed int param to a long-long param (`a + b`, b an
+        // int): sign-extend b into r0 (`srawi r0,b,31`), then `addc low,a_low,b`
+        // (carry) and `adde high,a_high,r0` (measured).
+        if let Expression::Binary { operator: BinaryOperator::Add, left, right } = return_expression {
+            if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
+                if let (Some(&(left_high, Some(left_low))), Some(&(int_register, None))) =
+                    (param_pair.get(left_name.as_str()), param_pair.get(right_name.as_str()))
+                {
+                    let signed = function.parameters.iter().find(|parameter| &parameter.name == right_name).is_some_and(|parameter| parameter.parameter_type.is_signed());
+                    if signed {
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: int_register, shift: 31 });
+                        self.output.instructions.push(Instruction::AddCarrying { d: low, a: left_low, b: int_register });
+                        self.output.instructions.push(Instruction::AddExtended { d: high, a: left_high, b: GENERAL_SCRATCH });
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // (e1b) A bitwise op of a long-long param with a WIDENED int param
         // (`a | b`, b an int): sign-extend b into r0 (`srawi r0,b,31`) as its high
         // word, then op the LOW word with b and the HIGH word with r0 (measured).
