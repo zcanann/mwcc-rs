@@ -541,6 +541,28 @@ impl Generator {
             }
         }
 
+        // (f0) AND a single long-long parameter with a small NON-NEGATIVE
+        // constant (`a & 0xff`, field extraction). mwcc materializes the 64-bit
+        // constant — high word 0 in r0, low word in r5 (the next free GPR) — then
+        // ANDs both words: `li r0,0; li r5,C; and r4,a_low,r5; and r3,a_high,r0`.
+        if function.parameters.len() == 1 {
+            if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = return_expression {
+                if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), crate::analysis::constant_value(right)) {
+                    if let Some(&(param_high, Some(param_low))) = param_pair.get(name.as_str()) {
+                        if (0..=i64::from(i16::MAX)).contains(&constant) {
+                            let constant_low = param_low + 1; // r5 — the next free GPR
+                            self.load_integer_constant(GENERAL_SCRATCH, 0);
+                            self.load_integer_constant(constant_low, constant);
+                            self.output.instructions.push(Instruction::And { a: low, s: param_low, b: constant_low });
+                            self.output.instructions.push(Instruction::And { a: high, s: param_high, b: GENERAL_SCRATCH });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
         // (f) ADD/SUBTRACT a small CONSTANT to a single long-long parameter. mwcc materializes the
         // 64-bit constant — its LOW word into the next free GPR (r5) and its HIGH word into r0, or
         // just r0 when both words are equal — then `addc`/`adde`. `a - C` lowers as `a + (-C)`.
