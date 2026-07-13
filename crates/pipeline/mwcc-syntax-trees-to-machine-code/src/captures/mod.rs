@@ -393,6 +393,8 @@ mod fpw_fseek_i;
 mod ldx_ldexp;
 mod xtr_strcmpi;
 mod gcn_sys_free;
+mod gcnp_sys_free;
+mod gcnw_sys_free;
 mod gcn_sys_alloc;
 mod esq_sqrt;
 mod ktn_tan;
@@ -671,6 +673,8 @@ impl Generator {
             || self.try_ldx_ldexp(function)?
             || self.try_xtr_strcmpi(function)?
             || self.try_gcn_sys_free(function)?
+            || self.try_gcnp_sys_free(function)?
+            || self.try_gcnw_sys_free(function)?
             || self.try_gcn_sys_alloc(function)?
             || self.try_esq_sqrt(function)?
             || self.try_ktn_tan(function)?
