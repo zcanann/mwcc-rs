@@ -360,6 +360,31 @@ impl Generator {
                     }
                 }
             }
+            // EQUALITY / INEQUALITY against the constant ZERO (`a == 0`): mwcc
+            // materializes 0 in the next free GPR (r5) and reuses it for BOTH XOR
+            // words (0's high == low), then the same is-zero -> 0/1 tail.
+            if let Expression::Binary { operator: operator @ (BinaryOperator::Equal | BinaryOperator::NotEqual), left, right } = return_expression {
+                if let (Expression::Variable(name), Some(0)) = (left.as_ref(), crate::analysis::constant_value(right)) {
+                    if let Some(&(param_high, Some(param_low))) = param_pair.get(name.as_str()) {
+                        if function.parameters.len() == 1 {
+                            let zero = param_low + 1; // r5 — the next free GPR
+                            self.load_integer_constant(zero, 0);
+                            self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: param_low, b: zero });
+                            self.output.instructions.push(Instruction::Xor { a: high, s: param_high, b: zero });
+                            self.output.instructions.push(Instruction::Or { a: high, s: GENERAL_SCRATCH, b: high });
+                            if matches!(operator, BinaryOperator::Equal) {
+                                self.output.instructions.push(Instruction::CountLeadingZeros { a: high, s: high });
+                                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: high, s: high, shift: 5 });
+                            } else {
+                                self.output.instructions.push(Instruction::AddImmediateCarrying { d: GENERAL_SCRATCH, a: high, immediate: -1 });
+                                self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: GENERAL_SCRATCH, b: high });
+                            }
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             return Err(Diagnostic::error("this long long truncation is not modeled yet (roadmap)"));
         }
         if !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong) {
