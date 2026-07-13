@@ -622,7 +622,7 @@ fn used_in_sign_sensitive_op(expression: &Expression, names: &std::collections::
     }
 }
 
-fn guard_no_duplication(expression: &Expression, values: &HashMap<String, Expression>) -> Compilation<()> {
+pub(crate) fn guard_no_duplication(expression: &Expression, values: &HashMap<String, Expression>) -> Compilation<()> {
     for (name, value) in values {
         if !is_leaf_value(value) && count_references(name, expression) > 1 {
             return Err(Diagnostic::error("value tracking would duplicate a computation (needs CSE, roadmap)"));

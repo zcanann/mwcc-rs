@@ -40,6 +40,30 @@ impl Generator {
     /// (`r3:r4` = high:low). Only a narrow set of shapes is modeled; the rest defer rather than
     /// fall through to the 32-bit codegen (which emits a single-register result for a 64-bit value).
     pub(crate) fn emit_long_long(&mut self, function: &Function) -> Compilation<()> {
+        // Fold trivial long-long LOCALS (each initialized once, no reassignment,
+        // and used without duplicating a non-leaf computation) into the return —
+        // `long long c = a+b; return c;` is byte-identical to `return a+b;`. This
+        // recurses on a locals-free function; the duplication guard keeps a local
+        // used twice (`c+c`) deferred for the register keeper we don't model.
+        if !function.locals.is_empty()
+            && function.statements.is_empty()
+            && function.guards.is_empty()
+            && function.return_expression.is_some()
+            && function.locals.iter().all(|local| local.initializer.is_some() && !local.is_static && local.array_length.is_none())
+        {
+            let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+            for local in &function.locals {
+                let initializer = local.initializer.as_ref().expect("checked above");
+                let folded = crate::value_tracking::substitute(initializer, &values);
+                values.insert(local.name.clone(), folded);
+            }
+            let return_expression = function.return_expression.as_ref().expect("checked above");
+            if crate::value_tracking::guard_no_duplication(return_expression, &values).is_ok() {
+                let folded_return = crate::value_tracking::substitute(return_expression, &values);
+                let stripped = Function { locals: Vec::new(), return_expression: Some(folded_return), ..function.clone() };
+                return self.emit_long_long(&stripped);
+            }
+        }
         // A 64-bit GLOBAL WRITE (`void f(long long a){ G = a; }`): store the LOW
         // word (r4) to the symbol+4, then the HIGH word (r3) to the symbol
         // (measured order). A long-long first parameter arrives in r3:r4.
