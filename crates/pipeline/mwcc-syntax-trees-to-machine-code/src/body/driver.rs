@@ -378,6 +378,35 @@ impl Generator {
             }
         }
 
+        // (e1b) A bitwise op of a long-long param with a WIDENED int param
+        // (`a | b`, b an int): sign-extend b into r0 (`srawi r0,b,31`) as its high
+        // word, then op the LOW word with b and the HIGH word with r0 (measured).
+        if let Expression::Binary { operator: operator @ (BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor), left, right } = return_expression {
+            if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
+                if let (Some(&(left_high, Some(left_low))), Some(&(int_register, None))) =
+                    (param_pair.get(left_name.as_str()), param_pair.get(right_name.as_str()))
+                {
+                    // SIGNED int only: it sign-extends into a full high word
+                    // (`srawi r0,b,31`), then both words op. An UNSIGNED int has a
+                    // zero high word, which mwcc folds away (`h|0`/`h^0` emit only
+                    // the low op, `h&0` zeroes the high) — deferred until measured.
+                    let signed = function.parameters.iter().find(|parameter| &parameter.name == right_name).is_some_and(|parameter| parameter.parameter_type.is_signed());
+                    if signed {
+                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: int_register, shift: 31 });
+                        let make = |a: u8, s: u8, b: u8| match operator {
+                            BinaryOperator::BitAnd => Instruction::And { a, s, b },
+                            BinaryOperator::BitOr => Instruction::Or { a, s, b },
+                            _ => Instruction::Xor { a, s, b },
+                        };
+                        self.output.instructions.push(make(low, left_low, int_register));
+                        self.output.instructions.push(make(high, left_high, GENERAL_SCRATCH));
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         // (e2) UNARY negate / bitwise-not of a single long-long parameter — the
         // LOW word first, then the HIGH (measured). Negate borrows: `subfic
         // r4,r4,0; subfze r3,r3`. Bitwise-not is word-parallel: `not r4,r4; not
