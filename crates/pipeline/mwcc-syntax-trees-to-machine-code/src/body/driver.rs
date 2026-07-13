@@ -201,6 +201,25 @@ impl Generator {
                     }
                 }
             }
+            // (d2) A long-long STRUCT MEMBER read (`return s->v;`) — like the
+            // dereference, but at the member's byte offset: copy the base to r4,
+            // load HIGH from base+off, LOW from copy+off+4.
+            if let Expression::Member { base, offset, member_type: Type::LongLong | Type::UnsignedLongLong, index_stride: None } = return_expression {
+                if let Expression::Variable(name) = base.as_ref() {
+                    let is_first_struct_pointer = function.parameters.first().is_some_and(|parameter| {
+                        &parameter.name == name && matches!(parameter.parameter_type, Type::StructPointer { .. })
+                    });
+                    if is_first_struct_pointer {
+                        let base_register = Eabi::FIRST_GENERAL_ARGUMENT; // r3 — s
+                        let off = *offset as i16;
+                        self.output.instructions.push(Instruction::move_register(low, base_register));
+                        self.output.instructions.push(Instruction::LoadWord { d: high, a: base_register, offset: off });
+                        self.output.instructions.push(Instruction::LoadWord { d: low, a: low, offset: off + 4 });
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
             return Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"));
         }
 
@@ -254,7 +273,11 @@ impl Generator {
             // OR them, and turn the is-zero test into 0/1 with `cntlzw; srwi 5`
             // (measured: xor r0,al,bl; xor r3,ah,bh; or r3,r0,r3; cntlzw r3,r3;
             // srwi r3,r3,5). r3 = 1 iff all 64 bits match.
-            if let Expression::Binary { operator: BinaryOperator::Equal, left, right } = return_expression {
+            // EQUALITY / INEQUALITY of two long-long params: XOR the words and OR
+            // them, then turn the is-zero test into 0/1 — `==` via `cntlzw; srwi 5`
+            // (1 iff all bits match), `!=` via `addic r0,r3,-1; subfe r3,r0,r3`
+            // (1 iff any bit differs).
+            if let Expression::Binary { operator: operator @ (BinaryOperator::Equal | BinaryOperator::NotEqual), left, right } = return_expression {
                 if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
                     if let (Some(&(left_high, Some(left_low))), Some(&(right_high, Some(right_low)))) =
                         (param_pair.get(left_name.as_str()), param_pair.get(right_name.as_str()))
@@ -262,8 +285,13 @@ impl Generator {
                         self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: left_low, b: right_low });
                         self.output.instructions.push(Instruction::Xor { a: high, s: left_high, b: right_high });
                         self.output.instructions.push(Instruction::Or { a: high, s: GENERAL_SCRATCH, b: high });
-                        self.output.instructions.push(Instruction::CountLeadingZeros { a: high, s: high });
-                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: high, s: high, shift: 5 });
+                        if matches!(operator, BinaryOperator::Equal) {
+                            self.output.instructions.push(Instruction::CountLeadingZeros { a: high, s: high });
+                            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: high, s: high, shift: 5 });
+                        } else {
+                            self.output.instructions.push(Instruction::AddImmediateCarrying { d: GENERAL_SCRATCH, a: high, immediate: -1 });
+                            self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: GENERAL_SCRATCH, b: high });
+                        }
                         self.emit_epilogue_and_return();
                         return Ok(());
                     }
