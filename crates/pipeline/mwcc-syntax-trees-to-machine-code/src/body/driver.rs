@@ -226,6 +226,28 @@ impl Generator {
                             self.emit_epilogue_and_return();
                             return Ok(());
                         }
+                        // Bitwise AND/OR/XOR are word-parallel with NO carry — the LOW
+                        // word first, then the HIGH (measured: `and r4,r4,r6; and r3,r3,r5`).
+                        BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor => {
+                            let (low_op, high_op) = match operator {
+                                BinaryOperator::BitAnd => (
+                                    Instruction::And { a: low, s: left_low, b: right_low },
+                                    Instruction::And { a: high, s: left_high, b: right_high },
+                                ),
+                                BinaryOperator::BitOr => (
+                                    Instruction::Or { a: low, s: left_low, b: right_low },
+                                    Instruction::Or { a: high, s: left_high, b: right_high },
+                                ),
+                                _ => (
+                                    Instruction::Xor { a: low, s: left_low, b: right_low },
+                                    Instruction::Xor { a: high, s: left_high, b: right_high },
+                                ),
+                            };
+                            self.output.instructions.push(low_op);
+                            self.output.instructions.push(high_op);
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
                         _ => {}
                     }
                 }
