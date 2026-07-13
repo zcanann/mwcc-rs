@@ -29,6 +29,7 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0xbd60acb658c79e45 => 0, // marioparty4 (bump TBD from refctx @N diff)
+            0x626216a8cf3d36f5 => 0, // strikers (bump TBD)
             _ => {
                 eprintln!("alm_merge_next context candidate: {context:#x}");
                 return Ok(false);

@@ -235,11 +235,11 @@ impl Generator {
         }
         if function.return_type != Type::Void {
             let result = Eabi::general_result().number;
-            let return_expression = function
-                .return_expression
-                .as_ref()
-                .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
-            self.evaluate_tail(return_expression, function.return_type, result)?;
+            // A non-void function may FALL OFF THE END (C89; strikers alloc's
+            // FORCE_DONT_INLINE stubs) — mwcc emits a bare blr, r3 undefined.
+            if let Some(return_expression) = function.return_expression.as_ref() {
+                self.evaluate_tail(return_expression, function.return_type, result)?;
+            }
         }
         self.emit_epilogue_and_return();
         Ok(true)

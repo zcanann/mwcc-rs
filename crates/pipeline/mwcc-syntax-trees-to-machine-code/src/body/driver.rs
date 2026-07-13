@@ -1493,10 +1493,15 @@ impl Generator {
             Type::Float | Type::Double => Eabi::float_result().number,
             _ => Eabi::general_result().number,
         };
-        let return_expression = function
-            .return_expression
-            .as_ref()
-            .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
+        // A non-void function may FALL OFF THE END (C89; strikers alloc's
+        // FORCE_DONT_INLINE stubs) — mwcc emits a bare blr, r3 undefined.
+        let Some(return_expression) = function.return_expression.as_ref() else {
+            if function.guards.is_empty() {
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
+            return Err(Diagnostic::error("a non-void function needs a return value"));
+        };
 
         if !function.guards.is_empty() {
             // Guard + single value-tracked local, zero-select: `int x = a+1; if (c) return 0;
@@ -1749,6 +1754,11 @@ impl Generator {
             Statement::Expression(Expression::Call { name, arguments }) => {
                 self.emit_call(name, arguments, None, false)
             }
+            // A bare CONSTANT expression statement is a no-op — mwcc emits
+            // nothing (strikers alloc's FORCE_DONT_INLINE: 176 `(void*)0;`).
+            Statement::Expression(Expression::IntegerLiteral(_)) => Ok(()),
+            Statement::Expression(Expression::Cast { operand, .. })
+                if matches!(**operand, Expression::IntegerLiteral(_)) => Ok(()),
             Statement::Expression(_) => Err(Diagnostic::error("only a call may be a bare statement (roadmap)")),
             // Reassignment is handled by value tracking; reaching here means it was
             // mixed with stores/calls, which that path defers.

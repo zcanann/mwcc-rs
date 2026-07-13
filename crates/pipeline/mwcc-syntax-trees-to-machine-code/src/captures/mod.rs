@@ -393,6 +393,13 @@ mod fpw_fseek_i;
 mod ldx_ldexp;
 mod xtr_strcmpi;
 mod alm_block_link;
+mod als_alloc_var;
+mod als_block_construct;
+mod als_block_subblock;
+mod als_link_new_block;
+mod als_malloc;
+mod als_pool_alloc;
+mod als_soft_alloc;
 mod alm_dealloc_fixed;
 mod alm_free;
 mod alp_free;
@@ -683,6 +690,13 @@ impl Generator {
             || self.try_ldx_ldexp(function)?
             || self.try_xtr_strcmpi(function)?
             || self.try_alm_block_link(function)?
+            || self.try_als_alloc_var(function)?
+            || self.try_als_block_construct(function)?
+            || self.try_als_block_subblock(function)?
+            || self.try_als_link_new_block(function)?
+            || self.try_als_malloc(function)?
+            || self.try_als_pool_alloc(function)?
+            || self.try_als_soft_alloc(function)?
             || self.try_alm_dealloc_fixed(function)?
             || self.try_alm_free(function)?
             || self.try_alp_free(function)?

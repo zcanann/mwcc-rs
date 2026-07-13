@@ -247,10 +247,15 @@ impl Generator {
             }
         }
 
-        let return_expression = function
-            .return_expression
-            .as_ref()
-            .ok_or_else(|| Diagnostic::error("a non-void function needs a return value"))?;
+        // A non-void function may FALL OFF THE END (C89; strikers alloc's
+        // FORCE_DONT_INLINE stubs) — mwcc emits a bare blr, r3 undefined.
+        let Some(return_expression) = function.return_expression.as_ref() else {
+            if function.guards.is_empty() {
+                self.emit_epilogue_and_return();
+                return Ok(true);
+            }
+            return Err(Diagnostic::error("a non-void function needs a return value"));
+        };
         guard_no_duplication(return_expression, &values)?;
         let inlined = substitute(return_expression, &values);
         // Inlining a computed local into an additive chain (`t = a + b; … t + c` ->
