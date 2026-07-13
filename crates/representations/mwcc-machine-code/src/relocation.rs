@@ -51,6 +51,9 @@ impl RelocationKind {
 #[derive(Debug, Clone)]
 pub enum RelocationTarget {
     External(String),
+    /// An external symbol plus a byte ADDEND — an SDA21 load reading INTO a
+    /// pooled string (`lbz r0, @53+0x4` — strtold's NUL probe of "NAN(").
+    ExternalWithAddend(String, i32),
     Constant(usize),
     /// This function's own jump table — the anonymous `@N` object the writer
     /// materializes in `.data` for a dense `switch` (its `lis`/`addi` address load).

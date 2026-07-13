@@ -357,6 +357,11 @@ impl Generator {
     pub(crate) fn record_relocation(&mut self, kind: RelocationKind, symbol: &str) {
         self.record_target(kind, RelocationTarget::External(symbol.to_string()));
     }
+    /// Like [`Self::record_relocation`] but with a byte ADDEND — an SDA21
+    /// load reading INTO a pooled object (strtold's `lbz r0, @53+0x4`).
+    pub(crate) fn record_relocation_with_addend(&mut self, kind: RelocationKind, symbol: &str, addend: i32) {
+        self.record_target(kind, RelocationTarget::ExternalWithAddend(symbol.to_string(), addend));
+    }
 
     /// Record a relocation with an explicit target (external symbol or pooled
     /// constant) against the instruction about to be pushed.

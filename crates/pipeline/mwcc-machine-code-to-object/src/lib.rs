@@ -86,6 +86,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                     elf_type: relocation.kind.elf_type(),
                     target: match &relocation.target {
                         MachineTarget::External(symbol) => RelocationTarget::External(symbol.clone()),
+                        MachineTarget::ExternalWithAddend(symbol, addend) => RelocationTarget::ExternalWithAddend(symbol.clone(), *addend),
                         MachineTarget::Constant(index) => RelocationTarget::Constant(*index),
                         MachineTarget::JumpTable => RelocationTarget::JumpTable,
                         MachineTarget::JumpTableAt(table_index) => RelocationTarget::JumpTableAt(*table_index),

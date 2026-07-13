@@ -186,6 +186,8 @@ pub enum RelocationTarget {
     JumpTableAt(usize),
     /// An external symbol defined elsewhere (a global or callee).
     External(String),
+    /// An external symbol plus a byte ADDEND (an SDA21 load into a pooled string).
+    ExternalWithAddend(String, i32),
     /// An entry in this object's constant pool, by index.
     Constant(usize),
     /// This function's own jump table (the anonymous `@N` object in `.data`).

@@ -89,6 +89,17 @@ for idx, mn, ops in instrs:
             kind = "StoreWord {{ s: {r}, a: 0, offset: 0 }}" if mn=="stw" else "LoadWord {{ d: {r}, a: 0, offset: 0 }}"
             out.append(f"        self.output.instructions.push(Instruction::{kind.format(r=R(ops[0]))});")
             continue
+        # an SDA21 LOAD reading INTO a pooled string (`lwz r3,@53` reads the
+        # first word of "NAN("; `lbz r0,@53+0x4` its NUL) — intern the string,
+        # relocate to the @@strN placeholder with the byte addend.
+        base = rl[1].split('+')[0]
+        if mn in ("lwz","lbz","lhz") and base in STRINGS:
+            addend = int(rl[1].split('+')[1], 16) if '+' in rl[1] else 0
+            out.append(f'        let index = {string_intern_expr(base)};')
+            out.append(f'        self.record_relocation_with_addend(RelocationKind::EmbSda21, &format!("@@str{{index}}"), {addend});')
+            kind = {"lwz": "LoadWord {{ d: {r}, a: 0, offset: 0 }}", "lbz": "LoadByteZero {{ d: {r}, a: 0, offset: 0 }}", "lhz": "LoadHalfwordZero {{ d: {r}, a: 0, offset: 0 }}"}[mn]
+            out.append(f"        self.output.instructions.push(Instruction::{kind.format(r=R(ops[0]))});")
+            continue
         # a short-string address: `li rD,0` + SDA21 @str -> the @@strN
         # placeholder the unit resolver rewrites (strings.rs model).
         if mn == "li" and rl[1] in STRINGS:

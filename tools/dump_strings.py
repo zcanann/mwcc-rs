@@ -28,7 +28,7 @@ def section_bytes(name):
     sections[name] = data
     return data
 for line in syms.splitlines():
-    m = re.match(r"^([0-9a-f]{8}) l\s+O\s+(\.s?data)\s+([0-9a-f]{8})\s+(@\d+)$", line)
+    m = re.match(r"^([0-9a-f]{8}) l\s+O\s+(\.s?data2?)\s+([0-9a-f]{8})\s+(@\d+)$", line)
     if not m:
         continue
     offset, section, size, name = int(m.group(1), 16), m.group(2), int(m.group(3), 16), m.group(4)

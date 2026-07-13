@@ -766,13 +766,18 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
         }
         counter = number + 4;
         for relocation in &mut machine_function.relocations {
-            let resolved_target = if let mwcc_machine_code::RelocationTarget::External(name) = &relocation.target {
-                name.strip_prefix("@@str").and_then(|rest| rest.parse::<usize>().ok()).map(|index| resolved[index].clone())
-            } else {
-                None
-            };
-            if let Some(name) = resolved_target {
-                relocation.target = mwcc_machine_code::RelocationTarget::External(name);
+            match &relocation.target {
+                mwcc_machine_code::RelocationTarget::External(name) => {
+                    if let Some(index) = name.strip_prefix("@@str").and_then(|rest| rest.parse::<usize>().ok()) {
+                        relocation.target = mwcc_machine_code::RelocationTarget::External(resolved[index].clone());
+                    }
+                }
+                mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, addend) => {
+                    if let Some(index) = name.strip_prefix("@@str").and_then(|rest| rest.parse::<usize>().ok()) {
+                        relocation.target = mwcc_machine_code::RelocationTarget::ExternalWithAddend(resolved[index].clone(), *addend);
+                    }
+                }
+                _ => {}
             }
         }
     }

@@ -251,7 +251,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // relocations carry the reference order instead (measured: wind_waker
         // abort_exit, whose __atexit_funcs places by first reference).
         let relocation_names = function.relocations.iter().filter_map(|relocation| match &relocation.target {
-            RelocationTarget::External(name) => Some(name.as_str()),
+            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
             _ => None,
         });
         for name in function.symbol_order.iter().map(|name| name.as_str()).chain(relocation_names) {
@@ -658,7 +658,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .flat_map(|function| function.relocations.iter())
         .filter_map(|relocation| match &relocation.target {
-            RelocationTarget::External(name) => Some(name.as_str()),
+            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
             _ => None,
         })
         .filter(|name| input.inline_asm_symbols.iter().any(|symbol| symbol == name))
@@ -740,7 +740,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut emitted_zero_static: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for function in functions {
         let relocation_names = function.relocations.iter().filter_map(|relocation| match &relocation.target {
-            RelocationTarget::External(name) => Some(name.as_str()),
+            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
             _ => None,
         });
         // TEXT-RELOCATION order, not symbol_order: mwcc's scheduler hoists a
@@ -1087,7 +1087,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .relocations
             .iter()
             .filter_map(|relocation| match &relocation.target {
-                RelocationTarget::External(name) => Some(name.as_str()),
+                RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
                 _ => None,
             })
             .collect();
@@ -1268,6 +1268,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut rela_text = Vec::new();
     for (index, function) in functions.iter().enumerate() {
         for relocation in &function.relocations {
+            let mut rela_addend: u32 = 0;
             let symbol = match &relocation.target {
                 // A `static` target is a local data or function symbol; everything
                 // else is a global/external symbol.
@@ -1275,12 +1276,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     .get(name.as_str())
                     .or_else(|| local_function_symbols.get(name.as_str()))
                     .unwrap_or_else(|| &global_symbols[name.as_str()]),
+                RelocationTarget::ExternalWithAddend(name, addend) => {
+                    rela_addend = *addend as u32;
+                    *local_data_symbols
+                        .get(name.as_str())
+                        .or_else(|| local_function_symbols.get(name.as_str()))
+                        .unwrap_or_else(|| &global_symbols[name.as_str()])
+                }
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
                 RelocationTarget::JumpTable => jump_table_symbols[index][0],
                 RelocationTarget::JumpTableAt(table_index) => jump_table_symbols[index][*table_index],
                 RelocationTarget::AnonymousRodata => rodata_blob_symbols[index],
             };
-            write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, 0);
+            write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, rela_addend);
         }
     }
     // `.rela.data` — each jump-table entry is an `ADDR32` to its function with the

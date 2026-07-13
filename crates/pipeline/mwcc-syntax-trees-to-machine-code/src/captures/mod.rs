@@ -428,6 +428,7 @@ mod sfb_two_exp;
 mod sfb_num2dec_i;
 mod sfb_num2dec;
 mod sfb_dec2num;
+mod sldb_strtold;
 mod afp_dec2num_pik;
 
 use crate::generator::Generator;
@@ -704,6 +705,7 @@ impl Generator {
             || self.try_sfb_num2dec_i(function)?
             || self.try_sfb_num2dec(function)?
             || self.try_sfb_dec2num(function)?
+            || self.try_sldb_strtold(function)?
             || self.try_afp_dec2num_pik(function)?
             || self.try_efmod(function)?
             || self.try_satan(function)?
