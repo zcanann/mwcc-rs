@@ -452,6 +452,11 @@ mod cdd_getdir;
 mod cdd_write;
 mod cdd_erase;
 mod cdd_update;
+mod crd_seek;
+mod crd_readcb;
+mod crd_readasync;
+mod crd_read;
+mod crd_cancel;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -795,6 +800,11 @@ impl Generator {
             || self.try_cdd_write(function)?
             || self.try_cdd_erase(function)?
             || self.try_cdd_update(function)?
+            || self.try_crd_seek(function)?
+            || self.try_crd_readcb(function)?
+            || self.try_crd_readasync(function)?
+            || self.try_crd_read(function)?
+            || self.try_crd_cancel(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
