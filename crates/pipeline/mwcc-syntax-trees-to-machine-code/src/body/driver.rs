@@ -68,6 +68,50 @@ impl Generator {
                     return Ok(());
                 }
             }
+            // A 64-bit write THROUGH A POINTER param (`void f(long long* p, long
+            // long a){ *p = a; }`): store the LOW word to p+4, then the HIGH word
+            // to p (measured). Register layout via a mini-EABI walk over the
+            // params (each int/pointer = one GPR; a long-long pair aligns to an
+            // odd start), so `(long long* p, long long a)` gives p=r3, a=r5:r6.
+            if let [Statement::Store { target: Expression::Dereference { pointer }, value: Expression::Variable(source) }] =
+                function.statements.as_slice()
+            {
+                if let Expression::Variable(pointer_name) = pointer.as_ref() {
+                    let mut next = Eabi::FIRST_GENERAL_ARGUMENT;
+                    let mut pointer_register = None;
+                    let mut source_pair = None;
+                    for parameter in &function.parameters {
+                        match parameter.parameter_type {
+                            Type::LongLong | Type::UnsignedLongLong => {
+                                if next % 2 == 0 {
+                                    next += 1;
+                                }
+                                if &parameter.name == source {
+                                    source_pair = Some((next, next + 1));
+                                }
+                                next += 2;
+                            }
+                            Type::Pointer(Pointee::LongLong | Pointee::UnsignedLongLong) => {
+                                if &parameter.name == pointer_name {
+                                    pointer_register = Some(next);
+                                }
+                                next += 1;
+                            }
+                            Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. } => next += 1,
+                            _ => {
+                                next = u8::MAX; // an unmodeled param type — bail
+                                break;
+                            }
+                        }
+                    }
+                    if let (Some(base), Some((high, low))) = (pointer_register, source_pair) {
+                        self.output.instructions.push(Instruction::StoreWord { s: low, a: base, offset: 4 });
+                        self.output.instructions.push(Instruction::StoreWord { s: high, a: base, offset: 0 });
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
         }
         // Long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
         if !function.locals.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
@@ -135,6 +179,26 @@ impl Generator {
                     self.output.instructions.push(Instruction::LoadWord { d: low, a: 0, offset: 0 });
                     self.emit_epilogue_and_return();
                     return Ok(());
+                }
+            }
+            // (d) DEREFERENCE a long-long POINTER parameter (`return *p;`). p
+            // arrives in r3 (= result HIGH), so copy it to r4 first (`mr r4,r3`),
+            // load the HIGH word into r3 from p[0] (clobbering p), then the LOW
+            // word into r4 from the copy[4] (measured).
+            if let Expression::Dereference { pointer } = return_expression {
+                if let Expression::Variable(name) = pointer.as_ref() {
+                    let is_first_ll_pointer = function.parameters.first().is_some_and(|parameter| {
+                        &parameter.name == name
+                            && matches!(parameter.parameter_type, Type::Pointer(Pointee::LongLong | Pointee::UnsignedLongLong))
+                    });
+                    if is_first_ll_pointer {
+                        let pointer_register = Eabi::FIRST_GENERAL_ARGUMENT; // r3 — p
+                        self.output.instructions.push(Instruction::move_register(low, pointer_register));
+                        self.output.instructions.push(Instruction::LoadWord { d: high, a: pointer_register, offset: 0 });
+                        self.output.instructions.push(Instruction::LoadWord { d: low, a: low, offset: 4 });
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
                 }
             }
             return Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"));
