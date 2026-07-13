@@ -1027,14 +1027,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         jump_table_symbols.push(symbols_of_tables);
         // A STATIC function's own FUNC symbol closes its block (definition end;
         // an implicit-local already emitted after its static locals above),
-        // followed by its own static locals (measured: ac uart).
+        // followed by its own static locals (measured: ac uart) — unless
+        // static_locals_lead flips the pair (mp4 alloc's get_malloc_pool:
+        // protopool$129, init$130, then the FUNC).
         if function.is_static && !function.implicit_local {
-            let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-            function_symbols[index] = symbol;
-            local_function_symbols.insert(function.name, symbol);
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
-            comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
-            for object in &input.data_objects {
+            let emit_func = |symtab: &mut Vec<u8>, strtab: &mut StringTable, comment_values: &mut Vec<(u32, u32)>| {
+                let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                write_symbol(symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
+                comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
+                symbol
+            };
+            if !function.static_locals_lead {
+                let symbol = emit_func(&mut symtab, &mut strtab, &mut comment_values);
+                function_symbols[index] = symbol;
+                local_function_symbols.insert(function.name, symbol);
+            }
+            // Under static_locals_lead the statics emit in REVERSE declaration
+            // order (measured: init$130 then protopool$129).
+            let owned: Vec<&DataObject> = if function.static_locals_lead {
+                input.data_objects.iter().rev().collect()
+            } else {
+                input.data_objects.iter().collect()
+            };
+            for object in owned {
                 if object.static_local_owner == Some(index) {
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[object.name]) as u16;
@@ -1053,6 +1068,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         rodata_anchor_emitted = true;
                     }
                 }
+            }
+            if function.static_locals_lead {
+                let symbol = emit_func(&mut symtab, &mut strtab, &mut comment_values);
+                function_symbols[index] = symbol;
+                local_function_symbols.insert(function.name, symbol);
             }
         }
     }

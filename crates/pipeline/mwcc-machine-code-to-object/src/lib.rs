@@ -62,6 +62,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
         .map(|(function, text)| FunctionObject {
             name: &function.name,
             is_static: function.is_static,
+            static_locals_lead: function.static_locals_lead,
             implicit_local: function.implicit_materialized,
             weak_inline: function.weak_inline,
             is_weak: function.is_weak,

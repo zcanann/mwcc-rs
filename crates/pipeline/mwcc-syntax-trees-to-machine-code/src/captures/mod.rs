@@ -392,6 +392,15 @@ mod fpw_ftell_i;
 mod fpw_fseek_i;
 mod ldx_ldexp;
 mod xtr_strcmpi;
+mod alm_block_link;
+mod alm_dealloc_fixed;
+mod alm_free;
+mod alm_dealloc_var;
+mod alm_get_malloc_pool;
+mod alm_merge_next;
+mod alm_unlink;
+mod alm_merge_prev;
+mod alm_pool_free;
 mod gcn_sys_free;
 mod gcnp_sys_free;
 mod gcnw_sys_free;
@@ -672,6 +681,15 @@ impl Generator {
             || self.try_fpw_fseek_i(function)?
             || self.try_ldx_ldexp(function)?
             || self.try_xtr_strcmpi(function)?
+            || self.try_alm_block_link(function)?
+            || self.try_alm_dealloc_fixed(function)?
+            || self.try_alm_free(function)?
+            || self.try_alm_dealloc_var(function)?
+            || self.try_alm_get_malloc_pool(function)?
+            || self.try_alm_merge_next(function)?
+            || self.try_alm_unlink(function)?
+            || self.try_alm_merge_prev(function)?
+            || self.try_alm_pool_free(function)?
             || self.try_gcn_sys_free(function)?
             || self.try_gcnp_sys_free(function)?
             || self.try_gcnw_sys_free(function)?

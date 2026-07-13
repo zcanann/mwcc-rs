@@ -65,7 +65,12 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         if globals.iter().any(|global| global.name == local.name) {
             return Err(Diagnostic::error("a static local shadowing a global is not supported yet (roadmap)"));
         }
-        let element = local.declared_type.width() as u32 / 8;
+        // A struct-typed static (`static __mem_pool protopool;`) carries its
+        // own byte size; scalars derive from the type width.
+        let element = match local.declared_type {
+            mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
+            other => other.width() as u32 / 8,
+        };
         let size = element * local.array_length.map_or(1, u32::from);
         // The byte image: a brace-list array, or a scalar literal folded here.
         let bytes = match (&local.data_bytes, &local.initializer) {
@@ -86,7 +91,13 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
             }
             (None, None) => None,
         };
-        let alignment = element.max(4);
+        let alignment = match local.declared_type {
+            mwcc_syntax_trees::Type::Struct { align, .. } => (align as u32).max(4),
+            // A char static records its natural alignment 1 (measured: mp4
+            // alloc's init$130 comment record).
+            mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::UnsignedChar if local.array_length.is_none() => 1,
+            _ => element.max(4),
+        };
         static_local_data.push((local.name.clone(), bytes, size, alignment, local.is_const));
     }
     // The body machinery never sees the statics as automatic locals.

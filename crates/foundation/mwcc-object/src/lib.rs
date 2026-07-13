@@ -98,6 +98,8 @@ pub struct FunctionObject<'a> {
     pub name: &'a str,
     /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol.
     pub is_static: bool,
+    /// See MachineFunction::static_locals_lead.
+    pub static_locals_lead: bool,
     pub is_weak: bool,
     /// An explicit `__declspec(section "…")` code section (e.g. `.init`), overriding
     /// the default `.text`/`.mwcats.text` placement. `None` = `.text`.

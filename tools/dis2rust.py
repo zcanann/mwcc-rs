@@ -81,12 +81,14 @@ for idx, mn, ops in instrs:
             out.append(f'        self.record_relocation(RelocationKind::EmbSda21, "{target}");')
             out.append(f"        self.output.instructions.push(Instruction::LoadFloatSingle {{ d: {ops[0][1:]}, a: 0, offset: 0 }});")
             continue
-        if mn in ("stw","lwz") and not rl[1].startswith("@"):
+        if mn in ("stw","lwz","stb","lbz","sth","lhz") and not rl[1].startswith("@"):
             # a function-scoped static displays as name$K — the writer keys the
             # local object on the RAW name and assigns K itself.
             target = re.sub(r'\$\d+$', '', rl[1])
             out.append(f'        self.record_relocation(RelocationKind::EmbSda21, "{target}");')
-            kind = "StoreWord {{ s: {r}, a: 0, offset: 0 }}" if mn=="stw" else "LoadWord {{ d: {r}, a: 0, offset: 0 }}"
+            kind = {"stw": "StoreWord {{ s: {r}, a: 0, offset: 0 }}", "lwz": "LoadWord {{ d: {r}, a: 0, offset: 0 }}",
+                    "stb": "StoreByte {{ s: {r}, a: 0, offset: 0 }}", "lbz": "LoadByteZero {{ d: {r}, a: 0, offset: 0 }}",
+                    "sth": "StoreHalfword {{ s: {r}, a: 0, offset: 0 }}", "lhz": "LoadHalfwordZero {{ d: {r}, a: 0, offset: 0 }}"}[mn]
             out.append(f"        self.output.instructions.push(Instruction::{kind.format(r=R(ops[0]))});")
             continue
         # an SDA21 LOAD reading INTO a pooled string (`lwz r3,@53` reads the

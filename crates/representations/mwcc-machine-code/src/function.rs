@@ -88,6 +88,11 @@ pub struct MachineFunction {
     /// A `static` (file-local) function — emitted with a LOCAL `STT_FUNC` symbol
     /// rather than a global one.
     pub is_static: bool,
+    /// This STATIC function's static-local symbols LEAD its FUNC symbol
+    /// (mwcc creates them at their in-body declaration points — measured on
+    /// mp4 alloc's get_malloc_pool: protopool$129, init$130, then the FUNC).
+    /// ac uart measured the opposite (FUNC first), so this is per-capture.
+    pub static_locals_lead: bool,
     /// A static function MATERIALIZED from an implicitly-declared inline: its
     /// call relocations bind the UND ghost and its local symbol trails its
     /// static locals (ww uart).
@@ -188,6 +193,7 @@ impl MachineFunction {
             string_number_after_rodata: None,
             new_string_names: Vec::new(),
             is_static: false,
+            static_locals_lead: false,
             implicit_materialized: false,
             weak_inline: false,
             is_weak: false,
