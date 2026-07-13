@@ -390,7 +390,13 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // `unused` l O .sdata2 4B, its string @229 l O .data).
             let single_target = global.array_length.is_none()
                 && matches!(elements.as_slice(), [PointerElement::Symbol(_)] | [PointerElement::Str(_)]);
-            if (global.is_static || global.is_const) && global.section.is_none() && !single_target {
+            // A static pointer initialized to NULL (`static T* p = 0;` — fstload's
+            // idTmp/bb2) is an all-zero object: it routes to `.sbss` like any zero
+            // global, LOCAL, no relocation. Only relocated/valued static pointers
+            // still defer.
+            let all_null = global.array_length.is_none()
+                && elements.iter().all(|element| matches!(element, PointerElement::Null));
+            if (global.is_static || global.is_const) && global.section.is_none() && !single_target && !all_null {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
             // A struct-table initializer (declared type is a struct) has one element
