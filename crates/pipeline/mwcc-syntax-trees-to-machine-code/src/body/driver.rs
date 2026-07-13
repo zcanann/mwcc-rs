@@ -310,6 +310,32 @@ impl Generator {
                     }
                 }
             }
+            // SIGNED ORDERED `a < b` of two long-long params -> 0/1. mwcc biases
+            // both high words by 0x8000_0000 (`xoris …,0x8000`) to turn the signed
+            // compare into an unsigned subtract, runs the 64-bit subtract, and
+            // extracts the final borrow with `subfe r3,r7,r7; neg r3,r3` (measured).
+            // Restricted to exactly two long-long params (so r3:r4/r5:r6, r7 free).
+            if let Expression::Binary { operator: BinaryOperator::Less, left, right } = return_expression {
+                if let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) {
+                    let both_signed_ll = function.parameters.len() == 2
+                        && function.parameters.iter().all(|parameter| matches!(parameter.parameter_type, Type::LongLong));
+                    if both_signed_ll {
+                        if let (Some(&(left_high, Some(left_low))), Some(&(right_high, Some(right_low)))) =
+                            (param_pair.get(left_name.as_str()), param_pair.get(right_name.as_str()))
+                        {
+                            let scratch = right_low + 1; // r7 — the first free volatile past r3:r6
+                            self.output.instructions.push(Instruction::XorImmediateShifted { a: scratch, s: left_high, immediate: 0x8000 });
+                            self.output.instructions.push(Instruction::XorImmediateShifted { a: high, s: right_high, immediate: 0x8000 });
+                            self.output.instructions.push(Instruction::SubtractFromCarrying { d: GENERAL_SCRATCH, a: right_low, b: left_low });
+                            self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: high, b: scratch });
+                            self.output.instructions.push(Instruction::SubtractFromExtended { d: high, a: scratch, b: scratch });
+                            self.output.instructions.push(Instruction::Negate { d: high, a: high });
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             return Err(Diagnostic::error("this long long truncation is not modeled yet (roadmap)"));
         }
         if !matches!(function.return_type, Type::LongLong | Type::UnsignedLongLong) {
