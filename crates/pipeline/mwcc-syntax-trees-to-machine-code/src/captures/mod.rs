@@ -411,6 +411,9 @@ mod alm_unlink;
 mod alm_merge_prev;
 mod alm_pool_free;
 mod gcn_sys_free;
+mod dvd_error2num;
+mod dvd_convert;
+mod dvd_storeerr;
 mod gek_register;
 mod gek_unregister;
 mod gcnp_sys_free;
@@ -710,6 +713,9 @@ impl Generator {
             || self.try_alm_unlink(function)?
             || self.try_alm_merge_prev(function)?
             || self.try_alm_pool_free(function)?
+            || self.try_dvd_error2num(function)?
+            || self.try_dvd_convert(function)?
+            || self.try_dvd_storeerr(function)?
             || self.try_gek_register(function)?
             || self.try_gek_unregister(function)?
             || self.try_gcn_sys_free(function)?
