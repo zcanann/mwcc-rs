@@ -344,6 +344,44 @@ impl Generator {
             }
         }
 
+        // (e3) SHIFT a single long-long parameter LEFT or RIGHT by 1. The words
+        // shift with a one-bit carry between them via `rlwimi`, and the shifted
+        // word passes through r0 (measured):
+        //   a<<1: slwi r0,low,1; slwi high,high,1; rlwimi high,low,1,31,31; mr low,r0
+        //   a>>1: srawi r0,high,1 (signed) / srwi r0,high,1 (unsigned);
+        //         rotlwi low,low,31; rlwimi low,high,31,0,0; mr high,r0
+        if let Expression::Binary { operator, left, right } = return_expression {
+            if let (Expression::Variable(name), Some(1)) = (left.as_ref(), crate::analysis::constant_value(right)) {
+                if let Some(&(param_high, Some(param_low))) = param_pair.get(name.as_str()) {
+                    let scratch = GENERAL_SCRATCH;
+                    match operator {
+                        BinaryOperator::ShiftLeft => {
+                            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scratch, s: param_low, shift: 1 });
+                            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: param_high, s: param_high, shift: 1 });
+                            self.output.instructions.push(Instruction::RotateAndMaskInsert { a: param_high, s: param_low, shift: 1, begin: 31, end: 31 });
+                            self.output.instructions.push(Instruction::move_register(param_low, scratch));
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        BinaryOperator::ShiftRight => {
+                            let signed = matches!(function.return_type, Type::LongLong);
+                            if signed {
+                                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: scratch, s: param_high, shift: 1 });
+                            } else {
+                                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: param_high, shift: 1 });
+                            }
+                            self.output.instructions.push(Instruction::RotateAndMask { a: param_low, s: param_low, shift: 31, begin: 0, end: 31 });
+                            self.output.instructions.push(Instruction::RotateAndMaskInsert { a: param_low, s: param_high, shift: 31, begin: 0, end: 0 });
+                            self.output.instructions.push(Instruction::move_register(param_high, scratch));
+                            self.emit_epilogue_and_return();
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         // (f) ADD/SUBTRACT a small CONSTANT to a single long-long parameter. mwcc materializes the
         // 64-bit constant — its LOW word into the next free GPR (r5) and its HIGH word into r0, or
         // just r0 when both words are equal — then `addc`/`adde`. `a - C` lowers as `a + (-C)`.
