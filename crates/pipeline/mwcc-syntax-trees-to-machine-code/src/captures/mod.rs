@@ -429,6 +429,15 @@ mod oal_cancel;
 mod oal_settimer;
 mod oal_insert;
 mod oal_callback;
+mod cck_checksum;
+mod cck_verifyid;
+mod cck_verifydir;
+mod cck_verifyfat;
+mod cck_verify;
+mod cck_checkexasync;
+mod cck_checkasync;
+mod cck_checkex;
+mod cck_check;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -749,6 +758,15 @@ impl Generator {
             || self.try_oal_settimer(function)?
             || self.try_oal_insert(function)?
             || self.try_oal_callback(function)?
+            || self.try_cck_checksum(function)?
+            || self.try_cck_verifyid(function)?
+            || self.try_cck_verifydir(function)?
+            || self.try_cck_verifyfat(function)?
+            || self.try_cck_verify(function)?
+            || self.try_cck_checkexasync(function)?
+            || self.try_cck_checkasync(function)?
+            || self.try_cck_checkex(function)?
+            || self.try_cck_check(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
