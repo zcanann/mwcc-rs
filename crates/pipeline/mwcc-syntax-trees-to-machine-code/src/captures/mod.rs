@@ -445,6 +445,9 @@ mod ose_wait;
 mod ose_trywait;
 mod ose_signal;
 mod ose_count;
+mod crt_callback;
+mod crt_async;
+mod crt_create;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -781,6 +784,9 @@ impl Generator {
             || self.try_ose_trywait(function)?
             || self.try_ose_signal(function)?
             || self.try_ose_count(function)?
+            || self.try_crt_callback(function)?
+            || self.try_crt_async(function)?
+            || self.try_crt_create(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
