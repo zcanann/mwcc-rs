@@ -219,3 +219,43 @@ pub(super) fn expect_operand_count(mnemonic: &str, operands: &[AsmOperand], expe
     }
     Ok(())
 }
+
+/// A special-purpose-register operand for `mfspr`/`mtspr`: an immediate SPR
+/// number, or a Gekko SPR NAME (GQR0-7, HID0-2, L2CR, WPAR, the DMA pair). The
+/// returned value is the raw SPR number; the split-field encoding is applied at
+/// encode time. Names come through as a `Label` (a bare identifier the assembler
+/// resolves) — mwcc's asm knows the Gekko SPR mnemonics.
+pub(super) fn special_register(mnemonic: &str, operand: &AsmOperand) -> Compilation<u16> {
+    let named = |name: &str| -> Option<u16> {
+        Some(match name {
+            "GQR0" => 912, "GQR1" => 913, "GQR2" => 914, "GQR3" => 915,
+            "GQR4" => 916, "GQR5" => 917, "GQR6" => 918, "GQR7" => 919,
+            "HID0" => 1008, "HID1" => 1009, "HID2" => 920,
+            "L2CR" => 1017, "WPAR" => 921, "DMAU" => 922, "DMAL" => 923,
+            "MMCR0" => 952, "MMCR1" => 956, "PMC1" => 953, "PMC2" => 954,
+            "PMC3" => 957, "PMC4" => 958, "DEC" => 22, "SDR1" => 25,
+            "SPRG0" => 272, "SPRG1" => 273, "SPRG2" => 274, "SPRG3" => 275,
+            "SRR0" => 26, "SRR1" => 27, "TBL" => 268, "TBU" => 269,
+            "DABR" => 1013, "IABR" => 1010, "PVR" => 287,
+            _ => return None,
+        })
+    };
+    match operand {
+        AsmOperand::Immediate(value) if (0..=1023).contains(value) => Ok(*value as u16),
+        AsmOperand::Label(name) => named(name)
+            .ok_or_else(|| Diagnostic::error(format!("inline-asm '{mnemonic}' unknown special register '{name}'"))),
+        AsmOperand::Symbol { name, .. } => named(name)
+            .ok_or_else(|| Diagnostic::error(format!("inline-asm '{mnemonic}' unknown special register '{name}'"))),
+        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected an SPR number or name"))),
+    }
+}
+
+/// A general-purpose register, or the literal `0` written as an immediate (a
+/// cache op's `dcbt 0, rB` base — an rA=0 encoding, not a use of r0).
+pub(super) fn gpr_or_zero(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
+    match operand {
+        AsmOperand::Gpr(index) => Ok(*index),
+        AsmOperand::Immediate(0) => Ok(0),
+        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a register or 0 base"))),
+    }
+}

@@ -232,9 +232,21 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         MoveFromLinkRegister { d } => visit(D, G, d),
         MoveToLinkRegister { s } => visit(U, G, s),
         MoveToCountRegister { s } => visit(U, G, s),
-        // No register fields: branches and the call (its ABI registers are implicit).
+        // SPR/MSR moves (inline-asm only; the SPR/MSR are not virtual registers).
+        MoveFromSpr { d, .. } | MoveFromMsr { d } => visit(D, G, d),
+        MoveToSpr { s, .. } | MoveToMsr { s } => visit(U, G, s),
+        // Cache ops address (rA|0)+rB — both are uses (rA=0 is the literal 0).
+        CacheOp { a, b, .. } => {
+            if *a != 0 {
+                visit(U, G, a);
+            }
+            visit(U, G, b);
+        }
+        // No register fields: branches, the call, and the barrier/system ops
+        // (their ABI/system registers are implicit).
         BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | BranchToLinkRegister
-        | Branch { .. } | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. } => {}
+        | Branch { .. } | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. }
+        | InstructionSynchronize | Synchronize | EnforceInOrderIo | ReturnFromInterrupt | SystemCall => {}
     }
 }
 

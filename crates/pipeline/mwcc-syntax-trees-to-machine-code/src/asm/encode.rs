@@ -104,6 +104,9 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
         "rotrwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (32 - n as u16) as u8 & 31, begin: 0, end: 31 } }
         "slwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::ShiftLeftImmediate { a, s, shift } }
         "clrlwi" => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediate { a, s, clear } }
+        "clrlwi." => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediateRecord { a, s, clear } }
+        // `nop` = `ori r0, r0, 0`.
+        "nop" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::OrImmediate { a: 0, s: 0, immediate: 0 } }
         // More `rlwinm` simplified spellings (all rotate-and-mask with derived fields).
         "srwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (32 - n as u16) as u8 & 31, begin: n, end: 31 } }
         "clrrwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: 0, begin: 0, end: 31 - n } }
@@ -210,6 +213,48 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
 
         // The count register (`bdnz` loop support).
         "mtctr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToCountRegister { s } }
+
+        // Special-purpose / machine-state register moves + the synchronization and
+        // interrupt-return system ops — the OS-kernel inline-asm vocabulary
+        // (OSCache/OSReset/OSSync/OSReboot). The SPR operand accepts a number or a
+        // named register (GQR0-7, HID0-2, the time base, …).
+        "mfspr" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let d = gpr(mnemonic, &operands[0])?;
+            let spr = special_register(mnemonic, &operands[1])?;
+            Instruction::MoveFromSpr { d, spr }
+        }
+        "mtspr" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let spr = special_register(mnemonic, &operands[0])?;
+            let s = gpr(mnemonic, &operands[1])?;
+            Instruction::MoveToSpr { spr, s }
+        }
+        "mftb" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromSpr { d, spr: 268 } }
+        "mftbu" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromSpr { d, spr: 269 } }
+        "mfmsr" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromMsr { d } }
+        "mtmsr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToMsr { s } }
+        "isync" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::InstructionSynchronize }
+        "sync" | "hwsync" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::Synchronize }
+        "eieio" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::EnforceInOrderIo }
+        "rfi" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::ReturnFromInterrupt }
+        "sc" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::SystemCall }
+
+        // Cache-block ops (`op rA, rB`, addressing `(rA|0) + rB`). `dcbz_l` is the
+        // Gekko locked-cache variant (primary opcode 4); the rest are opcode 31.
+        "dcbst" | "dcbf" | "dcbt" | "dcbtst" | "dcbi" | "dcbz" | "icbi" | "dcbz_l" => {
+            // `dcbt 0, rB` writes the base as the literal 0 (an immediate), not r0.
+            expect_operand_count(mnemonic, operands, 2)?;
+            let a = gpr_or_zero(mnemonic, &operands[0])?;
+            let b = gpr(mnemonic, &operands[1])?;
+            let (primary, xo) = match mnemonic {
+                "dcbst" => (31, 54), "dcbf" => (31, 86), "dcbt" => (31, 278),
+                "dcbtst" => (31, 246), "dcbi" => (31, 470), "dcbz" => (31, 1014),
+                "icbi" => (31, 982), "dcbz_l" => (4, 1014),
+                _ => unreachable!(),
+            };
+            Instruction::CacheOp { primary, xo, a, b }
+        }
 
         // The link register, condition register, and FPSCR moves + the multi-word
         // load/store — the setjmp/longjmp register-save vocabulary (Gecko_setjmp.c).

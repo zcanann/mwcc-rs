@@ -325,6 +325,30 @@ pub enum Instruction {
     BranchToCountRegister,
     /// `bctrl` — branch to the count register and link (`bcctrl 20,0`), an indirect call.
     BranchToCountRegisterAndLink,
+    /// `mfspr rD, SPR` — move from a special-purpose register (the SPR number
+    /// carries the raw value; the split-field encoding is applied at encode time).
+    /// `mftb rD` is this with `spr = 268` (TBL).
+    MoveFromSpr { d: u8, spr: u16 },
+    /// `mtspr SPR, rS` — move to a special-purpose register.
+    MoveToSpr { spr: u16, s: u8 },
+    /// `mfmsr rD` — move from the machine-state register.
+    MoveFromMsr { d: u8 },
+    /// `mtmsr rS` — move to the machine-state register.
+    MoveToMsr { s: u8 },
+    /// `isync` — instruction synchronize.
+    InstructionSynchronize,
+    /// `sync` (a.k.a. `hwsync`) — storage synchronize.
+    Synchronize,
+    /// `eieio` — enforce in-order execution of I/O.
+    EnforceInOrderIo,
+    /// `rfi` — return from interrupt.
+    ReturnFromInterrupt,
+    /// A cache-block op (`dcbf`/`dcbi`/`dcbst`/`dcbt`/`dcbz`/`dcbz_l`/`icbi`) —
+    /// `op rA, rB`, addressing `(rA|0) + rB`. Carries its primary opcode (31, or
+    /// 4 for the Gekko `dcbz_l`) and extended opcode. Inline-asm only.
+    CacheOp { primary: u8, xo: u16, a: u8, b: u8 },
+    /// `sc` — system call.
+    SystemCall,
 }
 
 impl Instruction {

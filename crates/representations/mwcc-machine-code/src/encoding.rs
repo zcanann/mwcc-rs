@@ -193,6 +193,26 @@ impl Instruction {
             Instruction::MoveToCountRegister { s } => 0x7C09_03A6 | ((s as u32) << 21),
             Instruction::BranchToCountRegister => 0x4E80_0420,
             Instruction::BranchToCountRegisterAndLink => 0x4E80_0421,
+            // The SPR/TBR field is the two 5-bit halves of the number, SWAPPED:
+            // instruction bits 11-15 = spr[0:4], bits 16-20 = spr[5:9].
+            Instruction::MoveFromSpr { d, spr } => {
+                let field = ((spr as u32 & 0x1F) << 5) | ((spr as u32 >> 5) & 0x1F);
+                (31 << 26) | ((d as u32) << 21) | (field << 11) | (339 << 1)
+            }
+            Instruction::MoveToSpr { spr, s } => {
+                let field = ((spr as u32 & 0x1F) << 5) | ((spr as u32 >> 5) & 0x1F);
+                (31 << 26) | ((s as u32) << 21) | (field << 11) | (467 << 1)
+            }
+            Instruction::MoveFromMsr { d } => (31 << 26) | ((d as u32) << 21) | (83 << 1),
+            Instruction::MoveToMsr { s } => (31 << 26) | ((s as u32) << 21) | (146 << 1),
+            Instruction::InstructionSynchronize => 0x4C00_012C,
+            Instruction::Synchronize => 0x7C00_04AC,
+            Instruction::EnforceInOrderIo => 0x7C00_06AC,
+            Instruction::ReturnFromInterrupt => 0x4C00_0064,
+            Instruction::CacheOp { primary, xo, a, b } => {
+                ((primary as u32) << 26) | ((a as u32) << 16) | ((b as u32) << 11) | ((xo as u32) << 1)
+            }
+            Instruction::SystemCall => 0x4400_0002,
         }
     }
 }
