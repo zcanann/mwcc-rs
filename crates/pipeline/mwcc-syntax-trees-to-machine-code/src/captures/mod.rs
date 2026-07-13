@@ -415,6 +415,13 @@ mod osm_initqueue;
 mod osm_send;
 mod osm_receive;
 mod osm_jam;
+mod dq_popprio;
+mod dq_clear;
+mod dq_push;
+mod dq_pop;
+mod dq_check;
+mod dq_dequeue;
+mod dq_isin;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -721,6 +728,13 @@ impl Generator {
             || self.try_osm_send(function)?
             || self.try_osm_receive(function)?
             || self.try_osm_jam(function)?
+            || self.try_dq_popprio(function)?
+            || self.try_dq_clear(function)?
+            || self.try_dq_push(function)?
+            || self.try_dq_pop(function)?
+            || self.try_dq_check(function)?
+            || self.try_dq_dequeue(function)?
+            || self.try_dq_isin(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
