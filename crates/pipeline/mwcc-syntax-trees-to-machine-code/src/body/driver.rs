@@ -40,6 +40,35 @@ impl Generator {
     /// (`r3:r4` = high:low). Only a narrow set of shapes is modeled; the rest defer rather than
     /// fall through to the 32-bit codegen (which emits a single-register result for a 64-bit value).
     pub(crate) fn emit_long_long(&mut self, function: &Function) -> Compilation<()> {
+        // A 64-bit GLOBAL WRITE (`void f(long long a){ G = a; }`): store the LOW
+        // word (r4) to the symbol+4, then the HIGH word (r3) to the symbol
+        // (measured order). A long-long first parameter arrives in r3:r4.
+        if function.locals.is_empty()
+            && function.guards.is_empty()
+            && function.return_type == Type::Void
+            && self.behavior.global_addressing == GlobalAddressing::SmallData
+        {
+            if let [Statement::Store { target: Expression::Variable(global), value: Expression::Variable(source) }] =
+                function.statements.as_slice()
+            {
+                let stores_ll_param = function.parameters.first().is_some_and(|parameter| {
+                    &parameter.name == source
+                        && matches!(parameter.parameter_type, Type::LongLong | Type::UnsignedLongLong)
+                });
+                if stores_ll_param
+                    && matches!(self.globals.get(global.as_str()), Some(Type::LongLong | Type::UnsignedLongLong))
+                {
+                    let high = Eabi::FIRST_GENERAL_ARGUMENT; // r3 — the param's HIGH word
+                    let low = high + 1; //                      r4 — the param's LOW word
+                    self.record_relocation_with_addend(RelocationKind::EmbSda21, global, 4);
+                    self.output.instructions.push(Instruction::StoreWord { s: low, a: 0, offset: 0 });
+                    self.record_relocation(RelocationKind::EmbSda21, global);
+                    self.output.instructions.push(Instruction::StoreWord { s: high, a: 0, offset: 0 });
+                    self.emit_epilogue_and_return();
+                    return Ok(());
+                }
+            }
+        }
         // Long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
         if !function.locals.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
             return Err(Diagnostic::error("this long long shape is not modeled yet (roadmap)"));
@@ -91,6 +120,21 @@ impl Generator {
                         self.emit_epilogue_and_return();
                         return Ok(());
                     }
+                }
+            }
+            // (c) A 64-bit GLOBAL read (`return G;`): two SDA21 loads — the HIGH
+            // word into r3 at the symbol, the LOW word into r4 at the symbol+4
+            // (big-endian). Small-data addressing only; ADDR16 defers.
+            if let Expression::Variable(name) = return_expression {
+                if matches!(self.globals.get(name.as_str()), Some(Type::LongLong | Type::UnsignedLongLong))
+                    && self.behavior.global_addressing == GlobalAddressing::SmallData
+                {
+                    self.record_relocation(RelocationKind::EmbSda21, name);
+                    self.output.instructions.push(Instruction::LoadWord { d: high, a: 0, offset: 0 });
+                    self.record_relocation_with_addend(RelocationKind::EmbSda21, name, 4);
+                    self.output.instructions.push(Instruction::LoadWord { d: low, a: 0, offset: 0 });
+                    self.emit_epilogue_and_return();
+                    return Ok(());
                 }
             }
             return Err(Diagnostic::error("this long long return shape is not modeled yet (roadmap)"));
