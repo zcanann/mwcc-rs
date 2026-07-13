@@ -395,6 +395,7 @@ mod xtr_strcmpi;
 mod alm_block_link;
 mod alm_dealloc_fixed;
 mod alm_free;
+mod alp_free;
 mod alm_dealloc_var;
 mod alm_get_malloc_pool;
 mod alm_merge_next;
@@ -684,6 +685,7 @@ impl Generator {
             || self.try_alm_block_link(function)?
             || self.try_alm_dealloc_fixed(function)?
             || self.try_alm_free(function)?
+            || self.try_alp_free(function)?
             || self.try_alm_dealloc_var(function)?
             || self.try_alm_get_malloc_pool(function)?
             || self.try_alm_merge_next(function)?
