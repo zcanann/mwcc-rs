@@ -73,10 +73,23 @@ impl Generator {
             // to p (measured). Register layout via a mini-EABI walk over the
             // params (each int/pointer = one GPR; a long-long pair aligns to an
             // odd start), so `(long long* p, long long a)` gives p=r3, a=r5:r6.
-            if let [Statement::Store { target: Expression::Dereference { pointer }, value: Expression::Variable(source) }] =
-                function.statements.as_slice()
-            {
-                if let Expression::Variable(pointer_name) = pointer.as_ref() {
+            // A struct-member write (`s->v = a`) stores at the member's byte
+            // offset; a plain deref (`*p = a`) at offset 0.
+            if let [Statement::Store { target, value: Expression::Variable(source) }] = function.statements.as_slice() {
+                let target_access = match target {
+                    Expression::Dereference { pointer } => match pointer.as_ref() {
+                        Expression::Variable(name) => Some((name.as_str(), 0i16)),
+                        _ => None,
+                    },
+                    Expression::Member { base, offset, member_type: Type::LongLong | Type::UnsignedLongLong, index_stride: None } => {
+                        match base.as_ref() {
+                            Expression::Variable(name) => Some((name.as_str(), *offset as i16)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some((pointer_name, byte_offset)) = target_access {
                     let mut next = Eabi::FIRST_GENERAL_ARGUMENT;
                     let mut pointer_register = None;
                     let mut source_pair = None;
@@ -91,13 +104,13 @@ impl Generator {
                                 }
                                 next += 2;
                             }
-                            Type::Pointer(Pointee::LongLong | Pointee::UnsignedLongLong) => {
-                                if &parameter.name == pointer_name {
+                            Type::Pointer(_) | Type::StructPointer { .. } => {
+                                if parameter.name == pointer_name {
                                     pointer_register = Some(next);
                                 }
                                 next += 1;
                             }
-                            Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. } => next += 1,
+                            Type::Int | Type::UnsignedInt => next += 1,
                             _ => {
                                 next = u8::MAX; // an unmodeled param type — bail
                                 break;
@@ -105,8 +118,8 @@ impl Generator {
                         }
                     }
                     if let (Some(base), Some((high, low))) = (pointer_register, source_pair) {
-                        self.output.instructions.push(Instruction::StoreWord { s: low, a: base, offset: 4 });
-                        self.output.instructions.push(Instruction::StoreWord { s: high, a: base, offset: 0 });
+                        self.output.instructions.push(Instruction::StoreWord { s: low, a: base, offset: byte_offset + 4 });
+                        self.output.instructions.push(Instruction::StoreWord { s: high, a: base, offset: byte_offset });
                         self.emit_epilogue_and_return();
                         return Ok(());
                     }
