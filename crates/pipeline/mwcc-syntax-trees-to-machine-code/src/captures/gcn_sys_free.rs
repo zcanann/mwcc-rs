@@ -27,8 +27,12 @@ impl Generator {
         // post-emission decline would pollute the output for the next
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
-        let bump: u32 = match context {
-            0x7826c186cda92236 => 8, // strikers
+        // marioparty4 shares strikers' AST byte-for-byte; its NINE FastCast
+        // helpers (OSInitFastCast + 8) all emit up front via inline_asm_symbols,
+        // so it carries NO after-string phantoms.
+        let (bump, phantoms): (u32, &[&str]) = match context {
+            0x7826c186cda92236 => (8, &["__OSf32tos16", "__OSf32tou8"] as &[&str]), // strikers
+            0x292a2b38af7a7d40 => (8, &[]),                                         // marioparty4 (measured: strings @135/@136)
             _ => {
                 eprintln!("gcn_sys_free context candidate: {context:#x}");
                 return Ok(false);
@@ -42,7 +46,7 @@ impl Generator {
         // The inlined heap-init path materializes its callees before the
         // direct OSFreeToHeap call (measured symtab order).
         self.output.symbol_order = ["__OSCurrHeap","OSReport","OSGetArenaLo","OSGetArenaHi","OSInitAlloc","OSSetArenaLo","OSCreateHeap","OSSetCurrentHeap","OSFreeToHeap"].iter().map(|s| s.to_string()).collect();
-        self.output.phantom_externals = vec!["__OSf32tos16".to_string(), "__OSf32tou8".to_string()];
+        self.output.phantom_externals = phantoms.iter().map(|name| name.to_string()).collect();
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
         for target in [36] {
             labels.insert(target, self.fresh_label());
