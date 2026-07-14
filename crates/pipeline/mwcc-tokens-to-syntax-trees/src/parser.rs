@@ -124,6 +124,11 @@ pub(crate) struct Parser {
     /// Names of skipped `static inline` functions with an inline `asm {}` body, in
     /// declaration order; mwcc emits a local undefined symbol for each.
     pub(crate) inline_asm_symbols: Vec<String>,
+    /// Names of skipped PLAIN (non-static) `inline` functions with an inline `asm {}`
+    /// body (OSFastCast's `inline __OSf32tos16`). mwcc materializes each as a GLOBAL
+    /// UND symbol from the dropped compilation; the general codegen path does not emit
+    /// them, so an object carrying one (with no capture declaring it) must DEFER.
+    pub(crate) plain_inline_asm_helpers: Vec<String>,
     /// Count of skipped `inline`/`static inline` FUNCTION DEFINITIONS: mwcc
     /// compiles-then-drops these, advancing the file's `@N` counter by 3 each
     /// (measured), so the writer pre-bumps the first function's numbering.

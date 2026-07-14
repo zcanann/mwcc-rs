@@ -448,8 +448,16 @@ impl Parser {
                 }
                 // A skipped `static inline` function with an inline `asm {}` body
                 // still contributes a local undefined symbol (mwcc cannot inline it).
-                if let Some(name) = self.inline_asm_function_name() {
-                    self.inline_asm_symbols.push(name);
+                if let Some((name, is_static)) = self.inline_asm_function_name() {
+                    if is_static {
+                        self.inline_asm_symbols.push(name);
+                    } else {
+                        // A PLAIN inline asm helper (OSFastCast's `inline __OSf32tos16`)
+                        // becomes a GLOBAL UND that mwcc materializes from the dropped
+                        // compilation. The general codegen path does not emit it, so a
+                        // non-captured object that carries one must DEFER (byte-exact-or-defer).
+                        self.plain_inline_asm_helpers.push(name);
+                    }
                 }
                 // A skipped inline function's `static` locals (measured matrix):
                 // a PLAIN inline emits each as a WEAK object named
@@ -592,6 +600,7 @@ impl Parser {
             functions,
             prototypes,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
+            plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
             skipped_inline_functions: self.skipped_inline_functions,
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
@@ -709,7 +718,7 @@ impl Parser {
         Ok(Expression::AggregateLiteral(elements))
     }
 
-    pub(crate) fn inline_asm_function_name(&self) -> Option<String> {
+    pub(crate) fn inline_asm_function_name(&self) -> Option<(String, bool)> {
         let mut index = self.position;
         let mut is_inline = false;
         let mut is_static = false;
@@ -727,11 +736,13 @@ impl Parser {
             }
             index += 1;
         }
-        // Only a STATIC inline asm helper becomes the early local-UND symbol
-        // (the measured OSFastCast.h shape). A PLAIN inline one (strikers'
-        // __frsqrte) is a normal external created by the dropped compilation —
-        // captures declare it via phantom_externals.
-        if !is_inline || !is_static {
+        // A STATIC inline asm helper becomes the early local-UND symbol (the
+        // measured OSFastCast.h shape); a PLAIN inline one (strikers' __frsqrte,
+        // OSFastCast's `inline __OSf32tos16`) is a GLOBAL external mwcc creates
+        // from the dropped compilation. Both are returned (with is_static) so the
+        // caller records the static ones as local-UND and the plain ones for the
+        // general-codegen defer check (captures declare plain ones via phantom_externals).
+        if !is_inline {
             return None;
         }
         let name = name?;
@@ -774,7 +785,7 @@ impl Parser {
             }
             index += 1;
         }
-        has_asm.then_some(name)
+        has_asm.then_some((name, is_static))
     }
 
     /// True if the item at the cursor is an `inline`/`static inline` function whose

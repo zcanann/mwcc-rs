@@ -245,6 +245,10 @@ pub struct TranslationUnit {
     /// emits a local *undefined* symbol for it even when unused (it cannot inline
     /// the assembly) — e.g. the `OSFastCast.h` fast-cast helpers.
     pub inline_asm_symbols: Vec<String>,
+    /// Names of PLAIN (non-static) `inline` asm helpers (OSFastCast's
+    /// `inline __OSf32tos16`). mwcc materializes each as a GLOBAL UND symbol; the
+    /// general codegen path does not, so a non-captured object carrying one defers.
+    pub plain_inline_asm_helpers: Vec<String>,
 }
 
 /// A function definition. Bodies are zero or more local declarations, then zero

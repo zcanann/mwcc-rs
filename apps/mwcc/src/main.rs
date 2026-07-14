@@ -863,6 +863,18 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             .collect()
     };
 
+    // A plain-`inline` asm helper (OSFastCast's `inline __OSf32tos16`) is materialized
+    // by mwcc as a GLOBAL UND symbol from the dropped compilation — present in the object
+    // even when nothing references it. Captures declare these via `phantom_externals`; the
+    // general codegen path does not emit them. If the TU carries one and NO function
+    // declared a phantom, the object's symbol table would be incomplete — so DEFER rather
+    // than emit a structurally-wrong object (byte-exact-or-defer; measured: src/gx/GXStubs.c).
+    if !unit.plain_inline_asm_helpers.is_empty() && machine_functions.iter().all(|function| function.phantom_externals.is_empty()) {
+        return Err(Diagnostic::error(
+            "TU carries plain-`inline` asm helpers (OSFastCast/etc.) whose GLOBAL UND symbols the general path does not emit — deferring (roadmap)",
+        ));
+    }
+
     let object = mwcc_machine_code_to_object::assemble_object(&machine_functions, &defined_globals, &unit.inline_asm_symbols, &forward_declared_statics, source_name, config.build.version, config.build.build, small_data);
 
     if let Some(directory) = artifacts {
