@@ -718,9 +718,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // inline-asm locals and before the functions' `@N` entries. The INITIALIZED ones
     // (`.sdata`/`.data`) come first in FORWARD declaration order, then the ZERO ones
     // (`.sbss`/`.bss`) in REVERSE — the same split (and same order) the uninitialized
-    // globals follow. (Only the common "all static data before any function" shape is
-    // produced; the parser defers a static global that follows a function.) Their
-    // indices are kept so a function relocation that targets one resolves locally.
+    // globals follow. A static declared AFTER a function (`functions_before > 0`) is
+    // SKIPPED here and emitted at its source position in the per-function run below
+    // (both const and non-const — byte-verified). Their indices are kept so a function
+    // relocation that targets one resolves locally.
     let mut local_data_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     // A function-body string's `@N` data object carries its bytes here (for section layout) but its
     // SYMBOL is emitted per-function in the `@N` run below, interleaved with that function's

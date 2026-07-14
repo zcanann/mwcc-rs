@@ -535,16 +535,15 @@ impl Parser {
                     }
                 }
             }
-            // An emittable (non-`extern`, non-`const`) `static` global declared after
-            // a function would need its local symbol interleaved among the functions'
-            // `@N` entries — not yet modeled, so defer the unit honestly. A DEFINED
-            // non-static global after a function needs the same source-order
-            // interleaving in the global symbol run (mwcc: __upper_map AFTER
-            // tolower in the MSL ctype shape) — also deferred until the writer
-            // models it.
-            if seen_function && globals[globals_before..].iter().any(|global| global.is_static && !global.is_const && !global.is_extern && global.section.is_none()) {
-                return Err(Diagnostic::error("a static global declared after a function is not supported yet (local-symbol ordering)"));
-            }
+            // A `static` global declared AFTER a function needs its local symbol
+            // interleaved at its source position among the functions' `@N` entries. The
+            // writer already models this (each global carries `functions_before`, and
+            // writer.rs's per-function static run at :865 emits it at that slot) — it was
+            // proven for `const` statics (ansi_fp's `unused`) and holds for non-const
+            // statics too: init/uninit, single/multiple, arrays, referenced or not, with
+            // or without pools, and tail declarations (main.rs clamps those) all go
+            // byte-exact. So no defer is needed here.
+            let _ = seen_function;
 
         }
         // Non-constant float-array globals synthesize a startup initializer:
