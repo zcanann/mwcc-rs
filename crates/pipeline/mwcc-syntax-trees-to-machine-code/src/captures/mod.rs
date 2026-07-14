@@ -475,6 +475,12 @@ mod crw_read;
 mod crw_writecb;
 mod crw_write;
 mod crw_bytes;
+mod cbk_getfat;
+mod cbk_writecb;
+mod cbk_erasecb;
+mod cbk_alloc;
+mod cbk_free;
+mod cbk_updatefat;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -841,6 +847,12 @@ impl Generator {
             || self.try_crw_writecb(function)?
             || self.try_crw_write(function)?
             || self.try_crw_bytes(function)?
+            || self.try_cbk_getfat(function)?
+            || self.try_cbk_writecb(function)?
+            || self.try_cbk_erasecb(function)?
+            || self.try_cbk_alloc(function)?
+            || self.try_cbk_free(function)?
+            || self.try_cbk_updatefat(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
