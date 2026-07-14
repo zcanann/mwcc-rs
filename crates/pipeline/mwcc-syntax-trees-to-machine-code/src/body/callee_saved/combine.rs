@@ -31,6 +31,22 @@ impl Generator {
         } else if function.statements.len() < 2 {
             return Ok(false);
         }
+        // Restore-by-register-death: a saved parameter nested >= 2 deep in the return
+        // (`g(x); return (-x)&C` = neg then clrlwi; `return x*3+1` = mulli then addi) DIES
+        // mid-computation, so mwcc interleaves its callee-saved restore at that point — a
+        // schedule this all-restores-at-end epilogue does not model, so it would
+        // miscompile. Single-op returns (`x`, `x+1`, `x&C`, `x+y`; depth <= 1) are
+        // unaffected. Defer the deeper ones. (Mirrors the guards in try_callee_saved and
+        // try_callee_saved_call_result.)
+        if let Some(return_expression) = function.return_expression.as_ref() {
+            if function
+                .parameters
+                .iter()
+                .any(|parameter| name_nesting_depth(return_expression, &parameter.name).is_some_and(|depth| depth >= 2))
+            {
+                return Ok(false);
+            }
+        }
         // Every statement must be a call whose arguments are exactly the parameters in
         // order, so the first call needs no moves and the live set is all the parameters.
         for statement in &function.statements {
