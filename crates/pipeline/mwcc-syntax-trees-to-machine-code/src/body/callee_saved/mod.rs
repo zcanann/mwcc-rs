@@ -185,6 +185,17 @@ impl Generator {
         {
             return Ok(false);
         }
+        // A single store that consumes BOTH saved values (`g(); *p=x;` — p is the store base, x the
+        // stored value, both live across the call) restores LR BEFORE both GPRs (`stw r31,0(r30);
+        // lwz r0(LR); lwz r31; lwz r30`), unlike two independent stores of one value each (`gi=a;
+        // gj=b;`) which this path models (`… lwz r31; lwz r0(LR); lwz r30`). Detect it as "fewer store
+        // statements than saved values" and defer rather than emit the wrong restore order.
+        if has_store
+            && count == 2
+            && function.statements.iter().filter(|statement| matches!(statement, Statement::Store { .. })).count() < count
+        {
+            return Ok(false);
+        }
         // A store sink whose RETURN is an unrelated CONSTANT (`g(); *p=C; return K;`) uses mwcc's
         // return-value-BEFORE-store schedule with a GPR-first restore (`li r3,K; stw ...; lwz r31;
         // lwz r0`), NOT this store-sink path's LR-first `stw; li r3; lwz r0; lwz r31` — so it emits
