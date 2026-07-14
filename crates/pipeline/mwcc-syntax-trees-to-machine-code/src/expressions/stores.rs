@@ -48,12 +48,14 @@ impl Generator {
         if let Expression::Member { base, offset, member_type, index_stride: None } = target {
             if let Some(address) = const_address_of(base) {
                 if let Some(pointee) = pointee_of_type(*member_type) {
-                    if !matches!(pointee, Pointee::Float | Pointee::Double) {
-                        if self.emit_const_address_store(pointee, address, *offset, value)? {
-                            return Ok(());
-                        }
-                        return Err(Diagnostic::error("a constant-address member store needing base reuse is not supported yet (roadmap)"));
+                    // Every width, including FLOAT/DOUBLE: emit_const_address_store folds the
+                    // member offset into a `stfs/stfd f,disp(base)` off the materialized `lis`
+                    // base just as it does the integer `stb/sth/stw` (measured: the GX FIFO
+                    // `(*(PPCWGPipe*)0xCC008000).f32 = x` -> `lis r3,0xCC01; stfs f1,-0x8000(r3)`).
+                    if self.emit_const_address_store(pointee, address, *offset, value)? {
+                        return Ok(());
                     }
+                    return Err(Diagnostic::error("a constant-address member store needing base reuse is not supported yet (roadmap)"));
                 }
             }
         }
