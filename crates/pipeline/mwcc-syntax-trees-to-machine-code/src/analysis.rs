@@ -148,6 +148,22 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
     }
 }
 
+/// The maximum ARITHMETIC nesting depth at which `name` appears (through Binary/Unary/Cast operators),
+/// or `None` if it does not appear on such a path. `x` -> 0, `-x` / `x&C` / `x+f()` -> 1, `(-x)&C` -> 2.
+/// A depth >= 2 means the value flows through more than one instruction, so it DIES mid-computation and
+/// mwcc interleaves its callee-saved restore at that death point (restore-by-register-death) — which the
+/// all-restores-at-end callee-saved epilogue does not model.
+pub(crate) fn name_nesting_depth(expression: &Expression, name: &str) -> Option<usize> {
+    match expression {
+        Expression::Variable(variable) if variable == name => Some(0),
+        Expression::Binary { left, right, .. } => {
+            [name_nesting_depth(left, name), name_nesting_depth(right, name)].into_iter().flatten().max().map(|depth| depth + 1)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => name_nesting_depth(operand, name).map(|depth| depth + 1),
+        _ => None,
+    }
+}
+
 /// The length of the CONNECTED add-chain rooted at this node (the add-tree mwcc reassociates). A
 /// non-add operand (a `*`, a leaf) terminates the chain, so `(a+b)*c + a` is a 1-add chain
 /// (byte-exact) — the `a+b` is consumed by the `*c` into a single value — not a 2-add tree.

@@ -230,6 +230,19 @@ impl Generator {
                 return Ok(false);
             }
         }
+        // A saved value nested >= 2 deep in an arithmetic RETURN (`return (-x)&C` = neg then clrlwi)
+        // DIES mid-computation, so mwcc interleaves its callee-saved restore at that death point
+        // (restore-by-register-death: `neg r0,r31; lwz r31; clrlwi r3,r0; …`). This all-restores-at-end
+        // epilogue does not model that, so it would miscompile — defer. Single-op returns (`x`, `-x`,
+        // `x&C`, `x+f()`; depth <= 1) are unaffected. (Store sinks are excluded; count>=2 already
+        // restricted to single-op above.)
+        if !has_store
+            && promoted.iter().any(|(_, name, _)| {
+                function.return_expression.as_ref().and_then(|expression| name_nesting_depth(expression, name)).is_some_and(|depth| depth >= 2)
+            })
+        {
+            return Ok(false);
+        }
         let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
