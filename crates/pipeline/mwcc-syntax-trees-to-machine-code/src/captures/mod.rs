@@ -481,6 +481,16 @@ mod cbk_erasecb;
 mod cbk_alloc;
 mod cbk_free;
 mod cbk_updatefat;
+mod cop_cmpname;
+mod cop_access;
+mod cop_iswritable;
+mod cop_ispublic;
+mod cop_isreadable;
+mod cop_getfileno;
+mod cop_fastopen;
+mod cop_open;
+mod cop_close;
+mod cop_isopened;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -853,6 +863,16 @@ impl Generator {
             || self.try_cbk_alloc(function)?
             || self.try_cbk_free(function)?
             || self.try_cbk_updatefat(function)?
+            || self.try_cop_cmpname(function)?
+            || self.try_cop_access(function)?
+            || self.try_cop_iswritable(function)?
+            || self.try_cop_ispublic(function)?
+            || self.try_cop_isreadable(function)?
+            || self.try_cop_getfileno(function)?
+            || self.try_cop_fastopen(function)?
+            || self.try_cop_open(function)?
+            || self.try_cop_close(function)?
+            || self.try_cop_isopened(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
