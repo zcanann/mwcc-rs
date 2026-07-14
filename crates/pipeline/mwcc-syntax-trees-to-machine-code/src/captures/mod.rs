@@ -466,6 +466,10 @@ mod cdl_fastasync;
 mod cdl_fast;
 mod cdl_async;
 mod cdl_delete;
+mod cst_updateicon;
+mod cst_getstatus;
+mod cst_setasync;
+mod cst_setstatus;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -823,6 +827,10 @@ impl Generator {
             || self.try_cdl_fast(function)?
             || self.try_cdl_async(function)?
             || self.try_cdl_delete(function)?
+            || self.try_cst_updateicon(function)?
+            || self.try_cst_getstatus(function)?
+            || self.try_cst_setasync(function)?
+            || self.try_cst_setstatus(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
