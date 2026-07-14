@@ -131,9 +131,14 @@ impl Generator {
             (other, Expression::Call { name, arguments }) if is_param(other) => (name, arguments, false),
             _ => return Ok(false),
         };
-        // The call takes no arguments or forwards exactly the parameter (already in its incoming
-        // register); anything else materializes an argument on a different schedule.
-        if !(call_arguments.is_empty() || (call_arguments.len() == 1 && is_param(&call_arguments[0]))) {
+        // The call takes no arguments, forwards exactly the parameter (already in its incoming
+        // register), or takes a single CONSTANT argument. The saved parameter is moved to r31
+        // FIRST (below), so a constant argument's `li r3,C` materializes into the freed incoming
+        // register right before the call (`mr r31,r3; li r3,C; bl`) — the schedule mwcc emits.
+        // A COMPUTED argument uses the parameter's register mid-computation and schedules
+        // differently, so it still defers.
+        let single_constant_arg = call_arguments.len() == 1 && constant_value(&call_arguments[0]).is_some();
+        if !(call_arguments.is_empty() || (call_arguments.len() == 1 && is_param(&call_arguments[0])) || single_constant_arg) {
             return Ok(false);
         }
         // Prologue: a 16-byte frame saving the link register and the saved parameter.
