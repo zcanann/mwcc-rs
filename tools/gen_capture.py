@@ -7,7 +7,7 @@ Usage: gen_capture.py <name> <fn_name> <capture_dir> <return_type> <n_params> \
 The AST hash and @N bump are left as dev-loop placeholders (hash 0 prints the
 candidate; bump 0). Wire into mod.rs manually (one mod line, one dispatcher arm).
 """
-import argparse, subprocess, sys, os
+import argparse, subprocess, sys, os, re
 ap = argparse.ArgumentParser()
 ap.add_argument('name'); ap.add_argument('fn_name'); ap.add_argument('dir')
 ap.add_argument('return_type'); ap.add_argument('n_params', type=int)
@@ -42,6 +42,19 @@ if a.csf: setup += f"        self.callee_saved_float = {a.csf};\n"
 if a.gap:
     pairs = ", ".join(f"({g.split(':')[0]}, {g.split(':')[1]})" for g in a.gap)
     setup += f"        self.output.constant_number_gaps = vec![{pairs}];\n"
+# PIN the external symbol order to the authoritative .text reference order (first-seen
+# relocation targets, minus @N pool refs). The generator's AST fallback
+# (symbol_order::referenced_names) mis-orders an ADDRESS-TAKEN external/callback (named
+# early in source, referenced late in .text) — pinning the reloc order matches mwcc.
+# Only affects THIS capture; verify byte-exact as always.
+_reloc_names, _seen = [], set()
+for _m in re.finditer(r'record_relocation(?:_with_addend)?\([^,]+,\s*"([^"]+)"', body):
+    _n = _m.group(1)
+    if not _n.startswith('@') and _n not in _seen:
+        _seen.add(_n); _reloc_names.append(_n)
+if _reloc_names:
+    _names = ", ".join(f'"{n}"' for n in _reloc_names)
+    setup += f"        self.output.symbol_order = [{_names}].into_iter().map(String::from).collect();\n"
 pool_block = f"""        for bits in [
             {consts},
         ] {{

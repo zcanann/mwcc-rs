@@ -457,6 +457,10 @@ mod crd_readcb;
 mod crd_readasync;
 mod crd_read;
 mod crd_cancel;
+mod cwr_writecb;
+mod cwr_erasecb;
+mod cwr_writeasync;
+mod cwr_write;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -805,6 +809,10 @@ impl Generator {
             || self.try_crd_readasync(function)?
             || self.try_crd_read(function)?
             || self.try_crd_cancel(function)?
+            || self.try_cwr_writecb(function)?
+            || self.try_cwr_erasecb(function)?
+            || self.try_cwr_writeasync(function)?
+            || self.try_cwr_write(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
