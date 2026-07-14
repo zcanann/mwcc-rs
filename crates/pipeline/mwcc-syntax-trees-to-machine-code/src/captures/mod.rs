@@ -461,6 +461,11 @@ mod cwr_writecb;
 mod cwr_erasecb;
 mod cwr_writeasync;
 mod cwr_write;
+mod cdl_deletecb;
+mod cdl_fastasync;
+mod cdl_fast;
+mod cdl_async;
+mod cdl_delete;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -813,6 +818,11 @@ impl Generator {
             || self.try_cwr_erasecb(function)?
             || self.try_cwr_writeasync(function)?
             || self.try_cwr_write(function)?
+            || self.try_cdl_deletecb(function)?
+            || self.try_cdl_fastasync(function)?
+            || self.try_cdl_fast(function)?
+            || self.try_cdl_async(function)?
+            || self.try_cdl_delete(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
