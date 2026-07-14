@@ -185,6 +185,19 @@ impl Generator {
         {
             return Ok(false);
         }
+        // A store sink whose RETURN is an unrelated CONSTANT (`g(); *p=C; return K;`) uses mwcc's
+        // return-value-BEFORE-store schedule with a GPR-first restore (`li r3,K; stw ...; lwz r31;
+        // lwz r0`), NOT this store-sink path's LR-first `stw; li r3; lwz r0; lwz r31` — so it emits
+        // the wrong order. Defer it (byte-exact-or-defer) until that schedule is modeled. A return of
+        // the SAVED value (`foo(); gi=a; return a;`) is unaffected (its return is a variable, not a
+        // constant) and stays on the correct LR-first path.
+        if has_store
+            && matches!(function.statements.last(), Some(Statement::Store { .. }))
+            && function.return_type != Type::Void
+            && function.return_expression.as_ref().is_some_and(|expression| constant_value(expression).is_some())
+        {
+            return Ok(false);
+        }
         // With more than one saved value RETURNED, mwcc's scheduler interleaves the
         // epilogue restores with the post-call computation by register death — which we
         // don't model yet. It coincides with "all restores after" only when the values
