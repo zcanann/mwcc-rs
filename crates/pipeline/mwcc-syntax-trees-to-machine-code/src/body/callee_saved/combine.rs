@@ -840,7 +840,14 @@ impl Generator {
             .parameters
             .iter()
             .any(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double));
-        for (index, (_, arguments)) in init_calls.iter().enumerate() {
+        // A second shape is also modeled (single local, first call only): integer
+        // CONSTANT arguments. mwcc materializes each as a single `li` and hoists them
+        // into the prologue's post-mflr latency slot, ahead of the LR/GPR saves (the
+        // same slot the "constant argument after a global load" defer names) — the
+        // regular epilogue is unchanged. `const_head` records that call's index so the
+        // emission below splices the `li`s into the prologue and emits only the `bl`.
+        let mut const_head: Option<usize> = None;
+        for (index, (init_name, arguments)) in init_calls.iter().enumerate() {
             if arguments.is_empty() {
                 continue;
             }
@@ -852,7 +859,21 @@ impl Generator {
                     .iter()
                     .enumerate()
                     .all(|(position, argument)| matches!(argument, Expression::Variable(name) if name == &function.parameters[position].name));
-            if !forwards_parameters {
+            // Every argument a small integer literal (single `li`), and no producing-call
+            // parameter narrower than a word — a narrow parameter would narrow the constant
+            // to a different materialized value, so let those defer.
+            let li_constants = count == 1
+                && index == 0
+                && arguments.iter().all(|argument| matches!(argument, Expression::IntegerLiteral(value) if (-0x8000..=0x7fff).contains(value)))
+                && self
+                    .call_parameter_types
+                    .get(init_name)
+                    .map_or(true, |types| types.iter().all(|parameter_type| parameter_type.width() >= 32));
+            if forwards_parameters {
+                continue;
+            } else if li_constants {
+                const_head = Some(index);
+            } else {
                 return Ok(false);
             }
         }
@@ -871,6 +892,15 @@ impl Generator {
         }
         if count == 1 {
             if !expression_reads_name(return_expr, &function.locals[0].name) {
+                return Ok(false);
+            }
+            // The saved value nested >= 2 deep in the return (`return (-a)&C` = neg then
+            // clrlwi; `return a*3+1` = mulli then addi) DIES mid-computation, so mwcc
+            // interleaves its callee-saved restore at that death point (restore-by-
+            // register-death) — a schedule this all-restores-at-end epilogue does not
+            // model, so it would miscompile. Defer. Single-op post-processing (`a`, `a+1`,
+            // `a&C`; depth <= 1) is unaffected. (Mirrors the try_callee_saved guard.)
+            if name_nesting_depth(return_expr, &function.locals[0].name).is_some_and(|depth| depth >= 2) {
                 return Ok(false);
             }
         } else {
@@ -908,14 +938,28 @@ impl Generator {
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        self.output.instructions.extend(plan.prologue());
+        if let Some(head_index) = const_head {
+            // Materialize the producing call's constant arguments through the shared
+            // argument path (so `li`/type handling matches exactly), capture them, and
+            // splice them into the prologue's post-mflr latency slot.
+            let (init_name, arguments) = &init_calls[head_index];
+            let mark = self.output.instructions.len();
+            self.emit_arguments(arguments, init_name)?;
+            let head: Vec<Instruction> = self.output.instructions.drain(mark..).collect();
+            self.output.instructions.extend(plan.prologue_with_setup(head));
+        } else {
+            self.output.instructions.extend(plan.prologue());
+        }
 
         // Each local: its producing call, then move r3 into the local's callee-saved
         // register — the first local takes the lowest (r30 when there are two), the last
         // takes r31, matching mwcc's `bl g1; mr r30,r3; bl g2; mr r31,r3`.
         for (index, local) in function.locals.iter().enumerate() {
             let (init_name, init_arguments) = &init_calls[index];
-            self.emit_call(init_name, init_arguments, None, false)?;
+            // The const-head call's arguments are already materialized in the prologue;
+            // emit only its `bl` (empty argument list) so they are not re-emitted.
+            let call_arguments: &[Expression] = if const_head == Some(index) { &[] } else { init_arguments };
+            self.emit_call(init_name, call_arguments, None, false)?;
             // The first local takes the LOWEST home (homes are highest-first).
             let register = homes[count - 1 - index];
             self.output.instructions.push(Instruction::Or { a: register, s: 3, b: 3 });

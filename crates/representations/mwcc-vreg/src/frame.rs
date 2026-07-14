@@ -63,6 +63,24 @@ impl FramePlan {
         instructions
     }
 
+    /// The canonical prologue with independent SETUP work scheduled into the
+    /// latency slot right after `mflr`, before the register saves — `stwu; mflr;
+    /// <head…>; stw r0; stw rS…`. mwcc fills that slot with frame-independent
+    /// work (e.g. materializing a producing call's CONSTANT arguments as `li`s),
+    /// which has no dependency on the saved LR/GPRs. `head` is emitted in order.
+    pub fn prologue_with_setup(&self, head: Vec<Instruction>) -> Vec<Instruction> {
+        let mut instructions = vec![
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            Instruction::MoveFromLinkRegister { d: 0 },
+        ];
+        instructions.extend(head);
+        instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 });
+        for (slot, &register) in self.saved.iter().enumerate() {
+            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+        }
+        instructions
+    }
+
     /// The canonical epilogue: `lwz r0; lwz rS…; mtlr; addi; blr` (restores in
     /// slot order after the LR reload).
     pub fn epilogue(&self) -> Vec<Instruction> {
@@ -112,6 +130,23 @@ mod tests {
         assert_eq!(prologue[4], Instruction::Or { a: 31, s: 4, b: 4 });
         assert_eq!(prologue[5], Instruction::StoreWord { s: 30, a: 1, offset: 8 });
         assert_eq!(prologue[6], Instruction::Or { a: 30, s: 3, b: 3 });
+    }
+
+    #[test]
+    fn setup_work_lands_between_mflr_and_the_saves() {
+        let plan = FramePlan::sized_for(vec![31]);
+        // Two constant-argument materializations (li r3,2 / li r4,3) as the head.
+        let head = vec![
+            Instruction::AddImmediate { d: 3, a: 0, immediate: 2 },
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 3 },
+        ];
+        let prologue = plan.prologue_with_setup(head);
+        assert_eq!(prologue[0], Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        assert_eq!(prologue[1], Instruction::MoveFromLinkRegister { d: 0 });
+        assert_eq!(prologue[2], Instruction::AddImmediate { d: 3, a: 0, immediate: 2 });
+        assert_eq!(prologue[3], Instruction::AddImmediate { d: 4, a: 0, immediate: 3 });
+        assert_eq!(prologue[4], Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        assert_eq!(prologue[5], Instruction::StoreWord { s: 31, a: 1, offset: 12 });
     }
 
     #[test]
