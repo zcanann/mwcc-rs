@@ -470,6 +470,11 @@ mod cst_updateicon;
 mod cst_getstatus;
 mod cst_setasync;
 mod cst_setstatus;
+mod crw_readcb;
+mod crw_read;
+mod crw_writecb;
+mod crw_write;
+mod crw_bytes;
 mod dvd_error2num;
 mod dvd_convert;
 mod dvd_storeerr;
@@ -831,6 +836,11 @@ impl Generator {
             || self.try_cst_getstatus(function)?
             || self.try_cst_setasync(function)?
             || self.try_cst_setstatus(function)?
+            || self.try_crw_readcb(function)?
+            || self.try_crw_read(function)?
+            || self.try_crw_writecb(function)?
+            || self.try_crw_write(function)?
+            || self.try_crw_bytes(function)?
             || self.try_dvd_error2num(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
