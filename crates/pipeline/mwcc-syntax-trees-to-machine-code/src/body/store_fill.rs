@@ -34,6 +34,61 @@ impl Generator {
         Ok(true)
     }
 
+    /// A run of 2+ stores of FLOAT literals to small-data `float` globals (`gf=1.0f; gg=2.0f;`).
+    /// mwcc pre-loads each constant into a DISTINCT FPR — f(count-1) down to f0 — then stores
+    /// them all: `lfs f1,@a; lfs f0,@b; stfs f1,gf; stfs f0,gg`. A run of the SAME constant loads
+    /// once into f0 and reuses it. The integer constant-store-fill excludes float globals
+    /// (is_scratch_safe_store_target), so this is the float sibling. A MIXED run (some repeated,
+    /// some distinct) or an absolute-addressing target defers.
+    pub(crate) fn try_float_constant_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || !matches!(self.behavior.global_addressing, GlobalAddressing::SmallData)
+        {
+            return Ok(false);
+        }
+        let statements = function.statements.as_slice();
+        if statements.len() < 2 {
+            return Ok(false);
+        }
+        let mut bits = Vec::new();
+        for statement in statements {
+            let Statement::Store { target: Expression::Variable(name), value: Expression::FloatLiteral(value) } = statement else {
+                return Ok(false);
+            };
+            if !matches!(self.globals.get(name.as_str()), Some(Type::Float)) {
+                return Ok(false);
+            }
+            bits.push((*value as f32).to_bits());
+        }
+        let count = bits.len();
+        let all_same = bits.iter().all(|value| *value == bits[0]);
+        let distinct: std::collections::HashSet<u32> = bits.iter().copied().collect();
+        if !all_same && (distinct.len() != count || count > 14) {
+            return Ok(false);
+        }
+        if all_same {
+            self.load_float_constant(FLOAT_SCRATCH, f32::from_bits(bits[0]));
+            self.prematerialized_float_constants = vec![(bits[0], FLOAT_SCRATCH)];
+        } else {
+            let mut assignments = Vec::with_capacity(count);
+            for (index, &value) in bits.iter().enumerate() {
+                let register = (count - 1 - index) as u8;
+                self.load_float_constant(register, f32::from_bits(value));
+                assignments.push((value, register));
+            }
+            self.prematerialized_float_constants = assignments;
+        }
+        for statement in statements {
+            self.emit_statement(statement)?;
+        }
+        self.prematerialized_float_constants.clear();
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// The register plan for a run of two-or-more constant stores to scratch-safe targets, or
     /// `None` when the statements are not such a run (a non-store, a non-constant value, an unsafe
     /// target) or cannot be scheduled here (3+ distinct constants with a non-global or duplicate

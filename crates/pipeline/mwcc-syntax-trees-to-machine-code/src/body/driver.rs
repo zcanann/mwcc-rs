@@ -1176,6 +1176,11 @@ impl Generator {
         if self.try_constant_store_fill(function)? {
             return Ok(());
         }
+        // The float sibling: a leaf void body of float-literal stores to `float` globals
+        // (`gf=1.0f; gg=2.0f;`) pre-loads each into a distinct FPR, then stores.
+        if self.try_float_constant_store_fill(function)? {
+            return Ok(());
+        }
         // A whole-body `if (c) { <constant run> } else { <constant run> }`: branch over the then-arm
         // to the else, each arm the batched constant store run then its own `blr`.
         if self.try_constant_store_if_else(function)? {

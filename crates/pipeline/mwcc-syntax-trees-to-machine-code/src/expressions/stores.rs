@@ -461,6 +461,14 @@ impl Generator {
                 return Ok(register);
             }
         }
+        // A float constant pre-loaded into a fixed FPR (a distinct-float-constant store run)
+        // reuses that FPR instead of re-pooling and re-loading it.
+        if let Expression::FloatLiteral(value) = value {
+            let bits = (*value as f32).to_bits();
+            if let Some(&(_, register)) = self.prematerialized_float_constants.iter().find(|(existing, _)| *existing == bits) {
+                return Ok(register);
+            }
+        }
         // During a constant-store-fill run, a constant value reuses the scratch
         // register when it already holds that constant (mwcc materializes a
         // repeated store value once: `li r0,0; stw; stw; stw`). The run guarantees
