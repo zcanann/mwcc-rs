@@ -123,18 +123,27 @@ impl Generator {
         let Some(displacement) = (low as i32).checked_add(offset as i32).and_then(|d| i16::try_from(d).ok()) else {
             return Ok(false);
         };
-        // A float target whose value needs an int->float conversion (`(*(WGPipe*)ADDR).f32
-        // = (float)int_x`) emits the magic-constant sequence, and mwcc reschedules the base
-        // `lis` to AFTER it (reusing a GPR the conversion frees) rather than before — a
-        // schedule this base-first emission does not model (it would pick the wrong base
-        // register and order: measured DIFF on the GX write-gather-pipe). Defer. A float
-        // leaf/constant value has no such rescheduling and stays byte-exact.
-        if matches!(pointee, Pointee::Float | Pointee::Double) {
-            if let Expression::Cast { target_type, operand } = value {
-                if matches!(target_type, Type::Float | Type::Double) && !self.is_float_value(operand) {
-                    return Ok(false);
-                }
+        // This path lays the base `lis` down BEFORE the value (below), which matches mwcc
+        // ONLY when the value is a register-resident LEAF that needs no pre-computation —
+        // then mwcc also emits just `lis base; store`. For ANY value that first emits
+        // instructions (a constant `li`, a global load, a computed expression, a call, or
+        // an int<->float conversion), mwcc emits the VALUE first and materializes the base
+        // AFTER it, REUSING a GPR the value freed (`add r0,r3,r4; lis r3; stw r0,d(r3)`) —
+        // a look-ahead base allocation this base-first path does not model (keystone-level).
+        // Defer those rather than emit the wrong base register/order (measured DIFFs across
+        // `= a+b`, `= gi`, `= 5`, `= (float)int_x` on the GX write-gather-pipe and plain
+        // const-address stores). A same-class width cast of a register leaf (`(u8)x` ->
+        // `stb`) still stores from that register, so it stays a leaf.
+        let is_register_leaf = match value {
+            Expression::Variable(name) => self.locations.contains_key(name.as_str()),
+            Expression::Cast { target_type, operand } => {
+                matches!(operand.as_ref(), Expression::Variable(name) if self.locations.contains_key(name.as_str()))
+                    && (matches!(target_type, Type::Float | Type::Double) == self.is_float_value(operand))
             }
+            _ => false,
+        };
+        if !is_register_leaf {
+            return Ok(false);
         }
         // Only the FIRST constant-address access in a function is byte-exact; a second of any
         // kind needs mwcc's look-ahead base allocation and scheduling (keystone-level). Defer.
