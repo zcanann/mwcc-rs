@@ -8,6 +8,7 @@ mod guards_ifs;
 mod if_else;
 mod conditional;
 mod store_fill;
+mod float_store_fill;
 mod punned_select;
 mod punned_writeback;
 mod loops;
