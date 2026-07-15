@@ -545,6 +545,9 @@ impl Parser {
             // completed member/index chain — its final tag was recorded when the inner
             // factor finished (alloc.c's block_->client_size_ chains).
             Expression::Member { .. } | Expression::Index { .. } => self.expression_struct_tag.take(),
+            // `get()->field`: a call to a function that RETURNS a struct pointer carries the
+            // pointee's tag (recorded from the `struct S *get(...)` declaration).
+            Expression::Call { name, .. } => self.function_return_structs.get(name).cloned(),
             _ => None,
         };
         loop {

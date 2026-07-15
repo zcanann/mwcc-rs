@@ -50,6 +50,10 @@ pub(crate) struct Parser {
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
     pub(crate) variable_structs: HashMap<String, String>,
+    /// Functions that RETURN a struct pointer, mapped to the pointee's struct tag,
+    /// so `get()->field` resolves the returned pointer's layout (populated when a
+    /// `struct S *get(...)` prototype/definition is parsed).
+    pub(crate) function_return_structs: HashMap<String, String>,
     /// Struct-typed GLOBALS by name -> struct tag (`extern FILE_TABLE __files;`),
     /// so `&__files._stdout` in an initializer resolves its member offset.
     pub(crate) global_structs: HashMap<String, String>,

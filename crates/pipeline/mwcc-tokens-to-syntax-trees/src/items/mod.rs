@@ -1329,6 +1329,15 @@ impl Parser {
                 return Ok(());
             }
             let return_type = self.parse_type()?;
+            // A struct-POINTER return type carries a tag (`struct S *get(...)`); capture it now
+            // (before later declarators overwrite `last_struct_tag`) so a function declarator below
+            // can record it for `get()->field` resolution. A struct-VALUE return is not recorded
+            // (its `get().field` needs the unmodeled struct-return ABI and stays deferred).
+            let return_struct_tag = if matches!(return_type, Type::StructPointer { .. }) {
+                self.last_struct_tag.clone()
+            } else {
+                None
+            };
             // A bare type with no declarator (`enum E { … };`, a forward decl) just
             // registers the type; there is nothing else to emit.
             if *self.peek() == Token::Semicolon {
@@ -1397,6 +1406,13 @@ impl Parser {
             // entered (otherwise the stray `__attribute__` falls to the function path and
             // the declaration is skipped — a missing-symbol DIFF). `None` when absent.
             let attribute_alignment_name = self.skip_attributes()?;
+            // A `(` after the name begins a FUNCTION declarator: record a struct-pointer
+            // return tag so `name()->field` resolves the returned pointee's layout.
+            if *self.peek() == Token::ParenOpen {
+                if let Some(tag) = &return_struct_tag {
+                    self.function_return_structs.insert(name.clone(), tag.clone());
+                }
+            }
             // `type name;`, `type name[N];`, or comma-separated declarators is a
             // global variable declaration. A `(` instead begins a function. (An
             // initialized global `type name = …;` is not in the subset yet and

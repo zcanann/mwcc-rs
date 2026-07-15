@@ -559,6 +559,9 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
         Expression::Cast { operand, .. } => expression_has_call(operand),
         Expression::Dereference { pointer } => expression_has_call(pointer),
         Expression::Index { base, index } => expression_has_call(base) || expression_has_call(index),
+        // `get()->field` / `get()->arr[i]`: a call in the member/member-address base still makes
+        // the function non-leaf (it must save the link register around the call).
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => expression_has_call(base),
         _ => false,
     }
 }
