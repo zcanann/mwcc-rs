@@ -58,10 +58,19 @@ fi
 echo "== gate: reference support parity (2.6) =="
 sp="$(tools/support_parity.sh 2.6 2>&1)"
 sptot="$(grep 'SUPPORT TOTAL' <<<"$sp")"
-if grep -qE '/ 0D /' <<<"$sptot"; then
-  echo "  PASS  support   $sptot"
+# Byte-exact-or-defer requires DIFF == 0. But a change can also silently REGRESS
+# coverage (flip BYTE -> DEFER) while keeping DIFF 0 — that passed as GREEN once
+# (a volatile-local attempt dropped 454B -> 201B/253DEFER, gate none the wiser).
+# So also assert a BYTE-count FLOOR: coverage must not drop below the known-good
+# 454. Raise this floor when new support coverage lands; never lower it silently.
+SUPPORT_BYTE_FLOOR=454
+spbyte="$(grep -oE '[0-9]+B' <<<"$sptot" | tr -d 'B')"
+if ! grep -qE '/ 0D /' <<<"$sptot"; then
+  echo "  FAIL  support   $sptot  (DIFF != 0 — byte-exact-or-defer violation)"; fail=1
+elif [[ -z "$spbyte" || "$spbyte" -lt "$SUPPORT_BYTE_FLOOR" ]]; then
+  echo "  FAIL  support   $sptot  (BYTE coverage ${spbyte:-?} < floor $SUPPORT_BYTE_FLOOR — a BYTE->DEFER regression)"; fail=1
 else
-  echo "  FAIL  support   $sptot"; fail=1
+  echo "  PASS  support   $sptot"
 fi
 
 echo "-----------------------------------------------"
