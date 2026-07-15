@@ -204,6 +204,135 @@ impl Generator {
         Ok(true)
     }
 
+    /// Push a float/double store-with-update (`stfsu`/`stfdu`) — writes `s` at `0(base)` then
+    /// sets `base` to that effective address (the `@l` relocation rides the displacement field).
+    fn push_float_store_update(&mut self, s: u8, base: u8, double: bool) {
+        self.output.instructions.push(if double {
+            Instruction::StoreFloatDoubleWithUpdate { s, a: base, offset: 0 }
+        } else {
+            Instruction::StoreFloatSingleWithUpdate { s, a: base, offset: 0 }
+        });
+    }
+
+    /// Push a plain float/double displacement store (`stfs`/`stfd`) of `s` at `offset(base)`.
+    fn push_float_store_at(&mut self, s: u8, base: u8, offset: i16, double: bool) {
+        self.output.instructions.push(if double {
+            Instruction::StoreFloatDouble { s, a: base, offset }
+        } else {
+            Instruction::StoreFloatSingle { s, a: base, offset }
+        });
+    }
+
+    /// A leaf void body that initializes consecutive elements of ONE file-scope array global from
+    /// index 0 with float/double literals (`g[0]=1.0f; g[1]=2.0f; g[2]=3.0f;` — table/vector init).
+    /// For a LARGE (ADDR16) array mwcc uses a shared-base schedule: it loads the values into distinct
+    /// FPRs and materializes the base with `lis`, then the FIRST store is a `stfsu` (store-with-update)
+    /// that both writes element 0 AND sets the base to `&g[0]`, so the remaining `stfs` ride element
+    /// offsets off it:
+    ///
+    /// ```text
+    ///   lfs f2,@a ; lis base,g@ha ; lfs f1,@b ; stfsu f2,g@l(base) ; lfs f0,@c ; stfs f1,4 ; stfs f0,8
+    /// ```
+    ///
+    /// The loads are in source order (so the `.sdata2` pool interns 0,1,2,…); element `i` uses FPR
+    /// `f(count-1-i)`; TWO loads precede the `stfsu`, the rest follow it, then the tail stores. Verified
+    /// version-invariant (1.3.2/2.6/2.7), float and double, for the two clean value profiles — all-same
+    /// (one FPR, one load) and all-distinct. A partial-duplicate run value-numbers by liveness (keystone),
+    /// a run not starting at index 0 materializes with `addi` instead of `stfsu`, and a SMALL (SDA) array
+    /// uses a `li` base — all three defer here.
+    pub(crate) fn try_float_array_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || !function.parameters.is_empty()
+        {
+            return Ok(false);
+        }
+        let statements = function.statements.as_slice();
+        // Two-plus elements; capped at 14 so the distinct FPRs stay in the volatile bank (f0..f13).
+        if statements.len() < 2 || statements.len() > 14 {
+            return Ok(false);
+        }
+        // The first store fixes the array and requires the run to begin at element 0.
+        let array_name = match statements.first() {
+            Some(Statement::Store {
+                target: Expression::Index { base, index },
+                value: Expression::FloatLiteral(_),
+            }) if matches!(index.as_ref(), Expression::IntegerLiteral(0)) => {
+                match base.as_ref() {
+                    Expression::Variable(name) => name.clone(),
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        };
+        // A LARGE (ADDR16) array only — the SMALL (SDA) run uses a different base setup.
+        let Some(&total_size) = self.global_array_sizes.get(array_name.as_str()) else {
+            return Ok(false);
+        };
+        if self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8 {
+            return Ok(false);
+        }
+        let double = match self.globals.get(array_name.as_str()) {
+            Some(Type::Double) => true,
+            Some(Type::Float) => false,
+            _ => return Ok(false),
+        };
+        let element_size: i64 = if double { 8 } else { 4 };
+        // Every statement stores a matching-width float/double literal to g[i], i ascending 0,1,2,…
+        let mut values = Vec::new();
+        for (expected_index, statement) in statements.iter().enumerate() {
+            let Statement::Store {
+                target: Expression::Index { base, index },
+                value: Expression::FloatLiteral(value),
+            } = statement else {
+                return Ok(false);
+            };
+            match base.as_ref() {
+                Expression::Variable(name) if *name == array_name => {}
+                _ => return Ok(false),
+            }
+            if !matches!(index.as_ref(), Expression::IntegerLiteral(i) if *i == expected_index as i64) {
+                return Ok(false);
+            }
+            values.push(*value);
+        }
+        let count = values.len();
+        let keys: Vec<u64> = values.iter().map(|value| value.to_bits()).collect();
+        let all_same = keys.iter().all(|key| *key == keys[0]);
+        let distinct: std::collections::HashSet<u64> = keys.iter().copied().collect();
+        // Only the two liveness-degenerate profiles are modeled; a partial-duplicate run defers.
+        if !all_same && distinct.len() != count {
+            return Ok(false);
+        }
+        let base = self.lowest_free_general()?;
+        if all_same {
+            self.load_float_literal(FLOAT_SCRATCH, values[0], double);
+            self.emit_address_high(base, &array_name);
+            self.record_relocation(RelocationKind::Addr16Lo, &array_name);
+            self.push_float_store_update(FLOAT_SCRATCH, base, double);
+            for i in 1..count {
+                self.push_float_store_at(FLOAT_SCRATCH, base, (i as i64 * element_size) as i16, double);
+            }
+        } else {
+            let fpr = |i: usize| (count - 1 - i) as u8;
+            self.load_float_literal(fpr(0), values[0], double);
+            self.emit_address_high(base, &array_name);
+            self.load_float_literal(fpr(1), values[1], double);
+            self.record_relocation(RelocationKind::Addr16Lo, &array_name);
+            self.push_float_store_update(fpr(0), base, double);
+            for i in 2..count {
+                self.load_float_literal(fpr(i), values[i], double);
+            }
+            for i in 1..count {
+                self.push_float_store_at(fpr(i), base, (i as i64 * element_size) as i16, double);
+            }
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// The register plan for a run of two-or-more constant stores to scratch-safe targets, or
     /// `None` when the statements are not such a run (a non-store, a non-constant value, an unsafe
     /// target) or cannot be scheduled here (3+ distinct constants with a non-global or duplicate

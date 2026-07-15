@@ -759,6 +759,12 @@ impl Generator {
         if matches!(function.return_type, Type::Struct { .. }) {
             return Err(Diagnostic::error("returning a struct by value is not supported yet (roadmap)"));
         }
+        // A whole-array float/double constant-init run (`g[0]=1.0f; g[1]=2.0f; …`) uses mwcc's
+        // shared-base `stfsu` schedule — claim it before the base-addressed-aggregate pre-check
+        // below would defer it as an unscheduled multi-store.
+        if self.try_float_array_store_fill(function)? {
+            return Ok(());
+        }
         // A store to a global AGGREGATE that addresses through a base register (a struct value's
         // non-offset-0 or large field, or any array element) alongside ANOTHER store: mwcc materializes
         // that base (`li rB,g@sda21` / `lis rB,g@ha`) AHEAD of all the stores; our program-order
