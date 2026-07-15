@@ -123,6 +123,19 @@ impl Generator {
         let Some(displacement) = (low as i32).checked_add(offset as i32).and_then(|d| i16::try_from(d).ok()) else {
             return Ok(false);
         };
+        // A float target whose value needs an int->float conversion (`(*(WGPipe*)ADDR).f32
+        // = (float)int_x`) emits the magic-constant sequence, and mwcc reschedules the base
+        // `lis` to AFTER it (reusing a GPR the conversion frees) rather than before — a
+        // schedule this base-first emission does not model (it would pick the wrong base
+        // register and order: measured DIFF on the GX write-gather-pipe). Defer. A float
+        // leaf/constant value has no such rescheduling and stays byte-exact.
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            if let Expression::Cast { target_type, operand } = value {
+                if matches!(target_type, Type::Float | Type::Double) && !self.is_float_value(operand) {
+                    return Ok(false);
+                }
+            }
+        }
         // Only the FIRST constant-address access in a function is byte-exact; a second of any
         // kind needs mwcc's look-ahead base allocation and scheduling (keystone-level). Defer.
         if !self.const_address_bases.is_empty() {
