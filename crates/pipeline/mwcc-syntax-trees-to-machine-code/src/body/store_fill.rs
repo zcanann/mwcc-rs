@@ -204,6 +204,95 @@ impl Generator {
         Ok(true)
     }
 
+    /// A leaf void body of exactly two member stores through ONE pointer base — one integer
+    /// literal and one float/double literal, in either order (`p->i = 0; p->f = 1.0f;` — a
+    /// `{int,float}` struct init). mwcc materializes BOTH values first (source order; the integer
+    /// into the `r0` scratch, the float into `f0` — separate register files, so no contention),
+    /// then emits BOTH stores in source order:
+    ///
+    /// ```text
+    ///   li r0,0 ; lfs f0,@val ; stw r0,0(base) ; stfs f0,4(base)
+    /// ```
+    ///
+    /// Only this two-element, one-of-each shape is modeled: it is version-invariant
+    /// (1.3.2/2.0/2.6/2.7) and needs no register scheduling. Three-plus mixed runs interleave the
+    /// float FPR pipeline with the stores in scheduler-dependent orders, and a SECOND integer value
+    /// contends with the base for a GPR (`li r4; li r0; …`) — both keystone; left to the general path.
+    pub(crate) fn try_mixed_member_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        enum Materialize {
+            Integer(i64),
+            Float(f64, bool),
+        }
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let statements = function.statements.as_slice();
+        if statements.len() != 2 {
+            return Ok(false);
+        }
+        // Both must be member-literal stores through the same base, each value matching its member
+        // class (float/double member <-> FloatLiteral, integer member <-> IntegerLiteral).
+        let mut parsed: Vec<(String, u16, Pointee, Materialize)> = Vec::new();
+        for statement in statements {
+            let Statement::Store {
+                target: Expression::Member { base, offset, member_type, index_stride: None },
+                value,
+            } = statement else {
+                return Ok(false);
+            };
+            let Expression::Variable(name) = base.as_ref() else { return Ok(false); };
+            let Some(pointee) = pointee_of_type(*member_type) else { return Ok(false); };
+            let materialize = match pointee {
+                Pointee::Float | Pointee::Double => {
+                    let Expression::FloatLiteral(literal) = value else { return Ok(false); };
+                    Materialize::Float(*literal, matches!(pointee, Pointee::Double))
+                }
+                _ => {
+                    let Expression::IntegerLiteral(literal) = value else { return Ok(false); };
+                    // Only a single-`li` integer (fits a signed 16-bit immediate). A wider value
+                    // materializes with `lis;addi`, and mwcc slots the float load into that gap
+                    // (`lis r4; lfs f0; addi r0,r4; …`) — a scheduler interleave, left to defer.
+                    if i16::try_from(*literal).is_err() {
+                        return Ok(false);
+                    }
+                    Materialize::Integer(*literal)
+                }
+            };
+            parsed.push((name.clone(), *offset, pointee, materialize));
+        }
+        // Same base pointer, and exactly one float-class member paired with one integer-class member.
+        if parsed[0].0 != parsed[1].0 {
+            return Ok(false);
+        }
+        let float_members = parsed.iter().filter(|(_, _, _, m)| matches!(m, Materialize::Float(..))).count();
+        if float_members != 1 {
+            return Ok(false);
+        }
+        let Some(base) = self.lookup_general(&parsed[0].0) else {
+            return Ok(false);
+        };
+        // Materialize both values (source order), then both stores (source order).
+        for (_, _, _, materialize) in &parsed {
+            match materialize {
+                Materialize::Float(literal, double) => self.load_float_literal(FLOAT_SCRATCH, *literal, *double),
+                Materialize::Integer(literal) => self.load_integer_constant(GENERAL_SCRATCH, *literal),
+            }
+        }
+        for (_, offset, pointee, materialize) in &parsed {
+            let register = match materialize {
+                Materialize::Float(..) => FLOAT_SCRATCH,
+                Materialize::Integer(_) => GENERAL_SCRATCH,
+            };
+            self.output.instructions.push(displacement_store(*pointee, register, base, *offset as i16)?);
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// Push a float/double store-with-update (`stfsu`/`stfdu`) — writes `s` at `0(base)` then
     /// sets `base` to that effective address (the `@l` relocation rides the displacement field).
     fn push_float_store_update(&mut self, s: u8, base: u8, double: bool) {

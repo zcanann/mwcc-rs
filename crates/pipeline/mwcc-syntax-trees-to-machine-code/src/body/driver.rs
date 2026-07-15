@@ -1193,6 +1193,11 @@ impl Generator {
         if self.try_float_member_store_fill(function)? {
             return Ok(());
         }
+        // The mixed sibling: exactly one integer-member and one float-member store through one base
+        // (`p->i=0; p->f=1.0f;`) — mwcc materializes both values (r0 + f0) then both stores.
+        if self.try_mixed_member_store_fill(function)? {
+            return Ok(());
+        }
         // A whole-body `if (c) { <constant run> } else { <constant run> }`: branch over the then-arm
         // to the else, each arm the batched constant store run then its own `blr`.
         if self.try_constant_store_if_else(function)? {
