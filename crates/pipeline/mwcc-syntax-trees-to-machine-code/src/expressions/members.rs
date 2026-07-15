@@ -82,22 +82,16 @@ impl Generator {
         }
         let pointee = pointee_of_type(member_type)
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
-        // `get()->field`: evaluate the call so the returned pointer is in the result register (r3),
-        // then ONE member load. Only a single post-call instruction is byte-exact — the enclosing
-        // non-leaf epilogue places the LR reload before it, matching the byte-exact `get() + 1`. A
-        // signed `char` (lbz + a separate `extsb`), a NESTED member (`get()->b->c`, two loads), or a
-        // member STORE (the value must survive the call in a callee-saved register) add post-call
-        // instructions whose LR-reload/allocation mwcc schedules differently; those defer — the nested
-        // and store contexts reach `member_base_register` with a non-bare-Call base (which has no Call
-        // arm), and a signed char hits the guard here.
-        if let Expression::Call { .. } = base {
-            if matches!(pointee, Pointee::Char) {
-                return Err(Diagnostic::error("a signed-char member through a call base needs the sign-extend epilogue schedule (roadmap)"));
-            }
-            let result = Eabi::general_result().number;
-            self.evaluate_general(base, result)?;
-            self.output.instructions.push(displacement_load(pointee, destination, result, offset as i16)?);
-            return Ok(());
+        // `get()->field`: a member access on a struct-pointer-returning call. Emitting it directly
+        // here (call, then the member load) is byte-exact for a TERMINAL value — `return get()->x`,
+        // `g = get()->x`, `foo(get()->x)` — but a trailing in-place op (`get()->x + C` → `addi`)
+        // makes mwcc reschedule the post-call link-register reload in a way the general epilogue
+        // scheduler does not reproduce (verified: `+C`/`-C` diverge; `&`/`<<`/terminal match). The
+        // load site cannot tell whether such a trailing op follows, so DEFER here to preserve
+        // byte-exact-or-defer. Making the terminal contexts byte-exact needs statement-level handling
+        // that owns the epilogue schedule — a follow-up.
+        if matches!(base, Expression::Call { .. }) {
+            return Err(Diagnostic::error("a member load through a call base needs the call-return epilogue schedule (roadmap)"));
         }
         let address = self.member_base_register(base)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, offset as i16)?);
