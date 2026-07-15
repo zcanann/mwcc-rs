@@ -80,16 +80,26 @@ impl Generator {
                 }
             }
         }
-        // A signed `char` member through a CALL base loads with `lbz` then a SEPARATE `extsb`, and
-        // mwcc schedules the link-register reload BETWEEN the two (an epilogue-scheduling nuance not
-        // modeled). Defer before the call is emitted — every other member width via a call base
-        // (int/short/unsigned/pointer, single-instruction loads) is byte-exact.
-        if matches!(base, Expression::Call { .. }) && matches!(pointee_of_type(member_type), Some(Pointee::Char)) {
-            return Err(Diagnostic::error("a signed-char member through a call base needs the sign-extend epilogue schedule (roadmap)"));
-        }
-        let address = self.member_base_register(base)?;
         let pointee = pointee_of_type(member_type)
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+        // `get()->field`: evaluate the call so the returned pointer is in the result register (r3),
+        // then ONE member load. Only a single post-call instruction is byte-exact — the enclosing
+        // non-leaf epilogue places the LR reload before it, matching the byte-exact `get() + 1`. A
+        // signed `char` (lbz + a separate `extsb`), a NESTED member (`get()->b->c`, two loads), or a
+        // member STORE (the value must survive the call in a callee-saved register) add post-call
+        // instructions whose LR-reload/allocation mwcc schedules differently; those defer — the nested
+        // and store contexts reach `member_base_register` with a non-bare-Call base (which has no Call
+        // arm), and a signed char hits the guard here.
+        if let Expression::Call { .. } = base {
+            if matches!(pointee, Pointee::Char) {
+                return Err(Diagnostic::error("a signed-char member through a call base needs the sign-extend epilogue schedule (roadmap)"));
+            }
+            let result = Eabi::general_result().number;
+            self.evaluate_general(base, result)?;
+            self.output.instructions.push(displacement_load(pointee, destination, result, offset as i16)?);
+            return Ok(());
+        }
+        let address = self.member_base_register(base)?;
         self.output.instructions.push(displacement_load(pointee, destination, address, offset as i16)?);
         Ok(())
     }
@@ -250,15 +260,9 @@ impl Generator {
             // `((struct S *)x)->field`: a pointer cast is transparent — the base is
             // just the operand's pointer value.
             Expression::Cast { operand, .. } => self.member_base_register(operand),
-            // `get()->field`: evaluate the call so the returned pointer lands in the general
-            // result register (r3); the member load then reads its field at `offset(r3)`. The
-            // enclosing non-leaf frame/epilogue scheduler places the LR reload around it (the
-            // same schedule as `get() + 1`, which is byte-exact).
-            Expression::Call { .. } => {
-                let result = Eabi::general_result().number;
-                self.evaluate_general(base, result)?;
-                Ok(result)
-            }
+            // A bare `get()->field` is handled in emit_member_load (single-load, byte-exact); any
+            // OTHER call context reaching here (a nested `get()->b->c`, an indexed `get()->a[i]`, a
+            // member store) has a post-call schedule mwcc places differently — defer.
             _ => Err(Diagnostic::error("struct member base must be a pointer variable (roadmap)")),
         }
     }
