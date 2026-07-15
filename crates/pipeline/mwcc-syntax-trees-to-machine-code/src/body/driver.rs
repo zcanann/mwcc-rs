@@ -1181,6 +1181,12 @@ impl Generator {
         if self.try_float_constant_store_fill(function)? {
             return Ok(());
         }
+        // The member sibling: float-literal stores to consecutive members through one pointer base
+        // (`p->x=1.0f; p->y=2.0f; p->z=3.0f;`) run mwcc's two-FPR software pipeline, staying two
+        // loads ahead of the stores rather than the naive load/store/load/store.
+        if self.try_float_member_store_fill(function)? {
+            return Ok(());
+        }
         // A whole-body `if (c) { <constant run> } else { <constant run> }`: branch over the then-arm
         // to the else, each arm the batched constant store run then its own `blr`.
         if self.try_constant_store_if_else(function)? {

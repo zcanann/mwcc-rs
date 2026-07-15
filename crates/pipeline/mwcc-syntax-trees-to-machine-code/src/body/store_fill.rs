@@ -102,6 +102,108 @@ impl Generator {
         Ok(true)
     }
 
+    /// A leaf void body of float-literal stores to consecutive members through ONE pointer base
+    /// (`p->x = 1.0f; p->y = 2.0f; p->z = 3.0f;` — vector/matrix init). Unlike the global sibling,
+    /// the base pointer occupies a register, so mwcc does not pre-load N distinct FPRs; instead it
+    /// runs a fixed TWO-FPR software pipeline that stays two loads ahead of the stores:
+    ///
+    /// ```text
+    ///   lfs f0,@x ; lfs f1,@y ; stfs f0 ; lfs f0,@z ; stfs f1 ; stfs f0   (reload reuses the freed FPR)
+    /// ```
+    ///
+    /// The register for element `i` is `f((N-1-i) & 1)` (the last store is always `f0`), and each
+    /// `load[i+2]` reuses the FPR that `store[i]` just freed. Verified identical at 1.3.2/2.0/2.6/2.7.
+    /// Only the two CLEAN value profiles are modeled: an all-same run (one FPR, load once, store N),
+    /// and an all-distinct run (the pipeline). A partial-duplicate run value-numbers differently
+    /// (`1,2,1` keeps `1.0` live in one FPR and re-orders the assignment) and defers.
+    pub(crate) fn try_float_member_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+        if function_makes_call(function)
+            || function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let statements = function.statements.as_slice();
+        if statements.len() < 2 {
+            return Ok(false);
+        }
+        // The first statement fixes the base pointer name and the run's width (float vs double).
+        let (base_name, run_is_double) = match statements.first() {
+            Some(Statement::Store {
+                target: Expression::Member { base, member_type, index_stride: None, .. },
+                value: Expression::FloatLiteral(_),
+            }) => match (base.as_ref(), member_type) {
+                (Expression::Variable(name), Type::Double) => (name.clone(), true),
+                (Expression::Variable(name), Type::Float) => (name.clone(), false),
+                _ => return Ok(false),
+            },
+            _ => return Ok(false),
+        };
+        let mut values = Vec::new();
+        let mut offsets = Vec::new();
+        for statement in statements {
+            let Statement::Store {
+                target: Expression::Member { base, offset, member_type, index_stride: None },
+                value: Expression::FloatLiteral(value),
+            } = statement else {
+                return Ok(false);
+            };
+            match base.as_ref() {
+                Expression::Variable(name) if *name == base_name => {}
+                _ => return Ok(false),
+            }
+            let matches_type = match member_type {
+                Type::Double => run_is_double,
+                Type::Float => !run_is_double,
+                _ => false,
+            };
+            if !matches_type {
+                return Ok(false);
+            }
+            values.push(*value);
+            offsets.push(*offset);
+        }
+        let Some(base_register) = self.lookup_general(&base_name) else {
+            return Ok(false);
+        };
+        let count = values.len();
+        let keys: Vec<u64> = values.iter().map(|value| value.to_bits()).collect();
+        let all_same = keys.iter().all(|key| *key == keys[0]);
+        let distinct: std::collections::HashSet<u64> = keys.iter().copied().collect();
+        // Only the two cleanly-modeled profiles proceed; a partial-duplicate run defers.
+        if !all_same && distinct.len() != count {
+            return Ok(false);
+        }
+        let emit_store = |generator: &mut Self, register: u8, offset: u16| {
+            let instruction = if run_is_double {
+                Instruction::StoreFloatDouble { s: register, a: base_register, offset: offset as i16 }
+            } else {
+                Instruction::StoreFloatSingle { s: register, a: base_register, offset: offset as i16 }
+            };
+            generator.output.instructions.push(instruction);
+        };
+        if all_same {
+            self.load_float_literal(FLOAT_SCRATCH, values[0], run_is_double);
+            for &offset in &offsets {
+                emit_store(self, FLOAT_SCRATCH, offset);
+            }
+        } else {
+            // Two-FPR software pipeline: register(i) = f((N-1-i) & 1), two loads ahead of the stores.
+            let register = |index: usize| ((count - 1 - index) & 1) as u8;
+            self.load_float_literal(register(0), values[0], run_is_double);
+            self.load_float_literal(register(1), values[1], run_is_double);
+            for index in 0..count {
+                emit_store(self, register(index), offsets[index]);
+                if index + 2 < count {
+                    self.load_float_literal(register(index + 2), values[index + 2], run_is_double);
+                }
+            }
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// The register plan for a run of two-or-more constant stores to scratch-safe targets, or
     /// `None` when the statements are not such a run (a non-store, a non-constant value, an unsafe
     /// target) or cannot be scheduled here (3+ distinct constants with a non-global or duplicate
