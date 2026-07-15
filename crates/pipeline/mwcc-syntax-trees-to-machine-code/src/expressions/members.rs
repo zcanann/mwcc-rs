@@ -565,6 +565,57 @@ impl Generator {
         let element_type = self.globals[name];
         let pointee = pointee_of_type(element_type)
             .ok_or_else(|| Diagnostic::error("a global array of this element type is not supported yet (roadmap)"))?;
+        // A float/double LITERAL element store at a CONSTANT index. mwcc materializes the value
+        // (`lfs`/`lfd` from the `.sdata2` pool) and the array base, scheduling the value load
+        // relative to the base differently per shape (all verified version-invariant across
+        // 1.3.2/2.6/2.7). `place_store_value` emits the width-correct load and yields the FPR.
+        //   - large (ADDR16) array, offset 0:  value ; lis base,name@ha ; stf val,name@l(base)
+        //     (`@l` folds into the store's displacement, so no `addi`)
+        //   - large (ADDR16) array, offset N:  lis base,name@ha ; value ; addi base,base,name@l ;
+        //     stf val,N(base)  (the value load fills the slot between the `lis` and the `addi`)
+        //   - small (SDA) array (total <= 8):  value ; li base,name@sda21 ; stf val,offset(base)
+        if matches!(pointee, Pointee::Float | Pointee::Double) && matches!(value, Expression::FloatLiteral(_)) {
+            if let Some(constant_index) = constant_value(index) {
+                let offset = constant_index * pointee.size() as i64;
+                let offset = i16::try_from(offset)
+                    .map_err(|_| Diagnostic::error("array subscript out of range (roadmap)"))?;
+                let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+                // Element 0 of a SMALL (SDA) array folds the relocation directly into the store,
+                // like a scalar global — no base register (`lfs val; stf val,name@sda21(r0)`).
+                if small && offset == 0 {
+                    let source = self.place_store_value(value, pointee)?;
+                    self.record_relocation(RelocationKind::EmbSda21, name);
+                    self.output.instructions.push(displacement_store(pointee, source, 0, 0)?);
+                    return Ok(());
+                }
+                let base = self.fresh_virtual_general();
+                let restore = self.reserved.insert(base);
+                if small {
+                    // value ; li base,name@sda21 ; stf val,offset(base)
+                    let source = self.place_store_value(value, pointee)?;
+                    self.record_relocation(RelocationKind::EmbSda21, name);
+                    self.output.instructions.push(Instruction::AddImmediate { d: base, a: 0, immediate: 0 });
+                    if restore { self.reserved.remove(&base); }
+                    self.output.instructions.push(displacement_store(pointee, source, base, offset)?);
+                } else if offset == 0 {
+                    // value ; lis base,name@ha ; stf val,name@l(base)  (`@l` folds into the store)
+                    let source = self.place_store_value(value, pointee)?;
+                    self.emit_address_high(base, name);
+                    if restore { self.reserved.remove(&base); }
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                    self.output.instructions.push(displacement_store(pointee, source, base, 0)?);
+                } else {
+                    // lis base,name@ha ; value ; addi base,base,name@l ; stf val,offset(base)
+                    self.emit_address_high(base, name);
+                    let source = self.place_store_value(value, pointee)?;
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                    self.output.instructions.push(Instruction::AddImmediate { d: base, a: base, immediate: 0 });
+                    if restore { self.reserved.remove(&base); }
+                    self.output.instructions.push(displacement_store(pointee, source, base, offset)?);
+                }
+                return Ok(());
+            }
+        }
         // A CONSTANT value over a VARIABLE index on a large (ADDR16) array is handled in
         // the variable-index path below: the constant materializes into the freed
         // base-high register after the `addi` — `lis r4,@ha; slwi r0,i,2; addi r3,r4,@lo;
