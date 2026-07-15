@@ -503,7 +503,10 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             Some(align) => align.max(4),
             None if global.array_length.is_some() => element_size.max(4),
             None => element_size,
-        };
+        }
+        // An explicit `__attribute__((aligned(n)))` raises the object's alignment (and
+        // thus its section's sh_addralign) — dolphin's ATTRIBUTE_ALIGN(32) DMA buffers.
+        .max(global.attribute_alignment.map_or(1, u32::from));
         // A struct's constant initializer lists its individual fields, each at its own
         // offset, so it serializes with a 4-byte field stride even though the object is
         // `struct_size`. (Only all-word-field structs are supported; a sub-word field

@@ -676,11 +676,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // FILE entries, holding that symbol's alignment (0 for an undefined external).
     // Values are collected here in symbol-emission order.
     let mut comment_values: Vec<(u32, u32)> = Vec::new();
+    // mwcc raises a data section's alignment (sh_addralign) to the MAX alignment of the
+    // objects it holds: a `__attribute__((aligned(32)))` global makes its `.bss`/`.sdata`
+    // 32-aligned rather than the 8-byte default (dolphin DMA buffers). Compute the per-
+    // section max object alignment (data_aligns/data_section are fully populated by now).
+    let mut section_max_align: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for (name, section) in &data_section {
+        let entry = section_max_align.entry(*section).or_insert(0);
+        *entry = (*entry).max(data_aligns[name]);
+    }
     let section_align = |name: &str| -> u32 {
-        match name {
+        let base = match name {
             ".sdata2" | ".sdata" | ".sbss" | ".data" | ".bss" | ".rodata" => 8,
             _ => 4,
-        }
+        };
+        base.max(section_max_align.get(name).copied().unwrap_or(0))
     };
     let mut strtab = StringTable::new();
     let mut symtab = Vec::new();
@@ -1567,30 +1577,30 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // `.rodata` (read-only const data) then the large writable `.data`/`.bss`
     // precede the small-data sections, matching the section-name order above.
     if has_rodata {
-        push(".rodata", SHT_PROGBITS, SHF_ALLOC, 0, 0, 8, 0, rodata, 0);
+        push(".rodata", SHT_PROGBITS, SHF_ALLOC, 0, 0, section_align(".rodata"), 0, rodata, 0);
     }
     if has_data {
         // `.data` holds the creation-order layout computed above — file data
         // and jump tables interleaved; table bytes stay zero (ADDR32
         // relocations fill them at link time).
-        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, file_data, 0);
+        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".data"), 0, file_data, 0);
     }
     if has_bss {
         // `.bss` is NOBITS (large zero-initialized globals): a size, no file bytes.
-        push(".bss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, Vec::new(), bss_size);
+        push(".bss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".bss"), 0, Vec::new(), bss_size);
     }
     // Defined small data (`.sdata`/`.sbss`) precedes the read-only constant pool
     // (`.sdata2`), matching the section-name order above.
     if has_sdata {
         // `.sdata` holds the initialized values as file bytes.
-        push(".sdata", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata, 0);
+        push(".sdata", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".sdata"), 0, sdata, 0);
     }
     if has_sbss {
         // `.sbss` is NOBITS: no file bytes, but `sh_size` is the in-memory size.
-        push(".sbss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, Vec::new(), sbss_size);
+        push(".sbss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".sbss"), 0, Vec::new(), sbss_size);
     }
     if has_constants || has_const_sdata2 {
-        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, 8, 0, sdata2, 0);
+        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".sdata2"), 0, sdata2, 0);
     }
     if has_mwcats {
         push(&mwcats_section, SHT_MWCATS, 0, index_of(text_section), 0, 4, 1, mwcats, 0);

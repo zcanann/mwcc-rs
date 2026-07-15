@@ -185,6 +185,10 @@ pub struct GlobalDeclaration {
     /// default `.sdata`/`.sdata2`/`.sbss` placement (e.g. `.dtors` for a global
     /// destructor-chain reference). `None` uses the default rules.
     pub section: Option<String>,
+    /// An explicit alignment from `__attribute__((aligned(n)))` on the declarator
+    /// (dolphin's `ATTRIBUTE_ALIGN(n)` on a DMA buffer). The lowering folds it into
+    /// the object's alignment (`max` with the natural/array minimum). `None` = none.
+    pub attribute_alignment: Option<u16>,
 }
 
 /// One element of a pointer global's initializer.

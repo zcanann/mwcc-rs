@@ -495,6 +495,7 @@ impl Parser {
                                 data_relocations: Vec::new(),
                                 is_weak: true,
                                 section: None,
+                                attribute_alignment: None,
                             });
                         }
                     }
@@ -592,6 +593,7 @@ impl Parser {
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 section: Some(".ctors".to_string()),
+                attribute_alignment: None,
             });
         }
         Ok(TranslationUnit {
@@ -1316,7 +1318,7 @@ impl Parser {
                         return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
                     }
                     self.variable_structs.insert(name.clone(), tag.clone());
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone(), attribute_alignment: None });
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {
@@ -1385,10 +1387,16 @@ impl Parser {
                     None
                 };
                 self.expect(Token::Semicolon)?;
-                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone() });
+                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone(), attribute_alignment: None });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
+            // A `__attribute__((aligned(n)))` immediately AFTER the declarator name
+            // (`T x ATTRIBUTE_ALIGN(n);` — the scalar form). Consuming it here makes the
+            // following token the real `;`/`[`/`=`, so the global-variable branch below is
+            // entered (otherwise the stray `__attribute__` falls to the function path and
+            // the declaration is skipped — a missing-symbol DIFF). `None` when absent.
+            let attribute_alignment_name = self.skip_attributes()?;
             // `type name;`, `type name[N];`, or comma-separated declarators is a
             // global variable declaration. A `(` instead begins a function. (An
             // initialized global `type name = …;` is not in the subset yet and
@@ -1425,6 +1433,14 @@ impl Parser {
                         self.expect(Token::BracketClose)?;
                         dimensions.push(count);
                     }
+                    // A `__attribute__((aligned(n)))` AFTER the dimensions (`u8 buf[32]
+                    // ATTRIBUTE_ALIGN(32);` — the common dolphin DMA-buffer form). Combine
+                    // with any post-name attribute; the larger requested alignment wins.
+                    let attribute_alignment_dims = self.skip_attributes()?;
+                    let attribute_alignment = match (attribute_alignment_name, attribute_alignment_dims) {
+                        (Some(a), Some(b)) => Some(a.max(b)),
+                        (a, b) => a.or(b),
+                    };
                     // A pointer global initialized with addresses (`int *p = &g;` or
                     // a `{&a, &b}` array) is a set of data relocations, not constants.
                     // An array of word-field structs with a pointer field (a
@@ -1549,7 +1565,7 @@ impl Parser {
                     } else {
                         is_const
                     };
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations), section: declspec_section.clone() });
+                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations), section: declspec_section.clone(), attribute_alignment });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type
