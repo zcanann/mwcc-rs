@@ -490,6 +490,14 @@ impl Generator {
             // register (mwcc emits no `frsp`/`fmr`). A single (`float*`) target is a real
             // narrowing, so it is left to the cast path.
             let value = if pointee == Pointee::Double { self.peel_redundant_double_cast(value) } else { value };
+            // A float/double LITERAL loads from the pool at the TARGET's width — `lfd` for a
+            // `double` target (8-byte pool entry), `lfs` for `float`. Without this, the general
+            // evaluator below defaults to a single `lfs`, storing a 4-byte constant to an 8-byte
+            // `double` target (measured DIFF: `gd = 1.0;` emitted `lfs` where mwcc emits `lfd`).
+            if let Expression::FloatLiteral(literal) = value {
+                self.load_float_literal(FLOAT_SCRATCH, *literal, pointee == Pointee::Double);
+                return Ok(FLOAT_SCRATCH);
+            }
             if let Expression::Variable(name) = value {
                 // A float parameter/local lives in a register; a float global is not in
                 // `locations`, so it falls through to the general float evaluator, which
