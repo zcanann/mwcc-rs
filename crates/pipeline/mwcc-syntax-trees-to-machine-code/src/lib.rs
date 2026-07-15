@@ -186,6 +186,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         register_avoid: HashMap::new(), register_prefer: HashMap::new(),
         stored_globals: HashMap::new(),
         const_address_bases: HashSet::new(),
+        emitted_variable_index_store: false,
         frame_slots: HashMap::new(),
         written_slots: HashSet::new(),
         reuse_scratch_constant: false,

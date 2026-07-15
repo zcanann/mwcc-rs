@@ -349,6 +349,15 @@ impl Generator {
                 self.output.instructions.push(displacement_store(pointee, source, address, offset)?);
             }
             Some(index) => {
+                // A SECOND variable-index subscript store defers: mwcc pre-scales the indices
+                // of multiple such stores up front (`slwi r4,r4,2; slwi r0,r6,2; stwx…; stwx…`),
+                // a look-ahead schedule the per-store just-in-time `slwi r0,i,k` does not model
+                // (measured DIFF: `a[i]=x; a[j]=y`). The first is byte-exact; the second emits
+                // the wrong interleaved, r0-reusing order — so defer it.
+                if self.emitted_variable_index_store {
+                    return Err(Diagnostic::error("a second variable-index subscript store needs look-ahead index scheduling (roadmap)"));
+                }
+                self.emitted_variable_index_store = true;
                 // A variable index uses the scratch for scaling, so the value must
                 // be a leaf (it stays in its own register) — no temporary, so release
                 // the address reservation up front.

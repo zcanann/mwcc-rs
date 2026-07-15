@@ -187,6 +187,14 @@ pub(crate) struct Generator {
     /// value, but the wrong bytes). Accesses with a zero high half (r0=0 base, no
     /// `lis`) never record here and are unaffected.
     pub(crate) const_address_bases: HashSet<i16>,
+    /// Set once a VARIABLE-index subscript store (`a[i] = v`, i not constant) has
+    /// scaled its index through the r0 scratch. mwcc pre-scales the indices of
+    /// MULTIPLE such stores up front (`slwi r4,r4,2; slwi r0,r6,2; stwx…; stwx…`),
+    /// a look-ahead schedule the just-in-time `slwi r0,i,k` per store does not
+    /// model — so a SECOND variable-index subscript store defers rather than emit
+    /// the wrong (interleaved, r0-reusing) order. Constant-index stores use a
+    /// displacement (no r0 scaling) and never set or consult this.
+    pub(crate) emitted_variable_index_store: bool,
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
