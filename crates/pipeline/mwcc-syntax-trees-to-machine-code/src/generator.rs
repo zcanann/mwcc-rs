@@ -195,11 +195,12 @@ pub(crate) struct Generator {
     /// the wrong (interleaved, r0-reusing) order. Constant-index stores use a
     /// displacement (no r0 scaling) and never set or consult this.
     pub(crate) emitted_variable_index_store: bool,
-    /// Float constants pre-loaded into fixed FPRs for a distinct-float-constant store run
-    /// (`gf=1.0f; gg=2.0f`): mwcc pre-loads each into a distinct FPR (`lfs f1,@a; lfs f0,@b;
-    /// stfs f1,gf; stfs f0,gg`), so `place_store_value` reuses the pre-loaded FPR by float
-    /// bits instead of re-pooling/re-loading. `(f32 bits, FPR)`; empty outside a run.
-    pub(crate) prematerialized_float_constants: Vec<(u32, u8)>,
+    /// Float/double constants pre-loaded into fixed FPRs for a distinct-float-constant store
+    /// run (`gf=1.0f; gg=2.0f`, or the `double` `lfd` variant): mwcc pre-loads each into a
+    /// distinct FPR (`lfs f1,@a; lfs f0,@b; stfs f1,gf; stfs f0,gg`), so `place_store_value`
+    /// reuses the pre-loaded FPR by the literal's f64 bits instead of re-pooling/re-loading.
+    /// `(FloatLiteral f64 bits, FPR)`; empty outside a run (runs are homogeneous float/double).
+    pub(crate) prematerialized_float_constants: Vec<(u64, u8)>,
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,

@@ -461,10 +461,11 @@ impl Generator {
                 return Ok(register);
             }
         }
-        // A float constant pre-loaded into a fixed FPR (a distinct-float-constant store run)
-        // reuses that FPR instead of re-pooling and re-loading it.
+        // A float/double constant pre-loaded into a fixed FPR (a distinct-float-constant store
+        // run) reuses that FPR instead of re-pooling and re-loading it. Keyed on the literal's
+        // f64 bits (the run is homogeneous float/double, so no float/double key collision).
         if let Expression::FloatLiteral(value) = value {
-            let bits = (*value as f32).to_bits();
+            let bits = value.to_bits();
             if let Some(&(_, register)) = self.prematerialized_float_constants.iter().find(|(existing, _)| *existing == bits) {
                 return Ok(register);
             }

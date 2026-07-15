@@ -53,31 +53,44 @@ impl Generator {
         if statements.len() < 2 {
             return Ok(false);
         }
-        let mut bits = Vec::new();
+        // Every statement stores a FloatLiteral to a `float` (or, homogeneously, `double`)
+        // small-data global. A mixed float/double run, or any other target, defers.
+        let run_is_double = matches!(
+            statements.first(),
+            Some(Statement::Store { target: Expression::Variable(name), .. })
+                if matches!(self.globals.get(name.as_str()), Some(Type::Double))
+        );
+        let mut values = Vec::new();
         for statement in statements {
             let Statement::Store { target: Expression::Variable(name), value: Expression::FloatLiteral(value) } = statement else {
                 return Ok(false);
             };
-            if !matches!(self.globals.get(name.as_str()), Some(Type::Float)) {
+            let matches_type = match self.globals.get(name.as_str()) {
+                Some(Type::Double) => run_is_double,
+                Some(Type::Float) => !run_is_double,
+                _ => false,
+            };
+            if !matches_type {
                 return Ok(false);
             }
-            bits.push((*value as f32).to_bits());
+            values.push(*value);
         }
-        let count = bits.len();
-        let all_same = bits.iter().all(|value| *value == bits[0]);
-        let distinct: std::collections::HashSet<u32> = bits.iter().copied().collect();
+        let count = values.len();
+        let keys: Vec<u64> = values.iter().map(|value| value.to_bits()).collect();
+        let all_same = keys.iter().all(|value| *value == keys[0]);
+        let distinct: std::collections::HashSet<u64> = keys.iter().copied().collect();
         if !all_same && (distinct.len() != count || count > 14) {
             return Ok(false);
         }
         if all_same {
-            self.load_float_constant(FLOAT_SCRATCH, f32::from_bits(bits[0]));
-            self.prematerialized_float_constants = vec![(bits[0], FLOAT_SCRATCH)];
+            self.load_float_literal(FLOAT_SCRATCH, values[0], run_is_double);
+            self.prematerialized_float_constants = vec![(keys[0], FLOAT_SCRATCH)];
         } else {
             let mut assignments = Vec::with_capacity(count);
-            for (index, &value) in bits.iter().enumerate() {
+            for (index, &value) in values.iter().enumerate() {
                 let register = (count - 1 - index) as u8;
-                self.load_float_constant(register, f32::from_bits(value));
-                assignments.push((value, register));
+                self.load_float_literal(register, value, run_is_double);
+                assignments.push((keys[index], register));
             }
             self.prematerialized_float_constants = assignments;
         }
