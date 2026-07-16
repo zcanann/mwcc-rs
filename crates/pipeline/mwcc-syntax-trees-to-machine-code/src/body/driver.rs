@@ -1764,6 +1764,10 @@ impl Generator {
             if self.try_callee_saved_result_call_sequence(function)? {
                 return Ok(());
             }
+            // `x = f(); g(<literals>); return x;` — a call result live across one call, returned.
+            if self.try_callee_saved_result_across_call_return(function)? {
+                return Ok(());
+            }
             // `g(x); return x OP y;` — two params both live across one call, combined in the return.
             if self.try_callee_saved_param_pair_combine(function)? {
                 return Ok(());

@@ -313,6 +313,88 @@ impl Generator {
         Ok(true)
     }
 
+    /// `x = f(); g(<literals>); return x;` — an argument-free call's RESULT live across
+    /// ONE literal-argument call and returned. Measured (1.3.2): with no g-arguments the
+    /// save is a direct `mr r31,r3`; with arguments it THREADS THE SCRATCH — `mr r0,r3`,
+    /// the FIRST argument's `li r3,K`, then `mr r31,r0`, then the remaining `li`s (the
+    /// scheduler fills the first li's latency slot with the save). The return move
+    /// interleaves into the epilogue between the two reloads (`lwz r0,20; mr r3,r31;
+    /// lwz r31,12; mtlr; addi; blr`).
+    pub(crate) fn try_callee_saved_result_across_call_return(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.parameters.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // Exactly one local — a scalar int from an argument-free direct call — returned bare.
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if local.is_static || local.array_length.is_some() || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(Expression::Call { name: producer_name, arguments: producer_arguments }) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        if !producer_arguments.is_empty() {
+            return Ok(false);
+        }
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+            return Ok(false);
+        }
+        // One consuming statement: a direct call whose arguments are ALL integer literals
+        // (r3..r10 slots; a non-literal argument interleaves on an unmeasured schedule).
+        let [Statement::Expression(Expression::Call { name: consumer_name, arguments: consumer_arguments })] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if consumer_arguments.len() > 8
+            || !consumer_arguments.iter().all(|argument| matches!(argument, Expression::IntegerLiteral(value) if *value >= i16::MIN as i64 && *value <= i16::MAX as i64))
+        {
+            return Ok(false);
+        }
+        for name in [producer_name, consumer_name] {
+            if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+                return Ok(false);
+            }
+        }
+
+        // The canonical single-save frame.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        // Producer, then the measured save schedule.
+        self.record_relocation(RelocationKind::Rel24, producer_name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
+        if consumer_arguments.is_empty() {
+            self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+        } else {
+            // mr r0,r3 ; li r3,K0 ; mr r31,r0 ; li r4,K1 ; …
+            self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+            for (slot, argument) in consumer_arguments.iter().enumerate() {
+                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
+                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+                if slot == 0 {
+                    self.output.instructions.push(Instruction::Or { a: saved, s: 0, b: 0 });
+                }
+            }
+        }
+        self.record_relocation(RelocationKind::Rel24, consumer_name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: consumer_name.to_string() });
+        // The measured interleaved epilogue: LR reload, return move, GPR reload.
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        self.output.instructions.push(Instruction::Or { a: 3, s: saved, b: saved });
+        self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: self.frame_size - 4 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// `return f() - g();` — two argument-free calls whose results are subtracted in the return. mwcc
     /// runs the first call, saves its result in r31 (`mr r31,r3`, live across the second call), runs
     /// the second call (its result in r3), reloads LR, then `subf r3,r3,r31` (= r31 - r3 = f() - g()).
