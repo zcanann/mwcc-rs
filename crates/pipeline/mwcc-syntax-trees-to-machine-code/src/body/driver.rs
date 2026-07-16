@@ -1353,7 +1353,8 @@ impl Generator {
         if let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() {
             let statement_bodied_default =
                 matches!(default, Some(body) if body.return_expression().is_none());
-            if function.guards.is_empty()
+            if function.return_type != Type::Void
+                && function.guards.is_empty()
                 && function.locals.is_empty()
                 && !function_makes_call(function)
                 && !statement_bodied_default
@@ -1371,18 +1372,26 @@ impl Generator {
                 return self.emit_switch(scrutinee, arms, default_expression, default.is_some(), function.return_type, result);
             }
         }
-        // A whole-body `void` function that is a single `switch` with STATEMENT arms and a `default:`
-        // statement arm (`switch(n){ case V: <stores> break; ... default: <stores>; }`): the
-        // comparison-tree dispatch, then each arm's statements plus its own `blr` (the arm's `break`
-        // is the void function's return).
+        // A whole-body `void` function that is a single `switch` with STATEMENT arms
+        // (`switch(n){ case V: <stores> break; ... }`): the comparison-tree dispatch, then each
+        // arm's statements plus its own `blr` (the arm's `break` is the void function's return).
+        // A `default:` statement arm becomes a trailing default block; a MISSING default makes the
+        // dispatch's out-of-range branches conditional returns (`bgelr`/`blr`) instead.
         if let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() {
             if function.return_type == Type::Void
                 && function.guards.is_empty()
                 && function.locals.is_empty()
                 && !function_makes_call(function)
             {
-                if let Some(mwcc_syntax_trees::ArmBody::Statements(default_statements)) = default.as_ref() {
-                    return self.emit_statement_switch(scrutinee, arms, default_statements);
+                match default.as_ref() {
+                    Some(mwcc_syntax_trees::ArmBody::Statements(default_statements)) => {
+                        return self.emit_statement_switch(scrutinee, arms, Some(default_statements));
+                    }
+                    None => {
+                        return self.emit_statement_switch(scrutinee, arms, None);
+                    }
+                    // A value-returning default in a void function is nonsensical; defer.
+                    Some(mwcc_syntax_trees::ArmBody::Return(_)) => {}
                 }
             }
         }
