@@ -1393,6 +1393,11 @@ impl Generator {
         if self.try_do_while_counter(function)? {
             return Ok(());
         }
+        // An empty-body hardware-register poll (`while (__EXIRegs[13] & 1);`):
+        // element address materialized once, then load → `rlwinm.`/`cmplwi` → branch back.
+        if self.try_emit_busy_wait(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and

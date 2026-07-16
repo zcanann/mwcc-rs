@@ -117,6 +117,129 @@ impl Generator {
         Ok(true)
     }
 
+    /// A leaf `void` function whose whole body is an EMPTY-body busy-wait on one
+    /// fixed-address array element — the hardware-register poll (`while (__EXIRegs[13] & 1);`,
+    /// DebuggerDriver/EXI/SI/DSP spin loops). mwcc materializes the ELEMENT address once
+    /// (`lis`/`addi` of the folded `base + index*elem`), then loops load → test → branch
+    /// back (the volatile reload is the loop):
+    ///
+    /// ```text
+    ///   lis rB, elem@ha ; addi rB, rB, elem@lo
+    ///   loop: lwz r0,0(rB) ; rlwinm. r0,r0,0,mb,me ; bne loop     (`& CONTIGUOUS_MASK`)
+    ///                        cmplwi r0,0            ; bne loop     (truthy)
+    /// ```
+    ///
+    /// A `!(…)` wrapper flips `bne` to `beq` (wait-until-set). Element widths: u32 `lwz`,
+    /// u16 `lhz`, u8 `lbz`. Measured 1.3.2/2.0/2.7: masks 1/3/0x100/0x8000/0x200-on-u16,
+    /// truthy, negated. A non-contiguous mask, non-constant index, or any other condition
+    /// shape falls through (the general loop defer). Returns whether this path applied.
+    pub(crate) fn try_emit_busy_wait(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !body.is_empty() {
+            return Ok(false);
+        }
+        // Strip a logical-not wrapper: `while (!(R[i] & m));` waits for the bit to SET,
+        // so the backward branch re-enters while the test result is ZERO (`beq`).
+        let (condition, negated) = match condition {
+            Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => (operand.as_ref(), true),
+            other => (other, false),
+        };
+        // The testable forms: `R[c] & mask` (contiguous mask -> one `rlwinm.`) or bare `R[c]`.
+        let (element_access, mask) = match condition {
+            Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => match (left.as_ref(), right.as_ref()) {
+                (access, Expression::IntegerLiteral(mask)) => (access, Some(*mask)),
+                (Expression::IntegerLiteral(mask), access) => (access, Some(*mask)),
+                _ => return Ok(false),
+            },
+            access => (access, None),
+        };
+        let Expression::Index { base, index } = element_access else {
+            return Ok(false);
+        };
+        let (Expression::Variable(name), Expression::IntegerLiteral(index)) = (base.as_ref(), index.as_ref()) else {
+            return Ok(false);
+        };
+        let Some(&(address, element)) = self.fixed_address_arrays.get(name) else {
+            return Ok(false);
+        };
+        // The mask must be one contiguous run of ones (a single `rlwinm.` range).
+        let mask_bits = match mask {
+            Some(mask) => {
+                let bits = mask as u64 as u32;
+                if bits == 0 {
+                    return Ok(false);
+                }
+                let low = bits.trailing_zeros();
+                let high = 31 - bits.leading_zeros();
+                let contiguous = (bits >> low).count_ones() == high - low + 1 && bits >> low == (1u64 << (high - low + 1)) as u32 - 1;
+                if !contiguous {
+                    return Ok(false);
+                }
+                Some((31 - high) as u8..=(31 - low) as u8) // PPC bit numbering: mb..=me
+            }
+            None => None,
+        };
+        let (load, element_bytes): (fn(u8, u8, i16) -> Instruction, u32) = match element {
+            Type::Int | Type::UnsignedInt => (|d, a, offset| Instruction::LoadWord { d, a, offset }, 4),
+            Type::Short | Type::UnsignedShort => (|d, a, offset| Instruction::LoadHalfwordZero { d, a, offset }, 2),
+            Type::Char | Type::UnsignedChar => (|d, a, offset| Instruction::LoadByteZero { d, a, offset }, 1),
+            _ => return Ok(false),
+        };
+
+        // The loop-invariant address: element 0's hoisted invariant is just the `lis`
+        // half (the `lo` rides the load's displacement, re-read each iteration);
+        // a non-zero element hoists the FULL folded address (`lis`+`addi`) and the
+        // load runs at displacement 0. Measured: R[0] -> `lis; loop: lwz lo(rB)`,
+        // R[13] -> `lis; addi; loop: lwz 0(rB)`.
+        let element_address = address as u32 + *index as u32 * element_bytes;
+        let base_register = self.lowest_free_general()?;
+        let high = ((element_address.wrapping_add(0x8000)) >> 16) as u16;
+        let low = element_address as u16 as i16;
+        // The loop's internal labels advance mwcc's anonymous-`@N` counter: by 6 for
+        // an element-0 poll, by 7 for a non-zero element (the folded full-address
+        // temporary adds one) — measured against the no-loop baseline (@9 -> @15/@16).
+        self.output.anonymous_label_bump = if *index == 0 { 6 } else { 7 };
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: base_register, a: 0, immediate: high as i16 });
+        let load_offset = if *index == 0 {
+            low
+        } else {
+            self.output.instructions.push(Instruction::AddImmediate { d: base_register, a: base_register, immediate: low });
+            0
+        };
+
+        // loop: load; test (sets cr0); branch back while waiting.
+        let loop_top = self.output.instructions.len();
+        self.output.instructions.push(load(0, base_register, load_offset));
+        match mask_bits {
+            Some(range) => self.output.instructions.push(Instruction::RotateAndMaskRecord {
+                a: 0,
+                s: 0,
+                shift: 0,
+                begin: *range.start(),
+                end: *range.end(),
+            }),
+            None => self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 }),
+        }
+        // `bne loop` re-enters while the bit is SET (wait-for-clear); a negated
+        // condition re-enters while ZERO (`beq loop`, wait-for-set).
+        let (options, condition_bit) = if negated { (12, 2) } else { (4, 2) };
+        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: loop_top });
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// A leaf `void` function whose body is a single non-counting `while` loop (truthy condition)
     /// whose body is pure in-place increments/decrements of register parameters (`while (*p) p++;`).
     /// mwcc does
