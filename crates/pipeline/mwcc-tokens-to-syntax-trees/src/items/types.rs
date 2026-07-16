@@ -23,6 +23,9 @@ impl Parser {
     fn parse_type_base(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
         self.last_pointer_const = false;
+        // The array-typedef marker is only ever set by the LAST parse_type call, so a
+        // consumer that `.take()`s right after its own call can never read a stale one.
+        self.last_array_typedef = None;
         // Leading qualifiers: `const`/`register` are transparent to codegen (`const`
         // is noted for the global path, which defers a read-only global); `volatile`
         // changes access semantics (memory accesses can't be elided), so defer it.
@@ -153,6 +156,31 @@ impl Parser {
                     return Ok(Type::Pointer(pointee_of(aliased)?));
                 }
                 return Ok(aliased);
+            }
+        }
+        // An array typedef (`Mtx`, `typedef float Mtx[3][4];`) used as a type: the
+        // returned scalar type is the DECAYED element pointer (right for a parameter);
+        // `last_array_typedef` carries `(element, total, inner)` so the global path can
+        // declare the whole array object and the parameter path can record the row
+        // stride. A row-pointer typedef (`MtxPtr`, `typedef float (*MtxPtr)[4];`) is
+        // already that pointer — it reports `total == 0` (no array object to declare).
+        // A trailing `*` (`Mtx*`) is a pointer to the whole array — not modeled; defer.
+        if let Token::Identifier(name) = self.peek() {
+            if let Some(&(element, total, inner)) = self.array_typedefs.get(name) {
+                self.advance();
+                if *self.peek() == Token::Star {
+                    return Err(Diagnostic::error("a pointer to an array-typedef value is not supported yet (roadmap)"));
+                }
+                self.last_array_typedef = Some((element, total, inner));
+                return Ok(Type::Pointer(pointee_of(element)?));
+            }
+            if let Some(&(element, length)) = self.row_pointer_typedefs.get(name) {
+                self.advance();
+                if *self.peek() == Token::Star {
+                    return Err(Diagnostic::error("a pointer to a row-pointer-typedef value is not supported yet (roadmap)"));
+                }
+                self.last_array_typedef = Some((element, 0, length));
+                return Ok(Type::Pointer(pointee_of(element)?));
             }
         }
         let base = match self.advance() {
@@ -490,7 +518,7 @@ impl Parser {
                 Token::Identifier(word) => self.array_typedefs.get(word).copied(),
                 _ => None,
             };
-            if let Some((element, base_len)) = array_typedef {
+            if let Some((element, base_len, _inner)) = array_typedef {
                 self.advance(); // the array-typedef name
                 let attr_align = self.skip_attributes()?;
                 let element_size = type_size(element);
@@ -522,6 +550,13 @@ impl Parser {
                 continue;
             }
             let field_type = self.parse_type()?;
+            // Only a ROW-POINTER typedef member reaches here (an array-typedef member
+            // was intercepted above); its subscript stride isn't carried through the
+            // member model yet, so defer rather than lay it out as a plain pointer
+            // that a later `s->m[i][j]` would stride wrongly through.
+            if self.last_array_typedef.take().is_some() {
+                return Err(Diagnostic::error("a row-pointer-typedef struct member is not supported yet (roadmap)"));
+            }
             let struct_tag = self.last_struct_tag.take();
             // A declarator may carry `__attribute__((aligned(n)))` between the type
             // and the name (e.g. `u8 ATTRIBUTE_ALIGN(4) board_data[32];`); skip it,
@@ -744,6 +779,11 @@ impl Parser {
                 continue;
             }
             let field_type = self.parse_type()?;
+            // An array-typedef (or row-pointer-typedef) union member would lay out at
+            // the decayed pointer's size (4) instead of the array's — defer.
+            if self.last_array_typedef.take().is_some() {
+                return Err(Diagnostic::error("an array-typedef union member is not supported yet (roadmap)"));
+            }
             let struct_tag = self.last_struct_tag.take();
             let attr_align = self.skip_attributes()?;
             let name = self.parse_identifier()?;

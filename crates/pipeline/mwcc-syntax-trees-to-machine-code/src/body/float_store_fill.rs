@@ -147,10 +147,6 @@ impl Generator {
         let keys: Vec<u64> = values.iter().map(|value| value.to_bits()).collect();
         let all_same = keys.iter().all(|key| *key == keys[0]);
         let distinct: std::collections::HashSet<u64> = keys.iter().copied().collect();
-        // Only the two cleanly-modeled profiles proceed; a partial-duplicate run defers.
-        if !all_same && distinct.len() != count {
-            return Ok(false);
-        }
         let emit_store = |generator: &mut Self, register: u8, offset: u16| {
             let instruction = if run_is_double {
                 Instruction::StoreFloatDouble { s: register, a: base_register, offset: offset as i16 }
@@ -164,7 +160,7 @@ impl Generator {
             for &offset in &offsets {
                 emit_store(self, FLOAT_SCRATCH, offset);
             }
-        } else {
+        } else if distinct.len() == count {
             // Two-FPR software pipeline: register(i) = f((N-1-i) & 1), two loads ahead of the stores.
             let register = |index: usize| ((count - 1 - index) & 1) as u8;
             self.load_float_literal(register(0), values[0], run_is_double);
@@ -173,6 +169,53 @@ impl Generator {
                 emit_store(self, register(index), offsets[index]);
                 if index + 2 < count {
                     self.load_float_literal(register(index + 2), values[index + 2], run_is_double);
+                }
+            }
+        } else {
+            // PARTIAL-DUPLICATE (pooled) run — the identity-matrix shape (`1,0,0,…,1,…`).
+            // A reused value stays live past its first store, so mwcc gives every
+            // distinct constant its OWN FPR — no recycling, even when liveness would
+            // allow it (measured: `1,1,2,3,2` holds 1.0 in f2 to the end): distinct
+            // value k (first-seen order) sits in f(D-1-k), the LAST-seen in f0. The
+            // first two distinct loads lead; load k (k >= 2) issues right after the
+            // FIRST-USE store of distinct value k-2 (the same two-in-flight rhythm as
+            // the all-distinct pipeline, keyed on first uses); the stores run in
+            // source order. Verified 1.3.2: (1,0,1,0), (1,2,1), (1,1,0), (0,1,1),
+            // (1,2,1,3), (1,1,2,3,2), and the 12-store identity fill.
+            let pooled = distinct.len();
+            // f0..f7 is comfortably inside the volatile FPR file; a wider pool is
+            // unmeasured — and NOTHING downstream schedules this shape (the sequential
+            // fallback emits wrong bytes, the leak this profile closes), so DEFER.
+            if pooled > 8 {
+                return Err(Diagnostic::error("a float member-store run pooling more than 8 distinct constants is not supported yet (roadmap)"));
+            }
+            // Number the distinct values in first-seen order; map each store to its number.
+            let mut seen: Vec<(u64, f64)> = Vec::new();
+            let mut item_of_store = Vec::with_capacity(count);
+            let mut first_use = vec![usize::MAX; pooled];
+            for (index, key) in keys.iter().enumerate() {
+                let item = match seen.iter().position(|(existing, _)| existing == key) {
+                    Some(item) => item,
+                    None => {
+                        seen.push((*key, values[index]));
+                        seen.len() - 1
+                    }
+                };
+                if first_use[item] == usize::MAX {
+                    first_use[item] = index;
+                }
+                item_of_store.push(item);
+            }
+            let register = |item: usize| (pooled - 1 - item) as u8;
+            self.load_float_literal(register(0), seen[0].1, run_is_double);
+            if pooled >= 2 {
+                self.load_float_literal(register(1), seen[1].1, run_is_double);
+            }
+            for (index, &item) in item_of_store.iter().enumerate() {
+                emit_store(self, register(item), offsets[index]);
+                // A first-use store releases the next pipelined distinct load.
+                if first_use[item] == index && item + 2 < pooled {
+                    self.load_float_literal(register(item + 2), seen[item + 2].1, run_is_double);
                 }
             }
         }

@@ -187,9 +187,28 @@ pub(crate) struct Parser {
     /// mapped to their struct tag — the alias itself is already a struct pointer.
     pub(crate) struct_pointer_typedefs: HashMap<String, String>,
     /// `typedef`-declared array aliases (`typedef float Mtx[3][4];`) mapped to their
-    /// element type and total element count, so a struct member of this type lays out
-    /// with the right size (the `Type` model has no array variant of its own).
-    pub(crate) array_typedefs: HashMap<String, (Type, u16)>,
+    /// element type, total element count, and INNER-dimension element count (the
+    /// product of every dimension after the first; 1 for a 1-D typedef) — the row
+    /// stride a decayed parameter subscripts by. The `Type` model has no array
+    /// variant of its own, so struct members of this type lay out from the total.
+    pub(crate) array_typedefs: HashMap<String, (Type, u16, u16)>,
+    /// `typedef`-declared pointer-to-array aliases (`typedef float (*MtxPtr)[4];`)
+    /// mapped to their element type and pointed-to-array length — a value of this
+    /// type is a ROW pointer (`p[i][j]` strides by the array length).
+    pub(crate) row_pointer_typedefs: HashMap<String, (Type, u16)>,
+    /// Set by `parse_type` when the type it just returned was an array typedef
+    /// (`(element, total, inner)`; a row-pointer typedef reports `total == 0`).
+    /// Callers that must not treat the decayed pointer as the object type — the
+    /// global-declaration path (an array typedef declares a whole array object) and
+    /// the parameter path (records the row stride for subscript desugaring) —
+    /// `.take()` this, exactly like `last_struct_tag`.
+    pub(crate) last_array_typedef: Option<(Type, u16, u16)>,
+    /// Variables (parameters) of a decayed array-typedef / row-pointer-typedef type,
+    /// mapped to `(element type, row stride in BYTES)`. A two-constant-subscript use
+    /// (`m[i][j]`) desugars to a Member access at `i*stride + j*element`; every OTHER
+    /// subscript/deref form on such a variable is an error (defer) — falling through
+    /// to the plain `Index` stride would compute the wrong address.
+    pub(crate) decayed_row_pointers: HashMap<String, (Type, u16)>,
     /// Enumeration constant values, so a bare enumerator resolves to its integer
     /// value in an expression. (`-enum int`: an enum type is a 4-byte `int`.)
     pub(crate) enum_constants: HashMap<String, i64>,

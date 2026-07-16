@@ -639,6 +639,41 @@ impl Parser {
                     expression = Expression::CallThrough { target, arguments };
                 }
                 Token::BracketOpen => {
+                    // A decayed array-typedef / row-pointer parameter (`Mtx m`): the ONLY
+                    // modeled subscript form is `m[c1][c2]` with both indices constant,
+                    // which desugars to the strided Member access `m + c1*stride + c2*elem`
+                    // (the same AST as `p->field`, so all member codegen applies). Every
+                    // other form — a single subscript (a row VALUE, whose stride the plain
+                    // Index would get wrong), a variable index — errors (defers) instead of
+                    // falling through to the wrong-stride generic Index.
+                    if let Expression::Variable(name) = &expression {
+                        if let Some(&(element, stride)) = self.decayed_row_pointers.get(name) {
+                            self.advance(); // `[`
+                            let row = self.expression()?;
+                            self.expect(Token::BracketClose)?;
+                            if *self.peek() != Token::BracketOpen {
+                                return Err(Diagnostic::error("a single subscript on an array-typedef parameter is not supported yet (roadmap)"));
+                            }
+                            self.advance(); // `[`
+                            let column = self.expression()?;
+                            self.expect(Token::BracketClose)?;
+                            let (Expression::IntegerLiteral(row), Expression::IntegerLiteral(column)) = (&row, &column) else {
+                                return Err(Diagnostic::error("a variable subscript on an array-typedef parameter is not supported yet (roadmap)"));
+                            };
+                            let element_bytes = element.width() as i64 / 8;
+                            let offset = row * stride as i64 + column * element_bytes;
+                            if offset < 0 || offset > u16::MAX as i64 {
+                                return Err(Diagnostic::error("an array-typedef subscript offset is out of range"));
+                            }
+                            expression = Expression::Member {
+                                base: Box::new(expression),
+                                offset: offset as u16,
+                                member_type: element,
+                                index_stride: None,
+                            };
+                            continue;
+                        }
+                    }
                     self.advance();
                     let index = self.expression()?;
                     self.expect(Token::BracketClose)?;

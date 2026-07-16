@@ -1198,6 +1198,53 @@ impl Generator {
         if self.try_mixed_member_store_fill(function)? {
             return Ok(());
         }
+        // LEAK GUARD: a leaf void body of 2+ literal member stores through ONE base
+        // that mixes integer and float members and was NOT claimed by the fills above
+        // (3+ mixed statements). mwcc pipelines the materializations across BOTH
+        // register files (loads greedy-early, each >= 2 slots before its store, an
+        // extra GPR when reuse would stall — measured `p->i=1; p->f=2.0f; p->j=3;`
+        // gives li/lfs/stw/li/stfs/stw); the sequential path would emit wrong bytes,
+        // so DEFER until that store scheduler exists.
+        if function.return_type == Type::Void
+            && function.guards.is_empty()
+            && function.locals.is_empty()
+            && !function_makes_call(function)
+            && function.statements.len() >= 3
+        {
+            let mut base: Option<&str> = None;
+            let mut has_float = false;
+            let mut has_integer = false;
+            let mut all_literal_member_stores = true;
+            for statement in &function.statements {
+                let Statement::Store {
+                    target: Expression::Member { base: member_base, member_type, index_stride: None, .. },
+                    value: Expression::FloatLiteral(_) | Expression::IntegerLiteral(_),
+                } = statement
+                else {
+                    all_literal_member_stores = false;
+                    break;
+                };
+                let Expression::Variable(name) = member_base.as_ref() else {
+                    all_literal_member_stores = false;
+                    break;
+                };
+                match base {
+                    None => base = Some(name.as_str()),
+                    Some(existing) if existing == name.as_str() => {}
+                    Some(_) => {
+                        all_literal_member_stores = false;
+                        break;
+                    }
+                }
+                match member_type {
+                    Type::Float | Type::Double => has_float = true,
+                    _ => has_integer = true,
+                }
+            }
+            if all_literal_member_stores && has_float && has_integer {
+                return Err(Diagnostic::error("a mixed integer/float member-store run needs the store scheduler (roadmap)"));
+            }
+        }
         // A whole-body `if (c) { <constant run> } else { <constant run> }`: branch over the then-arm
         // to the else, each arm the batched constant store run then its own `blr`.
         if self.try_constant_store_if_else(function)? {

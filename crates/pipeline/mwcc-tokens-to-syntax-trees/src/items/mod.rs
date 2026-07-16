@@ -626,6 +626,11 @@ impl Parser {
                 self.advance();
             }
             self.parse_type().ok()?;
+            // An array-typedef parameter's subscripts need the row stride, which
+            // inline substitution does not carry — don't record such a body.
+            if self.last_array_typedef.take().is_some() {
+                return None;
+            }
             let name = match self.advance().clone() {
                 Token::Identifier(name) => name,
                 _ => return None,
@@ -640,6 +645,9 @@ impl Parser {
             } else if *self.peek() != Token::ParenClose {
                 loop {
                     self.parse_type().ok()?;
+                    if self.last_array_typedef.take().is_some() {
+                        return None;
+                    }
                     match self.advance().clone() {
                         Token::Identifier(parameter) => parameters.push(parameter),
                         _ => return None,
@@ -1238,13 +1246,22 @@ impl Parser {
                     }
                 }
                 let aliased = self.parse_type()?;
-                // Function-pointer typedef `typedef RET (*name)(params);` — the
-                // alias is a 4-byte pointer (modeled as a word pointer).
+                // `typedef RET (*name)(params);` (function pointer, a 4-byte word
+                // pointer) or `typedef T (*name)[N];` (pointer to array — a ROW
+                // pointer whose subscript strides by N elements).
                 if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
                     self.advance(); // `(`
                     self.advance(); // `*`
                     let alias = self.parse_identifier()?;
                     self.expect(Token::ParenClose)?;
+                    if *self.peek() == Token::BracketOpen {
+                        self.advance(); // `[`
+                        let length = self.parse_integer_constant()? as u16;
+                        self.expect(Token::BracketClose)?;
+                        self.expect(Token::Semicolon)?;
+                        self.row_pointer_typedefs.insert(alias, (aliased, length));
+                        return Ok(());
+                    }
                     self.expect(Token::ParenOpen)?;
                     let mut depth = 1;
                     while depth > 0 {
@@ -1261,18 +1278,25 @@ impl Parser {
                 }
                 let name = self.parse_identifier()?;
                 // An array typedef (`typedef float Mtx[3][4];`) — record the element
-                // type and total element count so a member of this type lays out with
-                // the right size (the `Type` model has no array variant).
+                // type, total element count (member layout size), and the INNER
+                // element count (the product of the dimensions after the first: the
+                // row stride a decayed parameter subscripts by; 1 for a 1-D typedef).
                 if *self.peek() == Token::BracketOpen {
                     let mut total: u16 = 1;
+                    let mut inner: u16 = 1;
+                    let mut first = true;
                     while *self.peek() == Token::BracketOpen {
                         self.advance();
                         let count = self.parse_integer_constant()? as u16;
                         self.expect(Token::BracketClose)?;
                         total = total.saturating_mul(count);
+                        if !first {
+                            inner = inner.saturating_mul(count);
+                        }
+                        first = false;
                     }
                     self.expect(Token::Semicolon)?;
-                    self.array_typedefs.insert(name, (aliased, total));
+                    self.array_typedefs.insert(name, (aliased, total, inner));
                     return Ok(());
                 }
                 self.expect(Token::Semicolon)?;
@@ -1330,6 +1354,11 @@ impl Parser {
                 return Ok(());
             }
             let return_type = self.parse_type()?;
+            // An array-typedef type (`Mtx g;`): parse_type returned the DECAYED pointer
+            // (right for a function's return type) and left `(element, total, inner)`
+            // in the marker — the GLOBAL branch below declares the real array object
+            // from it (a row-pointer typedef reports total == 0 and stays a pointer).
+            let array_typedef_marker = self.last_array_typedef.take();
             // A struct-POINTER return type carries a tag (`struct S *get(...)`); capture it now
             // (before later declarators overwrite `last_struct_tag`) so a function declarator below
             // can record it for `get()->field` resolution. A struct-VALUE return is not recorded
@@ -1431,6 +1460,11 @@ impl Parser {
                 matches!(self.tokens.get(scan), Some(Token::Colon))
             };
             if is_fixed_address {
+                // A fixed-address declaration through an array typedef would record the
+                // decayed pointer as the element type (wrong stride) — defer.
+                if array_typedef_marker.is_some() {
+                    return Err(Diagnostic::error("a fixed-address array-typedef global is not supported yet (roadmap)"));
+                }
                 let mut is_array = false;
                 while *self.peek() == Token::BracketOpen {
                     is_array = true;
@@ -1473,6 +1507,19 @@ impl Parser {
             // initialized global `type name = …;` is not in the subset yet and
             // falls through to the function path, which reports it.)
             if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals) {
+                // An array-typedef global (`Mtx g;`) is the whole ARRAY object — as if
+                // `float g[12];` had been written: the declared type becomes the element
+                // and the typedef's total element count seeds the dimensions (explicit
+                // brackets multiply it: `Mtx pool[2]` is 24 elements). A row-pointer
+                // typedef (total == 0) keeps the pointer type — the object IS a pointer.
+                let mut return_type = return_type;
+                let mut array_typedef_length: Option<u16> = None;
+                if let Some((element, total, _inner)) = array_typedef_marker {
+                    if total > 0 {
+                        return_type = element;
+                        array_typedef_length = Some(total);
+                    }
+                }
                 // A `const` file-scope global lands in a *read-only* section
                 // (`.sdata2` if small, `.rodata` if large). Record it; the lowering
                 // routes the supported shapes and defers the rest. `parse_type` set
@@ -1494,6 +1541,9 @@ impl Parser {
                     // initializer; no brackets is a scalar. A multi-dimensional array
                     // flattens row-major to one element list of the dimensions' product.
                     let mut dimensions: Vec<Option<u16>> = Vec::new();
+                    if let Some(total) = array_typedef_length {
+                        dimensions.push(Some(total));
+                    }
                     while *self.peek() == Token::BracketOpen {
                         self.advance();
                         let count = if *self.peek() == Token::BracketClose {
@@ -1664,6 +1714,9 @@ impl Parser {
 
             let mut parameters = Vec::new();
             let mut is_variadic = false;
+            // Row-stride records are scoped to ONE function's parameters — a stale
+            // entry from a previous function would mis-stride a same-named variable.
+            self.decayed_row_pointers.clear();
             // `(void)` is an empty parameter list — but only when the `void` is the
             // whole list; `void *p` / `void (*f)()` are real first parameters.
             if *self.peek() == Token::KeywordVoid && self.tokens.get(self.position + 1) == Some(&Token::ParenClose) {
@@ -1679,10 +1732,18 @@ impl Parser {
                         break;
                     }
                     let mut parameter_type = self.parse_type()?;
+                    // An array-typedef (`Mtx m`) or row-pointer-typedef (`MtxPtr m`)
+                    // parameter: the type already decayed to the element pointer;
+                    // keep `(element, inner)` to record the row stride under the
+                    // parameter's name below so `m[i][j]` desugars with it.
+                    let array_typedef_marker = self.last_array_typedef.take();
                     // Extra declarator stars — `wchar_t ** end` is a pointer to
                     // pointer; each further `*` deepens to a plain pointer.
                     while *self.peek() == Token::Star {
                         self.advance();
+                        if array_typedef_marker.is_some() {
+                            return Err(Diagnostic::error("a pointer to an array-typedef parameter is not supported yet (roadmap)"));
+                        }
                         parameter_type = Type::Pointer(Pointee::Pointer);
                     }
                     let struct_tag = self.last_struct_tag.take();
@@ -1715,6 +1776,10 @@ impl Parser {
                         // decay. Consume the `[...]` (the size is irrelevant for a parameter)
                         // and make the parameter a pointer to the element type.
                         let parameter_type = if *self.peek() == Token::BracketOpen {
+                            if array_typedef_marker.is_some() {
+                                // `Mtx m[N]` decays to a pointer to the WHOLE array — not modeled.
+                                return Err(Diagnostic::error("an array of an array-typedef parameter is not supported yet (roadmap)"));
+                            }
                             self.advance(); // `[`
                             while !matches!(self.peek(), Token::BracketClose | Token::EndOfFile) {
                                 self.advance(); // skip the optional size expression
@@ -1730,6 +1795,14 @@ impl Parser {
                         if let Some(tag) = struct_tag {
                             if !name.is_empty() {
                                 self.variable_structs.insert(name.clone(), tag);
+                            }
+                        }
+                        // Record the row stride for a decayed array-typedef / row-pointer
+                        // parameter so `m[i][j]` desugars to the strided Member access.
+                        if let Some((element, _total, inner)) = array_typedef_marker {
+                            if !name.is_empty() {
+                                let stride = inner.max(1) as u32 * (element.width() as u32 / 8);
+                                self.decayed_row_pointers.insert(name.clone(), (element, stride as u16));
                             }
                         }
                         parameters.push(Parameter { parameter_type, name });
