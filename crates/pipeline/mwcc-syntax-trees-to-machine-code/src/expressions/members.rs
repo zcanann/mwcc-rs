@@ -35,10 +35,19 @@ impl Generator {
             if !self.locations.contains_key(name.as_str())
                 && matches!(self.globals.get(name.as_str()), Some(Type::StructPointer { .. }))
             {
-                self.emit_global_load_value(name, destination)?;
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
-                self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16)?);
+                // A FLOAT/double member loads into an FPR, so the pointer must go to a GPR base —
+                // reusing the FPR destination's NUMBER would address through the matching GPR
+                // (`f1`↔`r1`/sp). Integer members share the destination GPR as both base and result.
+                if matches!(pointee, Pointee::Float | Pointee::Double) {
+                    let base = self.lowest_free_general()?;
+                    self.emit_global_load_value(name, base)?;
+                    self.output.instructions.push(displacement_load(pointee, destination, base, offset as i16)?);
+                } else {
+                    self.emit_global_load_value(name, destination)?;
+                    self.output.instructions.push(displacement_load(pointee, destination, destination, offset as i16)?);
+                }
                 return Ok(());
             }
             // `g.field` where `g` is a global struct VALUE: materialize g's address

@@ -703,13 +703,29 @@ impl Parser {
                 let inner = self.parse_struct_body()?;
                 let inner_size = inner.size;
                 let inner_align = (inner.align as u16).max(1);
-                if !matches!(self.peek(), Token::Identifier(_)) {
-                    return Err(Diagnostic::error("an anonymous inline struct variant in a union is not supported yet (roadmap)"));
+                // A NAMED inline struct variant (`struct {…} name;`) registers as a struct-value
+                // field so `u.name.field` chains. An ANONYMOUS one (`struct {…};`) flattens its
+                // fields into the union at the union base (offset 0), each keeping its struct-relative
+                // offset — C anonymous-member promotion. This is GXData's fog/z overlay
+                // (`union { struct { u8 fgRange; …; f32 fgSideX; }; struct { f32 zOffset; f32 zScale; }; }`),
+                // whose members are accessed directly on the enclosing struct.
+                if matches!(self.peek(), Token::Identifier(_)) {
+                    let name = self.parse_identifier()?;
+                    let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+                    self.structs.insert(variant_tag.clone(), inner);
+                    layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset: 0, struct_tag: Some(variant_tag), array_element: None, array_bytes: None, bit_field: None });
+                } else {
+                    for (field_name, field) in &inner.fields {
+                        layout.fields.insert(field_name.clone(), StructField {
+                            member_type: field.member_type,
+                            offset: field.offset,
+                            struct_tag: field.struct_tag.clone(),
+                            array_element: field.array_element,
+                            array_bytes: field.array_bytes,
+                            bit_field: field.bit_field,
+                        });
+                    }
                 }
-                let name = self.parse_identifier()?;
-                let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
-                self.structs.insert(variant_tag.clone(), inner);
-                layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset: 0, struct_tag: Some(variant_tag), array_element: None, array_bytes: None, bit_field: None });
                 max_size = max_size.max(inner_size);
                 max_align = max_align.max(inner_align);
                 self.expect(Token::Semicolon)?;
