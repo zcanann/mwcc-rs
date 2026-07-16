@@ -218,6 +218,45 @@ impl Generator {
                 self.emit_epilogue_and_return();
                 return Ok(true);
             }
+            // A void leaf function that computes ONE `int` local once and stores it to two-plus
+            // scratch-safe targets (`int t = a + b; g = t; h = t;`). mwcc materializes the local in
+            // the scratch (r0) and stores from it — it does NOT duplicate the computation the way
+            // value inlining would (which is why the inlining path defers this via
+            // guard_no_duplication). Evaluate the initializer into the scratch, record the local
+            // there, then emit the stores; each reuses r0 through place_store_value. A scratch-safe
+            // target never overwrites r0 between the stores, so the reuse is valid.
+            if !function_makes_call(function) && function.guards.is_empty() {
+                if let [local] = function.locals.as_slice() {
+                    let stores_the_local = function.statements.len() >= 2
+                        && function.statements.iter().all(|statement| matches!(statement,
+                            Statement::Store { target, value: Expression::Variable(name) }
+                                if *name == local.name && self.is_scratch_safe_store_target(target)));
+                    let single_op_initializer = local
+                        .initializer
+                        .as_ref()
+                        .is_some_and(|initializer| self.is_single_op_register_value(initializer));
+                    if stores_the_local && single_op_initializer && local.declared_type.width() == 32 {
+                        let initializer = local.initializer.as_ref().unwrap();
+                        self.evaluate_general(initializer, GENERAL_SCRATCH)?;
+                        self.locations.insert(
+                            local.name.clone(),
+                            Location {
+                                class: ValueClass::General,
+                                register: GENERAL_SCRATCH,
+                                signed: local.declared_type.is_signed(),
+                                width: 32,
+                                pointee: None,
+                                stride: None,
+                            },
+                        );
+                        for statement in &function.statements {
+                            self.emit_statement(statement)?;
+                        }
+                        self.emit_epilogue_and_return();
+                        return Ok(true);
+                    }
+                }
+            }
             return Err(Diagnostic::error("value tracking for a void function is not supported yet (roadmap)"));
         }
 
