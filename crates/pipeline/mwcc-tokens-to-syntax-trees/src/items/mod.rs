@@ -2389,7 +2389,16 @@ impl Parser {
                             if self.eat_keyword(Token::Minus) {
                                 negative = true;
                             }
-                            match (self.advance().clone(), declared_type) {
+                            // An enumerator (or folded const-int global) element reads as
+                            // its integer value (`{ PAD_CHAN0_BIT, … }`).
+                            let element = match self.advance().clone() {
+                                Token::Identifier(word) => match self.enum_constants.get(&word) {
+                                    Some(&value) => Token::IntegerLiteral(value),
+                                    None => Token::Identifier(word),
+                                },
+                                other => other,
+                            };
+                            match (element, declared_type) {
                                 (Token::FloatLiteral(value), Type::Float) => {
                                     let value = if negative { -value } else { value };
                                     bytes.extend_from_slice(&(value as f32).to_be_bytes());
