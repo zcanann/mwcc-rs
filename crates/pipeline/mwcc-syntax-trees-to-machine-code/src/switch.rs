@@ -19,7 +19,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, JumpTable, RelocationKind, RelocationTarget};
-use mwcc_syntax_trees::{Expression, SwitchArm, Type};
+use mwcc_syntax_trees::{ArmBody, Expression, Statement, SwitchArm, Type};
 use crate::generator::*;
 
 /// A pending dispatch-branch destination, resolved to an instruction index once
@@ -130,6 +130,94 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchToLinkRegister);
 
         // Resolve the dispatch branches now that the bodies have addresses.
+        for (index, target) in patches {
+            let destination = match target {
+                Target::Body(body) => body_start[body],
+                Target::Default => default_start,
+            };
+            match &mut self.output.instructions[index] {
+                Instruction::BranchConditionalForward { target, .. } => *target = destination,
+                Instruction::Branch { target } => *target = destination,
+                _ => unreachable!("switch patch points at a non-branch instruction"),
+            }
+        }
+        Ok(())
+    }
+
+    /// A whole-body `void` function that is a single `switch` with STATEMENT arms
+    /// (`case V: <stores/...> break;`) and a `default:` statement arm. Reuses the
+    /// comparison-tree dispatch, then emits each arm's statements followed by `blr`
+    /// (the arm's `break` is the void function's return). Deferred (never mis-compiled):
+    /// a jump-table span (> 6), a fall-through arm, an out-of-order arm, a missing default,
+    /// or an out-of-range case value — those keep the existing defer.
+    pub(crate) fn emit_statement_switch(
+        &mut self,
+        scrutinee: &Expression,
+        arms: &[SwitchArm],
+        default_statements: &[Statement],
+    ) -> Compilation<()> {
+        let register = match scrutinee {
+            Expression::Variable(name) => {
+                let location = self
+                    .locations
+                    .get(name)
+                    .ok_or_else(|| Diagnostic::error("switch scrutinee is not a known variable (roadmap)"))?;
+                if !matches!(location.class, ValueClass::General) {
+                    return Err(Diagnostic::error("only an integer switch scrutinee is supported yet (roadmap)"));
+                }
+                location.register
+            }
+            _ => {
+                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
+                GENERAL_SCRATCH
+            }
+        };
+        let mut sorted: Vec<&SwitchArm> = arms.iter().collect();
+        sorted.sort_by_key(|arm| arm.value);
+        if sorted.is_empty() {
+            return Err(Diagnostic::error("an empty switch is not supported (roadmap)"));
+        }
+        for pair in sorted.windows(2) {
+            if pair[0].value == pair[1].value {
+                return Err(Diagnostic::error("duplicate switch case values"));
+            }
+        }
+        if arms.windows(2).any(|pair| pair[0].value >= pair[1].value) {
+            return Err(Diagnostic::error("switch arms not in ascending source order (roadmap)"));
+        }
+        // Comparison tree only (defer a jump-table span); each `cmpwi v`/`cmpwi v+1` must fit i16.
+        if sorted[sorted.len() - 1].value - sorted[0].value + 1 > 6 {
+            return Err(Diagnostic::error("a wide-span statement switch is not supported yet (roadmap)"));
+        }
+        for arm in &sorted {
+            if arm.value < i16::MIN as i64 || arm.value >= i16::MAX as i64 {
+                return Err(Diagnostic::error("switch case value out of cmpwi immediate range (roadmap)"));
+            }
+            if arm.falls_through || !matches!(arm.body, ArmBody::Statements(_)) {
+                return Err(Diagnostic::error("a fall-through or value-returning statement-switch arm is not supported yet (roadmap)"));
+            }
+        }
+
+        let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
+        let mut patches: Vec<(usize, Target)> = Vec::new();
+        self.lower_switch_range(register, &values, 0, values.len() - 1, None, None, &mut patches);
+
+        // Each arm's statements, then `blr` (the `break` returns from the void function).
+        let mut body_start = vec![0usize; sorted.len()];
+        for (index, arm) in sorted.iter().enumerate() {
+            body_start[index] = self.output.instructions.len();
+            let ArmBody::Statements(statements) = &arm.body else { unreachable!() };
+            for statement in statements {
+                self.emit_statement(statement)?;
+            }
+            self.output.instructions.push(Instruction::BranchToLinkRegister);
+        }
+        let default_start = self.output.instructions.len();
+        for statement in default_statements {
+            self.emit_statement(statement)?;
+        }
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+
         for (index, target) in patches {
             let destination = match target {
                 Target::Body(body) => body_start[body],

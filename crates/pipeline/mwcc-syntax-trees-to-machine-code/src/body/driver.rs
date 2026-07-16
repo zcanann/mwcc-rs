@@ -1371,6 +1371,21 @@ impl Generator {
                 return self.emit_switch(scrutinee, arms, default_expression, default.is_some(), function.return_type, result);
             }
         }
+        // A whole-body `void` function that is a single `switch` with STATEMENT arms and a `default:`
+        // statement arm (`switch(n){ case V: <stores> break; ... default: <stores>; }`): the
+        // comparison-tree dispatch, then each arm's statements plus its own `blr` (the arm's `break`
+        // is the void function's return).
+        if let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() {
+            if function.return_type == Type::Void
+                && function.guards.is_empty()
+                && function.locals.is_empty()
+                && !function_makes_call(function)
+            {
+                if let Some(mwcc_syntax_trees::ArmBody::Statements(default_statements)) = default.as_ref() {
+                    return self.emit_statement_switch(scrutinee, arms, default_statements);
+                }
+            }
+        }
         // A non-leaf function whose whole body is `if (c) <call>;`: mwcc schedules
         // the condition test (`cmpwi`) into the prologue, between `mflr` and the LR
         // store, then branches forward over the body to the epilogue when false.
