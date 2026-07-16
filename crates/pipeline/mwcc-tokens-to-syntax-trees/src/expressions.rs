@@ -467,6 +467,19 @@ impl Parser {
                     _ => Expression::Call { name, arguments },
                 }
             }
+            // A FIXED-ADDRESS global (`AT_ADDRESS`) aliases a const-address deref `*(Type *)addr`;
+            // desugar so a following `.member` resolves via the const-address path (byte-exact).
+            // `expression_struct_tag` carries the pointee's tag for the postfix member resolver.
+            Token::Identifier(name) if self.fixed_address_globals.contains_key(&name) => {
+                let (address, tag, element_size) = self.fixed_address_globals.get(&name).cloned().unwrap();
+                self.expression_struct_tag = tag;
+                Expression::Dereference {
+                    pointer: Box::new(Expression::Cast {
+                        target_type: mwcc_syntax_trees::Type::StructPointer { element_size },
+                        operand: Box::new(Expression::IntegerLiteral(address)),
+                    }),
+                }
+            }
             // A bare name is an enumerator (its integer value) if known, else a
             // variable — resolved through any active block-scope shadow renames.
             Token::Identifier(name) => match self.enum_constants.get(&name) {

@@ -54,6 +54,11 @@ pub(crate) struct Parser {
     /// so `get()->field` resolves the returned pointer's layout (populated when a
     /// `struct S *get(...)` prototype/definition is parsed).
     pub(crate) function_return_structs: HashMap<String, String>,
+    /// Fixed-address globals declared with `AT_ADDRESS` (`Type Name : addr;` — mwcc's `: (addr)`
+    /// placement): name -> (address, struct/union tag, element size). A reference to one desugars
+    /// to a const-address deref `*(Type *)addr` at its use site, so member access resolves through
+    /// the const-address path (the GX write-gather FIFO `GXWGFifo.u32 = v`).
+    pub(crate) fixed_address_globals: HashMap<String, (i64, Option<String>, u16)>,
     /// Struct-typed GLOBALS by name -> struct tag (`extern FILE_TABLE __files;`),
     /// so `&__files._stdout` in an initializer resolves its member offset.
     pub(crate) global_structs: HashMap<String, String>,

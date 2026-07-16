@@ -1413,6 +1413,30 @@ impl Parser {
                     self.function_return_structs.insert(name.clone(), tag.clone());
                 }
             }
+            // `type name : addr;` — a FIXED-ADDRESS global (mwcc's `AT_ADDRESS(a)` = `: (a)`; the
+            // hardware-register pattern, e.g. the GX write-gather FIFO `volatile PPCWGPipe GXWGFifo
+            // : 0xCC008000`). A reference aliases a const-address pointer deref `*(type *)addr`, so
+            // record the address (plus the struct/union tag and size) and desugar uses at their site.
+            if *self.peek() == Token::Colon {
+                self.advance(); // `:`
+                let address = if *self.peek() == Token::ParenOpen {
+                    self.advance();
+                    let value = self.parse_integer_constant()?;
+                    self.expect(Token::ParenClose)?;
+                    value
+                } else {
+                    self.parse_integer_constant()?
+                };
+                self.expect(Token::Semicolon)?;
+                let tag = self.last_struct_tag.clone();
+                let element_size = tag
+                    .as_ref()
+                    .and_then(|tag| self.structs.get(tag))
+                    .map(|layout| layout.size)
+                    .unwrap_or_else(|| type_size(return_type));
+                self.fixed_address_globals.insert(name.clone(), (address, tag, element_size));
+                return Ok(());
+            }
             // `type name;`, `type name[N];`, or comma-separated declarators is a
             // global variable declaration. A `(` instead begins a function. (An
             // initialized global `type name = …;` is not in the subset yet and
