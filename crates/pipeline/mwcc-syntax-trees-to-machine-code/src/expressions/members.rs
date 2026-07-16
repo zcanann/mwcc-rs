@@ -933,13 +933,62 @@ impl Generator {
         Ok(false)
     }
 
+    /// `((T *)ADDR)[index] = value;` — a store to a subscript of a constant-address pointer (a
+    /// hardware register). The base is split like the load: a CONSTANT index materializes the high
+    /// half with `lis` into a free register (avoiding the value) and rides the offset in the store
+    /// displacement; a VARIABLE index scales in its own register, adds the high half with `addis`,
+    /// and rides the constant part in the displacement. Returns `false` (unhandled) unless the value
+    /// is a register variable (no materialization to schedule against the base) and the index leaf's
+    /// register differs from the value's — a constant/computed value, or an index that aliases the
+    /// value register, defers.
+    pub(crate) fn emit_const_address_subscript_store(&mut self, element: Pointee, address: u32, index: &Expression, value: &Expression) -> Compilation<bool> {
+        if !matches!(value, Expression::Variable(_)) {
+            return Ok(false);
+        }
+        let source = self.general_register_of_leaf(value)?;
+        let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
+        let low = (address as i16) as i64;
+        let size = element.size() as i64;
+        if let Some(constant) = constant_value(index) {
+            let displacement = i16::try_from(low + constant * size)
+                .map_err(|_| Diagnostic::error("constant-address subscript offset out of range (roadmap)"))?;
+            let base = self.free_general_excluding(source)?;
+            self.output.instructions.push(Instruction::load_immediate_shifted(base, high_adjusted));
+            self.output.instructions.push(displacement_store(element, source, base, displacement)?);
+            return Ok(true);
+        }
+        if let Some((leaf, factor, offset)) = split_scaled_index(index) {
+            if let Ok(index_register) = self.general_register_of_leaf(leaf) {
+                if index_register == source {
+                    return Ok(false);
+                }
+                let displacement = i16::try_from(low + offset * size)
+                    .map_err(|_| Diagnostic::error("constant-address subscript offset out of range (roadmap)"))?;
+                let scale = factor * size;
+                if scale != 1 {
+                    if (scale as u64).is_power_of_two() {
+                        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: index_register, s: index_register, shift: (scale as u64).trailing_zeros() as u8 });
+                    } else if let Ok(scale) = i16::try_from(scale) {
+                        self.output.instructions.push(Instruction::MultiplyImmediate { d: index_register, a: index_register, immediate: scale });
+                    } else {
+                        return Ok(false);
+                    }
+                }
+                self.output.instructions.push(Instruction::AddImmediateShifted { d: index_register, a: index_register, immediate: high_adjusted });
+                self.output.instructions.push(displacement_store(element, source, index_register, displacement)?);
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
 }
 
 /// Split a subscript index into `(leaf, factor, offset)` with `index == leaf * factor + offset`:
 /// a bare `leaf`, `leaf * k` / `k * leaf`, `leaf + k`, `leaf - k`, or `leaf * k ± c`. `None` for any
 /// other shape (a non-constant factor/offset). The caller resolves `leaf` to a register and defers
 /// if it is not a plain register variable. Used to lay out a constant-address subscript.
-fn split_scaled_index(index: &Expression) -> Option<(&Expression, i64, i64)> {
+pub(crate) fn split_scaled_index(index: &Expression) -> Option<(&Expression, i64, i64)> {
     fn scaled(expression: &Expression) -> Option<(&Expression, i64)> {
         match expression {
             Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {

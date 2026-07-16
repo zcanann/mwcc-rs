@@ -136,6 +136,14 @@ impl Generator {
                     return self.emit_global_array_store(name, total_size, index, value);
                 }
             }
+            // `((T *)ADDR)[index] = value;` — a store to a constant-address (hardware register) pointer.
+            if let Expression::Cast { target_type: Type::Pointer(element), operand } = base.as_ref() {
+                if let Some(address) = constant_value(operand) {
+                    if self.emit_const_address_subscript_store(*element, address as u32, index, value)? {
+                        return Ok(());
+                    }
+                }
+            }
         }
         // `a[i] op= rhs` (variable index, leaf rhs) — scale the index once and
         // reuse it for the indexed load and store, the value flowing through r0.
