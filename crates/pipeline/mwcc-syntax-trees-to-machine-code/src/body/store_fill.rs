@@ -478,9 +478,19 @@ impl Generator {
         // The store address must be a general parameter plus a FIXED displacement so it
         // never touches the value's register: a bare deref (`*p`), a member (`p->field`),
         // or a constant subscript (`p[3]`). A variable subscript would compute its offset
-        // into a register (possibly the value's) — deferred.
+        // into a register (possibly the value's) — deferred. The base register must ALSO
+        // differ from `result`: when the value is returned it lives in r3, and the first
+        // pointer parameter is r3 too (`int f(struct S *p, int a){ p->x = a+1; return a+1; }`),
+        // so materializing the value into r3 would overwrite the store's base pointer.
+        // mwcc keeps the value in r0 and `mr r3,r0`s at the end (a different allocation not
+        // modeled here) — defer that overlap.
         let base_is_general_param = |generator: &Self, base: &Expression| {
-            leaf_name(base).is_some_and(|name| generator.locations.get(name).map(|location| location.class) == Some(ValueClass::General))
+            leaf_name(base).is_some_and(|name| {
+                generator
+                    .locations
+                    .get(name)
+                    .is_some_and(|location| location.class == ValueClass::General && location.register != result)
+            })
         };
         let mut seen_store = false;
         for statement in &function.statements {
