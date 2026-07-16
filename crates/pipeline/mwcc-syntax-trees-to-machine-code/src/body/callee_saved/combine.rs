@@ -496,13 +496,6 @@ impl Generator {
                 return Ok(false);
             }
         }
-        // `g(x, K…)` void — x likely stays in r3 without the scratch thread, but the
-        // exact li order is unmeasured for this liveness; defer (checked BEFORE any
-        // emission — a mid-emission bail would leave partial instructions behind).
-        if x_slot == 0 && consumer_arguments.len() > 1 {
-            return Ok(false);
-        }
-
         // LR-only frame: nothing survives a call.
         self.non_leaf = true;
         self.frame_size = 16;
@@ -511,8 +504,13 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
         self.record_relocation(RelocationKind::Rel24, producer_name);
         self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
-        if x_slot == 0 && consumer_arguments.len() == 1 {
-            // x is already in r3.
+        if x_slot == 0 {
+            // `g(x[, K…])`: x is already in r3 — no thread, no move; the literal
+            // arguments (if any) materialize in slot order (measured g(x,5), g(x,5,9)).
+            for (slot, argument) in consumer_arguments.iter().enumerate().skip(1) {
+                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
+                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+            }
         } else {
             // After the scratch thread, the FIRST literal's li issues and x's move from
             // r0 fills that li's latency slot — ending r0's live range at the earliest
