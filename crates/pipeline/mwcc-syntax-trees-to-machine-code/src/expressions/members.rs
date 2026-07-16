@@ -307,26 +307,50 @@ impl Generator {
             }
             return Ok(());
         }
-        // `((T *)ADDR)[k]` — a subscript on a CONSTANT-address pointer with a CONSTANT index (a
-        // hardware register at a fixed offset). mwcc splits ADDR into a high-adjusted `lis` and a
-        // low displacement, folding the element offset into the displacement:
-        // `lis d,ADDR@ha; l** d,(ADDR@l + k*size)(d)` — the destination doubles as the base. A
-        // VARIABLE index (which adds the high half onto the scaled index via `addis`) defers here.
+        // `((T *)ADDR)[index]` — a subscript on a CONSTANT-address pointer (a hardware register). mwcc
+        // splits ADDR into a high-adjusted half and a low displacement, folding the element offset into
+        // the displacement. A CONSTANT index materializes the high half with `lis` and rides the whole
+        // offset in the displacement (`lis d,ADDR@ha; l** d,(ADDR@l + k*size)(d)`). A VARIABLE index
+        // scales into the destination, adds the high half onto it with `addis`, and rides the constant
+        // part of the index in the displacement (`slwi d,i,log2(size); addis d,d,ADDR@ha;
+        // l** d,ADDR@l(d)`). The destination doubles as the base throughout.
         if let Expression::Cast { target_type: Type::Pointer(element), operand } = base {
             if let Some(address) = constant_value(operand) {
                 let element = *element;
-                let Some(constant) = constant_value(index) else {
-                    return Err(Diagnostic::error("a variable-index subscript on a constant-address pointer is not supported yet (roadmap)"));
-                };
                 let address = address as u32;
                 let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
                 let low = (address as i16) as i64;
-                let displacement = low + constant * element.size() as i64;
-                let displacement = i16::try_from(displacement)
-                    .map_err(|_| Diagnostic::error("constant-address subscript offset out of range (roadmap)"))?;
-                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
-                self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
-                return Ok(());
+                let size = element.size() as i64;
+                if let Some(constant) = constant_value(index) {
+                    let displacement = i16::try_from(low + constant * size)
+                        .map_err(|_| Diagnostic::error("constant-address subscript offset out of range (roadmap)"))?;
+                    self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
+                    self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
+                    return Ok(());
+                }
+                // A variable index `leaf * factor ± offset` (bare `leaf`, `leaf * k`, `leaf + k`).
+                if let Some((leaf, factor, offset)) = split_scaled_index(index) {
+                    if let Ok(index_register) = self.general_register_of_leaf(leaf) {
+                        let displacement = i16::try_from(low + offset * size)
+                            .map_err(|_| Diagnostic::error("constant-address subscript offset out of range (roadmap)"))?;
+                        let scale = factor * size;
+                        let scaled_register = if scale == 1 {
+                            index_register
+                        } else if (scale as u64).is_power_of_two() {
+                            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: destination, s: index_register, shift: (scale as u64).trailing_zeros() as u8 });
+                            destination
+                        } else if let Ok(scale) = i16::try_from(scale) {
+                            self.output.instructions.push(Instruction::MultiplyImmediate { d: destination, a: index_register, immediate: scale });
+                            destination
+                        } else {
+                            return Err(Diagnostic::error("constant-address subscript scale out of range (roadmap)"));
+                        };
+                        self.output.instructions.push(Instruction::AddImmediateShifted { d: destination, a: scaled_register, immediate: high_adjusted });
+                        self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
+                        return Ok(());
+                    }
+                }
+                return Err(Diagnostic::error("a variable-index subscript on a constant-address pointer is not supported yet (roadmap)"));
             }
         }
         let (pointee, address) = self.resolve_pointer(base)?;
@@ -909,4 +933,39 @@ impl Generator {
         Ok(false)
     }
 
+}
+
+/// Split a subscript index into `(leaf, factor, offset)` with `index == leaf * factor + offset`:
+/// a bare `leaf`, `leaf * k` / `k * leaf`, `leaf + k`, `leaf - k`, or `leaf * k ± c`. `None` for any
+/// other shape (a non-constant factor/offset). The caller resolves `leaf` to a register and defers
+/// if it is not a plain register variable. Used to lay out a constant-address subscript.
+fn split_scaled_index(index: &Expression) -> Option<(&Expression, i64, i64)> {
+    fn scaled(expression: &Expression) -> Option<(&Expression, i64)> {
+        match expression {
+            Expression::Binary { operator: BinaryOperator::Multiply, left, right } => {
+                if let Some(factor) = constant_value(right) {
+                    Some((left.as_ref(), factor))
+                } else {
+                    constant_value(left).map(|factor| (right.as_ref(), factor))
+                }
+            }
+            Expression::Variable(_) => Some((expression, 1)),
+            _ => None,
+        }
+    }
+    match index {
+        Expression::Binary { operator: operator @ (BinaryOperator::Add | BinaryOperator::Subtract), left, right } => {
+            if let Some(offset) = constant_value(right) {
+                let (leaf, factor) = scaled(left)?;
+                Some((leaf, factor, if *operator == BinaryOperator::Subtract { -offset } else { offset }))
+            } else if *operator == BinaryOperator::Add {
+                let offset = constant_value(left)?;
+                let (leaf, factor) = scaled(right)?;
+                Some((leaf, factor, offset))
+            } else {
+                None
+            }
+        }
+        _ => scaled(index).map(|(leaf, factor)| (leaf, factor, 0)),
+    }
 }
