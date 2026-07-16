@@ -135,6 +135,14 @@ impl Generator {
                 if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
                     return self.emit_global_array_store(name, total_size, index, value);
                 }
+                // `__EXIRegs[index] = value;` — a store to a fixed-address (hardware register) array.
+                if let Some(&(address, element_type)) = self.fixed_address_arrays.get(name.as_str()) {
+                    if let Some(element) = pointee_of_type(element_type) {
+                        if self.emit_fixed_address_array_subscript_store(element, address, index, value)? {
+                            return Ok(());
+                        }
+                    }
+                }
             }
             // `((T *)ADDR)[index] = value;` — a store to a constant-address (hardware register) pointer.
             if let Expression::Cast { target_type: Type::Pointer(element), operand } = base.as_ref() {

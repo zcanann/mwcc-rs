@@ -1057,6 +1057,69 @@ impl Generator {
         Ok(())
     }
 
+    /// `__EXIRegs[index] = value;` — a store to a fixed-address array. Mirrors the read schedule with
+    /// the base materialized in the INDEX register (there is no load destination): a `mulli` scale
+    /// takes the index reg as the base (`mulli r0; lis idx; addi idx; …`); a `slwi` scale puts the
+    /// base-high in a scratch (avoiding the value and index) then the base in the index register.
+    /// The value must be a register variable and must not alias the index register; otherwise defers.
+    pub(crate) fn emit_fixed_address_array_subscript_store(&mut self, element: Pointee, address: u32, index: &Expression, value: &Expression) -> Compilation<bool> {
+        if !matches!(value, Expression::Variable(_)) {
+            return Ok(false);
+        }
+        let source = self.general_register_of_leaf(value)?;
+        let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
+        let low = address as i16;
+        let size = element.size() as i64;
+        if let Some(constant) = constant_value(index) {
+            let displacement = i16::try_from(low as i64 + constant * size)
+                .map_err(|_| Diagnostic::error("fixed-address array subscript offset out of range (roadmap)"))?;
+            let base = self.free_general_excluding(source)?;
+            self.output.instructions.push(Instruction::load_immediate_shifted(base, high_adjusted));
+            self.output.instructions.push(displacement_store(element, source, base, displacement)?);
+            return Ok(true);
+        }
+        let Some((leaf, factor, offset)) = split_scaled_index(index) else {
+            return Ok(false);
+        };
+        let index_register = self.general_register_of_leaf(leaf)?;
+        if index_register == source {
+            return Ok(false);
+        }
+        let scale = factor * size;
+        let displacement = i16::try_from(offset * size)
+            .map_err(|_| Diagnostic::error("fixed-address array subscript offset out of range (roadmap)"))?;
+        if scale != 1 && !(scale as u64).is_power_of_two() {
+            let Ok(scale) = i16::try_from(scale) else {
+                return Ok(false);
+            };
+            self.output.instructions.push(Instruction::MultiplyImmediate { d: GENERAL_SCRATCH, a: index_register, immediate: scale });
+            self.output.instructions.push(Instruction::load_immediate_shifted(index_register, high_adjusted));
+            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: index_register, immediate: low });
+            if offset == 0 {
+                self.output.instructions.push(indexed_store(element, source, index_register, GENERAL_SCRATCH)?);
+            } else {
+                self.output.instructions.push(Instruction::Add { d: index_register, a: index_register, b: GENERAL_SCRATCH });
+                self.output.instructions.push(displacement_store(element, source, index_register, displacement)?);
+            }
+            return Ok(true);
+        }
+        if scale == 1 {
+            // A byte store (no scaling) is not modeled yet — defer.
+            return Ok(false);
+        }
+        let high = self.free_general_excluding_two(source, index_register)?;
+        self.output.instructions.push(Instruction::load_immediate_shifted(high, high_adjusted));
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: (scale as u64).trailing_zeros() as u8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: low });
+        if offset == 0 {
+            self.output.instructions.push(indexed_store(element, source, index_register, GENERAL_SCRATCH)?);
+        } else {
+            self.output.instructions.push(Instruction::Add { d: index_register, a: index_register, b: GENERAL_SCRATCH });
+            self.output.instructions.push(displacement_store(element, source, index_register, displacement)?);
+        }
+        Ok(true)
+    }
+
 }
 
 /// Split a subscript index into `(leaf, factor, offset)` with `index == leaf * factor + offset`:
