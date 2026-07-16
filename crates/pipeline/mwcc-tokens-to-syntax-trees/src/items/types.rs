@@ -353,13 +353,25 @@ impl Parser {
                 let inner_size = inner.size;
                 let inner_align = (inner.align as u16).max(1);
                 let member_name = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                // An inline struct member may be an ARRAY — `struct { … } queue[3];` (EXIControl's
+                // callback queue). Parse the dimension(s); `array_bytes` is the total so the fields
+                // after it lay out correctly (`count * inner_size`), `None` for a scalar member.
+                let mut array_count: Option<u16> = None;
+                while *self.peek() == Token::BracketOpen {
+                    self.advance();
+                    let dimension = self.parse_integer_constant()? as u16;
+                    array_count = Some(array_count.unwrap_or(1).saturating_mul(dimension));
+                    self.expect(Token::BracketClose)?;
+                }
+                let member_bytes = array_count.map_or(inner_size, |count| count.saturating_mul(inner_size));
+                let array_bytes = array_count.map(|count| count.saturating_mul(inner_size));
                 match (tag, member_name) {
                     (Some(tag), Some(name)) => {
                         self.structs.insert(tag.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
-                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(tag), array_element: None, array_bytes: None, bit_field: None });
-                        offset += inner_size;
+                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(tag), array_element: None, array_bytes, bit_field: None });
+                        offset += member_bytes;
                     }
                     (Some(tag), None) => {
                         // A named struct type registered inside this one (no member).
@@ -375,8 +387,8 @@ impl Parser {
                         self.structs.insert(synthetic.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
-                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(synthetic), array_element: None, array_bytes: None, bit_field: None });
-                        offset += inner_size;
+                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(synthetic), array_element: None, array_bytes, bit_field: None });
+                        offset += member_bytes;
                     }
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
