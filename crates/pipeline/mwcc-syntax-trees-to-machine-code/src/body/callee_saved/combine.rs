@@ -241,6 +241,78 @@ impl Generator {
         Ok(true)
     }
 
+    /// `x = f(); g(x); h(x);` — an argument-free call's RESULT live across the calls
+    /// that consume it. mwcc saves the result to the callee-saved home right after the
+    /// producing call (`mr r31,r3`); the FIRST consumer reads x still live in r3 (no
+    /// move); the second consumer materializes from the home (`mr r3,r31`). Measured:
+    /// `bl f; mr r31,r3; bl g; mr r3,r31; bl h` with the canonical single-save frame.
+    /// Exactly two consumers (a third's materialization schedule is unmeasured — defer).
+    pub(crate) fn try_callee_saved_result_call_sequence(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void || function.return_expression.is_some() {
+            return Ok(false);
+        }
+        if !function.parameters.is_empty() {
+            return Ok(false);
+        }
+        // Exactly one local: a scalar int initialized from an ARGUMENT-FREE direct call.
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if local.is_static || local.array_length.is_some() || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(Expression::Call { name: producer_name, arguments: producer_arguments }) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        if !producer_arguments.is_empty() {
+            return Ok(false);
+        }
+        // Exactly two consuming statements, each a direct call whose single argument is x.
+        let [Statement::Expression(Expression::Call { name: first_name, arguments: first_arguments }), Statement::Expression(Expression::Call { name: second_name, arguments: second_arguments })] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        for (name, arguments) in [(first_name, first_arguments), (second_name, second_arguments)] {
+            if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(v) if v == &local.name) {
+                return Ok(false);
+            }
+            // An indirect callee (function-pointer variable/global) materializes differently.
+            if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+                return Ok(false);
+            }
+        }
+        if self.locations.contains_key(producer_name.as_str()) || self.globals.contains_key(producer_name.as_str()) {
+            return Ok(false);
+        }
+
+        // The canonical single-save frame; the result's home is a call-crossing virtual.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let saved = self.fresh_virtual_general();
+        self.callee_saved = vec![saved];
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        // The producing call, then the save.
+        self.emit_call(producer_name, producer_arguments, None, false)?;
+        self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+        // x reads from r3 for the first consumer (still live), from the home after.
+        let signed = !matches!(local.declared_type, Type::UnsignedInt);
+        self.locations.insert(
+            local.name.clone(),
+            Location { class: ValueClass::General, register: 3, signed, width: 32, pointee: None, stride: None },
+        );
+        self.emit_call(first_name, first_arguments, None, false)?;
+        if let Some(location) = self.locations.get_mut(&local.name) {
+            location.register = saved;
+        }
+        self.emit_call(second_name, second_arguments, None, false)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// `return f() - g();` — two argument-free calls whose results are subtracted in the return. mwcc
     /// runs the first call, saves its result in r31 (`mr r31,r3`, live across the second call), runs
     /// the second call (its result in r3), reloads LR, then `subf r3,r3,r31` (= r31 - r3 = f() - g()).
