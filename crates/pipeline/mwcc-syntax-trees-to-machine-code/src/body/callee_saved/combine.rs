@@ -4,6 +4,36 @@
 use super::*;
 
 impl Generator {
+    /// Whether `argument` materializes into its slot with exactly ONE instruction on
+    /// the measured schedules: an in-range integer literal (`li`) or an SDA scalar-int
+    /// global (`lwz rN,G(0)` — SmallData only; absolute addressing is `lis`+`lwz`,
+    /// a different schedule, unmeasured). A local/parameter, an array global (its
+    /// value is a decayed ADDRESS), and float/narrow globals are not.
+    fn materializes_in_one(&self, argument: &Expression) -> bool {
+        match argument {
+            Expression::IntegerLiteral(value) => *value >= i16::MIN as i64 && *value <= i16::MAX as i64,
+            Expression::Variable(name) => {
+                self.behavior.global_addressing == GlobalAddressing::SmallData
+                    && !self.locations.contains_key(name.as_str())
+                    && !self.global_array_sizes.contains_key(name.as_str())
+                    && matches!(self.globals.get(name.as_str()), Some(Type::Int | Type::UnsignedInt))
+            }
+            _ => false,
+        }
+    }
+
+    /// Emit the one-instruction materialization `materializes_in_one` promised.
+    fn materialize_slot(&mut self, argument: &Expression, slot: usize) -> Compilation<()> {
+        match argument {
+            Expression::IntegerLiteral(value) => {
+                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+                Ok(())
+            }
+            Expression::Variable(name) => self.emit_global_load_value(name, 3 + slot as u8),
+            _ => unreachable!("materialize_slot on an unvetted argument"),
+        }
+    }
+
     /// A void function whose body is two or more calls that each pass the SAME argument
     /// list — all the parameters, in order — `f(a,b){ g(a,b); h(a,b); }` (the single-
     /// parameter `f(x){ g(x); h(x); }` is the common case). Each parameter is live across
@@ -351,11 +381,10 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let literal_in_range = |argument: &Expression| {
-            matches!(argument, Expression::IntegerLiteral(value) if *value >= i16::MIN as i64 && *value <= i16::MAX as i64)
-        };
         // x may occupy exactly ONE argument slot (any position); every other argument
-        // must be an in-range integer literal.
+        // must be an in-range integer literal or an SDA scalar-int global (whose load
+        // is one `lwz` — it substitutes 1:1 for a literal's `li` in the measured
+        // schedule; absolute addressing is two instructions and unmeasured — defer).
         let x_slots: Vec<usize> = consumer_arguments
             .iter()
             .enumerate()
@@ -371,7 +400,7 @@ impl Generator {
             || !consumer_arguments
                 .iter()
                 .enumerate()
-                .all(|(slot, argument)| Some(slot) == x_slot || literal_in_range(argument))
+                .all(|(slot, argument)| Some(slot) == x_slot || self.materializes_in_one(argument))
         {
             return Ok(false);
         }
@@ -391,13 +420,48 @@ impl Generator {
         // Producer, then the measured save schedule.
         self.record_relocation(RelocationKind::Rel24, producer_name);
         self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
+        // Split the non-x slots: LOADS (SDA globals) batch AHEAD of the `li`s in mwcc's
+        // schedule (measured `g(5,G)`: lwz r4 first). Each group keeps slot order.
+        let load_slots: Vec<usize> = consumer_arguments
+            .iter()
+            .enumerate()
+            .filter(|&(slot, argument)| Some(slot) != x_slot && matches!(argument, Expression::Variable(_)))
+            .map(|(slot, _)| slot)
+            .collect();
+        let li_slots: Vec<usize> = consumer_arguments
+            .iter()
+            .enumerate()
+            .filter(|&(slot, argument)| Some(slot) != x_slot && matches!(argument, Expression::IntegerLiteral(_)))
+            .map(|(slot, _)| slot)
+            .collect();
+        // Measured boundaries: at most TWO loads, and two only when slot 0 is a load
+        // (the r0-thread path, `g(G,H)`); a load alongside `li`s is measured only with
+        // ONE load. Wider mixes are unmeasured — defer before any emission.
+        if load_slots.len() > 2
+            || (load_slots.len() == 2 && load_slots[0] != 0)
+            || (load_slots.len() >= 1 && !li_slots.is_empty() && load_slots.len() != 1)
+        {
+            return Ok(false);
+        }
+        // An x-first tail mixing loads and lis is unmeasured (which batches first
+        // around the save?) — defer.
+        if passes_x_first && !load_slots.is_empty() && !li_slots.is_empty() {
+            return Ok(false);
+        }
+        // x mid-slot with a load AND a literal slot 0 (`g(5,x,G)`) issues the save
+        // FIRST (before the load — measured once, the save is on the x-move's critical
+        // path) — a different order than the no-x `g(5,G)`; one sample is not a rule,
+        // so defer this combination.
+        if x_slot.is_some() && !passes_x_first && !load_slots.is_empty() && load_slots[0] != 0 {
+            return Ok(false);
+        }
+
         if passes_x_first {
-            // `g(x, K…)`: x stays live in r3 (no move). The save lands in the FIRST
-            // li's latency slot — `li r4,K0 ; mr r31,r3 ; li r5,K1 ; …` (measured
-            // g(x,5) and g(x,5,9)); with no literals it directly follows the bl.
+            // `g(x, tail…)`: x stays live in r3 (no move). The save lands in the FIRST
+            // materialization's latency slot — `li r4,K0 ; mr r31,r3 ; li r5,K1 ; …`
+            // (measured g(x,5), g(x,5,9), g(x,G)); with no tail it follows the bl.
             for (index, argument) in literal_tail.iter().enumerate() {
-                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
-                self.output.instructions.push(Instruction::AddImmediate { d: 4 + index as u8, a: 0, immediate: *value as i16 });
+                self.materialize_slot(argument, index + 1)?;
                 if index == 0 {
                     self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
                 }
@@ -407,20 +471,43 @@ impl Generator {
             }
         } else if consumer_arguments.is_empty() {
             self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+        } else if load_slots.first() == Some(&0) {
+            // Slot 0 is a LOAD — it clobbers r3, so the save THREADS THE SCRATCH:
+            // mr r0,r3; the loads batch in slot order; `mr r31,r0` follows the batch
+            // (measured g(G): 1 load — g(G,H): save after BOTH loads); then the lis.
+            self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+            for &slot in &load_slots {
+                self.materialize_slot(&consumer_arguments[slot], slot)?;
+            }
+            self.output.instructions.push(Instruction::Or { a: saved, s: 0, b: 0 });
+            for &slot in &li_slots {
+                self.materialize_slot(&consumer_arguments[slot], slot)?;
+            }
+            if let Some(x_slot) = x_slot {
+                self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: saved, b: saved });
+            }
+        } else if let Some(&load_slot) = load_slots.first() {
+            // A LOAD exists but slot 0 is a literal — the load issues FIRST and does
+            // not touch r3, so the save is DIRECT (`mr r31,r3`, x still live), placed
+            // in the load's latency slot; the lis follow (measured g(5,G): lwz r4;
+            // mr r31,r3; li r3,5).
+            self.materialize_slot(&consumer_arguments[load_slot], load_slot)?;
+            self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+            for &slot in &li_slots {
+                self.materialize_slot(&consumer_arguments[slot], slot)?;
+            }
+            if let Some(x_slot) = x_slot {
+                self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: saved, b: saved });
+            }
         } else {
-            // The first li clobbers r3, so the save THREADS THE SCRATCH — mr r0,r3;
-            // then the literal `li`s in slot order with `mr r31,r0` in the FIRST one's
-            // latency slot. When x occupies a later argument slot (`g(5,x,7); return x`),
-            // its slot materializes from the saved home LAST, right before the call
-            // (measured: mr r0,r3; li r3,5; mr r31,r0; li r5,7; mr r4,r31; bl).
+            // All-`li` tail: the first li clobbers r3, so the save THREADS THE SCRATCH —
+            // mr r0,r3; lis in slot order with `mr r31,r0` in the FIRST one's latency
+            // slot. When x occupies a later argument slot (`g(5,x,7); return x`), its
+            // slot materializes from the saved home LAST, right before the call.
             self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
             let mut saved_emitted = false;
-            for (slot, argument) in consumer_arguments.iter().enumerate() {
-                if Some(slot) == x_slot {
-                    continue;
-                }
-                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
-                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+            for &slot in &li_slots {
+                self.materialize_slot(&consumer_arguments[slot], slot)?;
                 if !saved_emitted {
                     self.output.instructions.push(Instruction::Or { a: saved, s: 0, b: 0 });
                     saved_emitted = true;
@@ -472,7 +559,8 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // Exactly one x argument; every other argument an in-range integer literal.
+        // Exactly one x argument; every other argument an in-range integer literal or
+        // a one-instruction SDA scalar-int global.
         let x_slots: Vec<usize> = consumer_arguments
             .iter()
             .enumerate()
@@ -484,10 +572,10 @@ impl Generator {
         };
         let x_slot = *x_slot;
         if consumer_arguments.len() > 8
-            || !consumer_arguments.iter().enumerate().all(|(slot, argument)| {
-                slot == x_slot
-                    || matches!(argument, Expression::IntegerLiteral(value) if *value >= i16::MIN as i64 && *value <= i16::MAX as i64)
-            })
+            || !consumer_arguments
+                .iter()
+                .enumerate()
+                .all(|(slot, argument)| slot == x_slot || self.materializes_in_one(argument))
         {
             return Ok(false);
         }
@@ -495,6 +583,18 @@ impl Generator {
             if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
                 return Ok(false);
             }
+        }
+        // Measured global-load boundaries for the void form: at most ONE load, and it
+        // must be slot 0 (`g(G,x)`, `g(G,x,7)`) or in an x-first tail (`g(x,G)`).
+        // A load with a literal in slot 0, or two loads, is unmeasured — defer.
+        let void_load_slots: Vec<usize> = consumer_arguments
+            .iter()
+            .enumerate()
+            .filter(|&(slot, argument)| slot != x_slot && matches!(argument, Expression::Variable(_)))
+            .map(|(slot, _)| slot)
+            .collect();
+        if void_load_slots.len() > 1 || (void_load_slots.len() == 1 && x_slot != 0 && void_load_slots[0] != 0) {
+            return Ok(false);
         }
         // LR-only frame: nothing survives a call.
         self.non_leaf = true;
@@ -505,27 +605,26 @@ impl Generator {
         self.record_relocation(RelocationKind::Rel24, producer_name);
         self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
         if x_slot == 0 {
-            // `g(x[, K…])`: x is already in r3 — no thread, no move; the literal
+            // `g(x[, K…])`: x is already in r3 — no thread, no move; the tail
             // arguments (if any) materialize in slot order (measured g(x,5), g(x,5,9)).
             for (slot, argument) in consumer_arguments.iter().enumerate().skip(1) {
-                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
-                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+                self.materialize_slot(argument, slot)?;
             }
         } else {
-            // After the scratch thread, the FIRST literal's li issues and x's move from
-            // r0 fills that li's latency slot — ending r0's live range at the earliest
-            // slot — then the remaining lis follow in slot order. (Measured g(5,x):
+            // After the scratch thread, the FIRST materialization issues and x's move
+            // from r0 fills its latency slot — ending r0's live range at the earliest
+            // slot — then the remaining slots follow in order. (Measured g(5,x):
             // li r3,5; mr r4,r0 — g(5,x,7): li r3,5; mr r4,r0; li r5,7 — g(5,7,x):
-            // li r3,5; mr r5,r0; li r4,7. Same position the r31 save takes in the
-            // return form; the scheduler treats both as "the r0 consumer".)
+            // li r3,5; mr r5,r0; li r4,7 — g(G,x): lwz r3,G; mr r4,r0. Same position
+            // the r31 save takes in the return form; the scheduler treats both as
+            // "the r0 consumer".)
             self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
             let mut x_move_emitted = false;
             for (slot, argument) in consumer_arguments.iter().enumerate() {
                 if slot == x_slot {
                     continue;
                 }
-                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
-                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+                self.materialize_slot(argument, slot)?;
                 if !x_move_emitted {
                     self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: 0, b: 0 });
                     x_move_emitted = true;
