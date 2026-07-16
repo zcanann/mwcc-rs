@@ -354,11 +354,28 @@ impl Generator {
         let literal_in_range = |argument: &Expression| {
             matches!(argument, Expression::IntegerLiteral(value) if *value >= i16::MIN as i64 && *value <= i16::MAX as i64)
         };
-        let passes_x_first = matches!(consumer_arguments.first(), Some(Expression::Variable(name)) if name == &local.name);
-        let literal_tail: &[Expression] = if passes_x_first { &consumer_arguments[1..] } else { consumer_arguments };
-        if consumer_arguments.len() > 8 || !literal_tail.iter().all(literal_in_range) {
+        // x may occupy exactly ONE argument slot (any position); every other argument
+        // must be an in-range integer literal.
+        let x_slots: Vec<usize> = consumer_arguments
+            .iter()
+            .enumerate()
+            .filter(|(_, argument)| matches!(argument, Expression::Variable(name) if name == &local.name))
+            .map(|(slot, _)| slot)
+            .collect();
+        if x_slots.len() > 1 {
             return Ok(false);
         }
+        let x_slot = x_slots.first().copied();
+        let passes_x_first = x_slot == Some(0);
+        if consumer_arguments.len() > 8
+            || !consumer_arguments
+                .iter()
+                .enumerate()
+                .all(|(slot, argument)| Some(slot) == x_slot || literal_in_range(argument))
+        {
+            return Ok(false);
+        }
+        let literal_tail: &[Expression] = if passes_x_first { &consumer_arguments[1..] } else { consumer_arguments };
         for name in [producer_name, consumer_name] {
             if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
                 return Ok(false);
@@ -391,15 +408,26 @@ impl Generator {
         } else if consumer_arguments.is_empty() {
             self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
         } else {
-            // `g(K…)`: the first li clobbers r3, so the save THREADS THE SCRATCH —
-            // mr r0,r3 ; li r3,K0 ; mr r31,r0 ; li r4,K1 ; …
+            // The first li clobbers r3, so the save THREADS THE SCRATCH — mr r0,r3;
+            // then the literal `li`s in slot order with `mr r31,r0` in the FIRST one's
+            // latency slot. When x occupies a later argument slot (`g(5,x,7); return x`),
+            // its slot materializes from the saved home LAST, right before the call
+            // (measured: mr r0,r3; li r3,5; mr r31,r0; li r5,7; mr r4,r31; bl).
             self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+            let mut saved_emitted = false;
             for (slot, argument) in consumer_arguments.iter().enumerate() {
+                if Some(slot) == x_slot {
+                    continue;
+                }
                 let Expression::IntegerLiteral(value) = argument else { unreachable!() };
                 self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
-                if slot == 0 {
+                if !saved_emitted {
                     self.output.instructions.push(Instruction::Or { a: saved, s: 0, b: 0 });
+                    saved_emitted = true;
                 }
+            }
+            if let Some(x_slot) = x_slot {
+                self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: saved, b: saved });
             }
         }
         self.record_relocation(RelocationKind::Rel24, consumer_name);
@@ -411,6 +439,104 @@ impl Generator {
         self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
         self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
+    /// `x = f(); g(…, x, …);` in a VOID function — the result feeds the next call and
+    /// DIES there, so nothing crosses a call: no callee-saved home at all (LR-only
+    /// frame). x in slot 0 with no other arguments is the degenerate `bl f; bl g`
+    /// (x flows through r3 untouched). Otherwise the result threads the scratch
+    /// (`mr r0,r3`), the literal arguments materialize in slot order, and x's slot
+    /// fills from r0 LAST (measured: `bl f; mr r0,r3; li r3,5; mr r4,r0; bl g`).
+    pub(crate) fn try_result_feeds_call(&mut self, function: &Function) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.parameters.is_empty() {
+            return Ok(false);
+        }
+        if function.return_type != Type::Void || function.return_expression.is_some() {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if local.is_static || local.array_length.is_some() || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let Some(Expression::Call { name: producer_name, arguments: producer_arguments }) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        if !producer_arguments.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Expression(Expression::Call { name: consumer_name, arguments: consumer_arguments })] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // Exactly one x argument; every other argument an in-range integer literal.
+        let x_slots: Vec<usize> = consumer_arguments
+            .iter()
+            .enumerate()
+            .filter(|(_, argument)| matches!(argument, Expression::Variable(name) if name == &local.name))
+            .map(|(slot, _)| slot)
+            .collect();
+        let [x_slot] = x_slots.as_slice() else {
+            return Ok(false);
+        };
+        let x_slot = *x_slot;
+        if consumer_arguments.len() > 8
+            || !consumer_arguments.iter().enumerate().all(|(slot, argument)| {
+                slot == x_slot
+                    || matches!(argument, Expression::IntegerLiteral(value) if *value >= i16::MIN as i64 && *value <= i16::MAX as i64)
+            })
+        {
+            return Ok(false);
+        }
+        for name in [producer_name, consumer_name] {
+            if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+                return Ok(false);
+            }
+        }
+        // `g(x, K…)` void — x likely stays in r3 without the scratch thread, but the
+        // exact li order is unmeasured for this liveness; defer (checked BEFORE any
+        // emission — a mid-emission bail would leave partial instructions behind).
+        if x_slot == 0 && consumer_arguments.len() > 1 {
+            return Ok(false);
+        }
+
+        // LR-only frame: nothing survives a call.
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.record_relocation(RelocationKind::Rel24, producer_name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
+        if x_slot == 0 && consumer_arguments.len() == 1 {
+            // x is already in r3.
+        } else {
+            // After the scratch thread, the FIRST literal's li issues and x's move from
+            // r0 fills that li's latency slot — ending r0's live range at the earliest
+            // slot — then the remaining lis follow in slot order. (Measured g(5,x):
+            // li r3,5; mr r4,r0 — g(5,x,7): li r3,5; mr r4,r0; li r5,7 — g(5,7,x):
+            // li r3,5; mr r5,r0; li r4,7. Same position the r31 save takes in the
+            // return form; the scheduler treats both as "the r0 consumer".)
+            self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+            let mut x_move_emitted = false;
+            for (slot, argument) in consumer_arguments.iter().enumerate() {
+                if slot == x_slot {
+                    continue;
+                }
+                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
+                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+                if !x_move_emitted {
+                    self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: 0, b: 0 });
+                    x_move_emitted = true;
+                }
+            }
+        }
+        self.record_relocation(RelocationKind::Rel24, consumer_name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: consumer_name.to_string() });
+        self.emit_epilogue_and_return();
         Ok(true)
     }
 

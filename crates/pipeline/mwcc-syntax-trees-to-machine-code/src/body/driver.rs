@@ -1768,6 +1768,10 @@ impl Generator {
             if self.try_callee_saved_result_across_call_return(function)? {
                 return Ok(());
             }
+            // `x = f(); g(…, x, …);` void — the result feeds the next call and dies (no home).
+            if self.try_result_feeds_call(function)? {
+                return Ok(());
+            }
             // `g(x); return x OP y;` — two params both live across one call, combined in the return.
             if self.try_callee_saved_param_pair_combine(function)? {
                 return Ok(());
