@@ -280,22 +280,11 @@ impl Generator {
             if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
                 return self.emit_global_array_subscript(name, total_size, index, destination);
             }
-            // `__EXIRegs[k]` — a fixed-address (hardware register) array. A CONSTANT index materializes
-            // the base high with `lis` and rides the whole offset in the displacement:
-            // `lis d,ADDR@ha; l** d,(ADDR@l + k*size)(d)`. A variable index (mwcc's `lis; slwi; addi;
-            // lwzx`) is a follow-up.
+            // `__EXIRegs[k]` — a fixed-address (hardware register) array. mwcc materializes the base
+            // off the constant address and indexes it (distinct from a pointer cast's fold).
             if let Some(&(address, element_type)) = self.fixed_address_arrays.get(name.as_str()) {
                 if let Some(element) = pointee_of_type(element_type) {
-                    let Some(constant) = constant_value(index) else {
-                        return Err(Diagnostic::error("a variable-index fixed-address array subscript is not supported yet (roadmap)"));
-                    };
-                    let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
-                    let low = (address as i16) as i64;
-                    let displacement = i16::try_from(low + constant * element.size() as i64)
-                        .map_err(|_| Diagnostic::error("fixed-address array subscript offset out of range (roadmap)"))?;
-                    self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
-                    self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
-                    return Ok(());
+                    return self.emit_fixed_address_array_subscript(element, address, index, destination);
                 }
             }
         }
@@ -998,6 +987,74 @@ impl Generator {
             }
         }
         Ok(false)
+    }
+
+    /// `__EXIRegs[index]` — a read of a fixed-address (hardware register) array. mwcc materializes the
+    /// constant base and indexes it (distinct from a pointer cast's high-adjusted fold). The `index`
+    /// is `leaf * factor ± offset`; `scale = factor * element_size`. The emission ORDER and base
+    /// register track mwcc's scheduler: a `mulli` scale reads the index FIRST (freeing the destination
+    /// for `lis`), so the base high goes to the destination; a `slwi`/no scale keeps the index live
+    /// past `lis`, so the high goes to a scratch when the index sits in the destination. `offset == 0`
+    /// uses an indexed load, a non-zero offset an `add` plus a displacement load.
+    pub(crate) fn emit_fixed_address_array_subscript(&mut self, element: Pointee, address: u32, index: &Expression, destination: u8) -> Compilation<()> {
+        let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
+        let low = address as i16;
+        let size = element.size() as i64;
+        if let Some(constant) = constant_value(index) {
+            let displacement = i16::try_from(low as i64 + constant * size)
+                .map_err(|_| Diagnostic::error("fixed-address array subscript offset out of range (roadmap)"))?;
+            self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
+            self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
+            return Ok(());
+        }
+        let Some((leaf, factor, offset)) = split_scaled_index(index) else {
+            return Err(Diagnostic::error("a variable-index fixed-address array subscript of this shape is not supported yet (roadmap)"));
+        };
+        let index_register = self.general_register_of_leaf(leaf)?;
+        let scale = factor * size;
+        let displacement = i16::try_from(offset * size)
+            .map_err(|_| Diagnostic::error("fixed-address array subscript offset out of range (roadmap)"))?;
+        if scale != 1 && !(scale as u64).is_power_of_two() {
+            let Ok(scale) = i16::try_from(scale) else {
+                return Err(Diagnostic::error("fixed-address array subscript scale out of range (roadmap)"));
+            };
+            self.output.instructions.push(Instruction::MultiplyImmediate { d: GENERAL_SCRATCH, a: index_register, immediate: scale });
+            self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: low });
+            if offset == 0 {
+                self.output.instructions.push(indexed_load(element, destination, destination, GENERAL_SCRATCH)?);
+            } else {
+                self.output.instructions.push(Instruction::Add { d: destination, a: destination, b: GENERAL_SCRATCH });
+                self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
+            }
+            return Ok(());
+        }
+        // `slwi`/no scale: `lis` is emitted first, so its target avoids the still-live index.
+        let high = if index_register == destination {
+            self.free_general_excluding_two(destination, index_register)?
+        } else {
+            destination
+        };
+        self.output.instructions.push(Instruction::load_immediate_shifted(high, high_adjusted));
+        if scale == 1 {
+            // No scaling: the base stays in `high` and the raw index is the indexed operand. Only the
+            // zero-offset (indexed) form is modeled; a non-zero offset defers.
+            if offset != 0 {
+                return Err(Diagnostic::error("a fixed-address byte-array subscript with an offset is not supported yet (roadmap)"));
+            }
+            self.output.instructions.push(Instruction::AddImmediate { d: high, a: high, immediate: low });
+            self.output.instructions.push(indexed_load(element, destination, high, index_register)?);
+            return Ok(());
+        }
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: (scale as u64).trailing_zeros() as u8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: high, immediate: low });
+        if offset == 0 {
+            self.output.instructions.push(indexed_load(element, destination, destination, GENERAL_SCRATCH)?);
+        } else {
+            self.output.instructions.push(Instruction::Add { d: destination, a: destination, b: GENERAL_SCRATCH });
+            self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
+        }
+        Ok(())
     }
 
 }

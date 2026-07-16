@@ -523,6 +523,17 @@ impl Generator {
             .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
     }
 
+    /// The lowest free general register avoiding TWO registers (e.g. a destination and a
+    /// live index that both must survive while a scratch base is materialized).
+    pub(crate) fn free_general_excluding_two(&self, first: u8, second: u8) -> Compilation<u8> {
+        self.constraints
+            .pool(Class::General)
+            .iter()
+            .copied()
+            .find(|register| *register != first && *register != second && !self.reserved.contains(register))
+            .ok_or_else(|| Diagnostic::error("out of free registers (roadmap M1: spilling)"))
+    }
+
     /// The lowest free float register: the first in the target's float pool (which
     /// already excludes the scratch) that is not reserved.
     pub(crate) fn lowest_free_float(&self) -> Compilation<u8> {
