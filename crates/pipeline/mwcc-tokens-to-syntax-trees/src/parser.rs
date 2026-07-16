@@ -55,10 +55,11 @@ pub(crate) struct Parser {
     /// `struct S *get(...)` prototype/definition is parsed).
     pub(crate) function_return_structs: HashMap<String, String>,
     /// Fixed-address globals declared with `AT_ADDRESS` (`Type Name : addr;` — mwcc's `: (addr)`
-    /// placement): name -> (address, struct/union tag, element size). A reference to one desugars
-    /// to a const-address deref `*(Type *)addr` at its use site, so member access resolves through
-    /// the const-address path (the GX write-gather FIFO `GXWGFifo.u32 = v`).
-    pub(crate) fixed_address_globals: HashMap<String, (i64, Option<String>, u16)>,
+    /// placement): name -> (address, cast-target POINTER type, struct/union tag). A reference to one
+    /// desugars to a const-address deref `*(cast-target)addr` at its use site — a `StructPointer`
+    /// for an aggregate (the GX write-gather FIFO `GXWGFifo.u32 = v`, member access via the const-
+    /// address path) or a scalar `Pointer` (a hardware register like `__OSBusClock`, direct load/store).
+    pub(crate) fixed_address_globals: HashMap<String, (i64, Type, Option<String>)>,
     /// Struct-typed GLOBALS by name -> struct tag (`extern FILE_TABLE __files;`),
     /// so `&__files._stdout` in an initializer resolves its member offset.
     pub(crate) global_structs: HashMap<String, String>,

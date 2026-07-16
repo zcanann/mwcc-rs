@@ -1429,12 +1429,19 @@ impl Parser {
                 };
                 self.expect(Token::Semicolon)?;
                 let tag = self.last_struct_tag.clone();
-                let element_size = tag
-                    .as_ref()
-                    .and_then(|tag| self.structs.get(tag))
-                    .map(|layout| layout.size)
-                    .unwrap_or_else(|| type_size(return_type));
-                self.fixed_address_globals.insert(name.clone(), (address, tag, element_size));
+                // An aggregate placement casts to a struct pointer (member access flows through the
+                // const-address member path); a scalar casts to a pointer of its own pointee (a direct
+                // const-address load/store). An unsupported scalar type is not recorded — it defers.
+                let cast_target = match &tag {
+                    Some(tag) => {
+                        let size = self.structs.get(tag).map(|layout| layout.size).unwrap_or_else(|| type_size(return_type));
+                        Some(Type::StructPointer { element_size: size })
+                    }
+                    None => pointee_of(return_type).ok().map(Type::Pointer),
+                };
+                if let Some(cast_target) = cast_target {
+                    self.fixed_address_globals.insert(name.clone(), (address, cast_target, tag));
+                }
                 return Ok(());
             }
             // `type name;`, `type name[N];`, or comma-separated declarators is a

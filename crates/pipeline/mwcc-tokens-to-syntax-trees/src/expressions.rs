@@ -471,11 +471,11 @@ impl Parser {
             // desugar so a following `.member` resolves via the const-address path (byte-exact).
             // `expression_struct_tag` carries the pointee's tag for the postfix member resolver.
             Token::Identifier(name) if self.fixed_address_globals.contains_key(&name) => {
-                let (address, tag, element_size) = self.fixed_address_globals.get(&name).cloned().unwrap();
+                let (address, cast_target, tag) = self.fixed_address_globals.get(&name).cloned().unwrap();
                 self.expression_struct_tag = tag;
                 Expression::Dereference {
                     pointer: Box::new(Expression::Cast {
-                        target_type: mwcc_syntax_trees::Type::StructPointer { element_size },
+                        target_type: cast_target,
                         operand: Box::new(Expression::IntegerLiteral(address)),
                     }),
                 }
