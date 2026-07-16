@@ -280,6 +280,24 @@ impl Generator {
             if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
                 return self.emit_global_array_subscript(name, total_size, index, destination);
             }
+            // `__EXIRegs[k]` — a fixed-address (hardware register) array. A CONSTANT index materializes
+            // the base high with `lis` and rides the whole offset in the displacement:
+            // `lis d,ADDR@ha; l** d,(ADDR@l + k*size)(d)`. A variable index (mwcc's `lis; slwi; addi;
+            // lwzx`) is a follow-up.
+            if let Some(&(address, element_type)) = self.fixed_address_arrays.get(name.as_str()) {
+                if let Some(element) = pointee_of_type(element_type) {
+                    let Some(constant) = constant_value(index) else {
+                        return Err(Diagnostic::error("a variable-index fixed-address array subscript is not supported yet (roadmap)"));
+                    };
+                    let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
+                    let low = (address as i16) as i64;
+                    let displacement = i16::try_from(low + constant * element.size() as i64)
+                        .map_err(|_| Diagnostic::error("fixed-address array subscript offset out of range (roadmap)"))?;
+                    self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
+                    self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
+                    return Ok(());
+                }
+            }
         }
         // `base->arr[index]` — the array address (`base + offset`) folds into the
         // subscript: the array offset rides in the load displacement.

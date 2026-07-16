@@ -609,6 +609,7 @@ impl Parser {
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
+            fixed_address_arrays: std::mem::take(&mut self.fixed_address_arrays),
         })
     }
 
@@ -1413,12 +1414,31 @@ impl Parser {
                     self.function_return_structs.insert(name.clone(), tag.clone());
                 }
             }
-            // `type name : addr;` — a FIXED-ADDRESS global (mwcc's `AT_ADDRESS(a)` = `: (a)`; the
-            // hardware-register pattern, e.g. the GX write-gather FIFO `volatile PPCWGPipe GXWGFifo
-            // : 0xCC008000`). A reference aliases a const-address pointer deref `*(type *)addr`, so
-            // record the address (plus the struct/union tag and size) and desugar uses at their site.
-            if *self.peek() == Token::Colon {
-                self.advance(); // `:`
+            // `type name [N]… : addr;` — a FIXED-ADDRESS global (mwcc's `AT_ADDRESS(a)` = `: (a)`; the
+            // hardware-register pattern: the GX FIFO `volatile PPCWGPipe GXWGFifo : 0xCC008000`, or an
+            // array `vu32 __EXIRegs[16] : 0xCC006800`). Look past the name and any `[N]` brackets for
+            // the `:` that marks a placement. A scalar/aggregate is recorded for desugaring to a const-
+            // address deref; an ARRAY is recorded separately (kept a variable — its subscript compiles
+            // to mwcc's array form, not a cast fold) and handed to codegen.
+            let is_fixed_address = {
+                let mut scan = self.position;
+                while matches!(self.tokens.get(scan), Some(Token::BracketOpen)) {
+                    while !matches!(self.tokens.get(scan), Some(Token::BracketClose) | None) {
+                        scan += 1;
+                    }
+                    scan += 1; // past `]`
+                }
+                matches!(self.tokens.get(scan), Some(Token::Colon))
+            };
+            if is_fixed_address {
+                let mut is_array = false;
+                while *self.peek() == Token::BracketOpen {
+                    is_array = true;
+                    self.advance();
+                    let _length = self.parse_integer_constant()?;
+                    self.expect(Token::BracketClose)?;
+                }
+                self.expect(Token::Colon)?;
                 let address = if *self.peek() == Token::ParenOpen {
                     self.advance();
                     let value = self.parse_integer_constant()?;
@@ -1428,19 +1448,23 @@ impl Parser {
                     self.parse_integer_constant()?
                 };
                 self.expect(Token::Semicolon)?;
-                let tag = self.last_struct_tag.clone();
-                // An aggregate placement casts to a struct pointer (member access flows through the
-                // const-address member path); a scalar casts to a pointer of its own pointee (a direct
-                // const-address load/store). An unsupported scalar type is not recorded — it defers.
-                let cast_target = match &tag {
-                    Some(tag) => {
-                        let size = self.structs.get(tag).map(|layout| layout.size).unwrap_or_else(|| type_size(return_type));
-                        Some(Type::StructPointer { element_size: size })
+                if is_array {
+                    self.fixed_address_arrays.insert(name.clone(), (address, return_type));
+                } else {
+                    let tag = self.last_struct_tag.clone();
+                    // An aggregate casts to a struct pointer (member access via the const-address
+                    // member path); a scalar casts to a pointer of its own pointee (direct load/store).
+                    // An unsupported scalar type is not recorded — it defers.
+                    let cast_target = match &tag {
+                        Some(tag) => {
+                            let size = self.structs.get(tag).map(|layout| layout.size).unwrap_or_else(|| type_size(return_type));
+                            Some(Type::StructPointer { element_size: size })
+                        }
+                        None => pointee_of(return_type).ok().map(Type::Pointer),
+                    };
+                    if let Some(cast_target) = cast_target {
+                        self.fixed_address_globals.insert(name.clone(), (address, cast_target, tag));
                     }
-                    None => pointee_of(return_type).ok().map(Type::Pointer),
-                };
-                if let Some(cast_target) = cast_target {
-                    self.fixed_address_globals.insert(name.clone(), (address, cast_target, tag));
                 }
                 return Ok(());
             }

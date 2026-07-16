@@ -60,6 +60,11 @@ pub(crate) struct Parser {
     /// for an aggregate (the GX write-gather FIFO `GXWGFifo.u32 = v`, member access via the const-
     /// address path) or a scalar `Pointer` (a hardware register like `__OSBusClock`, direct load/store).
     pub(crate) fixed_address_globals: HashMap<String, (i64, Type, Option<String>)>,
+    /// Fixed-address ARRAY globals (`vu32 __EXIRegs[16] : 0xCC006800;`): name -> (address, element
+    /// type). Unlike a scalar/aggregate placement, an array is NOT desugared to a const-address cast
+    /// (whose subscript folds differently than mwcc's array `lis; addi; lwzx`); the name stays a
+    /// variable and this map is handed to codegen, which lays out the array-form subscript.
+    pub(crate) fixed_address_arrays: HashMap<String, (i64, Type)>,
     /// Struct-typed GLOBALS by name -> struct tag (`extern FILE_TABLE __files;`),
     /// so `&__files._stdout` in an initializer resolves its member offset.
     pub(crate) global_structs: HashMap<String, String>,

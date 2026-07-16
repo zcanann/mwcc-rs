@@ -160,6 +160,9 @@ pub(crate) struct Generator {
     /// Return type of each callable name (prototypes + definitions), so a call's
     /// result type is known — e.g. `(float)cos(x)` rounds a double with `frsp`.
     pub(crate) call_return_types: HashMap<String, Type>,
+    /// Fixed-address ARRAY globals (`vu32 __EXIRegs[16] : 0xCC006800;`): name -> (address, element
+    /// type). A `name[i]` subscript lays out mwcc's array form (`lis; addi; lwzx`) off the constant base.
+    pub(crate) fixed_address_arrays: HashMap<String, (u32, Type)>,
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,

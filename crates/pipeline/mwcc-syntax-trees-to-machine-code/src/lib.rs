@@ -38,7 +38,7 @@ use generator::Generator;
 /// `call_return_types` maps callable names (prototypes and definitions) to their
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
-pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, skipped_inline_names: &std::collections::HashSet<String>, weak_materialized_names: &std::collections::HashSet<String>, prototyped_names: &std::collections::HashSet<String>, variadic_definitions: &std::collections::HashSet<String>, config: CompilerConfig) -> Compilation<MachineFunction> {
+pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, skipped_inline_names: &std::collections::HashSet<String>, weak_materialized_names: &std::collections::HashSet<String>, prototyped_names: &std::collections::HashSet<String>, variadic_definitions: &std::collections::HashSet<String>, fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>, config: CompilerConfig) -> Compilation<MachineFunction> {
     // An inline-`asm` function is emitted verbatim — no register allocation,
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {
@@ -199,6 +199,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         narrow_truncation_context: false,
         known_locals: std::collections::HashSet::new(),
         call_return_types: call_return_types.clone(),
+        fixed_address_arrays: fixed_address_arrays.iter().map(|(name, (address, element))| (name.clone(), (*address as u32, *element))).collect(),
         skipped_inline_names: skipped_inline_names.clone(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),

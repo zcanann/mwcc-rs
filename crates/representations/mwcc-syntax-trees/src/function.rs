@@ -253,6 +253,11 @@ pub struct TranslationUnit {
     /// `inline __OSf32tos16`). mwcc materializes each as a GLOBAL UND symbol; the
     /// general codegen path does not, so a non-captured object carrying one defers.
     pub plain_inline_asm_helpers: Vec<String>,
+    /// Fixed-address ARRAY globals (`vu32 __EXIRegs[16] : 0xCC006800;` — an `AT_ADDRESS` array):
+    /// name -> (address, element type). A `name[i]` subscript materializes the constant base and
+    /// indexes it (`lis; addi; lwzx`), distinct from a pointer cast's high-adjusted fold — so codegen
+    /// keeps the address rather than desugaring the name (which would compile as the wrong form).
+    pub fixed_address_arrays: std::collections::HashMap<String, (i64, Type)>,
 }
 
 /// A function definition. Bodies are zero or more local declarations, then zero
