@@ -1395,15 +1395,15 @@ impl Parser {
                 // — `[N]` (or `[]` on an extern reference) between the name and
                 // the closing paren. Each element is a 4-byte address.
                 let mut pointer_array_length: Option<u16> = None;
+                let mut pointer_array_unsized = false;
                 if self.eat_keyword(Token::BracketOpen) {
                     if let Token::IntegerLiteral(count) = self.peek() {
                         pointer_array_length = Some(*count as u16);
                         self.advance();
+                    } else {
+                        pointer_array_unsized = true;
                     }
                     self.expect(Token::BracketClose)?;
-                    if pointer_array_length.is_none() && !is_extern {
-                        return Err(Diagnostic::error("a function-pointer array needs an explicit length (roadmap)"));
-                    }
                 }
                 self.expect(Token::ParenClose)?;
                 self.expect(Token::ParenOpen)?;
@@ -1426,6 +1426,19 @@ impl Parser {
                     None
                 };
                 self.expect(Token::Semicolon)?;
+                // An UNSIZED fp-array (`void (*tbl[])(void)`) infers its length from
+                // the initializer list (`= { e1, e2 }` — item.c's itemFuncTbl); with
+                // neither an initializer nor `extern` there is nothing to infer.
+                if pointer_array_unsized {
+                    match address_initializer.as_ref() {
+                        Some(elements) => pointer_array_length = Some(elements.len() as u16),
+                        // An extern unsized fp-array (`extern void (*_dtors[])(void);`)
+                        // keeps its pre-existing None length (abort_exit.c is byte-exact
+                        // with it — do not disturb).
+                        None if is_extern => {}
+                        None => return Err(Diagnostic::error("a function-pointer array needs an explicit length (roadmap)")),
+                    }
+                }
                 globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone(), attribute_alignment: None });
                 return Ok(());
             }

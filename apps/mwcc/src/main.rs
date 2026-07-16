@@ -396,6 +396,34 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // still defer.
             let all_null = global.array_length.is_none()
                 && elements.iter().all(|element| matches!(element, PointerElement::Null));
+            // LEAK GUARD (measured, pre-existing): a table whose Symbol element targets
+            // a unit function defined AFTER the table's declaration (a FORWARD
+            // reference) — mwcc pulls the address-taken function's symbol up to the
+            // data object's symtab position (measured `void (*tbl[])(void) = {e1,e2};`
+            // with e1/e2 defined below: real order is tbl, e2, e1 mid-table; ours
+            // keeps definition order — a whole-object DIFF). Exempt: a table declared
+            // after its callees (definition-ordered anyway; 13 support files BYTE),
+            // external targets (undef symbols), a SECTION override and the
+            // single-target/all-null forms (their placement machinery is proven —
+            // bfbb's `.dtors` reference among them). DEFER only the multi-element
+            // forward-referencing table until the interleave is modeled.
+            if global.section.is_none()
+                && !single_target
+                && !all_null
+                && elements.iter().any(|element| {
+                    matches!(element, PointerElement::Symbol(name)
+                        if machine_functions.iter().skip(global.functions_before).any(|function| &function.name == name))
+                })
+            {
+                return Err(Diagnostic::error("an address table forward-referencing unit functions needs the symbol-order interleave (roadmap)"));
+            }
+            // A `static` symbol ARRAY (`static void (*tbl[])(void) = { e1, e2 };` —
+            // item.c's dispatch tables) is measured as the same .sdata object with
+            // ADDR32 relocations but the symbol LOCAL — and this path emits it GLOBAL
+            // (is_static does not flow through the address-initializer symbol
+            // emission, and the LOCAL binding also re-interleaves the symbol table).
+            // Loosening the guard here produced a whole-object DIFF, so it stays: the
+            // writer-side LOCAL routing is the recorded follow-up.
             if (global.is_static || global.is_const) && global.section.is_none() && !single_target && !all_null {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
