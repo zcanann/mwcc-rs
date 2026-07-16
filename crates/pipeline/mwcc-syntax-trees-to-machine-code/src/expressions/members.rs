@@ -307,6 +307,28 @@ impl Generator {
             }
             return Ok(());
         }
+        // `((T *)ADDR)[k]` — a subscript on a CONSTANT-address pointer with a CONSTANT index (a
+        // hardware register at a fixed offset). mwcc splits ADDR into a high-adjusted `lis` and a
+        // low displacement, folding the element offset into the displacement:
+        // `lis d,ADDR@ha; l** d,(ADDR@l + k*size)(d)` — the destination doubles as the base. A
+        // VARIABLE index (which adds the high half onto the scaled index via `addis`) defers here.
+        if let Expression::Cast { target_type: Type::Pointer(element), operand } = base {
+            if let Some(address) = constant_value(operand) {
+                let element = *element;
+                let Some(constant) = constant_value(index) else {
+                    return Err(Diagnostic::error("a variable-index subscript on a constant-address pointer is not supported yet (roadmap)"));
+                };
+                let address = address as u32;
+                let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
+                let low = (address as i16) as i64;
+                let displacement = low + constant * element.size() as i64;
+                let displacement = i16::try_from(displacement)
+                    .map_err(|_| Diagnostic::error("constant-address subscript offset out of range (roadmap)"))?;
+                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
+                self.output.instructions.push(displacement_load(element, destination, destination, displacement)?);
+                return Ok(());
+            }
+        }
         let (pointee, address) = self.resolve_pointer(base)?;
         if let Some(constant) = constant_value(index) {
             let offset = constant * pointee.size() as i64;
