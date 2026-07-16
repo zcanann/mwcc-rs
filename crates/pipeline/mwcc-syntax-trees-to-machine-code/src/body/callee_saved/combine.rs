@@ -344,15 +344,19 @@ impl Generator {
             return Ok(false);
         }
         // One consuming statement: a direct call whose arguments are ALL integer literals
-        // (r3..r10 slots; a non-literal argument interleaves on an unmeasured schedule).
+        // — or `x` itself as the FIRST argument followed by literals (`g(x, 5)`). Any
+        // other argument shape interleaves on an unmeasured schedule.
         let [Statement::Expression(Expression::Call { name: consumer_name, arguments: consumer_arguments })] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
-        if consumer_arguments.len() > 8
-            || !consumer_arguments.iter().all(|argument| matches!(argument, Expression::IntegerLiteral(value) if *value >= i16::MIN as i64 && *value <= i16::MAX as i64))
-        {
+        let literal_in_range = |argument: &Expression| {
+            matches!(argument, Expression::IntegerLiteral(value) if *value >= i16::MIN as i64 && *value <= i16::MAX as i64)
+        };
+        let passes_x_first = matches!(consumer_arguments.first(), Some(Expression::Variable(name)) if name == &local.name);
+        let literal_tail: &[Expression] = if passes_x_first { &consumer_arguments[1..] } else { consumer_arguments };
+        if consumer_arguments.len() > 8 || !literal_tail.iter().all(literal_in_range) {
             return Ok(false);
         }
         for name in [producer_name, consumer_name] {
@@ -370,9 +374,24 @@ impl Generator {
         // Producer, then the measured save schedule.
         self.record_relocation(RelocationKind::Rel24, producer_name);
         self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
-        if consumer_arguments.is_empty() {
+        if passes_x_first {
+            // `g(x, K…)`: x stays live in r3 (no move). The save lands in the FIRST
+            // li's latency slot — `li r4,K0 ; mr r31,r3 ; li r5,K1 ; …` (measured
+            // g(x,5) and g(x,5,9)); with no literals it directly follows the bl.
+            for (index, argument) in literal_tail.iter().enumerate() {
+                let Expression::IntegerLiteral(value) = argument else { unreachable!() };
+                self.output.instructions.push(Instruction::AddImmediate { d: 4 + index as u8, a: 0, immediate: *value as i16 });
+                if index == 0 {
+                    self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+                }
+            }
+            if literal_tail.is_empty() {
+                self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+            }
+        } else if consumer_arguments.is_empty() {
             self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
         } else {
+            // `g(K…)`: the first li clobbers r3, so the save THREADS THE SCRATCH —
             // mr r0,r3 ; li r3,K0 ; mr r31,r0 ; li r4,K1 ; …
             self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
             for (slot, argument) in consumer_arguments.iter().enumerate() {
