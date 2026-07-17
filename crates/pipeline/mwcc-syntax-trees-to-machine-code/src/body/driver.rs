@@ -1631,6 +1631,11 @@ impl Generator {
         if self.try_dynamic_iota_loop(function)? {
             return Ok(());
         }
+        // A dynamic-bound bare call loop: the counter and bound homes cross the
+        // call, so the allocator derives r31/r30.
+        if self.try_dynamic_call_loop(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and

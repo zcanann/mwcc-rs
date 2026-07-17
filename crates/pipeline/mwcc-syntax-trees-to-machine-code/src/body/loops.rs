@@ -2431,4 +2431,101 @@ impl Generator {
         Ok(true)
     }
 
+    /// A DYNAMIC-bound bare call loop (`for (i = 0; i < n; i++) h();`): the
+    /// bottom-test rotation with a top entry jump (the dynamic bound keeps the
+    /// pre-test, unlike the constant-bound counted loop's dropped one).
+    /// Measured @2.6/1.3.2: the interleaved prologue parks each home right
+    /// after its save (`stw r31,12; li r31,0; stw r30,8; mr r30,r3`), body
+    /// `bl; addi i,1`, test `cmpw i,n; blt`, epilogue LR-first. The counter
+    /// and bound homes are VIRTUALS — both cross the call, so the allocator's
+    /// callee-saved pool derives r31/r30.
+    pub(crate) fn try_dynamic_call_loop(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() {
+            return Ok(false);
+        }
+        let [parameter] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(parameter.parameter_type, Type::Int) {
+            return Ok(false);
+        }
+        let [counter] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if counter.is_static
+            || counter.array_length.is_some()
+            || counter.initializer.is_some()
+            || counter.data_bytes.is_some()
+            || !matches!(counter.declared_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !matches!(initializer, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::IntegerLiteral(0)))
+        {
+            return Ok(false);
+        }
+        if !matches!(condition, Expression::Binary { operator: BinaryOperator::Less, left, right }
+            if matches!(left.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(right.as_ref(), Expression::Variable(name) if name == &parameter.name))
+        {
+            return Ok(false);
+        }
+        if !matches!(step, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(other) if other == &counter.name)
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(1))))
+        {
+            return Ok(false);
+        }
+        // The body: one bare direct call.
+        let [Statement::Expression(Expression::Call { name: callee, arguments })] = body.as_slice() else {
+            return Ok(false);
+        };
+        if !arguments.is_empty()
+            || self.locations.contains_key(callee.as_str())
+            || self.globals.contains_key(callee.as_str())
+            || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+        {
+            return Ok(false);
+        }
+        if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
+            return Ok(false);
+        }
+        let callee = callee.clone();
+
+        let counter_home = self.fresh_virtual_general();
+        let bound_home = self.fresh_virtual_general();
+        let plan = mwcc_vreg::FramePlan::sized_for(vec![counter_home, bound_home]);
+        self.non_leaf = true;
+        self.frame_size = plan.frame_size;
+        self.callee_saved = vec![counter_home, bound_home];
+        self.epilogue_lr_before_gprs = true;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -plan.frame_size });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
+        self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 1, offset: plan.frame_size - 4 });
+        self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: bound_home, a: 1, offset: plan.frame_size - 8 });
+        self.output.instructions.push(Instruction::Or { a: bound_home, s: 3, b: 3 });
+        let test = self.fresh_label();
+        let loop_body = self.fresh_label();
+        self.emit_branch_to(test);
+        self.bind_label(loop_body);
+        self.emit_call(&callee, &[], None, false)?;
+        self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: counter_home, immediate: 1 });
+        self.bind_label(test);
+        self.output.instructions.push(Instruction::CompareWord { a: counter_home, b: bound_home });
+        self.emit_branch_conditional_to(12, 0, loop_body); // blt
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
 }
