@@ -961,43 +961,74 @@ impl Generator {
         Ok(true)
     }
 
-    /// `int x = G; call(); G2 = x;` — a register local initialized from a word
-    /// global, live across ONE void no-arg call, stored back to a word global.
-    /// The first fully general-allocator crossing shape: the home is a VIRTUAL,
-    /// the call-crossing makes LinearScan draw from the callee-saved pool (r31),
-    /// and the frame builder supplies the canonical saves. Measured @2.6/1.3.2:
-    /// `stwu -16; mflr; stw r0,20; stw r31,12; lwz r31,@G; bl; stw r31,@G2;
-    /// lwz r0,20; lwz r31,12; mtlr; addi 16; blr` — the global loads DIRECTLY
-    /// into the callee-saved home, and the LR reload issues before the restore.
+    /// `int x = G; [int y = G';] call(); G2 = x; [G3 = y;]` — one or two register
+    /// locals initialized from word globals, live across ONE call, stored back to
+    /// word globals in declaration order. The fully general-allocator crossing
+    /// shape: each home is a VIRTUAL, the call-crossing makes LinearScan draw from
+    /// the callee-saved pool (r31, then r30), and the frame builder supplies the
+    /// canonical saves. Measured @2.6/1.3.2: the globals load DIRECTLY into the
+    /// callee-saved homes (declaration order), and the epilogue is the
+    /// `epilogue_lr_first` register-death schedule (one save: `lwz r0; lwz r31`;
+    /// two saves: `lwz r31; lwz r0; lwz r30`).
     pub(crate) fn try_callee_saved_global_round_trip(&mut self, function: &Function) -> Compilation<bool> {
         if function.return_type != Type::Void
             || function.return_expression.is_some()
             || !function.guards.is_empty()
             || !function.parameters.is_empty()
             || !self.frame_slots.is_empty()
+            || function.locals.is_empty()
+            || function.locals.len() > 2
         {
             return Ok(false);
         }
-        let [local] = function.locals.as_slice() else { return Ok(false) };
-        if local.array_length.is_some()
-            || local.is_static
-            || local.row_bytes.is_some()
-            || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
-        {
-            return Ok(false);
+        let mut source_globals = Vec::with_capacity(function.locals.len());
+        for local in &function.locals {
+            if local.array_length.is_some()
+                || local.is_static
+                || local.row_bytes.is_some()
+                || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+            {
+                return Ok(false);
+            }
+            let Some(Expression::Variable(source_global)) = &local.initializer else { return Ok(false) };
+            if self.locations.contains_key(source_global)
+                || !matches!(self.globals.get(source_global.as_str()), Some(Type::Int | Type::UnsignedInt))
+            {
+                return Ok(false);
+            }
+            source_globals.push(source_global.clone());
         }
-        let Some(Expression::Variable(source_global)) = &local.initializer else { return Ok(false) };
-        let source_global = source_global.clone();
-        if self.locations.contains_key(&source_global)
-            || !matches!(self.globals.get(source_global.as_str()), Some(Type::Int | Type::UnsignedInt))
-        {
-            return Ok(false);
-        }
-        let [Statement::Expression(Expression::Call { name: callee, arguments }), Statement::Store { target: Expression::Variable(target_global), value: Expression::Variable(stored) }] =
-            function.statements.as_slice()
+        // Statements: the call, then one store per local IN DECLARATION ORDER
+        // (each local written back to a word global exactly once).
+        let Some((Statement::Expression(Expression::Call { name: callee, arguments }), store_statements)) =
+            function.statements.split_first()
         else {
             return Ok(false);
         };
+        if store_statements.len() != function.locals.len() {
+            return Ok(false);
+        }
+        let mut target_globals = Vec::with_capacity(store_statements.len());
+        for (local, statement) in function.locals.iter().zip(store_statements) {
+            let Statement::Store { target: Expression::Variable(target_global), value: Expression::Variable(stored) } = statement
+            else {
+                return Ok(false);
+            };
+            if stored != &local.name
+                || self.locations.contains_key(target_global)
+                || !matches!(self.globals.get(target_global.as_str()), Some(Type::Int | Type::UnsignedInt))
+            {
+                return Ok(false);
+            }
+            target_globals.push(target_global.clone());
+        }
+        // Arguments are measured only for the SINGLE-local shape; the pair defers
+        // with any argument. (The `stored != local.name` check above already
+        // consumed the single-local `G2 = x` decode.)
+        if function.locals.len() == 2 && !arguments.is_empty() {
+            return Ok(false);
+        }
+        let local = &function.locals[0];
         // The call's arguments: small-constant ints (their `li`s ride the
         // prologue's latency slots — measured: two after the mflr, the third
         // after the LR store) and/or the crossing local itself, at most once
@@ -1021,15 +1052,11 @@ impl Generator {
         let local_count = decoded_arguments.len() - constant_count;
         if constant_count > 3
             || local_count > 1
-            || stored != &local.name
-            || self.locations.contains_key(target_global)
-            || !matches!(self.globals.get(target_global.as_str()), Some(Type::Int | Type::UnsignedInt))
             || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
         {
             return Ok(false);
         }
         let callee = callee.clone();
-        let target_global = target_global.clone();
         let constants: Vec<(u8, i16)> = decoded_arguments
             .iter()
             .enumerate()
@@ -1043,12 +1070,12 @@ impl Generator {
             .position(|argument| matches!(argument, Argument::Local))
             .map(|position| 3 + position as u8);
 
-        let home = self.fresh_virtual_general();
-        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
+        let homes: Vec<u8> = (0..function.locals.len()).map(|_| self.fresh_virtual_general()).collect();
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
-        self.callee_saved = vec![home];
-        self.epilogue_lr_before_gprs = true;
+        self.callee_saved = homes.clone();
+        self.epilogue_lr_first = true;
         if constants.is_empty() {
             self.output.instructions.extend(plan.prologue());
         } else {
@@ -1064,17 +1091,21 @@ impl Generator {
             for &(register, value) in constants.iter().skip(2) {
                 self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
             }
-            self.output.instructions.push(Instruction::StoreWord { s: home, a: 1, offset: plan.frame_size - 4 });
+            self.output.instructions.push(Instruction::StoreWord { s: homes[0], a: 1, offset: plan.frame_size - 4 });
         }
-        self.emit_global_load(&source_global, home)?;
+        for (source_global, &home) in source_globals.iter().zip(&homes) {
+            self.emit_global_load(source_global, home)?;
+        }
         if let Some(register) = local_argument_register {
-            self.output.instructions.push(Instruction::Or { a: register, s: home, b: home });
+            self.output.instructions.push(Instruction::Or { a: register, s: homes[0], b: homes[0] });
             // Passing the local burns one extra internal label in mwcc (measured:
             // the extab/extabindex hidden symbols shift @5/@6 -> @6/@7).
             self.output.anonymous_label_bump += 1;
         }
         self.emit_call(&callee, &[], None, false)?;
-        self.emit_global_store(&target_global, Pointee::Int, home)?;
+        for (target_global, &home) in target_globals.iter().zip(&homes) {
+            self.emit_global_store(target_global, Pointee::Int, home)?;
+        }
         self.emit_epilogue_and_return();
         Ok(true)
     }
