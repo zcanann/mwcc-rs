@@ -2500,29 +2500,58 @@ impl Generator {
         {
             return Ok(false);
         }
-        // The body: a run of one to three direct calls, each bare or passing
-        // the counter (measured: consecutive bl's; a counter argument is one
-        // `mr r3,<home>` immediately ahead of its bl).
+        // The body: a run of one to three statements in SOURCE order (measured
+        // both orders), each a direct call — bare or passing the counter (its
+        // `mr r3,<home>` immediately ahead of its bl) — or a store of the
+        // counter to a small word global (`gi = i` -> stw home,@gi SDA).
+        // At least one call (a store-only body is a fill loop, not this shape).
+        enum BodyStep {
+            Call(String, bool),
+            StoreCounter(String),
+        }
         if body.is_empty() || body.len() > 3 {
             return Ok(false);
         }
-        let mut body_calls = Vec::with_capacity(body.len());
+        let mut body_steps = Vec::with_capacity(body.len());
+        let mut call_count = 0usize;
         for statement in body {
-            let Statement::Expression(Expression::Call { name: callee, arguments }) = statement else {
-                return Ok(false);
-            };
-            let passes_counter = match arguments.as_slice() {
-                [] => false,
-                [Expression::Variable(variable)] if variable == &counter.name => true,
+            match statement {
+                Statement::Expression(Expression::Call { name: callee, arguments }) => {
+                    let passes_counter = match arguments.as_slice() {
+                        [] => false,
+                        [Expression::Variable(variable)] if variable == &counter.name => true,
+                        _ => return Ok(false),
+                    };
+                    if self.locations.contains_key(callee.as_str())
+                        || self.globals.contains_key(callee.as_str())
+                        || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+                    {
+                        return Ok(false);
+                    }
+                    call_count += 1;
+                    body_steps.push(BodyStep::Call(callee.clone(), passes_counter));
+                }
+                Statement::Store { target: Expression::Variable(global), value: Expression::Variable(stored) } => {
+                    if stored != &counter.name
+                        || self.locations.contains_key(global.as_str())
+                        || !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt))
+                        || self.global_array_sizes.contains_key(global.as_str())
+                    {
+                        return Ok(false);
+                    }
+                    body_steps.push(BodyStep::StoreCounter(global.clone()));
+                }
                 _ => return Ok(false),
-            };
-            if self.locations.contains_key(callee.as_str())
-                || self.globals.contains_key(callee.as_str())
-                || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
-            {
-                return Ok(false);
             }
-            body_calls.push((callee.clone(), passes_counter));
+        }
+        if call_count == 0 {
+            return Ok(false);
+        }
+        // A counter-store in the body advances the @N counter by a flat 5
+        // (measured: extab @10/@11 vs the unbumped @5/@6, same for one or two
+        // stores); a pure call body burns nothing.
+        if body_steps.iter().any(|step| matches!(step, BodyStep::StoreCounter(_))) {
+            self.output.anonymous_label_bump += 5;
         }
         if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
             return Ok(false);
@@ -2546,11 +2575,19 @@ impl Generator {
         let loop_body = self.fresh_label();
         self.emit_branch_to(test);
         self.bind_label(loop_body);
-        for (callee, passes_counter) in &body_calls {
-            if *passes_counter {
-                self.output.instructions.push(Instruction::Or { a: 3, s: counter_home, b: counter_home });
+        for step in &body_steps {
+            match step {
+                BodyStep::Call(callee, passes_counter) => {
+                    if *passes_counter {
+                        self.output.instructions.push(Instruction::Or { a: 3, s: counter_home, b: counter_home });
+                    }
+                    self.emit_call(callee, &[], None, false)?;
+                }
+                BodyStep::StoreCounter(global) => {
+                    self.record_relocation(RelocationKind::EmbSda21, global);
+                    self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 0, offset: 0 });
+                }
             }
-            self.emit_call(callee, &[], None, false)?;
         }
         self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: counter_home, immediate: 1 });
         self.bind_label(test);
