@@ -993,19 +993,25 @@ impl Generator {
             if local.array_length.is_some()
                 || local.is_static
                 || local.row_bytes.is_some()
-                || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+                || !matches!(
+                    local.declared_type,
+                    Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+                )
             {
                 return Ok(false);
             }
             match &local.initializer {
+                // The source global's type must MATCH the local's (mixed-width
+                // promotion around the crossing is unmeasured).
                 Some(Expression::Variable(source_global))
                     if !self.locations.contains_key(source_global)
-                        && matches!(self.globals.get(source_global.as_str()), Some(Type::Int | Type::UnsignedInt)) =>
+                        && self.globals.get(source_global.as_str()) == Some(&local.declared_type) =>
                 {
                     sources.push(Source::Global(source_global.clone()));
                 }
                 Some(Expression::Call { name: producer, arguments })
                     if arguments.is_empty()
+                        && matches!(local.declared_type, Type::Int | Type::UnsignedInt)
                         && !matches!(self.call_return_types.get(producer.as_str()), Some(Type::Float | Type::Double | Type::Void)) =>
                 {
                     sources.push(Source::Call(producer.clone()));
@@ -1015,6 +1021,14 @@ impl Generator {
         }
         let has_call_source = sources.iter().any(|source| matches!(source, Source::Call(_)));
         if has_call_source && function.locals.len() > 1 {
+            return Ok(false);
+        }
+        // Narrow (byte/halfword) locals are measured ONLY for the single-local,
+        // no-argument, global-source round trip: lbz/lha/lhz into the home (the
+        // signed char's extsb is DROPPED — the narrowing store re-truncates),
+        // stb/sth back out. Pairs and arguments with narrow types defer.
+        let narrow = function.locals.iter().any(|local| !matches!(local.declared_type, Type::Int | Type::UnsignedInt));
+        if narrow && function.locals.len() > 1 {
             return Ok(false);
         }
         // Statements: the call, then one store per local IN DECLARATION ORDER
@@ -1035,15 +1049,16 @@ impl Generator {
             };
             if stored != &local.name
                 || self.locations.contains_key(target_global)
-                || !matches!(self.globals.get(target_global.as_str()), Some(Type::Int | Type::UnsignedInt))
+                || self.globals.get(target_global.as_str()) != Some(&local.declared_type)
             {
                 return Ok(false);
             }
             target_globals.push(target_global.clone());
         }
-        // Arguments are measured only for the SINGLE-local GLOBAL-source shape;
-        // the pair — and any call-producer combination — defers with arguments.
-        if (function.locals.len() == 2 || has_call_source) && !arguments.is_empty() {
+        // Arguments are measured only for the SINGLE-local, WORD, GLOBAL-source
+        // shape; the pair, narrow types, and call-producer combinations defer
+        // with arguments.
+        if (function.locals.len() == 2 || has_call_source || narrow) && !arguments.is_empty() {
             return Ok(false);
         }
         let local = &function.locals[0];
@@ -1113,7 +1128,15 @@ impl Generator {
         }
         for (source, &home) in sources.iter().zip(&homes) {
             match source {
-                Source::Global(source_global) => self.emit_global_load(source_global, home)?,
+                Source::Global(source_global) => {
+                    // The round trip is a truncation context: the narrowing store
+                    // re-truncates, so the signed char's extsb is dropped (measured).
+                    let saved_context = self.narrow_truncation_context;
+                    self.narrow_truncation_context = true;
+                    let load = self.emit_global_load(source_global, home);
+                    self.narrow_truncation_context = saved_context;
+                    load?;
+                }
                 Source::Call(producer) => {
                     // The producing call, its result parked into the home.
                     self.emit_call(producer, &[], None, false)?;
@@ -1129,8 +1152,16 @@ impl Generator {
             self.output.anonymous_label_bump += 1;
         }
         self.emit_call(&callee, &[], None, false)?;
-        for (target_global, &home) in target_globals.iter().zip(&homes) {
-            self.emit_global_store(target_global, Pointee::Int, home)?;
+        for ((target_global, &home), local) in target_globals.iter().zip(&homes).zip(&function.locals) {
+            let pointee = match local.declared_type {
+                Type::Char => Pointee::Char,
+                Type::UnsignedChar => Pointee::UnsignedChar,
+                Type::Short => Pointee::Short,
+                Type::UnsignedShort => Pointee::UnsignedShort,
+                Type::UnsignedInt => Pointee::UnsignedInt,
+                _ => Pointee::Int,
+            };
+            self.emit_global_store(target_global, pointee, home)?;
         }
         self.emit_epilogue_and_return();
         Ok(true)
