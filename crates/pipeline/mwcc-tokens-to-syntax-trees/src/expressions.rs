@@ -628,11 +628,14 @@ impl Parser {
                 }
                 // `base->fp(args)` / `base.fp(args)` — an indirect call through
                 // a function-pointer MEMBER (buffer_io's writeFunc). Also the
-                // `(*s->fp)(args)` spelling, which parses to Dereference(Member).
+                // `(*s->fp)(args)` spelling, which parses to Dereference(Member),
+                // and the double-deref `(**pp)(args)` — Dereference(Dereference(..)) —
+                // whose callee address is the inner pointer value `*pp` (executor's
+                // `(**ctors)()` C++ ctor/dtor runner).
                 Token::ParenOpen
                     if matches!(&expression, Expression::Member { .. } | Expression::Index { .. } | Expression::Cast { .. })
                         || matches!(&expression, Expression::Dereference { pointer }
-                            if matches!(pointer.as_ref(), Expression::Member { .. } | Expression::Index { .. } | Expression::Cast { .. })) =>
+                            if matches!(pointer.as_ref(), Expression::Member { .. } | Expression::Index { .. } | Expression::Cast { .. } | Expression::Dereference { .. })) =>
                 {
                     let target = match expression {
                         Expression::Dereference { pointer } => pointer,

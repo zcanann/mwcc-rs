@@ -2513,6 +2513,24 @@ impl Generator {
             Statement::Expression(Expression::Call { name, arguments }) => {
                 self.emit_call(name, arguments, None, false)
             }
+            // A bare indirect-call statement `(*s->fp)()` / `(**pp)()`: load the
+            // callee pointer into r12, then `mtctr r12; bctrl`. Only the NO-ARGUMENT
+            // form is modeled — an argument collides with the pointer's own base
+            // register and needs the measured save/schedule (roadmap). The target is
+            // the callee-pointer expression (case 3 in the parser peeled the outer
+            // `*`), restricted to the measured shapes that load cleanly into r12.
+            Statement::Expression(Expression::CallThrough { target, arguments }) => {
+                if !arguments.is_empty() {
+                    return Err(Diagnostic::error("arguments to a bare indirect call are not supported yet (roadmap)"));
+                }
+                if !matches!(target.as_ref(), Expression::Dereference { .. } | Expression::Member { .. }) {
+                    return Err(Diagnostic::error("this bare indirect-call target is not supported yet (roadmap)"));
+                }
+                self.evaluate(target, Type::UnsignedInt, 12)?;
+                self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
+                self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+                Ok(())
+            }
             // A bare CONSTANT expression statement is a no-op — mwcc emits
             // nothing (strikers alloc's FORCE_DONT_INLINE: 176 `(void*)0;`).
             Statement::Expression(Expression::IntegerLiteral(_)) => Ok(()),

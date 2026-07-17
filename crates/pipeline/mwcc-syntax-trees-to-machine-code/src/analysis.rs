@@ -464,8 +464,17 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
             || (expression_has_call(right) && reads_register(left, registers))
     };
     match expression {
-        // An indirect call both CALLS and reads its operands — conservative.
-        Expression::CallThrough { .. } => true,
+        // An indirect call evaluates its callee `target` and arguments BEFORE the
+        // branch, so a NO-ARGUMENT call through a simple pointer target (`(*s->fp)()`,
+        // `(**pp)()`) reads nothing after the call — the callee load is the last thing
+        // before `bctrl`. With arguments (which collide with the pointer's base
+        // register) or a computed target, the interplay needs the allocator: stay
+        // conservative.
+        Expression::CallThrough { target, arguments } => {
+            !arguments.is_empty()
+                || !matches!(target.as_ref(), Expression::Dereference { .. } | Expression::Member { .. })
+                || reads_register_after_call(target, registers)
+        }
         Expression::CompoundLiteral { .. } => false,
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => matches!(target.as_ref(), Expression::Call { .. }) || expression_has_call(target),
@@ -556,6 +565,9 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
         // still makes the function non-leaf, so recurse into the arguments.
         Expression::Call { name, arguments } if is_intrinsic_call(name) => arguments.iter().any(expression_has_call),
         Expression::Call { .. } => true,
+        // An indirect call (through a function pointer) always makes the function
+        // non-leaf — the link register must be saved around the `bctrl`.
+        Expression::CallThrough { .. } => true,
         Expression::Binary { left, right, .. } => expression_has_call(left) || expression_has_call(right),
         Expression::Unary { operand, .. } => expression_has_call(operand),
         Expression::Conditional { condition, when_true, when_false } => {
