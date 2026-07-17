@@ -557,6 +557,11 @@ pub(crate) fn ast_hash(function: &Function) -> u64 {
         Some(index) => format!("{} }}", &debug[..index]),
         None => debug,
     };
+    // `row_bytes` (a multi-dim local's row stride) is likewise EXCLUDED: it is `None`
+    // for every capturable function (the baked templates predate the field, and a
+    // multi-dim local has no template), so stripping it preserves all ~130 hashes —
+    // the same fire-465 re-bake hazard the `section` strip above avoids.
+    let key = key.replace(", row_bytes: None", "");
     key.hash(&mut hasher);
     hasher.finish()
 }

@@ -200,6 +200,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         known_locals: std::collections::HashSet::new(),
         call_return_types: call_return_types.clone(),
         fixed_address_arrays: fixed_address_arrays.iter().map(|(name, (address, element))| (name.clone(), (*address as u32, *element))).collect(),
+        frame_row_bytes: function.locals.iter().filter_map(|local| local.row_bytes.map(|row| (local.name.clone(), row))).collect(),
         skipped_inline_names: skipped_inline_names.clone(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),

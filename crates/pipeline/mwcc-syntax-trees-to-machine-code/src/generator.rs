@@ -163,6 +163,9 @@ pub(crate) struct Generator {
     /// Fixed-address ARRAY globals (`vu32 __EXIRegs[16] : 0xCC006800;`): name -> (address, element
     /// type). A `name[i]` subscript lays out mwcc's array form (`lis; addi; lwzx`) off the constant base.
     pub(crate) fixed_address_arrays: HashMap<String, (u32, Type)>,
+    /// Row byte-strides of flattened multi-dimensional FRAME arrays (`float m[3][4]`
+    /// -> 16): `m[k]` in value position is the ROW ADDRESS `slot + k*stride`.
+    pub(crate) frame_row_bytes: HashMap<String, u16>,
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,

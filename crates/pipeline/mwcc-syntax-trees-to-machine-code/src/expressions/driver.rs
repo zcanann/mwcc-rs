@@ -164,6 +164,30 @@ impl Generator {
             Expression::StringLiteral(bytes) => self.emit_string_literal(bytes, destination),
             // `&x` for a frame-resident variable is its address: `addi d, r1, slot`.
             Expression::AddressOf { operand } => self.emit_address_of(operand, destination),
+            // `m[k]` on a flattened MULTI-DIM frame array is the ROW ADDRESS
+            // `addi d, r1, slot + k*row_bytes` (measured: g(m[2]) -> addi r3,r1,40
+            // for float m[3][4] at slot 8). A one-dim frame array's m[k] is a VALUE
+            // and falls through to the general Index handling below.
+            Expression::Index { base, index }
+                if matches!(base.as_ref(), Expression::Variable(name)
+                    if self.frame_row_bytes.contains_key(name.as_str()))
+                    && constant_value(index).is_some() =>
+            {
+                let Expression::Variable(name) = base.as_ref() else { unreachable!() };
+                let row_bytes = self.frame_row_bytes[name.as_str()];
+                let row = constant_value(index).unwrap();
+                let slot = self
+                    .frame_slots
+                    .get(name.as_str())
+                    .copied()
+                    .ok_or_else(|| Diagnostic::error("a row access on an unallocated frame array (roadmap)"))?;
+                let offset = slot.offset as i64 + row * row_bytes as i64;
+                if offset < i16::MIN as i64 || offset > i16::MAX as i64 {
+                    return Err(Diagnostic::error("a frame-array row offset is out of range (roadmap)"));
+                }
+                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 1, immediate: offset as i16 });
+                Ok(())
+            }
             Expression::Variable(name) => {
                 // A frame-resident variable is reloaded from its stack slot; a local
                 // array decays to the slot's address instead (`addi d,r1,offset`).

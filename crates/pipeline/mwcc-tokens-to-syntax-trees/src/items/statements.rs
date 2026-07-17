@@ -386,7 +386,7 @@ impl Parser {
                         if matches!(self.peek(), Token::BracketOpen | Token::Equals | Token::Star) {
                             return Err(Diagnostic::error("an array-typedef local with brackets/initializer is not supported yet (roadmap)"));
                         }
-                        block_locals.push(LocalDeclaration { declared_type: element, name: name.clone(), initializer: None, array_length: Some(total), is_static: false, data_bytes: None, is_const: false });
+                        block_locals.push(LocalDeclaration { declared_type: element, name: name.clone(), initializer: None, array_length: Some(total), is_static: false, data_bytes: None, is_const: false, row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)) });
                         local_names.insert(name.clone());
                         self.variable_types.insert(name.clone(), element);
                         self.variable_array_bytes.insert(name.clone(), element.width() as u32 / 8 * total as u32);
@@ -461,7 +461,7 @@ impl Parser {
                                 (None, Some(image)) => image.len() as u16,
                                 (None, None) => return Err(Diagnostic::error("an unsized block-scoped array needs an initializer (roadmap)")),
                             };
-                            block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: Some(length), is_static: false, data_bytes, is_const: false });
+                            block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: Some(length), is_static: false, data_bytes, is_const: false , row_bytes: None});
                             local_names.insert(name.clone());
                             self.variable_types.insert(name.clone(), declared_type);
                             let element_bytes = match declared_type {
@@ -520,7 +520,7 @@ impl Parser {
                         };
                         self.variable_types.insert(name.clone(), declared_type);
                         self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
-                        block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: Some(length), is_static: true, data_bytes: Some(bytes), is_const: self.last_type_was_const });
+                        block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: Some(length), is_static: true, data_bytes: Some(bytes), is_const: self.last_type_was_const , row_bytes: None});
                         local_names.insert(name);
                         if !self.eat_keyword(Token::Comma) {
                             self.expect(Token::Semicolon)?;
@@ -528,7 +528,7 @@ impl Parser {
                         }
                         continue;
                     }
-                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static, data_bytes: None, is_const: false });
+                    block_locals.push(LocalDeclaration { declared_type, name: name.clone(), initializer: None, array_length: None, is_static, data_bytes: None, is_const: false , row_bytes: None});
                     local_names.insert(name.clone());
                     // Register the type so `sizeof(s_h)` (fdlibm's __HI/__LO
                     // macros inside e_pow's inner block) resolves at parse time.

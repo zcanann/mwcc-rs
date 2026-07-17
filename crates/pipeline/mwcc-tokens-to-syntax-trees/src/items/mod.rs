@@ -2334,7 +2334,7 @@ impl Parser {
                     if matches!(self.peek(), Token::BracketOpen | Token::Equals | Token::Star) {
                         return Err(Diagnostic::error("an array-typedef local with brackets/initializer is not supported yet (roadmap)"));
                     }
-                    locals.push(LocalDeclaration { declared_type: element, name: name.clone(), initializer: None, array_length: Some(total), is_static: false, data_bytes: None, is_const: false });
+                    locals.push(LocalDeclaration { declared_type: element, name: name.clone(), initializer: None, array_length: Some(total), is_static: false, data_bytes: None, is_const: false, row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)) });
                     self.variable_types.insert(name.clone(), element);
                     self.variable_array_bytes.insert(name.clone(), element.width() as u32 / 8 * total as u32);
                     if !self.eat_keyword(Token::Comma) {
@@ -2367,7 +2367,7 @@ impl Parser {
                         }
                     }
                     let initializer = if self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
-                    locals.push(LocalDeclaration { declared_type: Type::Pointer(Pointee::Pointer), name, initializer, array_length: None, is_static: false, data_bytes: None, is_const: false });
+                    locals.push(LocalDeclaration { declared_type: Type::Pointer(Pointee::Pointer), name, initializer, array_length: None, is_static: false, data_bytes: None, is_const: false , row_bytes: None});
                     if self.eat_keyword(Token::Comma) {
                         continue;
                     }
@@ -2396,6 +2396,7 @@ impl Parser {
                 // byte image instead (it is static storage, not a frame slot).
                 let mut data_relocations: Vec<(u32, String, i32)> = Vec::new();
                     let mut data_bytes: Option<Vec<u8>> = None;
+                let mut inner_elements: u16 = 1;
                 let array_length = if *self.peek() == Token::BracketOpen {
                     self.advance();
                     let explicit = if *self.peek() == Token::BracketClose {
@@ -2414,6 +2415,7 @@ impl Parser {
                         self.advance();
                         let extra = self.parse_integer_constant()? as u16;
                         self.expect(Token::BracketClose)?;
+                        inner_elements = inner_elements.saturating_mul(extra);
                         match explicit {
                             Some(length) => explicit = Some(length.saturating_mul(extra)),
                             None => return Err(Diagnostic::error("a multi-dimensional local array needs explicit dimensions (roadmap)")),
@@ -2520,7 +2522,7 @@ impl Parser {
                     };
                     self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
                 }
-                locals.push(LocalDeclaration { declared_type, name, initializer, array_length, is_static, data_bytes, is_const: self.last_type_was_const });
+                locals.push(LocalDeclaration { declared_type, name, initializer, array_length, is_static, data_bytes, is_const: self.last_type_was_const, row_bytes: (inner_elements > 1).then(|| inner_elements * (declared_type.width() as u16 / 8)) });
                 if *self.peek() == Token::Comma {
                     self.advance();
                 } else {

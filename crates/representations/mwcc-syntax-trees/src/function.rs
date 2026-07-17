@@ -32,6 +32,10 @@ pub struct LocalDeclaration {
     pub data_bytes: Option<Vec<u8>>,
     /// Whether the static local was declared `const` (routes .sdata2/.rodata).
     pub is_const: bool,
+    /// For a flattened MULTI-DIMENSIONAL array local (`float m[3][4];` / `Mtx m;`):
+    /// the byte stride of one row (`m[k]` is the ADDRESS `slot + k*row_bytes`).
+    /// `None` for scalars and one-dimensional arrays (whose `m[k]` is a VALUE).
+    pub row_bytes: Option<u16>,
 }
 
 /// A guarded early return: `if (condition) return value;`.
