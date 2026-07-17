@@ -1031,13 +1031,33 @@ impl Generator {
         if narrow && function.locals.len() > 1 {
             return Ok(false);
         }
-        // Statements: the call, then one store per local IN DECLARATION ORDER
-        // (each local written back to a word global exactly once).
-        let Some((Statement::Expression(Expression::Call { name: callee, arguments }), store_statements)) =
-            function.statements.split_first()
-        else {
+        // Statements: a leading run of one to three bare crossing calls
+        // (measured: consecutive `bl`s, everything else unchanged), then one
+        // store per local IN DECLARATION ORDER (each local written back to a
+        // word global exactly once).
+        let call_count = function
+            .statements
+            .iter()
+            .take_while(|statement| matches!(statement, Statement::Expression(Expression::Call { .. })))
+            .count();
+        if call_count == 0 || call_count > 3 {
             return Ok(false);
-        };
+        }
+        let mut crossing_calls = Vec::with_capacity(call_count);
+        for statement in &function.statements[..call_count] {
+            let Statement::Expression(Expression::Call { name, arguments }) = statement else { unreachable!() };
+            if matches!(self.call_return_types.get(name.as_str()), Some(Type::Float | Type::Double)) {
+                return Ok(false);
+            }
+            crossing_calls.push((name.clone(), arguments));
+        }
+        // Arguments are measured only for the SINGLE-call shapes; a multi-call
+        // run requires every call bare.
+        if call_count > 1 && crossing_calls.iter().any(|(_, arguments)| !arguments.is_empty()) {
+            return Ok(false);
+        }
+        let arguments = crossing_calls[0].1;
+        let store_statements = &function.statements[call_count..];
         if store_statements.len() != function.locals.len() {
             return Ok(false);
         }
@@ -1059,6 +1079,10 @@ impl Generator {
         // shape; the pair, narrow types, and call-producer combinations defer
         // with arguments.
         if (function.locals.len() == 2 || has_call_source || narrow) && !arguments.is_empty() {
+            return Ok(false);
+        }
+        // A call producer alongside a MULTI-call crossing run is unmeasured.
+        if has_call_source && call_count > 1 {
             return Ok(false);
         }
         let local = &function.locals[0];
@@ -1083,13 +1107,9 @@ impl Generator {
         }
         let constant_count = decoded_arguments.iter().filter(|argument| matches!(argument, Argument::Constant(_))).count();
         let local_count = decoded_arguments.len() - constant_count;
-        if constant_count > 3
-            || local_count > 1
-            || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
-        {
+        if constant_count > 3 || local_count > 1 {
             return Ok(false);
         }
-        let callee = callee.clone();
         let constants: Vec<(u8, i16)> = decoded_arguments
             .iter()
             .enumerate()
@@ -1151,7 +1171,9 @@ impl Generator {
             // the extab/extabindex hidden symbols shift @5/@6 -> @6/@7).
             self.output.anonymous_label_bump += 1;
         }
-        self.emit_call(&callee, &[], None, false)?;
+        for (name, _) in &crossing_calls {
+            self.emit_call(name, &[], None, false)?;
+        }
         for ((target_global, &home), local) in target_globals.iter().zip(&homes).zip(&function.locals) {
             let pointee = match local.declared_type {
                 Type::Char => Pointee::Char,
