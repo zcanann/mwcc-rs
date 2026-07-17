@@ -998,15 +998,29 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // The call takes up to THREE small-constant int arguments (their `li`s
-        // ride the prologue's latency slots — measured: two after the mflr, the
-        // third after the LR store); the store writes the local back to a word
-        // global.
-        if arguments.len() > 3
-            || !arguments.iter().all(|argument| {
-                matches!(argument, Expression::IntegerLiteral(value)
-                    if (i16::MIN as i64..=i16::MAX as i64).contains(value))
-            })
+        // The call's arguments: small-constant ints (their `li`s ride the
+        // prologue's latency slots — measured: two after the mflr, the third
+        // after the LR store) and/or the crossing local itself, at most once
+        // (measured: `mr rPOS,r31` immediately before the `bl`, after the
+        // crossing load). The store writes the local back to a word global.
+        enum Argument {
+            Constant(i16),
+            Local,
+        }
+        let mut decoded_arguments = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            match argument {
+                Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                    decoded_arguments.push(Argument::Constant(*value as i16));
+                }
+                Expression::Variable(name) if name == &local.name => decoded_arguments.push(Argument::Local),
+                _ => return Ok(false),
+            }
+        }
+        let constant_count = decoded_arguments.iter().filter(|argument| matches!(argument, Argument::Constant(_))).count();
+        let local_count = decoded_arguments.len() - constant_count;
+        if constant_count > 3
+            || local_count > 1
             || stored != &local.name
             || self.locations.contains_key(target_global)
             || !matches!(self.globals.get(target_global.as_str()), Some(Type::Int | Type::UnsignedInt))
@@ -1016,13 +1030,18 @@ impl Generator {
         }
         let callee = callee.clone();
         let target_global = target_global.clone();
-        let constants: Vec<i16> = arguments
+        let constants: Vec<(u8, i16)> = decoded_arguments
             .iter()
-            .map(|argument| match argument {
-                Expression::IntegerLiteral(value) => *value as i16,
-                _ => unreachable!(),
+            .enumerate()
+            .filter_map(|(position, argument)| match argument {
+                Argument::Constant(value) => Some((3 + position as u8, *value)),
+                Argument::Local => None,
             })
             .collect();
+        let local_argument_register: Option<u8> = decoded_arguments
+            .iter()
+            .position(|argument| matches!(argument, Argument::Local))
+            .map(|position| 3 + position as u8);
 
         let home = self.fresh_virtual_general();
         let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
@@ -1038,16 +1057,22 @@ impl Generator {
             // mflr and LR-store latency slots.
             self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -plan.frame_size });
             self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-            for (index, &value) in constants.iter().enumerate().take(2) {
-                self.output.instructions.push(Instruction::AddImmediate { d: 3 + index as u8, a: 0, immediate: value });
+            for &(register, value) in constants.iter().take(2) {
+                self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
             }
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
-            for (index, &value) in constants.iter().enumerate().skip(2) {
-                self.output.instructions.push(Instruction::AddImmediate { d: 3 + index as u8, a: 0, immediate: value });
+            for &(register, value) in constants.iter().skip(2) {
+                self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
             }
             self.output.instructions.push(Instruction::StoreWord { s: home, a: 1, offset: plan.frame_size - 4 });
         }
         self.emit_global_load(&source_global, home)?;
+        if let Some(register) = local_argument_register {
+            self.output.instructions.push(Instruction::Or { a: register, s: home, b: home });
+            // Passing the local burns one extra internal label in mwcc (measured:
+            // the extab/extabindex hidden symbols shift @5/@6 -> @6/@7).
+            self.output.anonymous_label_bump += 1;
+        }
         self.emit_call(&callee, &[], None, false)?;
         self.emit_global_store(&target_global, Pointee::Int, home)?;
         self.emit_epilogue_and_return();
