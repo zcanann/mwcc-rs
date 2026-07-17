@@ -401,14 +401,22 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // emit at the data object's position, reverse-slot first-seen — measured
             // `{e1,e2}` -> tbl,e2,e1; shuffled `{e2,e1,e3}` -> tbl,e3,e1,e2; a
             // duplicated element hoists once by its LAST slot.)
-            // A `static` symbol ARRAY (`static void (*tbl[])(void) = { e1, e2 };` —
-            // item.c's dispatch tables) is measured as the same .sdata object with
-            // ADDR32 relocations but the symbol LOCAL — and this path emits it GLOBAL
-            // (is_static does not flow through the address-initializer symbol
-            // emission, and the LOCAL binding also re-interleaves the symbol table).
-            // Loosening the guard here produced a whole-object DIFF, so it stays: the
-            // writer-side LOCAL routing is the recorded follow-up.
-            if (global.is_static || global.is_const) && global.section.is_none() && !single_target && !all_null {
+            // A `static` (non-const) symbol ARRAY whose targets are ALL unit functions
+            // (`static void (*tbl[])(void) = { e1, e2 };` — item.c's dispatch tables):
+            // measured layout is the table LOCAL in the local-statics run and the
+            // hoisted callee FUNC symbols at the table's source position in the GLOBAL
+            // run — both handled by the writer now, so it passes through. A CONST
+            // table (.sdata2/.rodata) and a static table with EXTERN targets (their
+            // undef-symbol placement is unmeasured) keep the defer.
+            let static_unit_function_table = global.is_static
+                && !global.is_const
+                && global.array_length.is_some()
+                && elements.iter().all(|element| {
+                    matches!(element, PointerElement::Symbol(name)
+                        if machine_functions.iter().any(|function| &function.name == name))
+                        || matches!(element, PointerElement::Null)
+                });
+            if (global.is_static || global.is_const) && global.section.is_none() && !single_target && !all_null && !static_unit_function_table {
                 return Err(Diagnostic::error("a static/const pointer-address global is not supported yet (roadmap)"));
             }
             // A struct-table initializer (declared type is a struct) has one element
@@ -480,9 +488,10 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
                 // as a LOCAL; the writable `int *p = &g;` case stays non-const in `.sdata`.
                 // A section override handles its own placement, so const is irrelevant there.
                 is_const: global.is_const && global.section.is_none(),
-                // A section-attributed static (`.dtors`) or a `static const` reference
-                // binds LOCAL; a plain writable pointer global stays GLOBAL as before.
-                is_static: global.is_static && (global.section.is_some() || global.is_const),
+                // A section-attributed static (`.dtors`), a `static const` reference,
+                // or a static unit-function TABLE binds LOCAL; a plain writable
+                // pointer global stays GLOBAL as before.
+                is_static: global.is_static && (global.section.is_some() || global.is_const || static_unit_function_table),
                 is_explicit_zero,
                 relocations,
                 section: global.section.clone(),

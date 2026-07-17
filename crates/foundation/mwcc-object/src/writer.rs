@@ -1136,20 +1136,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // One initialized exported object's symbol plus its pointer-relocation
     // targets (reverse element order) — shared by the up-front run and the
     // source-position interleaved runs below.
-    macro_rules! emit_initialized_object {
+    // The reverse-slot, first-seen walk of ONE object's relocation targets — shared
+    // by the full initialized-object emission and the STATIC-table hook (whose own
+    // symbol lives in the LOCAL run; only its hoisted targets join the GLOBAL run).
+    macro_rules! emit_object_targets {
         ($object:expr) => {{
             let object = $object;
-            // An ANONYMOUS object (the synthesized `.ctors` sinit reference)
-            // lays out and relocates but has NO symbol or .comment record.
-            if !object.name.is_empty() {
-                global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
-                let section = index_of(data_section[object.name]) as u16;
-                let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
-                // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
-                let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
-                write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
-                comment_values.push((data_aligns[object.name], flags));
-            }
             for relocation in object.relocations.iter().rev() {
                 let target = relocation.target.as_str();
                 // A STATIC function's LOCAL symbol satisfies a data reloc too —
@@ -1188,6 +1180,35 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }};
     }
+    macro_rules! emit_initialized_object {
+        ($object:expr) => {{
+            let object = $object;
+            // An ANONYMOUS object (the synthesized `.ctors` sinit reference)
+            // lays out and relocates but has NO symbol or .comment record.
+            if !object.name.is_empty() {
+                global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
+                // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
+                let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+                write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
+                comment_values.push((data_aligns[object.name], flags));
+            }
+            emit_object_targets!(object);
+        }};
+    }
+    // A STATIC dispatch table (`static void (*tbl[])(void) = { e1, e2 };`): its own
+    // symbol binds LOCAL (emitted in the local-statics run above), but its hoisted
+    // relocation targets join the GLOBAL run at the table's source position — up
+    // front here, or after function K below (measured: mid-file table gives
+    // f, e2, e1, h).
+    let is_static_table_hook = |object: &DataObject| -> bool {
+        object.is_static
+            && !object.is_const
+            && object.section.is_none()
+            && object.static_local_owner.is_none()
+            && !object.relocations.is_empty()
+    };
     let is_initialized_run_object = |object: &DataObject| -> bool {
         let section_name = data_section[object.name];
         // `.ctors`/`.dtors` chain references join the run: their symbols emit in
@@ -1211,6 +1232,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in &input.data_objects {
         if is_initialized_run_object(object) && object.functions_before == 0 {
             emit_initialized_object!(object);
+        } else if is_static_table_hook(object) && object.functions_before == 0 {
+            emit_object_targets!(object);
         }
     }
     let mut functions_seen = 0usize;
@@ -1377,6 +1400,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 && !global_symbols.contains_key(object.name)
             {
                 emit_initialized_object!(object);
+            } else if is_static_table_hook(object) && object.functions_before == functions_seen {
+                emit_object_targets!(object);
             }
         }
     }
