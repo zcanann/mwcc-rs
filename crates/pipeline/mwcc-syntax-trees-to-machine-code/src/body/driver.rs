@@ -1055,6 +1055,10 @@ impl Generator {
         if let Some(inlined) = inline_frame_feeding_locals(function) {
             return self.evaluate_body(&inlined);
         }
+        // A struct-image local passed by address to one call (`GXColor c = {…}; g(&c);`).
+        if self.try_struct_image_init_call(function)? {
+            return Ok(());
+        }
         if self.try_frame_resident(function)? {
             return Ok(());
         }

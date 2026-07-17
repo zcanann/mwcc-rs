@@ -13,6 +13,64 @@ use crate::analysis::*;
 use crate::generator::*;
 
 impl Generator {
+    /// A struct-image local passed by address to ONE call — `GXColor c = {0xFF,…};
+    /// g(&c);` (thpmain's spC idiom). mwcc pools the image (<= 4 bytes: one word)
+    /// and copies it into the frame slot, the copy scheduled between the argument's
+    /// addi and the call (measured: `addi r3,r1,8; lwz r0,@IMG(0); stw r0,8(r1);
+    /// bl`). A larger image addresses its pool object ABSOLUTELY with a
+    /// prologue-interleaved `lis` (the list scheduler crossing the prologue) —
+    /// unmeasured; defers, along with any other statement shape.
+    pub(crate) fn try_struct_image_init_call(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function.return_type != Type::Void || function.return_expression.is_some() {
+            return Ok(false);
+        }
+        if !function.parameters.is_empty() {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if local.is_static || local.array_length.is_some() || local.initializer.is_some() {
+            return Ok(false);
+        }
+        let Some(image) = local.data_bytes.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(local.declared_type, Type::Struct { .. }) || image.len() != 4 {
+            return Ok(false);
+        }
+        let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        let [Expression::AddressOf { operand }] = arguments.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(operand.as_ref(), Expression::Variable(variable) if variable == &local.name) {
+            return Ok(false);
+        }
+        if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+            return Ok(false);
+        }
+
+        let bits = u32::from_be_bytes([image[0], image[1], image[2], image[3]]);
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
+        // The image numbers at the STATIC-LOCAL slot (@4) and mwcc leaves a one-label
+        // gap after it before the unwind entries (measured: @4 image, @5 gap,
+        // @6/@7 extab/extabindex) — the post-constant bump restores the unwind base.
+        self.load_word_constant_static_slot(0, bits);
+        self.output.post_constant_label_bump += 1;
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        self.record_relocation(RelocationKind::Rel24, name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// If the function takes the address of any variable, lower it with a stack
     /// frame: lay out a slot per address-taken parameter/local, spill the
     /// parameters in the prologue, and run the body against those slots. Returns
@@ -135,7 +193,9 @@ impl Generator {
             if address_taken.contains(local.name.as_str()) || is_array {
                 // Only an uninitialized local is modeled here (its value comes from a
                 // store through the taken address, or — for an array — element stores).
-                if local.initializer.is_some() {
+                // A struct-image local (`GXColor c = {…};`, data_bytes set) needs the
+                // pool copy-in — the dedicated body shape handles the measured form.
+                if local.initializer.is_some() || (local.data_bytes.is_some() && !is_array) {
                     return Ok(false);
                 }
                 let class = class_of(local.declared_type)?;
