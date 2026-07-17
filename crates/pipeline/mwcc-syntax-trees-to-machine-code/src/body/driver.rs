@@ -772,13 +772,21 @@ impl Generator {
         // base-addressed aggregate store is present and the function has two-plus stores of any kind —
         // a lone store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, and scalar
         // globals (no base register) stay byte-exact.
-        // THREE int-literal member stores into ONE large (ADDR16) struct global, in
-        // ascending offset order: the base MIGRATES off r3 (`addi r4,r3,@lo`) so r3
-        // recycles for the second value — measured `lis r3; li r5,v0; addi r4,r3;
-        // li r3,v1; li r0,v2; stw r5,off0(r4); stw r3; stw r0`. Other source orders
-        // and 4+ stores keep the shared-base defer.
-        if let [Statement::Store { target: t0, value: Expression::IntegerLiteral(v0) }, Statement::Store { target: t1, value: Expression::IntegerLiteral(v1) }, Statement::Store { target: t2, value: Expression::IntegerLiteral(v2) }] =
-            function.statements.as_slice()
+        // THREE-TO-FIVE int-literal member stores into ONE large (ADDR16) struct
+        // global, ascending offset order. The register rule (measured N=3/4/5):
+        // v0 = r(N+2), the base MIGRATES to r(N+1) (`addi base,r3,@lo`), the
+        // remaining values DESCEND from r(N) with r3 recycled after the addi and
+        // the LAST value always r0; loads batch, then the stores. Other source
+        // orders and 6+ stores keep the shared-base defer.
+        if function.statements.len() >= 3
+            && function.statements.len() <= 5
+            && function.return_type == Type::Void
+            && function.return_expression.is_none()
+            && function.guards.is_empty()
+            && function.locals.is_empty()
+            && self.frame_slots.is_empty()
+            && !function_makes_call(function)
+            && self.behavior.global_addressing == GlobalAddressing::SmallData
         {
             let word_member = |generator: &Self, target: &Expression| -> Option<(String, u16, u32)> {
                 let Expression::Member { base, offset, member_type, index_stride: None } = target else { return None };
@@ -792,33 +800,54 @@ impl Generator {
                 }
                 Some((name.clone(), *offset, size as u32))
             };
-            if function.return_type == Type::Void
-                && function.return_expression.is_none()
-                && function.guards.is_empty()
-                && function.locals.is_empty()
-                && self.frame_slots.is_empty()
-                && !function_makes_call(function)
-                && self.behavior.global_addressing == GlobalAddressing::SmallData
-                && [v0, v1, v2].iter().all(|value| (i16::MIN as i64..=i16::MAX as i64).contains(*value))
-            {
-                if let (Some((n0, o0, size)), Some((n1, o1, _)), Some((n2, o2, _))) =
-                    (word_member(self, t0), word_member(self, t1), word_member(self, t2))
-                {
-                    if n0 == n1 && n1 == n2 && o0 < o1 && o1 < o2 && size > 8 {
-                        self.record_relocation(RelocationKind::Addr16Ha, &n0);
-                        self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
-                        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 0, immediate: *v0 as i16 });
-                        self.record_relocation(RelocationKind::Addr16Lo, &n0);
-                        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 3, immediate: 0 });
-                        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: *v1 as i16 });
-                        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *v2 as i16 });
-                        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 4, offset: o0 as i16 });
-                        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 4, offset: o1 as i16 });
-                        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 4, offset: o2 as i16 });
-                        self.emit_epilogue_and_return();
-                        return Ok(());
+            let mut plan: Vec<(String, u16, u32, i16)> = Vec::new();
+            let mut all_fit = true;
+            for statement in &function.statements {
+                let Statement::Store { target, value: Expression::IntegerLiteral(value) } = statement else {
+                    all_fit = false;
+                    break;
+                };
+                if !(i16::MIN as i64..=i16::MAX as i64).contains(value) {
+                    all_fit = false;
+                    break;
+                }
+                match word_member(self, target) {
+                    Some((name, offset, size)) => plan.push((name, offset, size, *value as i16)),
+                    None => {
+                        all_fit = false;
+                        break;
                     }
                 }
+            }
+            let count = plan.len();
+            if all_fit
+                && count >= 3
+                && plan.iter().all(|(name, _, size, _)| name == &plan[0].0 && *size > 8)
+                && plan.windows(2).all(|pair| pair[0].1 < pair[1].1)
+            {
+                let name = plan[0].0.clone();
+                let base = count as u8 + 1; // r4 / r5 / r6 for N = 3 / 4 / 5
+                // Value registers: v0 = base+1; v1.. descend base-1 .. r3; last = r0.
+                let mut value_registers: Vec<u8> = vec![base + 1];
+                let mut next = base - 1;
+                for _ in 1..count - 1 {
+                    value_registers.push(next);
+                    next -= 1;
+                }
+                value_registers.push(0);
+                self.record_relocation(RelocationKind::Addr16Ha, &name);
+                self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
+                self.output.instructions.push(Instruction::AddImmediate { d: value_registers[0], a: 0, immediate: plan[0].3 });
+                self.record_relocation(RelocationKind::Addr16Lo, &name);
+                self.output.instructions.push(Instruction::AddImmediate { d: base, a: 3, immediate: 0 });
+                for index in 1..count {
+                    self.output.instructions.push(Instruction::AddImmediate { d: value_registers[index], a: 0, immediate: plan[index].3 });
+                }
+                for index in 0..count {
+                    self.output.instructions.push(Instruction::StoreWord { s: value_registers[index], a: base, offset: plan[index].1 as i16 });
+                }
+                self.emit_epilogue_and_return();
+                return Ok(());
             }
         }
         // TWO int-literal member stores into ONE small SDA struct global
