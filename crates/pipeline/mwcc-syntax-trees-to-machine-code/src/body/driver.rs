@@ -1621,6 +1621,11 @@ impl Generator {
         if self.try_unrolled_fill_loop(function)? {
             return Ok(());
         }
+        // A dynamic-bound zero fill (`for (i = 0; i < n; i++) A[i] = 0;`) emits
+        // the measured modulo-scheduled 8-way + tail structure.
+        if self.try_dynamic_fill_loop(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and
