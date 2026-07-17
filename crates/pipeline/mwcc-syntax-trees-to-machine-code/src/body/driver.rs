@@ -788,19 +788,26 @@ impl Generator {
             && !function_makes_call(function)
             && self.behavior.global_addressing == GlobalAddressing::SmallData
         {
-            let word_member = |generator: &Self, target: &Expression| -> Option<(String, u16, u32)> {
+            let word_member = |generator: &Self, target: &Expression| -> Option<(String, u16, u32, u8)> {
                 let Expression::Member { base, offset, member_type, index_stride: None } = target else { return None };
                 let Expression::Variable(name) = base.as_ref() else { return None };
                 if generator.locations.contains_key(name.as_str()) {
                     return None;
                 }
                 let Some(Type::Struct { size, .. }) = generator.globals.get(name.as_str()).copied() else { return None };
-                if !matches!(member_type, Type::Int | Type::UnsignedInt) {
+                if !matches!(member_type, Type::Int | Type::UnsignedInt | Type::Short | Type::UnsignedShort | Type::Char | Type::UnsignedChar) {
                     return None;
                 }
-                Some((name.clone(), *offset, size as u32))
+                Some((name.clone(), *offset, size as u32, member_type.width()))
             };
-            let mut plan: Vec<(String, u16, u32, i16)> = Vec::new();
+            let store_by_width = |width: u8, source: u8, base: u8, offset: i16| -> Instruction {
+                match width {
+                    8 => Instruction::StoreByte { s: source, a: base, offset },
+                    16 => Instruction::StoreHalfword { s: source, a: base, offset },
+                    _ => Instruction::StoreWord { s: source, a: base, offset },
+                }
+            };
+            let mut plan: Vec<(String, u16, u32, i16, u8)> = Vec::new();
             let mut all_fit = true;
             for statement in &function.statements {
                 let Statement::Store { target, value: Expression::IntegerLiteral(value) } = statement else {
@@ -812,7 +819,7 @@ impl Generator {
                     break;
                 }
                 match word_member(self, target) {
-                    Some((name, offset, size)) => plan.push((name, offset, size, *value as i16)),
+                    Some((name, offset, size, width)) => plan.push((name, offset, size, *value as i16, width)),
                     None => {
                         all_fit = false;
                         break;
@@ -820,9 +827,31 @@ impl Generator {
                 }
             }
             let count = plan.len();
+            // The SMALL (SDA) 3-store form: values r5/r4 lead, the base li r3 lands
+            // THIRD (no migration), the last value r0; the offset-0 store folds
+            // (measured mixed-width: li r5; li r4; li r3,@gm; li r0; stw r5,@gm(0);
+            // sth r4,4(r3); stb r0,6(r3)).
+            if all_fit
+                && count == 3
+                && plan.iter().all(|(name, _, size, _, _)| name == &plan[0].0 && *size <= 8)
+                && plan[0].1 == 0
+                && plan.windows(2).all(|pair| pair[0].1 < pair[1].1)
+            {
+                let name = plan[0].0.clone();
+                self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 0, immediate: plan[0].3 });
+                self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: plan[1].3 });
+                self.emit_global_array_base(&name, plan[0].2, 3)?;
+                self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: plan[2].3 });
+                self.record_relocation(RelocationKind::EmbSda21, &name);
+                self.output.instructions.push(store_by_width(plan[0].4, 5, 0, 0));
+                self.output.instructions.push(store_by_width(plan[1].4, 4, 3, plan[1].1 as i16));
+                self.output.instructions.push(store_by_width(plan[2].4, 0, 3, plan[2].1 as i16));
+                self.emit_epilogue_and_return();
+                return Ok(());
+            }
             if all_fit
                 && count >= 3
-                && plan.iter().all(|(name, _, size, _)| name == &plan[0].0 && *size > 8)
+                && plan.iter().all(|(name, _, size, _, _)| name == &plan[0].0 && *size > 8)
                 && plan.windows(2).all(|pair| pair[0].1 < pair[1].1)
             {
                 let name = plan[0].0.clone();
@@ -844,7 +873,7 @@ impl Generator {
                     self.output.instructions.push(Instruction::AddImmediate { d: value_registers[index], a: 0, immediate: plan[index].3 });
                 }
                 for index in 0..count {
-                    self.output.instructions.push(Instruction::StoreWord { s: value_registers[index], a: base, offset: plan[index].1 as i16 });
+                    self.output.instructions.push(store_by_width(plan[index].4, value_registers[index], base, plan[index].1 as i16));
                 }
                 self.emit_epilogue_and_return();
                 return Ok(());
