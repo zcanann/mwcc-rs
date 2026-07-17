@@ -520,6 +520,29 @@ impl Parser {
             };
             if let Some((element, base_len, _inner)) = array_typedef {
                 self.advance(); // the array-typedef name
+                // `Mtx *group_mtx;` — a POINTER to the array type is a plain 4-byte
+                // pointer member (subscripts through it defer in codegen); route it
+                // through the ordinary pointer-member layout.
+                if *self.peek() == Token::Star {
+                    self.advance();
+                    let field_name = self.parse_identifier()?;
+                    if !matches!(self.peek(), Token::Semicolon) {
+                        return Err(Diagnostic::error("an array-typedef-pointer member declarator list is not supported yet (roadmap)"));
+                    }
+                    self.advance(); // `;`
+                    offset = offset.div_ceil(4) * 4;
+                    alignment_max = alignment_max.max(4);
+                    layout.fields.insert(field_name, StructField {
+                        member_type: Type::Pointer(pointee_of(element)?),
+                        offset,
+                        struct_tag: None,
+                        array_element: None,
+                        array_bytes: None,
+                        bit_field: None,
+                    });
+                    offset += 4;
+                    continue;
+                }
                 let attr_align = self.skip_attributes()?;
                 let element_size = type_size(element);
                 let alignment = type_alignment(element).max(1).max(attr_align.unwrap_or(1));
