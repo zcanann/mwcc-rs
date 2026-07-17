@@ -835,32 +835,34 @@ impl Generator {
         Ok(true)
     }
 
-    /// `void f(int a){ g(); h(a); }` — a single word parameter that is live across one or more
-    /// leading bare calls and then passed as the SOLE argument to a final call. mwcc stashes the
-    /// parameter in a callee-saved home (`mr r31,r3`, interleaved into the prologue), runs the
-    /// leading bare calls, then materializes it into the argument register before the final call
-    /// (`mr r3,r31`). This is the fundamental "parameter survives a call" crossing (executor-style
-    /// C++ runners aside — those add a loop). One to three leading bare calls are measured; the
-    /// param passed at a non-zero position or alongside constant arguments defers (a different
-    /// argument schedule), as does any leading call that itself references the parameter.
+    /// `void f(int a){ g(); h(a); }` / `void f(int a,int b){ g(); h(a,b); }` — one or two word
+    /// parameters live across a leading run of bare calls, then passed to a run of trailing calls.
+    /// mwcc stashes each surviving parameter in a callee-saved home, interleaved into the prologue
+    /// in REVERSE parameter order (the last parameter takes r31, the previous r30: `mr r31,r4;
+    /// mr r30,r3`), runs the leading bare calls, then before each trailing call re-materializes its
+    /// arguments from the homes (`mr r3,r30; mr r4,r31`) — every trailing call is preceded by a
+    /// call that clobbered the argument registers, so the re-materialization always occurs.
+    /// Measured: one to three leading bare calls; each trailing call passes each surviving parameter
+    /// at most once (any position) plus small integer constants — the parameters are marshaled
+    /// first (in position order), then the constants (in position order). Every declared parameter
+    /// must be used across the calls (an unused one would not be saved). A parameter passed twice in
+    /// one call, a non-constant extra argument, a leading call touching a parameter, or a body whose
+    /// first parameter use is not preceded by a call all defer.
     pub(crate) fn try_callee_saved_param_across_calls(&mut self, function: &Function) -> Compilation<bool> {
         if function.return_type != Type::Void
             || function.return_expression.is_some()
             || !function.guards.is_empty()
             || !function.locals.is_empty()
             || !self.frame_slots.is_empty()
-            || function.parameters.len() != 1
+            || function.parameters.is_empty()
+            || function.parameters.len() > 2
         {
             return Ok(false);
         }
-        let parameter = &function.parameters[0];
-        if !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt) {
+        if function.parameters.iter().any(|parameter| !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)) {
             return Ok(false);
         }
-        // Two to six call statements: a leading run of BARE calls (at least one, so the
-        // parameter's argument register is always stale before its first use), then a run of
-        // TRAILING calls that each pass the parameter — every one preceded by a call that
-        // clobbered the argument registers, so each re-materializes it (`mr rPos,r31`).
+        let parameter_index = |name: &str| function.parameters.iter().position(|parameter| parameter.name == name);
         if function.statements.len() < 2 || function.statements.len() > 6 {
             return Ok(false);
         }
@@ -872,73 +874,98 @@ impl Generator {
                 _ => return Ok(false),
             }
         }
-        // Decode one trailing call's arguments: the parameter exactly once (at any position),
-        // plus optional small integer constants — their `li`s follow the parameter's `mr` in
-        // ascending position order (measured). Anything else (a second variable, a global, an
-        // out-of-range literal, over eight args) yields None so the call defers.
-        let decode = |arguments: &[Expression]| -> Option<(u8, Vec<(u8, i16)>)> {
+        // One argument slot: a parameter (by index, in argument register `reg`) or a small constant.
+        enum Slot {
+            Parameter { index: usize, register: u8 },
+            Constant { register: u8, value: i16 },
+        }
+        // Decode one trailing call's arguments. A parameter may appear at most once; anything else
+        // (a non-parameter variable, a global, an out-of-range literal, over eight args) yields None.
+        let decode = |arguments: &[Expression]| -> Option<Vec<Slot>> {
             if arguments.is_empty() || arguments.len() > 8 {
                 return None;
             }
-            let mut parameter_register = None;
-            let mut constants: Vec<(u8, i16)> = Vec::new();
+            let mut slots = Vec::with_capacity(arguments.len());
+            let mut seen = [false; 2];
             for (position, argument) in arguments.iter().enumerate() {
+                let register = 3 + position as u8;
                 match argument {
-                    Expression::Variable(name) if *name == parameter.name => {
-                        if parameter_register.is_some() {
-                            return None; // the parameter passed twice is a different (duplicating) shape
+                    Expression::Variable(name) => {
+                        let index = parameter_index(name)?;
+                        if seen[index] {
+                            return None; // the same parameter passed twice is a duplicating shape
                         }
-                        parameter_register = Some(3 + position as u8);
+                        seen[index] = true;
+                        slots.push(Slot::Parameter { index, register });
                     }
                     Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
-                        constants.push((3 + position as u8, *value as i16));
+                        slots.push(Slot::Constant { register, value: *value as i16 });
                     }
                     _ => return None,
                 }
             }
-            parameter_register.map(|register| (register, constants))
+            Some(slots)
         };
         // The leading run is the maximal prefix of bare (argument-free) calls; the rest must all
-        // pass the parameter. At least one leading call and one trailing call are required.
+        // pass a parameter. At least one leading and one trailing call are required.
         let leading_count = calls.iter().take_while(|(_, arguments)| arguments.is_empty()).count();
         if leading_count == 0 || leading_count == calls.len() {
             return Ok(false);
         }
         let mut trailing = Vec::with_capacity(calls.len() - leading_count);
+        let mut used = [false; 2];
         for (name, arguments) in &calls[leading_count..] {
             match decode(arguments) {
-                Some(decoded) => trailing.push((*name, decoded)),
+                Some(slots) => {
+                    for slot in &slots {
+                        if let Slot::Parameter { index, .. } = slot {
+                            used[*index] = true;
+                        }
+                    }
+                    trailing.push((*name, slots));
+                }
                 None => return Ok(false),
             }
         }
-        // Sanity: the parameter arrives in a general register (r3).
-        match self.locations.get(&parameter.name) {
-            Some(location) if location.class == ValueClass::General => {}
-            _ => return Ok(false),
+        // Every declared parameter must be live across the calls (else mwcc would not save it).
+        if (0..function.parameters.len()).any(|index| !used[index]) {
+            return Ok(false);
         }
-        let incoming = self.locations[&parameter.name].register;
+        // The incoming argument registers, in parameter order (all must be general-class).
+        let mut incoming = Vec::with_capacity(function.parameters.len());
+        for parameter in &function.parameters {
+            match self.locations.get(&parameter.name) {
+                Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                _ => return Ok(false),
+            }
+        }
 
-        // A 16-byte frame saving the link register and r31; the `mr r31,r3` stash is interleaved
-        // into the prologue (measured: `stwu; mflr; stw r0,20; stw r31,12; mr r31,r3`).
+        // A 16-byte frame saving the link register and the callee-saved homes; the `mr home,param`
+        // stashes interleave into the prologue in REVERSE parameter order (last param -> r31).
         self.non_leaf = true;
-        self.frame_size = 16;
-        let home = self.fresh_virtual_general();
-        self.callee_saved = vec![home];
-        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
-        self.output.instructions.extend(plan.prologue_interleaved(&[incoming]));
-        // The parameter now lives in its callee-saved home; the leading calls run bare.
-        if let Some(location) = self.locations.get_mut(&parameter.name) {
-            location.register = home;
-        }
+        let homes: Vec<u8> = (0..function.parameters.len()).map(|_| self.fresh_virtual_general()).collect();
+        self.callee_saved = homes.clone();
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        self.frame_size = plan.frame_size;
+        let incoming_reversed: Vec<u8> = incoming.iter().rev().copied().collect();
+        self.output.instructions.extend(plan.prologue_interleaved(&incoming_reversed));
+        // Parameter `index` lives in `homes[nparams - 1 - index]` (the reverse-order interleave).
+        let parameter_home = |index: usize| homes[function.parameters.len() - 1 - index];
         for (name, arguments) in &calls[..leading_count] {
             self.emit_call(name, arguments, None, false)?;
         }
-        // Each trailing call marshals the saved parameter FIRST (`mr rPos,r31`), then the
-        // constants in ascending position order (`li`), then a direct `bl`.
-        for (name, (parameter_register, constants)) in &trailing {
-            self.output.instructions.push(Instruction::move_register(*parameter_register, home));
-            for &(register, value) in constants {
-                self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
+        // Each trailing call marshals its parameter arguments FIRST (in position order), then the
+        // constants (in position order), then a direct `bl`.
+        for (name, slots) in &trailing {
+            for slot in slots {
+                if let Slot::Parameter { index, register } = slot {
+                    self.output.instructions.push(Instruction::move_register(*register, parameter_home(*index)));
+                }
+            }
+            for slot in slots {
+                if let Slot::Constant { register, value } = slot {
+                    self.output.instructions.push(Instruction::AddImmediate { d: *register, a: 0, immediate: *value });
+                }
             }
             self.record_relocation(RelocationKind::Rel24, name);
             self.output.instructions.push(Instruction::BranchAndLink { target: (*name).clone() });
