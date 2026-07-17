@@ -2491,7 +2491,7 @@ impl Parser {
                         // committed handling flows through it); a relocated element
                         // (`{&g, 0}`) is not an image — defer.
                         let small_struct_tag = match (declared_type, struct_tag.as_ref()) {
-                            (Type::Struct { size, .. }, Some(tag)) if size <= 4 => Some(tag.clone()),
+                            (Type::Struct { size, .. }, Some(tag)) if size == 4 || size == 12 => Some(tag.clone()),
                             _ => None,
                         };
                         if let Some(tag) = small_struct_tag {

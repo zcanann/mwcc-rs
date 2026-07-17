@@ -36,7 +36,7 @@ impl Generator {
         let Some(image) = local.data_bytes.as_ref() else {
             return Ok(false);
         };
-        if !matches!(local.declared_type, Type::Struct { .. }) || image.len() != 4 {
+        if !matches!(local.declared_type, Type::Struct { .. }) || !matches!(image.len(), 4 | 12) {
             return Ok(false);
         }
         let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
@@ -52,19 +52,48 @@ impl Generator {
             return Ok(false);
         }
 
-        let bits = u32::from_be_bytes([image[0], image[1], image[2], image[3]]);
         self.non_leaf = true;
-        self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
-        // The image numbers at the STATIC-LOCAL slot (@4) and mwcc leaves a one-label
-        // gap after it before the unwind entries (measured: @4 image, @5 gap,
-        // @6/@7 extab/extabindex) — the post-constant bump restores the unwind base.
-        self.load_word_constant_static_slot(0, bits);
-        self.output.post_constant_label_bump += 1;
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        if image.len() == 4 {
+            let bits = u32::from_be_bytes([image[0], image[1], image[2], image[3]]);
+            self.frame_size = 16;
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
+            // The image numbers at the STATIC-LOCAL slot (@4) and mwcc leaves a one-label
+            // gap after it before the unwind entries (measured: @4 image, @5 gap,
+            // @6/@7 extab/extabindex) — the post-constant bump restores the unwind base.
+            self.load_word_constant_static_slot(0, bits);
+            self.output.post_constant_label_bump += 1;
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        } else {
+            // The 12-byte image (`Vec v = {0,0,1.0f};`): an anonymous data blob
+            // addressed ABSOLUTELY, its `lis` interleaved INTO the prologue between
+            // `mflr` and the LR store; the three copy loads batch before the three
+            // stores (r5/r4/r0 — the last-load-gets-r0 numbering), the `&v` argument's
+            // addi threaded after the base addi (measured on 1.3.2/2.6).
+            self.frame_size = 32;
+            // The blob numbers at counter-1, like a static local (@4 with the pool
+            // block at @5 — the strtold-table precedent); the same one-label gap
+            // precedes the unwind entries as in the 4-byte case (@6/@7 extab).
+            self.output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata { bytes: image.clone(), anonymous_offset: -1 });
+            self.output.post_constant_label_bump += 1;
+            let blob = self.output.anonymous_rodata.len() - 1;
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
+            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.record_target(RelocationKind::Addr16Ha, mwcc_machine_code::RelocationTarget::AnonymousRodataAt(blob));
+            self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
+            self.record_target(RelocationKind::Addr16Lo, mwcc_machine_code::RelocationTarget::AnonymousRodataAt(blob));
+            self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 4, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
+            self.output.instructions.push(Instruction::LoadWord { d: 5, a: 6, offset: 0 });
+            self.output.instructions.push(Instruction::LoadWord { d: 4, a: 6, offset: 4 });
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 6, offset: 8 });
+            self.output.instructions.push(Instruction::StoreWord { s: 5, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::StoreWord { s: 4, a: 1, offset: 12 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 16 });
+        }
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
         self.emit_epilogue_and_return();
