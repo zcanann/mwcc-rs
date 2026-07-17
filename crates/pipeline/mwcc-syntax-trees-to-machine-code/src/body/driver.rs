@@ -1626,6 +1626,11 @@ impl Generator {
         if self.try_dynamic_fill_loop(function)? {
             return Ok(());
         }
+        // The iota fill (`for (i = 0; i < n; i++) A[i] = i;`): the pipelined
+        // 8-way rotation body.
+        if self.try_dynamic_iota_loop(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and

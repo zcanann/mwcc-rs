@@ -2294,4 +2294,141 @@ impl Generator {
         Ok(true)
     }
 
+    /// The DYNAMIC iota fill (`for (i = 0; i < n; i++) A[i] = i;`): the same
+    /// modulo-scheduled scaffold as the constant fill, but the counter homes in
+    /// r9, the block base in r8, and the 8-way body is SOFTWARE-PIPELINED with
+    /// register rotation — i+1..i+7 computed three slots ahead of their stores
+    /// in r4,r0,r7,r6,r5,r4,r0 (measured whole @2.6/1.3.2). The tail stores the
+    /// counter itself, advancing base and counter together.
+    pub(crate) fn try_dynamic_iota_loop(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() {
+            return Ok(false);
+        }
+        let [parameter] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(parameter.parameter_type, Type::Int) {
+            return Ok(false);
+        }
+        let [counter] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if counter.is_static
+            || counter.array_length.is_some()
+            || counter.initializer.is_some()
+            || counter.data_bytes.is_some()
+            || !matches!(counter.declared_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !matches!(initializer, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::IntegerLiteral(0)))
+        {
+            return Ok(false);
+        }
+        if !matches!(condition, Expression::Binary { operator: BinaryOperator::Less, left, right }
+            if matches!(left.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(right.as_ref(), Expression::Variable(name) if name == &parameter.name))
+        {
+            return Ok(false);
+        }
+        if !matches!(step, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(other) if other == &counter.name)
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(1))))
+        {
+            return Ok(false);
+        }
+        // The body: `A[i] = i`.
+        let [Statement::Store { target: Expression::Index { base, index }, value: Expression::Variable(stored) }] = body.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(array) = base.as_ref() else {
+            return Ok(false);
+        };
+        if stored != &counter.name
+            || !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
+            || self.locations.contains_key(array.as_str())
+            || !matches!(self.globals.get(array.as_str()), Some(Type::Int | Type::UnsignedInt))
+        {
+            return Ok(false);
+        }
+        let Some(&size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        if size <= 8 {
+            return Ok(false);
+        }
+        if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
+            return Ok(false);
+        }
+        let array = array.clone();
+
+        let tail = self.fresh_label();
+        let body8 = self.fresh_label();
+        let body1 = self.fresh_label();
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 9, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 4, condition_bit: 1 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 3, immediate: -8 });
+        self.emit_branch_conditional_to(4, 1, tail); // ble
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 5, immediate: 7 });
+        self.record_relocation(RelocationKind::Addr16Ha, &array);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: 0, shift: 3 });
+        self.record_relocation(RelocationKind::Addr16Lo, &array);
+        self.output.instructions.push(Instruction::AddImmediate { d: 8, a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
+        self.emit_branch_conditional_to(4, 1, tail); // ble
+        // The pipelined 8-way body: values three slots ahead, rotating r4,r0,r7,r6,r5.
+        self.bind_label(body8);
+        self.output.instructions.push(Instruction::StoreWord { s: 9, a: 8, offset: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 9, immediate: 1 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 9, immediate: 2 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 7, a: 9, immediate: 3 });
+        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 8, offset: 4 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 9, immediate: 4 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 9, immediate: 5 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 9, immediate: 6 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 8, offset: 8 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 9, immediate: 7 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 9, a: 9, immediate: 8 });
+        self.output.instructions.push(Instruction::StoreWord { s: 7, a: 8, offset: 12 });
+        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 8, offset: 16 });
+        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 8, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 8, offset: 24 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 8, offset: 28 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 8, a: 8, immediate: 32 });
+        self.emit_branch_conditional_to(16, 0, body8); // bdnz
+        // The tail: base r4 = A + 4i; count n-i; store the counter itself.
+        self.bind_label(tail);
+        self.record_relocation(RelocationKind::Addr16Ha, &array);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 5, s: 9, shift: 2 });
+        self.record_relocation(RelocationKind::Addr16Lo, &array);
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::SubtractFrom { d: 0, a: 9, b: 3 });
+        self.output.instructions.push(Instruction::Add { d: 4, a: 4, b: 5 });
+        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
+        self.output.instructions.push(Instruction::CompareWord { a: 9, b: 3 });
+        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 4, condition_bit: 0 });
+        self.bind_label(body1);
+        self.output.instructions.push(Instruction::StoreWord { s: 9, a: 4, offset: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 4 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 9, a: 9, immediate: 1 });
+        self.emit_branch_conditional_to(16, 0, body1); // bdnz
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
 }
