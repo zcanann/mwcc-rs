@@ -772,6 +772,55 @@ impl Generator {
         // base-addressed aggregate store is present and the function has two-plus stores of any kind —
         // a lone store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, and scalar
         // globals (no base register) stay byte-exact.
+        // THREE int-literal member stores into ONE large (ADDR16) struct global, in
+        // ascending offset order: the base MIGRATES off r3 (`addi r4,r3,@lo`) so r3
+        // recycles for the second value — measured `lis r3; li r5,v0; addi r4,r3;
+        // li r3,v1; li r0,v2; stw r5,off0(r4); stw r3; stw r0`. Other source orders
+        // and 4+ stores keep the shared-base defer.
+        if let [Statement::Store { target: t0, value: Expression::IntegerLiteral(v0) }, Statement::Store { target: t1, value: Expression::IntegerLiteral(v1) }, Statement::Store { target: t2, value: Expression::IntegerLiteral(v2) }] =
+            function.statements.as_slice()
+        {
+            let word_member = |generator: &Self, target: &Expression| -> Option<(String, u16, u32)> {
+                let Expression::Member { base, offset, member_type, index_stride: None } = target else { return None };
+                let Expression::Variable(name) = base.as_ref() else { return None };
+                if generator.locations.contains_key(name.as_str()) {
+                    return None;
+                }
+                let Some(Type::Struct { size, .. }) = generator.globals.get(name.as_str()).copied() else { return None };
+                if !matches!(member_type, Type::Int | Type::UnsignedInt) {
+                    return None;
+                }
+                Some((name.clone(), *offset, size as u32))
+            };
+            if function.return_type == Type::Void
+                && function.return_expression.is_none()
+                && function.guards.is_empty()
+                && function.locals.is_empty()
+                && self.frame_slots.is_empty()
+                && !function_makes_call(function)
+                && self.behavior.global_addressing == GlobalAddressing::SmallData
+                && [v0, v1, v2].iter().all(|value| (i16::MIN as i64..=i16::MAX as i64).contains(*value))
+            {
+                if let (Some((n0, o0, size)), Some((n1, o1, _)), Some((n2, o2, _))) =
+                    (word_member(self, t0), word_member(self, t1), word_member(self, t2))
+                {
+                    if n0 == n1 && n1 == n2 && o0 < o1 && o1 < o2 && size > 8 {
+                        self.record_relocation(RelocationKind::Addr16Ha, &n0);
+                        self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
+                        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 0, immediate: *v0 as i16 });
+                        self.record_relocation(RelocationKind::Addr16Lo, &n0);
+                        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 3, immediate: 0 });
+                        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: *v1 as i16 });
+                        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *v2 as i16 });
+                        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 4, offset: o0 as i16 });
+                        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 4, offset: o1 as i16 });
+                        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 4, offset: o2 as i16 });
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
+        }
         // TWO int-literal member stores into ONE small SDA struct global
         // (`gs.a = 1; gs.b = 2;`): mwcc materializes greedy-early — both values
         // (first -> r4, second -> r0), then the shared base (r3), then the stores:
