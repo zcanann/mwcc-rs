@@ -4,6 +4,36 @@
 use super::*;
 
 impl Generator {
+    /// `(g+h)+x` (recursively): an Add whose LEFT is an Add of two GLOBAL leaves
+    /// and whose RIGHT is a register-resident variable — the shape mwcc
+    /// reassociates that our source-order emission gets wrong.
+    fn global_pair_plus_register(&self, expression: &Expression) -> bool {
+        let is_global = |operand: &Expression| {
+            matches!(operand, Expression::Variable(name)
+                if !self.locations.contains_key(name.as_str()) && self.globals.contains_key(name.as_str()))
+        };
+        let is_register = |operand: &Expression| {
+            matches!(operand, Expression::Variable(name) if self.locations.contains_key(name.as_str()))
+        };
+        match expression {
+            Expression::Binary { operator: BinaryOperator::Add, left, right } => {
+                if is_register(right) {
+                    if let Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right } = left.as_ref() {
+                        if is_global(inner_left) && is_global(inner_right) {
+                            return true;
+                        }
+                    }
+                }
+                self.global_pair_plus_register(left) || self.global_pair_plus_register(right)
+            }
+            Expression::Binary { left, right, .. } => {
+                self.global_pair_plus_register(left) || self.global_pair_plus_register(right)
+            }
+            Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => self.global_pair_plus_register(operand),
+            _ => false,
+        }
+    }
+
     pub(crate) fn evaluate_general(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         // A compile-time-constant expression — folded constant arithmetic
         // (`2 + 3`, `FLAG_A | FLAG_B`, `1 << 3`) or a side-effect-free identity
@@ -142,6 +172,28 @@ impl Generator {
         // register allocation — defer rather than emit wrong bytes (#20 allocator).
         if crate::analysis::contains_complex_add(expression) {
             return Err(Diagnostic::error("a reassociated integer add-tree needs the keystone allocator (roadmap)"));
+        }
+        // `(g+h)+x` — a two-GLOBAL inner sum plus a register leaf: mwcc reassociates
+        // the register operand INTO the first add (`lwz g; lwz h; add r3,g,x; add
+        // r3,h,r3`) while source order sums the globals first — wrong bytes. The
+        // sibling spellings (g+h+k, (a+b)+g, x+(g+h)) already defer; this left-chain
+        // escaped the leaf-shape checks (globals and registers both parse as Variable).
+        if self.global_pair_plus_register(expression) {
+            return Err(Diagnostic::error("a global-pair sum joined with a register value needs the keystone allocator (roadmap)"));
+        }
+        // `((a*b)+1)*((c*d)+2)` — BOTH multiply operands are (mul + const): mwcc's
+        // allocator orients the intermediates opposite to ours (first mullw -> r4,
+        // second -> r3, measured) — wrong bytes. The single-addend form matches;
+        // defer the both-addend sibling until the allocator models it.
+        if let Expression::Binary { operator: BinaryOperator::Multiply, left, right } = expression {
+            let mul_plus_const = |operand: &Expression| {
+                matches!(operand, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left: inner, right: constant }
+                    if matches!(inner.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. })
+                        && crate::analysis::constant_value(constant).is_some())
+            };
+            if mul_plus_const(left) && mul_plus_const(right) {
+                return Err(Diagnostic::error("a product of two addend-carrying products needs the keystone allocator (roadmap)"));
+            }
         }
         // mwcc keeps a constant-amount shift as the FIRST operand of a commutative op (`(a<<2)+b` ->
         // `add d, shift, b`), but our placement swaps it to second (like `(a*4)+b`). Defer the
