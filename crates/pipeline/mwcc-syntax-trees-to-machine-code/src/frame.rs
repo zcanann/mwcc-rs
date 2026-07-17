@@ -230,7 +230,7 @@ impl Generator {
         if !function.parameters.is_empty() || !function.locals.is_empty() || !self.frame_slots.is_empty() {
             return Ok(false);
         }
-        if !matches!(function.statements.len(), 1 | 2) {
+        if !matches!(function.statements.len(), 1..=4) {
             return Ok(false);
         }
         let mut calls: Vec<(&String, i16, u32)> = Vec::new();
@@ -250,26 +250,30 @@ impl Generator {
             calls.push((name, *first as i16, u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])));
         }
 
-        // Two calls with the SAME image bytes would dedupe in the pool — an
+        // Calls with the SAME image bytes would dedupe in the pool — an
         // unmeasured numbering; defer.
-        if calls.len() == 2 && calls[0].2 == calls[1].2 {
-            return Ok(false);
+        for i in 0..calls.len() {
+            for j in i + 1..calls.len() {
+                if calls[i].2 == calls[j].2 {
+                    return Ok(false);
+                }
+            }
         }
 
         self.non_leaf = true;
-        self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.frame_size = if calls.len() <= 2 { 16 } else { 32 };
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        // Temps allocate DESCENDING (call 0 at 12(r1), call 1 at 8 — the reverse
-        // slot rule); the FIRST call's li fills the prologue slot, its image load
+        // Temps allocate DESCENDING from 8 + 4*(N-1) (measured N=2: 12,8 — N=3:
+        // 16,12,8); the FIRST call's li fills the prologue slot, its image load
         // follows the addi; LATER calls reorder to loads-first (`lwz r0,@B;
         // addi r4; li r3; stw; bl` — measured).
-        let top = if calls.len() == 2 { 12 } else { 8 };
+        let top = 8 + 4 * (calls.len() as i16 - 1);
         for (index, &(name, first, bits)) in calls.iter().enumerate() {
             let slot = top - 4 * index as i16;
             if index == 0 {
                 self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: first });
-                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 });
                 self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 1, immediate: slot });
             }
             let constant = self.output.intern_constant(bits as u64, 4);
