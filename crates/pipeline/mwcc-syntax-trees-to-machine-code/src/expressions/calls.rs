@@ -144,19 +144,64 @@ impl Generator {
                 }
             }
         }
-        // A CONSTANT argument that follows a GLOBAL-LOAD argument: mwcc hoists the constant's `li` into
-        // the mflr->LR-store latency slot of the non-leaf prologue (ahead of the global load), a
-        // schedule our left-to-right emission (load, then `li`) does not reproduce. Defer. (A constant
-        // BEFORE the global load — `s(5, gi)` — is already early and stays byte-exact.)
+        // A CONSTANT argument that follows a GLOBAL-LOAD argument: mwcc materializes
+        // the constants GREEDY-EARLY — their `li`s emit ahead of the load, and the
+        // save scheduler then hoists them into the prologue's mflr latency slot
+        // (measured `h(gi, 5)`: stwu; mflr; li r4,5; stw r0; lwz r3,@gi; bl).
+        // Lifted for a DIRECT call with ONE word-global load plus i16 constants
+        // (up to three arguments); other mixes keep the defer.
         {
             let mut seen_global_load = false;
+            let mut constant_after_global = false;
             for argument in arguments {
                 match argument {
                     Expression::Variable(name) if self.globals.contains_key(name.as_str()) => seen_global_load = true,
-                    Expression::IntegerLiteral(_) if seen_global_load => {
-                        return Err(Diagnostic::error("a constant argument after a global load needs the LR-store-latency schedule (roadmap)"));
-                    }
+                    Expression::IntegerLiteral(_) if seen_global_load => constant_after_global = true,
                     _ => {}
+                }
+            }
+            if constant_after_global {
+                let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+                let mut global_argument: Option<(usize, String)> = None;
+                let mut constants: Vec<(usize, i16)> = Vec::new();
+                let mut simple = direct_call && arguments.len() <= 3;
+                for (position, argument) in arguments.iter().enumerate() {
+                    if !simple {
+                        break;
+                    }
+                    match argument {
+                        Expression::Variable(variable) if self.globals.contains_key(variable.as_str()) => {
+                            if global_argument.is_some()
+                                || !matches!(self.globals.get(variable.as_str()), Some(Type::Int | Type::UnsignedInt))
+                            {
+                                simple = false;
+                            } else {
+                                global_argument = Some((position, variable.clone()));
+                            }
+                        }
+                        Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                            constants.push((position, *value as i16));
+                        }
+                        _ => simple = false,
+                    }
+                }
+                match (simple, global_argument) {
+                    (true, Some((global_position, global_name))) if constants.len() + 1 == arguments.len() => {
+                        for &(position, value) in &constants {
+                            self.output.instructions.push(Instruction::AddImmediate {
+                                d: Eabi::FIRST_GENERAL_ARGUMENT + position as u8,
+                                a: 0,
+                                immediate: value,
+                            });
+                        }
+                        self.emit_global_load(&global_name, Eabi::FIRST_GENERAL_ARGUMENT + global_position as u8)?;
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(Diagnostic::error(
+                            "a constant argument after a global load needs the LR-store-latency schedule (roadmap)",
+                        ));
+                    }
                 }
             }
         }
