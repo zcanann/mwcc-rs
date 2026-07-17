@@ -12,6 +12,7 @@ mod float_store_fill;
 mod punned_select;
 mod punned_writeback;
 mod loops;
+mod indirect_call;
 mod ladders;
 mod dispatchers;
 mod callee_saved;

@@ -2027,6 +2027,11 @@ impl Generator {
             if self.try_callee_saved_param_across_calls(function)? {
                 return Ok(());
             }
+            // `void f(struct S *s){ s->cb(7); }` — a bare indirect call with constant arguments,
+            // through a memory-resident function pointer (the base collides with the first arg reg).
+            if self.try_indirect_call_with_constant_args(function)? {
+                return Ok(());
+            }
             // `h(g(), p)` — a live parameter passed alongside a nested call that produces another arg.
             if self.try_callee_saved_nested_call_arg(function)? {
                 return Ok(());
