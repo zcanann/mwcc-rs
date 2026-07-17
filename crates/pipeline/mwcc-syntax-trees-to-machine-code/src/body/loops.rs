@@ -2060,4 +2060,101 @@ impl Generator {
         Ok(true)
     }
 
+    /// A SMALL constant-trip constant-fill loop UNROLLS COMPLETELY (measured:
+    /// `for (i = 0; i < N; i++) A[i] = k;` with N <= 32 emits `li value; lis;
+    /// stwu @lo-fold; stw` run — no loop at all; N = 33 begins the peel/ctr
+    /// structure and stays deferred). Word arrays past the SDA threshold, full
+    /// walks only (a partial fill is unmeasured). The fill value's home is a
+    /// virtual with the scratch preference — the allocator derives r0.
+    pub(crate) fn try_unrolled_fill_loop(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || !function.parameters.is_empty()
+        {
+            return Ok(false);
+        }
+        let [counter] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if counter.is_static
+            || counter.array_length.is_some()
+            || counter.initializer.is_some()
+            || counter.data_bytes.is_some()
+            || !matches!(counter.declared_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // `i = 0` (a nonzero start's unroll is unmeasured), `i < N`, `i++`.
+        if !matches!(initializer, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::IntegerLiteral(0)))
+        {
+            return Ok(false);
+        }
+        let bound = match condition {
+            Expression::Binary { operator: BinaryOperator::Less, left, right }
+                if matches!(left.as_ref(), Expression::Variable(name) if name == &counter.name) =>
+            {
+                match right.as_ref() {
+                    Expression::IntegerLiteral(bound) if (3..=32).contains(bound) => *bound as u16,
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        };
+        if !matches!(step, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(other) if other == &counter.name)
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(1))))
+        {
+            return Ok(false);
+        }
+        // The body: `A[i] = k` — a word global array indexed by the counter.
+        let [Statement::Store { target: Expression::Index { base, index }, value: Expression::IntegerLiteral(fill) }] = body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !(i16::MIN as i64..=i16::MAX as i64).contains(fill) {
+            return Ok(false);
+        }
+        let Expression::Variable(array) = base.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
+            || self.locations.contains_key(array.as_str())
+            || !matches!(self.globals.get(array.as_str()), Some(Type::Int | Type::UnsignedInt))
+        {
+            return Ok(false);
+        }
+        let Some(&size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        if size != bound as u32 * 4 || size <= 8 {
+            return Ok(false);
+        }
+        let array = array.clone();
+
+        // The measured unroll: the fill value greedy-early, the base high half,
+        // the offset-0 store FOLDING @lo into `stwu` (which also forms the
+        // base), then the run of word stores.
+        let value = self.fresh_virtual_general_preferring(0);
+        self.output.instructions.push(Instruction::AddImmediate { d: value, a: 0, immediate: *fill as i16 });
+        self.record_relocation(RelocationKind::Addr16Ha, &array);
+        self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
+        self.record_relocation(RelocationKind::Addr16Lo, &array);
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: value, a: 3, offset: 0 });
+        for slot in 1..bound {
+            self.output.instructions.push(Instruction::StoreWord { s: value, a: 3, offset: (slot as i16) * 4 });
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
 }

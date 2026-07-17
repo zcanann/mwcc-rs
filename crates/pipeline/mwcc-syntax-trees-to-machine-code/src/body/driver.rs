@@ -1616,6 +1616,11 @@ impl Generator {
         if self.try_counted_call_loop(function)? {
             return Ok(());
         }
+        // A small constant-trip constant fill (`for (i = 0; i < N; i++) A[i] = k;`,
+        // N <= 32) unrolls completely — no loop structure at all.
+        if self.try_unrolled_fill_loop(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and
