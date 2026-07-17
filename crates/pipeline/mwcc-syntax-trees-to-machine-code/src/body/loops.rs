@@ -2508,6 +2508,8 @@ impl Generator {
         enum BodyStep {
             Call(String, bool),
             StoreCounter(String),
+            /// `if (gFlag) h();` — the flag reloads, a forward beq skips the call.
+            GuardedCall(String, String),
         }
         if body.is_empty() || body.len() > 3 {
             return Ok(false);
@@ -2541,17 +2543,44 @@ impl Generator {
                     }
                     body_steps.push(BodyStep::StoreCounter(global.clone()));
                 }
+                Statement::If { condition: Expression::Variable(flag), then_body, else_body } => {
+                    let [Statement::Expression(Expression::Call { name: callee, arguments })] = then_body.as_slice() else {
+                        return Ok(false);
+                    };
+                    if !else_body.is_empty()
+                        || !arguments.is_empty()
+                        || self.locations.contains_key(flag.as_str())
+                        || !matches!(self.globals.get(flag.as_str()), Some(Type::Int | Type::UnsignedInt))
+                        || self.global_array_sizes.contains_key(flag.as_str())
+                        || self.locations.contains_key(callee.as_str())
+                        || self.globals.contains_key(callee.as_str())
+                        || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+                    {
+                        return Ok(false);
+                    }
+                    call_count += 1;
+                    body_steps.push(BodyStep::GuardedCall(flag.clone(), callee.clone()));
+                }
                 _ => return Ok(false),
             }
         }
         if call_count == 0 {
             return Ok(false);
         }
-        // A counter-store in the body advances the @N counter by a flat 5
-        // (measured: extab @10/@11 vs the unbumped @5/@6, same for one or two
-        // stores); a pure call body burns nothing.
-        if body_steps.iter().any(|step| matches!(step, BodyStep::StoreCounter(_))) {
-            self.output.anonymous_label_bump += 5;
+        // The body's @N advance (measured): a counter-store = flat 5 (one or
+        // two alike), a guarded call = flat 7, a pure call body = 0. The
+        // store+guard MIX is unmeasured — defer rather than guess the counter.
+        let has_store = body_steps.iter().any(|step| matches!(step, BodyStep::StoreCounter(_)));
+        let has_guard = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(..)));
+        match (has_store, has_guard) {
+            (true, true) => {
+                return Err(Diagnostic::error(
+                    "a loop body mixing counter-stores and guarded calls needs its label count measured (roadmap)",
+                ));
+            }
+            (true, false) => self.output.anonymous_label_bump += 5,
+            (false, true) => self.output.anonymous_label_bump += 7,
+            (false, false) => {}
         }
         if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
             return Ok(false);
@@ -2586,6 +2615,15 @@ impl Generator {
                 BodyStep::StoreCounter(global) => {
                     self.record_relocation(RelocationKind::EmbSda21, global);
                     self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 0, offset: 0 });
+                }
+                BodyStep::GuardedCall(flag, callee) => {
+                    let skip = self.fresh_label();
+                    self.record_relocation(RelocationKind::EmbSda21, flag);
+                    self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
+                    self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+                    self.emit_branch_conditional_to(12, 2, skip); // beq
+                    self.emit_call(callee, &[], None, false)?;
+                    self.bind_label(skip);
                 }
             }
         }
