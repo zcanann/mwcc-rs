@@ -2212,11 +2212,15 @@ impl Generator {
         {
             return Ok(false);
         }
-        // The body: `A[i] = 0` (the zero fill is the measured shape).
-        let [Statement::Store { target: Expression::Index { base, index }, value: Expression::IntegerLiteral(0) }] = body.as_slice()
+        // The body: `A[i] = k` — measured for any i16 constant (the value rides
+        // the two `li r4` materialization sites; the structure is unchanged).
+        let [Statement::Store { target: Expression::Index { base, index }, value: Expression::IntegerLiteral(fill) }] = body.as_slice()
         else {
             return Ok(false);
         };
+        if !(i16::MIN as i64..=i16::MAX as i64).contains(fill) {
+            return Ok(false);
+        }
         let Expression::Variable(array) = base.as_ref() else {
             return Ok(false);
         };
@@ -2256,7 +2260,7 @@ impl Generator {
         self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: 0, shift: 3 });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
         self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *fill as i16 });
         self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
         self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
         self.emit_branch_conditional_to(4, 1, tail); // ble
@@ -2278,7 +2282,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 0 });
         self.output.instructions.push(Instruction::SubtractFrom { d: 0, a: 7, b: 3 });
         self.output.instructions.push(Instruction::Add { d: 5, a: 4, b: 5 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *fill as i16 });
         self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
         self.output.instructions.push(Instruction::CompareWord { a: 7, b: 3 });
         self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 4, condition_bit: 0 });
