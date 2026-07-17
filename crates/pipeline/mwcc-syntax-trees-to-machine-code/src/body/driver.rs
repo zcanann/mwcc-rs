@@ -934,13 +934,15 @@ impl Generator {
                             // The offset-0 store SECOND is unmeasured — defer.
                             return Err(Diagnostic::error("a large-struct store pair ending at offset 0 is not supported yet (roadmap)"));
                         } else {
+                            // NATURAL order — the latency-slot fill derives the
+                            // measured interleave (lis; li v0; addi; li v1).
                             let first = self.fresh_virtual_general_preferring(4);
                             let second = self.fresh_virtual_general_preferring(0);
                             self.record_relocation(RelocationKind::Addr16Ha, &name0);
                             self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
-                            self.output.instructions.push(Instruction::AddImmediate { d: first, a: 0, immediate: *value0 as i16 });
                             self.record_relocation(RelocationKind::Addr16Lo, &name0);
                             self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                            self.output.instructions.push(Instruction::AddImmediate { d: first, a: 0, immediate: *value0 as i16 });
                             self.output.instructions.push(Instruction::AddImmediate { d: second, a: 0, immediate: *value1 as i16 });
                             self.output.instructions.push(Instruction::StoreWord { s: first, a: 3, offset: offset0 as i16 });
                             self.output.instructions.push(Instruction::StoreWord { s: second, a: 3, offset: offset1 as i16 });
