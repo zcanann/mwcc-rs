@@ -117,7 +117,20 @@ impl Generator {
                 offset += size as i16;
             }
         }
-        for local in &function.locals {
+        // mwcc's frame order (measured): the address-taken SCALARS pack lowest, then
+        // the ARRAYS above them — each group in REVERSE declaration order (a later
+        // declaration sits at a lower offset): `int x; int y;` -> y@8, x@12;
+        // `Mtx a; int x; Mtx b;` -> x@8, b@12, a@60. (The ascending-declaration order
+        // this replaces was a measured whole-object DIFF for any function with two
+        // address-taken locals.)
+        let slot_locals: Vec<&mwcc_syntax_trees::LocalDeclaration> = function
+            .locals
+            .iter()
+            .rev()
+            .filter(|local| local.array_length.is_none())
+            .chain(function.locals.iter().rev().filter(|local| local.array_length.is_some()))
+            .collect();
+        for local in slot_locals {
             let is_array = local.array_length.is_some();
             if address_taken.contains(local.name.as_str()) || is_array {
                 // Only an uninitialized local is modeled here (its value comes from a

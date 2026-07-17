@@ -395,7 +395,7 @@ impl Parser {
             // A declaration inside a braced arm (`case 'N': { double result;
             // u64* ll = (u64*)&result; … }` — bfbb ansi_fp's __dec2num) hoists
             // exactly like one in a nested block.
-            if self.peek_is_type() || matches!(self.peek(), Token::Identifier(word) if word == "static") {
+            if self.peek_is_type() || self.peek_is_local_array_typedef() || matches!(self.peek(), Token::Identifier(word) if word == "static") {
                 self.parse_block_declaration(local_names, block_locals, &mut statements)?;
                 continue;
             }
@@ -2312,7 +2312,7 @@ impl Parser {
                 }
                 self.advance();
             }
-            if !self.peek_is_type() {
+            if !self.peek_is_type() && !self.peek_is_local_array_typedef() {
                 break;
             }
             let declared_type = self.parse_type()?;
@@ -2321,6 +2321,28 @@ impl Parser {
             // `li r3,5` instead of mwcc's store-then-load). Defer until that is modeled.
             if self.last_type_was_volatile {
                 return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
+            }
+            // An array-typedef local (`Mtx proj;`) is exactly the flat local array
+            // `f32 proj[12];` — reuse that machinery (frame codegen still defers it;
+            // task #19). Extra brackets/stars/initializers are unmeasured.
+            if let Some((element, total, _inner)) = self.last_array_typedef.take() {
+                if is_static || total == 0 {
+                    return Err(Diagnostic::error("a static or row-pointer array-typedef local is not supported yet (roadmap)"));
+                }
+                loop {
+                    let name = self.parse_identifier()?;
+                    if matches!(self.peek(), Token::BracketOpen | Token::Equals | Token::Star) {
+                        return Err(Diagnostic::error("an array-typedef local with brackets/initializer is not supported yet (roadmap)"));
+                    }
+                    locals.push(LocalDeclaration { declared_type: element, name: name.clone(), initializer: None, array_length: Some(total), is_static: false, data_bytes: None, is_const: false });
+                    self.variable_types.insert(name.clone(), element);
+                    self.variable_array_bytes.insert(name.clone(), element.width() as u32 / 8 * total as u32);
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(Token::Semicolon)?;
+                continue;
             }
             let struct_tag = self.last_struct_tag.take();
             // One or more comma-separated declarators, each optionally initialized.
@@ -2713,6 +2735,16 @@ impl Parser {
 
     pub(crate) fn peek_is_type(&self) -> bool {
         self.token_starts_type(self.peek())
+    }
+
+    /// Whether the cursor sits on an array-typedef LOCAL declaration (`Mtx proj;`):
+    /// an array-typedef name followed by a declarator identifier. Deliberately NOT
+    /// part of `token_starts_type` — a `sizeof(Mtx)`/cast context would fold the
+    /// DECAYED pointer size (4) instead of the array's (48); only the declaration
+    /// sites, which handle the marker, may admit it.
+    pub(crate) fn peek_is_local_array_typedef(&self) -> bool {
+        matches!(self.peek(), Token::Identifier(name) if self.array_typedefs.contains_key(name))
+            && matches!(self.peek_at(1), Token::Identifier(_))
     }
 
     /// Whether `token` can begin a type name (a keyword, a specifier word, a

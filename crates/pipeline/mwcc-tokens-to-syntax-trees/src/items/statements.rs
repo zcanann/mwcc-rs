@@ -335,7 +335,7 @@ impl Parser {
             // A BLOCK-SCOPED declaration (`f32 guess = ...;` inside an if):
             // hoist the local to the function and keep the initialization as
             // an Assign at its position (it may be conditionally reached).
-            if self.peek_is_type() || matches!(self.peek(), Token::Identifier(word) if word == "static") {
+            if self.peek_is_type() || self.peek_is_local_array_typedef() || matches!(self.peek(), Token::Identifier(word) if word == "static") {
                 self.parse_block_declaration(local_names, block_locals, &mut statements)?;
                 continue;
             }
@@ -364,6 +364,37 @@ impl Parser {
                 let declared_type = self.parse_type()?;
                 if self.last_type_was_volatile {
                     return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
+                }
+                // An array-typedef local (`Mtx proj;`) is exactly the flat local array
+                // `f32 proj[12];` — reuse that machinery (frame codegen still defers
+                // it; task #19). Extra brackets/stars/initializers are unmeasured.
+                let array_typedef_local = self.last_array_typedef.take();
+                if let Some((element, total, _inner)) = array_typedef_local {
+                    if is_static || total == 0 {
+                        return Err(Diagnostic::error("a static or row-pointer array-typedef local is not supported yet (roadmap)"));
+                    }
+                    loop {
+                        let name = self.parse_identifier()?;
+                        let name = if local_names.contains(&name) {
+                            self.rename_counter += 1;
+                            let internal = format!("{name}@{}", self.rename_counter);
+                            self.block_renames.push((name, internal.clone()));
+                            internal
+                        } else {
+                            name
+                        };
+                        if matches!(self.peek(), Token::BracketOpen | Token::Equals | Token::Star) {
+                            return Err(Diagnostic::error("an array-typedef local with brackets/initializer is not supported yet (roadmap)"));
+                        }
+                        block_locals.push(LocalDeclaration { declared_type: element, name: name.clone(), initializer: None, array_length: Some(total), is_static: false, data_bytes: None, is_const: false });
+                        local_names.insert(name.clone());
+                        self.variable_types.insert(name.clone(), element);
+                        self.variable_array_bytes.insert(name.clone(), element.width() as u32 / 8 * total as u32);
+                        if !self.eat_keyword(Token::Comma) {
+                            self.expect(Token::Semicolon)?;
+                            return Ok(());
+                        }
+                    }
                 }
                 // A struct/union-typed local carries its tag so `cur->next` resolves
                 // the layout — same as the function-top-level path. Nested-block
