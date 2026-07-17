@@ -802,14 +802,22 @@ impl Generator {
                 && (i16::MIN as i64..=i16::MAX as i64).contains(value0)
                 && (i16::MIN as i64..=i16::MAX as i64).contains(value1)
             {
-                if let (Some((name0, 0, size)), Some((name1, offset1, _))) = (word_member(self, target0), word_member(self, target1)) {
-                    if name0 == name1 && offset1 != 0 && size <= 8 {
-                        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *value0 as i16 });
-                        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *value1 as i16 });
+                if let (Some((name0, offset0, size)), Some((name1, offset1, _))) = (word_member(self, target0), word_member(self, target1)) {
+                    // Registers assign by SOURCE order (first store's value -> r4,
+                    // second -> r0) while the lis and the stores both run in OFFSET
+                    // order (measured both source orders); one member must sit at
+                    // offset 0 (its store folds), distinct members only.
+                    if name0 == name1 && offset0 != offset1 && (offset0 == 0 || offset1 == 0) && size <= 8 {
+                        let mut ordered = [(offset0, *value0 as i16, 4u8), (offset1, *value1 as i16, 0u8)];
+                        ordered.sort_by_key(|&(offset, _, _)| offset);
+                        for &(_, value, register) in &ordered {
+                            self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
+                        }
                         self.emit_global_array_base(&name0, size, 3)?;
+                        let [(_, _, first_register), (high_offset, _, second_register)] = ordered;
                         self.record_relocation(RelocationKind::EmbSda21, &name0);
-                        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 0, offset: 0 });
-                        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: offset1 as i16 });
+                        self.output.instructions.push(Instruction::StoreWord { s: first_register, a: 0, offset: 0 });
+                        self.output.instructions.push(Instruction::StoreWord { s: second_register, a: 3, offset: high_offset as i16 });
                         self.emit_epilogue_and_return();
                         return Ok(());
                     }
