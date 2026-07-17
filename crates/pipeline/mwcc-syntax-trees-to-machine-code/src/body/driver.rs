@@ -1606,6 +1606,11 @@ impl Generator {
         if self.try_do_while_counter(function)? {
             return Ok(());
         }
+        // The C++ ctor/dtor runner: a local pointer walks a NULL-terminated global
+        // function-pointer table, calling each entry (`while (*p) { (**p)(); p++; }`).
+        if self.try_pointer_walker_call_loop(function)? {
+            return Ok(());
+        }
         // An empty-body hardware-register poll (`while (__EXIRegs[13] & 1);`):
         // element address materialized once, then load → `rlwinm.`/`cmplwi` → branch back.
         if self.try_emit_busy_wait(function)? {

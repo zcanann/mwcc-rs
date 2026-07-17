@@ -173,6 +173,10 @@ pub(crate) struct Generator {
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
+    /// File-scope PROTOTYPE-only names (external declarations, not definitions in
+    /// this TU). A call to one is a genuine external `bl`; a name absent here that
+    /// the TU defines (e.g. a `static`) may be inlined by mwcc.
+    pub(crate) prototyped_names: std::collections::HashSet<String>,
     /// PLAIN-inline functions our parser MATERIALIZED as weak globals. mwcc may
     /// instead re-inline a trivial one at its call sites (ww's mbstowcs folds
     /// callers to `blr`), so a NATIVE caller defers — only a capture claim

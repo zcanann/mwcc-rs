@@ -4,6 +4,7 @@
 use super::*;
 
 mod counters;
+mod walker;
 mod count_register;
 mod poll_search;
 mod fill_copy;

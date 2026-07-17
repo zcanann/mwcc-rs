@@ -203,6 +203,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         frame_row_bytes: function.locals.iter().filter_map(|local| local.row_bytes.map(|row| (local.name.clone(), row))).collect(),
         descending_allocation_top: None,
         skipped_inline_names: skipped_inline_names.clone(),
+        prototyped_names: prototyped_names.clone(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
     };
