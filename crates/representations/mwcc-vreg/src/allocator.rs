@@ -218,6 +218,82 @@ impl Allocator for LinearScan {
     }
 }
 
+/// The DESCENDING store-fill policy (measured, fires 851-856): mwcc allocates a
+/// literal-fill's materializations from the TOP of a window down — for an N-store
+/// aggregate fill, v0 = r(N+2), the base at r(N+1), later values descending with
+/// r3 recycled after the base migrates off it, and the LAST value always r0 (the
+/// scratch, legal because it dies at its store). Expressed generally: assign each
+/// value the HIGHEST free pool register below `top`; when nothing in the window is
+/// free the scratch is used for a value that does not cross a call. LinearScan's
+/// interference/pinning/call rules are shared; only the pool direction differs.
+pub struct DescendingScan {
+    /// The window's top register (inclusive) — r(N+2) for an N-store fill.
+    pub top: u8,
+}
+
+impl Allocator for DescendingScan {
+    fn allocate(
+        &self,
+        intervals: &[LiveInterval],
+        pinned: &[PinnedOccupancy],
+        calls: &[usize],
+        constraints: &RegisterConstraints,
+    ) -> Result<Allocation, AllocationError> {
+        let mut order: Vec<&LiveInterval> = intervals.iter().collect();
+        order.sort_by_key(|interval| (interval.start, interval.vreg.id));
+
+        let mut allocation = Allocation::default();
+        let mut active: Vec<(usize, u8, Class)> = Vec::new();
+
+        for interval in order {
+            let class = interval.vreg.class;
+            active.retain(|(end, _, _)| *end > interval.start);
+
+            let mut busy: Vec<u8> = active
+                .iter()
+                .filter(|(_, _, active_class)| *active_class == class)
+                .map(|(_, register, _)| *register)
+                .collect();
+            for occupancy in pinned {
+                if occupancy.class == class
+                    && interferes(occupancy.start, occupancy.end, interval.start, interval.end)
+                {
+                    busy.push(occupancy.register);
+                }
+            }
+
+            let crosses_call = calls.iter().any(|call| interval.start < *call && *call < interval.end);
+            let pool: Vec<u8> = if crosses_call && class == Class::General {
+                constraints.general_callee_saved.clone()
+            } else {
+                // The descending window: pool registers <= top, HIGHEST first, then
+                // the scratch as the final fallback for a non-call-crossing value.
+                let mut window: Vec<u8> = constraints
+                    .pool(class)
+                    .iter()
+                    .copied()
+                    .filter(|register| *register <= self.top)
+                    .collect();
+                window.sort_unstable_by(|left, right| right.cmp(left));
+                if !crosses_call {
+                    window.push(constraints.scratch(class));
+                }
+                window
+            };
+            let choice = pool
+                .iter()
+                .copied()
+                .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
+                .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?;
+
+            allocation.assignments.insert(interval.vreg.id, choice);
+            active.push((interval.end, choice, class));
+        }
+
+        Ok(allocation)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +400,45 @@ mod tests {
         let intervals = [gpr(0, 3, 5)]; // starts after the parameter's last use
         let allocation = LinearScan.allocate(&intervals, &pinned, &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(3));
+    }
+
+    #[test]
+    fn descending_scan_reproduces_the_three_store_fill_formula() {
+        // The fire-854 aggregate fill, as pure intervals over the measured emission
+        // order [lis, li v0, addi base, li v1, li v2, stw0, stw1, stw2]:
+        let constraints = RegisterConstraints::gekko();
+        let intervals = [
+            gpr(0, 1, 5), // v0: defined at its li, dies at store 0
+            gpr(1, 2, 7), // base: defined at the addi, live through the last store
+            gpr(2, 3, 6), // v1
+            gpr(3, 4, 7), // v2
+        ];
+        let allocation = DescendingScan { top: 5 }.allocate(&intervals, &[], &[], &constraints).unwrap();
+        // Measured: v0 = r5, base = r4, v1 = r3 (recycled), v2 = r0 (the scratch).
+        assert_eq!(allocation.physical(phys(0)), Some(5));
+        assert_eq!(allocation.physical(phys(1)), Some(4));
+        assert_eq!(allocation.physical(phys(2)), Some(3));
+        assert_eq!(allocation.physical(phys(3)), Some(0));
+    }
+
+    #[test]
+    fn descending_scan_reproduces_the_four_store_fill_formula() {
+        // Fire 855's N=4: [lis, li v0, addi base, li v1, li v2, li v3, stw x4].
+        let constraints = RegisterConstraints::gekko();
+        let intervals = [
+            gpr(0, 1, 6),  // v0
+            gpr(1, 2, 9),  // base
+            gpr(2, 3, 7),  // v1
+            gpr(3, 4, 8),  // v2
+            gpr(4, 5, 9),  // v3
+        ];
+        let allocation = DescendingScan { top: 6 }.allocate(&intervals, &[], &[], &constraints).unwrap();
+        // Measured: v0 = r6, base = r5, v1 = r4, v2 = r3, v3 = r0.
+        assert_eq!(allocation.physical(phys(0)), Some(6));
+        assert_eq!(allocation.physical(phys(1)), Some(5));
+        assert_eq!(allocation.physical(phys(2)), Some(4));
+        assert_eq!(allocation.physical(phys(3)), Some(3));
+        assert_eq!(allocation.physical(phys(4)), Some(0));
     }
 
     #[test]
