@@ -2390,7 +2390,8 @@ impl Generator {
                         | Instruction::Negate { .. } | Instruction::ShiftLeftImmediate { .. }
                         | Instruction::ShiftRightAlgebraicImmediate { .. } | Instruction::ShiftRightLogicalImmediate { .. }
                         | Instruction::ClearLeftImmediate { .. } | Instruction::AndContiguousMask { .. }
-                        | Instruction::RotateAndMask { .. } | Instruction::OrImmediate { .. }) =>
+                        | Instruction::RotateAndMask { .. } | Instruction::OrImmediate { .. }
+                        | Instruction::ExtendSignByte { .. } | Instruction::ExtendSignHalfword { .. }) =>
                 {
                     let movable = mwcc_vreg::register_operands(other).iter().all(|operand| operand.register != 0);
                     saw_move |= movable;

@@ -314,6 +314,25 @@ impl Generator {
                             _ => false,
                         };
                         if !argument_is_narrow {
+                            // An IN-PLACE register leaf narrows with one op (extsb/extsh
+                            // for a signed parameter, clrlwi 24/16 for unsigned) that the
+                            // prologue hoist then schedules into the mflr->LR-store slot
+                            // (measured: `void g(short); g(x)` -> extsh r3,r3 mid-prologue).
+                            // A value NOT already in its argument register still defers.
+                            if let Ok((register, _, _)) = self.leaf_info(argument) {
+                                if register == next_general {
+                                    let narrow = match parameter_type {
+                                        Type::Char => Instruction::ExtendSignByte { a: register, s: register },
+                                        Type::Short => Instruction::ExtendSignHalfword { a: register, s: register },
+                                        Type::UnsignedChar => Instruction::ClearLeftImmediate { a: register, s: register, clear: 24 },
+                                        Type::UnsignedShort => Instruction::ClearLeftImmediate { a: register, s: register, clear: 16 },
+                                        _ => return Err(Diagnostic::error("an argument wider than a narrow parameter needs a narrowing conversion (roadmap)")),
+                                    };
+                                    self.output.instructions.push(narrow);
+                                    next_general += 1;
+                                    continue;
+                                }
+                            }
                             return Err(Diagnostic::error("an argument wider than a narrow parameter needs a narrowing conversion (roadmap)"));
                         }
                     }
