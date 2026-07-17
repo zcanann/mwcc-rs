@@ -857,49 +857,60 @@ impl Generator {
         if !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
-        // Two to four call statements: the final one passes the parameter as its sole argument,
-        // every earlier one is a bare call that does not reference the parameter.
-        if function.statements.len() < 2 || function.statements.len() > 4 {
+        // Two to six call statements: a leading run of BARE calls (at least one, so the
+        // parameter's argument register is always stale before its first use), then a run of
+        // TRAILING calls that each pass the parameter — every one preceded by a call that
+        // clobbered the argument registers, so each re-materializes it (`mr rPos,r31`).
+        if function.statements.len() < 2 || function.statements.len() > 6 {
             return Ok(false);
         }
-        let (final_statement, leading) = function.statements.split_last().unwrap();
-        let references_parameter = |expression: &Expression| expression_reads_name(expression, &parameter.name);
-        for statement in leading {
+        // Every statement must be a call expression.
+        let mut calls: Vec<(&String, &Vec<Expression>)> = Vec::with_capacity(function.statements.len());
+        for statement in &function.statements {
             match statement {
-                Statement::Expression(Expression::Call { arguments, .. })
-                    if arguments.is_empty() => {}
+                Statement::Expression(Expression::Call { name, arguments }) => calls.push((name, arguments)),
                 _ => return Ok(false),
             }
         }
-        let Statement::Expression(Expression::Call { name: final_name, arguments: final_arguments }) = final_statement else {
-            return Ok(false);
-        };
-        // The final call passes the parameter exactly once (at any position) and, optionally,
-        // small integer constants in the other positions (their `li`s follow the parameter's
-        // `mr`, in ascending position order — measured). Anything else (a second variable, a
-        // global, an out-of-range literal, at most 8 args) defers.
-        if final_arguments.is_empty() || final_arguments.len() > 8 {
-            return Ok(false);
-        }
-        let mut parameter_position = None;
-        let mut constants: Vec<(u8, i16)> = Vec::new();
-        for (position, argument) in final_arguments.iter().enumerate() {
-            match argument {
-                Expression::Variable(name) if *name == parameter.name => {
-                    if parameter_position.is_some() {
-                        return Ok(false); // the parameter passed twice is a different (duplicating) shape
+        // Decode one trailing call's arguments: the parameter exactly once (at any position),
+        // plus optional small integer constants — their `li`s follow the parameter's `mr` in
+        // ascending position order (measured). Anything else (a second variable, a global, an
+        // out-of-range literal, over eight args) yields None so the call defers.
+        let decode = |arguments: &[Expression]| -> Option<(u8, Vec<(u8, i16)>)> {
+            if arguments.is_empty() || arguments.len() > 8 {
+                return None;
+            }
+            let mut parameter_register = None;
+            let mut constants: Vec<(u8, i16)> = Vec::new();
+            for (position, argument) in arguments.iter().enumerate() {
+                match argument {
+                    Expression::Variable(name) if *name == parameter.name => {
+                        if parameter_register.is_some() {
+                            return None; // the parameter passed twice is a different (duplicating) shape
+                        }
+                        parameter_register = Some(3 + position as u8);
                     }
-                    parameter_position = Some(3 + position as u8);
+                    Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                        constants.push((3 + position as u8, *value as i16));
+                    }
+                    _ => return None,
                 }
-                Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
-                    constants.push((3 + position as u8, *value as i16));
-                }
-                _ => return Ok(false),
+            }
+            parameter_register.map(|register| (register, constants))
+        };
+        // The leading run is the maximal prefix of bare (argument-free) calls; the rest must all
+        // pass the parameter. At least one leading call and one trailing call are required.
+        let leading_count = calls.iter().take_while(|(_, arguments)| arguments.is_empty()).count();
+        if leading_count == 0 || leading_count == calls.len() {
+            return Ok(false);
+        }
+        let mut trailing = Vec::with_capacity(calls.len() - leading_count);
+        for (name, arguments) in &calls[leading_count..] {
+            match decode(arguments) {
+                Some(decoded) => trailing.push((*name, decoded)),
+                None => return Ok(false),
             }
         }
-        let Some(parameter_register) = parameter_position else {
-            return Ok(false);
-        };
         // Sanity: the parameter arrives in a general register (r3).
         match self.locations.get(&parameter.name) {
             Some(location) if location.class == ValueClass::General => {}
@@ -915,24 +926,23 @@ impl Generator {
         self.callee_saved = vec![home];
         let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
         self.output.instructions.extend(plan.prologue_interleaved(&[incoming]));
-        // The parameter now lives in its callee-saved home; the leading calls run bare, then the
-        // final call marshals it (`mr r3,r31`) from there.
+        // The parameter now lives in its callee-saved home; the leading calls run bare.
         if let Some(location) = self.locations.get_mut(&parameter.name) {
             location.register = home;
         }
-        for statement in leading {
-            let Statement::Expression(Expression::Call { name, arguments }) = statement else { unreachable!() };
+        for (name, arguments) in &calls[..leading_count] {
             self.emit_call(name, arguments, None, false)?;
         }
-        // The final call's arguments: the saved parameter is marshaled FIRST (`mr rPos,r31`),
-        // then the constants materialize in ascending position order (`li`) — the measured
-        // schedule. `constants` is already in position order. A direct `bl` follows.
-        self.output.instructions.push(Instruction::move_register(parameter_register, home));
-        for &(register, value) in &constants {
-            self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
+        // Each trailing call marshals the saved parameter FIRST (`mr rPos,r31`), then the
+        // constants in ascending position order (`li`), then a direct `bl`.
+        for (name, (parameter_register, constants)) in &trailing {
+            self.output.instructions.push(Instruction::move_register(*parameter_register, home));
+            for &(register, value) in constants {
+                self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
+            }
+            self.record_relocation(RelocationKind::Rel24, name);
+            self.output.instructions.push(Instruction::BranchAndLink { target: (*name).clone() });
         }
-        self.record_relocation(RelocationKind::Rel24, final_name);
-        self.output.instructions.push(Instruction::BranchAndLink { target: final_name.clone() });
         self.emit_epilogue_and_return();
         Ok(true)
     }
