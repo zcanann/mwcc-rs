@@ -218,6 +218,51 @@ impl Generator {
                 }
             }
         }
+        // THREE or FOUR word loads from ONE pointer base (`g(p->a, p->b, p->c[, p->d])`):
+        // mwcc pre-copies the base to the LAST argument register, loads the first
+        // argument through the dying original base, and the rest through the copy —
+        // the copy's own load comes last. The load ORDER is measured per count:
+        // three arguments hoist arg1's load ahead (`mr r5,r3; lwz r4,4(r5);
+        // lwz r3,0(r3); lwz r5,8(r5)`), four go in argument order (`mr r6,r3;
+        // lwz r3,0(r3); lwz r4,4(r6); lwz r5,8(r6); lwz r6,12(r6)`). Distinct
+        // offsets only (a repeated member diverges on the @N seam, as in the
+        // two-argument case).
+        if matches!(arguments.len(), 3 | 4) {
+            let base_register = Eabi::FIRST_GENERAL_ARGUMENT;
+            let member_load = |argument: &Expression| -> Option<(String, i16, Pointee)> {
+                match argument {
+                    Expression::Member { base, offset, member_type, index_stride: None } => {
+                        let Expression::Variable(name) = base.as_ref() else { return None };
+                        let is_word = matches!(member_type, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. });
+                        if !is_word {
+                            return None;
+                        }
+                        Some((name.clone(), i16::try_from(*offset as i64).ok()?, pointee_of_type(*member_type)?))
+                    }
+                    _ => None,
+                }
+            };
+            let loads: Vec<Option<(String, i16, Pointee)>> = arguments.iter().map(member_load).collect();
+            if loads.iter().all(Option::is_some) {
+                let loads: Vec<(String, i16, Pointee)> = loads.into_iter().map(Option::unwrap).collect();
+                let one_base = loads.iter().all(|(name, _, _)| name == &loads[0].0);
+                let distinct = loads.iter().map(|(_, offset, _)| offset).collect::<std::collections::HashSet<_>>().len() == loads.len();
+                if one_base
+                    && distinct
+                    && self.locations.get(loads[0].0.as_str()).map(|location| location.register) == Some(base_register)
+                {
+                    let copy_register = base_register + arguments.len() as u8 - 1;
+                    self.output.instructions.push(Instruction::move_register(copy_register, base_register));
+                    let order: &[usize] = if arguments.len() == 3 { &[1, 0, 2] } else { &[0, 1, 2, 3] };
+                    for &slot in order {
+                        let (_, offset, pointee) = loads[slot];
+                        let source = if slot == 0 { base_register } else { copy_register };
+                        self.output.instructions.push(displacement_load(pointee, base_register + slot as u8, source, offset)?);
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         for (index, argument) in arguments.iter().enumerate() {
