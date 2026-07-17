@@ -961,4 +961,68 @@ impl Generator {
         Ok(true)
     }
 
+    /// `int x = G; call(); G2 = x;` — a register local initialized from a word
+    /// global, live across ONE void no-arg call, stored back to a word global.
+    /// The first fully general-allocator crossing shape: the home is a VIRTUAL,
+    /// the call-crossing makes LinearScan draw from the callee-saved pool (r31),
+    /// and the frame builder supplies the canonical saves. Measured @2.6/1.3.2:
+    /// `stwu -16; mflr; stw r0,20; stw r31,12; lwz r31,@G; bl; stw r31,@G2;
+    /// lwz r0,20; lwz r31,12; mtlr; addi 16; blr` — the global loads DIRECTLY
+    /// into the callee-saved home, and the LR reload issues before the restore.
+    pub(crate) fn try_callee_saved_global_round_trip(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || function.return_expression.is_some()
+            || !function.guards.is_empty()
+            || !function.parameters.is_empty()
+            || !self.frame_slots.is_empty()
+        {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else { return Ok(false) };
+        if local.array_length.is_some()
+            || local.is_static
+            || local.row_bytes.is_some()
+            || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        let Some(Expression::Variable(source_global)) = &local.initializer else { return Ok(false) };
+        let source_global = source_global.clone();
+        if self.locations.contains_key(&source_global)
+            || !matches!(self.globals.get(source_global.as_str()), Some(Type::Int | Type::UnsignedInt))
+        {
+            return Ok(false);
+        }
+        let [Statement::Expression(Expression::Call { name: callee, arguments }), Statement::Store { target: Expression::Variable(target_global), value: Expression::Variable(stored) }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // The call is void no-arg (argument materialization around the crossing
+        // load is unmeasured); the store writes the local back to a word global.
+        if !arguments.is_empty()
+            || stored != &local.name
+            || self.locations.contains_key(target_global)
+            || !matches!(self.globals.get(target_global.as_str()), Some(Type::Int | Type::UnsignedInt))
+            || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+        {
+            return Ok(false);
+        }
+        let callee = callee.clone();
+        let target_global = target_global.clone();
+
+        let home = self.fresh_virtual_general();
+        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
+        self.non_leaf = true;
+        self.frame_size = plan.frame_size;
+        self.callee_saved = vec![home];
+        self.epilogue_lr_before_gprs = true;
+        self.output.instructions.extend(plan.prologue());
+        self.emit_global_load(&source_global, home)?;
+        self.emit_call(&callee, &[], None, false)?;
+        self.emit_global_store(&target_global, Pointee::Int, home)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
 }

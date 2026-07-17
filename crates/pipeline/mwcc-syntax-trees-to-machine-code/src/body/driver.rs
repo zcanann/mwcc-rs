@@ -2020,6 +2020,11 @@ impl Generator {
             if self.try_callee_saved_conditional_call_then_store(function)? {
                 return Ok(());
             }
+            // `int x = G; call(); G2 = x;` — the first fully general-allocator
+            // crossing shape (virtual home, callee-saved pool, frame builder).
+            if self.try_callee_saved_global_round_trip(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error("a value live across a call needs the callee-saved register allocator (roadmap)"));
             }
