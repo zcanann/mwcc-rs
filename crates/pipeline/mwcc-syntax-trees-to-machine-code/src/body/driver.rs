@@ -1252,6 +1252,10 @@ impl Generator {
         if self.try_struct_member_stores_call(function)? {
             return Ok(());
         }
+        // One call with an integer literal and a 4-byte compound-literal argument.
+        if self.try_compound_literal_call(function)? {
+            return Ok(());
+        }
         if self.try_frame_resident(function)? {
             return Ok(());
         }

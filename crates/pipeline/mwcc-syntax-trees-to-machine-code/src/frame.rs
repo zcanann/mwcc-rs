@@ -217,6 +217,53 @@ impl Generator {
         Ok(true)
     }
 
+    /// One call whose arguments are an integer literal and a 4-byte COMPOUND
+    /// LITERAL — `g(2, (GXColor){0,0,0xE2,0x58})` (THPDraw's GX color calls).
+    /// mwcc materializes the literal into a frame temporary via the pooled word
+    /// image and passes its ADDRESS (small structs pass by reference): the arg0
+    /// li hoists into the prologue slot, then `addi r4,r1,8; lwz r0,@IMG(0);
+    /// stw r0,8(r1); bl` — the struct-image schedule with the temp as an argument.
+    pub(crate) fn try_compound_literal_call(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function.return_type != Type::Void || function.return_expression.is_some() {
+            return Ok(false);
+        }
+        if !function.parameters.is_empty() || !function.locals.is_empty() || !self.frame_slots.is_empty() {
+            return Ok(false);
+        }
+        let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
+            return Ok(false);
+        };
+        let [Expression::IntegerLiteral(first), Expression::CompoundLiteral { bytes, .. }] = arguments.as_slice() else {
+            return Ok(false);
+        };
+        if bytes.len() != 4 || *first < i16::MIN as i64 || *first > i16::MAX as i64 {
+            return Ok(false);
+        }
+        if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+            return Ok(false);
+        }
+
+        let bits = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: *first as i16 });
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 1, immediate: 8 });
+        // The compound-literal image numbers at the PLAIN pool slot (@5), and the
+        // temp's internal labels leave a SIX-label gap before the unwind entries
+        // (measured: image @5, extab @12/@13) — unlike the named struct-local's
+        // static-slot @4 + one-label gap.
+        self.load_word_constant(0, bits);
+        self.output.post_constant_label_bump += 6;
+        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        self.record_relocation(RelocationKind::Rel24, name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// If the function takes the address of any variable, lower it with a stack
     /// frame: lay out a slot per address-taken parameter/local, spill the
     /// parameters in the prologue, and run the body against those slots. Returns
