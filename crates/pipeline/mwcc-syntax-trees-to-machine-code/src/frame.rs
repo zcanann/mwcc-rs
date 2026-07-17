@@ -230,36 +230,68 @@ impl Generator {
         if !function.parameters.is_empty() || !function.locals.is_empty() || !self.frame_slots.is_empty() {
             return Ok(false);
         }
-        let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
-            return Ok(false);
-        };
-        let [Expression::IntegerLiteral(first), Expression::CompoundLiteral { bytes, .. }] = arguments.as_slice() else {
-            return Ok(false);
-        };
-        if bytes.len() != 4 || *first < i16::MIN as i64 || *first > i16::MAX as i64 {
+        if !matches!(function.statements.len(), 1 | 2) {
             return Ok(false);
         }
-        if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+        let mut calls: Vec<(&String, i16, u32)> = Vec::new();
+        for statement in &function.statements {
+            let Statement::Expression(Expression::Call { name, arguments }) = statement else {
+                return Ok(false);
+            };
+            let [Expression::IntegerLiteral(first), Expression::CompoundLiteral { bytes, .. }] = arguments.as_slice() else {
+                return Ok(false);
+            };
+            if bytes.len() != 4 || *first < i16::MIN as i64 || *first > i16::MAX as i64 {
+                return Ok(false);
+            }
+            if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+                return Ok(false);
+            }
+            calls.push((name, *first as i16, u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])));
+        }
+
+        // Two calls with the SAME image bytes would dedupe in the pool — an
+        // unmeasured numbering; defer.
+        if calls.len() == 2 && calls[0].2 == calls[1].2 {
             return Ok(false);
         }
 
-        let bits = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         self.non_leaf = true;
         self.frame_size = 16;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: *first as i16 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 1, immediate: 8 });
-        // The compound-literal image numbers at the PLAIN pool slot (@5), and the
-        // temp's internal labels leave a SIX-label gap before the unwind entries
-        // (measured: image @5, extab @12/@13) — unlike the named struct-local's
-        // static-slot @4 + one-label gap.
-        self.load_word_constant(0, bits);
-        self.output.post_constant_label_bump += 6;
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
-        self.record_relocation(RelocationKind::Rel24, name);
-        self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
+        // Temps allocate DESCENDING (call 0 at 12(r1), call 1 at 8 — the reverse
+        // slot rule); the FIRST call's li fills the prologue slot, its image load
+        // follows the addi; LATER calls reorder to loads-first (`lwz r0,@B;
+        // addi r4; li r3; stw; bl` — measured).
+        let top = if calls.len() == 2 { 12 } else { 8 };
+        for (index, &(name, first, bits)) in calls.iter().enumerate() {
+            let slot = top - 4 * index as i16;
+            if index == 0 {
+                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: first });
+                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+                self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 1, immediate: slot });
+            }
+            let constant = self.output.intern_constant(bits as u64, 4);
+            // Consecutive temps' images sit TWO labels apart (@5, @8 — each temp
+            // interposes two internal labels before the next image).
+            if index > 0 {
+                self.output.constant_number_gaps.push((constant, 2));
+                self.record_target(RelocationKind::EmbSda21, mwcc_machine_code::RelocationTarget::Constant(constant));
+                self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
+                self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 1, immediate: slot });
+                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: first });
+            } else {
+                self.record_target(RelocationKind::EmbSda21, mwcc_machine_code::RelocationTarget::Constant(constant));
+                self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
+            }
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: slot });
+            self.record_relocation(RelocationKind::Rel24, name);
+            self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
+        }
+        // The trailing gap before the unwind entries: 6 for one temp, 4N+2 beyond
+        // (measured: single image @5/extab @12; pair images @5,@8/extab @19).
+        self.output.post_constant_label_bump += 4 * calls.len() as u32 + 2;
         self.emit_epilogue_and_return();
         Ok(true)
     }
