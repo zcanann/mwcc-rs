@@ -981,7 +981,14 @@ impl Generator {
         {
             return Ok(false);
         }
-        let mut source_globals = Vec::with_capacity(function.locals.len());
+        // Each local's source: a word-global load, or a no-arg call whose result
+        // parks into the home (`bl; mr r31,r3` — measured for the single-local
+        // shape; a call producer in the pair is unmeasured and defers below).
+        enum Source {
+            Global(String),
+            Call(String),
+        }
+        let mut sources = Vec::with_capacity(function.locals.len());
         for local in &function.locals {
             if local.array_length.is_some()
                 || local.is_static
@@ -990,13 +997,25 @@ impl Generator {
             {
                 return Ok(false);
             }
-            let Some(Expression::Variable(source_global)) = &local.initializer else { return Ok(false) };
-            if self.locations.contains_key(source_global)
-                || !matches!(self.globals.get(source_global.as_str()), Some(Type::Int | Type::UnsignedInt))
-            {
-                return Ok(false);
+            match &local.initializer {
+                Some(Expression::Variable(source_global))
+                    if !self.locations.contains_key(source_global)
+                        && matches!(self.globals.get(source_global.as_str()), Some(Type::Int | Type::UnsignedInt)) =>
+                {
+                    sources.push(Source::Global(source_global.clone()));
+                }
+                Some(Expression::Call { name: producer, arguments })
+                    if arguments.is_empty()
+                        && !matches!(self.call_return_types.get(producer.as_str()), Some(Type::Float | Type::Double | Type::Void)) =>
+                {
+                    sources.push(Source::Call(producer.clone()));
+                }
+                _ => return Ok(false),
             }
-            source_globals.push(source_global.clone());
+        }
+        let has_call_source = sources.iter().any(|source| matches!(source, Source::Call(_)));
+        if has_call_source && function.locals.len() > 1 {
+            return Ok(false);
         }
         // Statements: the call, then one store per local IN DECLARATION ORDER
         // (each local written back to a word global exactly once).
@@ -1022,10 +1041,9 @@ impl Generator {
             }
             target_globals.push(target_global.clone());
         }
-        // Arguments are measured only for the SINGLE-local shape; the pair defers
-        // with any argument. (The `stored != local.name` check above already
-        // consumed the single-local `G2 = x` decode.)
-        if function.locals.len() == 2 && !arguments.is_empty() {
+        // Arguments are measured only for the SINGLE-local GLOBAL-source shape;
+        // the pair — and any call-producer combination — defers with arguments.
+        if (function.locals.len() == 2 || has_call_source) && !arguments.is_empty() {
             return Ok(false);
         }
         let local = &function.locals[0];
@@ -1093,8 +1111,16 @@ impl Generator {
             }
             self.output.instructions.push(Instruction::StoreWord { s: homes[0], a: 1, offset: plan.frame_size - 4 });
         }
-        for (source_global, &home) in source_globals.iter().zip(&homes) {
-            self.emit_global_load(source_global, home)?;
+        for (source, &home) in sources.iter().zip(&homes) {
+            match source {
+                Source::Global(source_global) => self.emit_global_load(source_global, home)?,
+                Source::Call(producer) => {
+                    // The producing call, its result parked into the home.
+                    self.emit_call(producer, &[], None, false)?;
+                    let result = mwcc_target::Eabi::general_result().number;
+                    self.output.instructions.push(Instruction::Or { a: home, s: result, b: result });
+                }
+            }
         }
         if let Some(register) = local_argument_register {
             self.output.instructions.push(Instruction::Or { a: register, s: homes[0], b: homes[0] });
