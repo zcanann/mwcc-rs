@@ -835,11 +835,12 @@ impl Generator {
         Ok(true)
     }
 
-    /// `void f(int a){ g(); h(a); }` / `void f(int a,int b){ g(); h(a,b); }` — one or two word
-    /// parameters live across a leading run of bare calls, then passed to a run of trailing calls.
-    /// mwcc stashes each surviving parameter in a callee-saved home, interleaved into the prologue
-    /// in REVERSE parameter order (the last parameter takes r31, the previous r30: `mr r31,r4;
-    /// mr r30,r3`), runs the leading bare calls, then before each trailing call re-materializes its
+    /// `void f(int a){ g(); h(a); }` / `void f(int a,int b,int c){ g(); h(a,b,c); }` — one to three
+    /// word parameters live across a leading run of bare calls, then passed to a run of trailing
+    /// calls. mwcc stashes each surviving parameter in a callee-saved home, interleaved into the
+    /// prologue in REVERSE parameter order (the last parameter takes r31, then r30, then r29:
+    /// `mr r31,r5; mr r30,r4; mr r29,r3`), runs the leading bare calls, then before each trailing
+    /// call re-materializes its
     /// arguments from the homes (`mr r3,r30; mr r4,r31`) — every trailing call is preceded by a
     /// call that clobbered the argument registers, so the re-materialization always occurs.
     /// Measured: one to three leading bare calls; each trailing call passes each surviving parameter
@@ -855,7 +856,7 @@ impl Generator {
             || !function.locals.is_empty()
             || !self.frame_slots.is_empty()
             || function.parameters.is_empty()
-            || function.parameters.len() > 2
+            || function.parameters.len() > 3
         {
             return Ok(false);
         }
@@ -886,7 +887,7 @@ impl Generator {
                 return None;
             }
             let mut slots = Vec::with_capacity(arguments.len());
-            let mut seen = [false; 2];
+            let mut seen = [false; 3];
             for (position, argument) in arguments.iter().enumerate() {
                 let register = 3 + position as u8;
                 match argument {
@@ -913,7 +914,7 @@ impl Generator {
             return Ok(false);
         }
         let mut trailing = Vec::with_capacity(calls.len() - leading_count);
-        let mut used = [false; 2];
+        let mut used = [false; 3];
         for (name, arguments) in &calls[leading_count..] {
             match decode(arguments) {
                 Some(slots) => {
