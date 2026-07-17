@@ -28,6 +28,14 @@ impl Generator {
     /// (`-sdata 0`) the address is materialized with a `lis`/`addi` pair (see
     /// [`Self::emit_global_load_absolute`]). The load is chosen by the global's type.
     pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
+        // A FUNCTION name in value position (a callback argument — `reg(cb, 5)`) is
+        // its ADDRESS: an ADDR16 lis/addi pair whose halves mwcc interleaves with the
+        // surrounding schedule (measured: the lis in the argument run, the addi AFTER
+        // the prologue's LR store). That interleave is the scheduler's — defer
+        // precisely rather than report an unknown variable.
+        if !self.globals.contains_key(name) && self.call_return_types.contains_key(name) {
+            return Err(Diagnostic::error("a function name as a value (callback address) needs the address-materialization schedule (roadmap)"));
+        }
         self.emit_global_load_value(name, destination)?;
         // A signed `char` global promotes to int with a trailing sign-extension:
         // `lbz` zero-extends the byte, so the value must be re-signed (`extsb`). In a
