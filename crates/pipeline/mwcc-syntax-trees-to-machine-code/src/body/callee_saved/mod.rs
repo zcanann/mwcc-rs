@@ -998,9 +998,15 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // The call is void no-arg (argument materialization around the crossing
-        // load is unmeasured); the store writes the local back to a word global.
-        if !arguments.is_empty()
+        // The call takes up to THREE small-constant int arguments (their `li`s
+        // ride the prologue's latency slots — measured: two after the mflr, the
+        // third after the LR store); the store writes the local back to a word
+        // global.
+        if arguments.len() > 3
+            || !arguments.iter().all(|argument| {
+                matches!(argument, Expression::IntegerLiteral(value)
+                    if (i16::MIN as i64..=i16::MAX as i64).contains(value))
+            })
             || stored != &local.name
             || self.locations.contains_key(target_global)
             || !matches!(self.globals.get(target_global.as_str()), Some(Type::Int | Type::UnsignedInt))
@@ -1010,6 +1016,13 @@ impl Generator {
         }
         let callee = callee.clone();
         let target_global = target_global.clone();
+        let constants: Vec<i16> = arguments
+            .iter()
+            .map(|argument| match argument {
+                Expression::IntegerLiteral(value) => *value as i16,
+                _ => unreachable!(),
+            })
+            .collect();
 
         let home = self.fresh_virtual_general();
         let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
@@ -1017,7 +1030,23 @@ impl Generator {
         self.frame_size = plan.frame_size;
         self.callee_saved = vec![home];
         self.epilogue_lr_before_gprs = true;
-        self.output.instructions.extend(plan.prologue());
+        if constants.is_empty() {
+            self.output.instructions.extend(plan.prologue());
+        } else {
+            // The measured prologue interleave: `stwu; mflr; li r3 [; li r4];
+            // stw r0; [li r5;] stw r31` — the argument materializations fill the
+            // mflr and LR-store latency slots.
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -plan.frame_size });
+            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            for (index, &value) in constants.iter().enumerate().take(2) {
+                self.output.instructions.push(Instruction::AddImmediate { d: 3 + index as u8, a: 0, immediate: value });
+            }
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
+            for (index, &value) in constants.iter().enumerate().skip(2) {
+                self.output.instructions.push(Instruction::AddImmediate { d: 3 + index as u8, a: 0, immediate: value });
+            }
+            self.output.instructions.push(Instruction::StoreWord { s: home, a: 1, offset: plan.frame_size - 4 });
+        }
         self.emit_global_load(&source_global, home)?;
         self.emit_call(&callee, &[], None, false)?;
         self.emit_global_store(&target_global, Pointee::Int, home)?;
