@@ -2485,26 +2485,33 @@ impl Generator {
         {
             return Ok(false);
         }
-        // The body: one direct call, bare or passing the counter (measured:
-        // `mr r3,r31` at the body head, ahead of the bl).
-        let [Statement::Expression(Expression::Call { name: callee, arguments })] = body.as_slice() else {
+        // The body: a run of one to three direct calls, each bare or passing
+        // the counter (measured: consecutive bl's; a counter argument is one
+        // `mr r3,<home>` immediately ahead of its bl).
+        if body.is_empty() || body.len() > 3 {
             return Ok(false);
-        };
-        let passes_counter = match arguments.as_slice() {
-            [] => false,
-            [Expression::Variable(variable)] if variable == &counter.name => true,
-            _ => return Ok(false),
-        };
-        if self.locations.contains_key(callee.as_str())
-            || self.globals.contains_key(callee.as_str())
-            || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
-        {
-            return Ok(false);
+        }
+        let mut body_calls = Vec::with_capacity(body.len());
+        for statement in body {
+            let Statement::Expression(Expression::Call { name: callee, arguments }) = statement else {
+                return Ok(false);
+            };
+            let passes_counter = match arguments.as_slice() {
+                [] => false,
+                [Expression::Variable(variable)] if variable == &counter.name => true,
+                _ => return Ok(false),
+            };
+            if self.locations.contains_key(callee.as_str())
+                || self.globals.contains_key(callee.as_str())
+                || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+            {
+                return Ok(false);
+            }
+            body_calls.push((callee.clone(), passes_counter));
         }
         if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
             return Ok(false);
         }
-        let callee = callee.clone();
 
         let counter_home = self.fresh_virtual_general();
         let bound_home = self.fresh_virtual_general();
@@ -2524,10 +2531,12 @@ impl Generator {
         let loop_body = self.fresh_label();
         self.emit_branch_to(test);
         self.bind_label(loop_body);
-        if passes_counter {
-            self.output.instructions.push(Instruction::Or { a: 3, s: counter_home, b: counter_home });
+        for (callee, passes_counter) in &body_calls {
+            if *passes_counter {
+                self.output.instructions.push(Instruction::Or { a: 3, s: counter_home, b: counter_home });
+            }
+            self.emit_call(callee, &[], None, false)?;
         }
-        self.emit_call(&callee, &[], None, false)?;
         self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: counter_home, immediate: 1 });
         self.bind_label(test);
         self.output.instructions.push(Instruction::CompareWord { a: counter_home, b: bound_home });
