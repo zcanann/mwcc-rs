@@ -2545,4 +2545,67 @@ impl Generator {
         Ok(true)
     }
 
+    /// A global-flag while loop over a bare call (`while (gFlag) h();`):
+    /// measured @2.6/1.3.2 — the plain non-leaf prologue (nothing crosses in a
+    /// register; the flag RELOADS each iteration), the top entry jump to the
+    /// bottom test, `bl` body, `lwz r0,@flag (SDA); cmpwi; bne` test, canonical
+    /// epilogue.
+    pub(crate) fn try_flag_while_loop(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || !function.parameters.is_empty()
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // The condition: a bare small word global (the SDA reload form).
+        let Expression::Variable(flag) = condition else {
+            return Ok(false);
+        };
+        if self.locations.contains_key(flag.as_str())
+            || !matches!(self.globals.get(flag.as_str()), Some(Type::Int | Type::UnsignedInt))
+            || self.global_array_sizes.contains_key(flag.as_str())
+        {
+            return Ok(false);
+        }
+        let [Statement::Expression(Expression::Call { name: callee, arguments })] = body.as_slice() else {
+            return Ok(false);
+        };
+        if !arguments.is_empty()
+            || self.locations.contains_key(callee.as_str())
+            || self.globals.contains_key(callee.as_str())
+            || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+        {
+            return Ok(false);
+        }
+        let flag = flag.clone();
+        let callee = callee.clone();
+
+        self.non_leaf = true;
+        let plan = mwcc_vreg::FramePlan::sized_for(Vec::new());
+        self.frame_size = plan.frame_size;
+        // The while loop's internal labels advance the @N counter by 4
+        // (measured: extab @9/@10 vs the unbumped @5/@6).
+        self.output.anonymous_label_bump += 4;
+        self.output.instructions.extend(plan.prologue());
+        let test = self.fresh_label();
+        let loop_body = self.fresh_label();
+        self.emit_branch_to(test);
+        self.bind_label(loop_body);
+        self.emit_call(&callee, &[], None, false)?;
+        self.bind_label(test);
+        self.record_relocation(RelocationKind::EmbSda21, &flag);
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.emit_branch_conditional_to(4, 2, loop_body); // bne
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
 }

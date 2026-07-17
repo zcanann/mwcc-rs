@@ -1636,6 +1636,11 @@ impl Generator {
         if self.try_dynamic_call_loop(function)? {
             return Ok(());
         }
+        // A global-flag while loop over a bare call: the flag reloads each
+        // iteration (no register crossing).
+        if self.try_flag_while_loop(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and
