@@ -90,6 +90,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                         MachineTarget::External(symbol) => RelocationTarget::External(symbol.clone()),
                         MachineTarget::ExternalWithAddend(symbol, addend) => RelocationTarget::ExternalWithAddend(symbol.clone(), *addend),
                         MachineTarget::Constant(index) => RelocationTarget::Constant(*index),
+                        MachineTarget::ConstantWithAddend(index, addend) => RelocationTarget::ConstantWithAddend(*index, *addend),
                         MachineTarget::JumpTable => RelocationTarget::JumpTable,
                         MachineTarget::JumpTableAt(table_index) => RelocationTarget::JumpTableAt(*table_index),
                         MachineTarget::AnonymousRodata => RelocationTarget::AnonymousRodata,

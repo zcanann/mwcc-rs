@@ -36,7 +36,7 @@ impl Generator {
         let Some(image) = local.data_bytes.as_ref() else {
             return Ok(false);
         };
-        if !matches!(local.declared_type, Type::Struct { .. }) || !matches!(image.len(), 4 | 12) {
+        if !matches!(local.declared_type, Type::Struct { .. }) || !matches!(image.len(), 4 | 8 | 12 | 16) {
             return Ok(false);
         }
         let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
@@ -66,12 +66,35 @@ impl Generator {
             self.load_word_constant_static_slot(0, bits);
             self.output.post_constant_label_bump += 1;
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        } else if image.len() == 8 {
+            // ONE 8-byte SDA pool object read as two words (measured: a single
+            // .sdata2 @4 of 8 bytes): `addi r3; lwz r4,@4(0); lwz r0,@4+4(0);
+            // stw r4,8(r1); stw r0,12(r1); bl` — same static-slot @N algebra.
+            let bits = u64::from_be_bytes([image[0], image[1], image[2], image[3], image[4], image[5], image[6], image[7]]);
+            self.frame_size = 16;
+            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
+            let constant = self.output.intern_constant_static_slot(bits, 8);
+            self.record_target(RelocationKind::EmbSda21, mwcc_machine_code::RelocationTarget::Constant(constant));
+            self.output.instructions.push(Instruction::LoadWord { d: 4, a: 0, offset: 0 });
+            self.record_target(RelocationKind::EmbSda21, mwcc_machine_code::RelocationTarget::ConstantWithAddend(constant, 4));
+            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
+            self.output.post_constant_label_bump += 1;
+            self.output.instructions.push(Instruction::StoreWord { s: 4, a: 1, offset: 8 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 12 });
         } else {
-            // The 12-byte image (`Vec v = {0,0,1.0f};`): an anonymous data blob
+            // The 12/16-byte image (`Vec v = {0,0,1.0f};`): an anonymous data blob
             // addressed ABSOLUTELY, its `lis` interleaved INTO the prologue between
-            // `mflr` and the LR store; the three copy loads batch before the three
-            // stores (r5/r4/r0 — the last-load-gets-r0 numbering), the `&v` argument's
-            // addi threaded after the base addi (measured on 1.3.2/2.6).
+            // `mflr` and the LR store; the copy loads batch before the stores with
+            // descending registers ending at r0 (12B: r5/r4/r0 off base r6 — 16B:
+            // r6/r5/r4/r0 off base r7; base = r3+words, r4 reused as a copy reg),
+            // the `&v` argument's addi threaded after the base addi (measured).
+            let words = image.len() / 4;
+            let base = 3 + words as u8;
+            let mut copy_registers: Vec<u8> = (4..3 + words as u8).rev().collect();
+            copy_registers.push(0);
             self.frame_size = 32;
             // The blob numbers at counter-1, like a static local (@4 with the pool
             // block at @5 — the strtold-table precedent); the same one-label gap
@@ -85,14 +108,14 @@ impl Generator {
             self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
             self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
             self.record_target(RelocationKind::Addr16Lo, mwcc_machine_code::RelocationTarget::AnonymousRodataAt(blob));
-            self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 4, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate { d: base, a: 4, immediate: 0 });
             self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
-            self.output.instructions.push(Instruction::LoadWord { d: 5, a: 6, offset: 0 });
-            self.output.instructions.push(Instruction::LoadWord { d: 4, a: 6, offset: 4 });
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 6, offset: 8 });
-            self.output.instructions.push(Instruction::StoreWord { s: 5, a: 1, offset: 8 });
-            self.output.instructions.push(Instruction::StoreWord { s: 4, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 16 });
+            for (index, &register) in copy_registers.iter().enumerate() {
+                self.output.instructions.push(Instruction::LoadWord { d: register, a: base, offset: index as i16 * 4 });
+            }
+            for (index, &register) in copy_registers.iter().enumerate() {
+                self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset: 8 + index as i16 * 4 });
+            }
         }
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });

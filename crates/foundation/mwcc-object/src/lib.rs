@@ -201,6 +201,8 @@ pub enum RelocationTarget {
     ExternalWithAddend(String, i32),
     /// An entry in this object's constant pool, by index.
     Constant(usize),
+    /// A constant-pool entry plus a byte ADDEND (the second word of an 8-byte image).
+    ConstantWithAddend(usize, i32),
     /// This function's own jump table (the anonymous `@N` object in `.data`).
     JumpTable,
     /// The i-th of this function's `.rodata` blobs.

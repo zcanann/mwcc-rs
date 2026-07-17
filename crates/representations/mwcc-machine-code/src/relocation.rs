@@ -55,6 +55,9 @@ pub enum RelocationTarget {
     /// pooled string (`lbz r0, @53+0x4` — strtold's NUL probe of "NAN(").
     ExternalWithAddend(String, i32),
     Constant(usize),
+    /// A constant-pool entry plus a byte ADDEND — the second word of an 8-byte
+    /// struct image (`lwz r0, @4+0x4`).
+    ConstantWithAddend(usize, i32),
     /// This function's own jump table — the anonymous `@N` object the writer
     /// materializes in `.data` for a dense `switch` (its `lis`/`addi` address load).
     /// Refers to the FIRST table; a function with several uses `JumpTableAt`.

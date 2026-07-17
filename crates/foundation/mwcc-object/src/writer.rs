@@ -357,7 +357,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         let mut offsets = Vec::new();
         for constant in &function.constants {
             let fresh_slot = |sdata2: &mut Vec<u8>| {
-                let alignment = constant.byte_width as usize;
+                // An 8-byte STATIC-SLOT entry is a struct IMAGE (two floats/ints):
+                // it aligns 4, unlike a genuine double constant (align 8).
+                let alignment = if constant.byte_width == 8 && constant.static_slot { 4 } else { constant.byte_width as usize };
                 while sdata2.len() % alignment != 0 {
                     sdata2.push(0);
                 }
@@ -1034,7 +1036,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     symbols.push(symbol);
                     let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
                     write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
-                    comment_values.push((constant.byte_width as u32, 0));
+                    comment_values.push((if constant.byte_width == 8 && constant.static_slot { 4 } else { constant.byte_width as u32 }, 0));
                 }
             }
         }
@@ -1446,6 +1448,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         .unwrap_or_else(|| &global_symbols[name.as_str()])
                 }
                 RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
+                RelocationTarget::ConstantWithAddend(constant_index, addend) => {
+                    rela_addend = *addend as u32;
+                    constant_symbols[index][*constant_index]
+                }
                 RelocationTarget::JumpTable => jump_table_symbols[index][0],
                 RelocationTarget::JumpTableAt(table_index) => jump_table_symbols[index][*table_index],
                 RelocationTarget::AnonymousRodata => rodata_blob_symbols[index][0],
