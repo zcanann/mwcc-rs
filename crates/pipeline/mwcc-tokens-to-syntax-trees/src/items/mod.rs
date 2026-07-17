@@ -2404,8 +2404,23 @@ impl Parser {
                         Some(self.parse_integer_constant()? as u16)
                     };
                     self.expect(Token::BracketClose)?;
-                    if *self.peek() == Token::BracketOpen {
-                        return Err(Diagnostic::error("a multi-dimensional local array is not supported yet (roadmap)"));
+                    // Further dimensions FLATTEN row-major into one frame slot of the
+                    // product size — exactly the array-typedef local's representation
+                    // (`Mtx m;` = `f32 m[12]`, proven byte-exact); `float m[3][4];` is
+                    // the same object declared directly. Element access still defers in
+                    // codegen; an initializer on a flattened array is unmeasured.
+                    let mut explicit = explicit;
+                    while *self.peek() == Token::BracketOpen {
+                        self.advance();
+                        let extra = self.parse_integer_constant()? as u16;
+                        self.expect(Token::BracketClose)?;
+                        match explicit {
+                            Some(length) => explicit = Some(length.saturating_mul(extra)),
+                            None => return Err(Diagnostic::error("a multi-dimensional local array needs explicit dimensions (roadmap)")),
+                        }
+                        if *self.peek() == Token::Equals {
+                            return Err(Diagnostic::error("a multi-dimensional local array initializer is not supported yet (roadmap)"));
+                        }
                     }
                     if *self.peek() == Token::Equals {
                         // An AUTOMATIC initialized array parses like the static
