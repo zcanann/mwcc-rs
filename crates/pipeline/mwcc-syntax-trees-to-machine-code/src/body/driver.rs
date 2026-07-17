@@ -2023,6 +2023,10 @@ impl Generator {
             if self.try_callee_saved_call_sequence_combine(function)? {
                 return Ok(());
             }
+            // `void f(int a){ g(); h(a); }` — one param live across leading bare calls, then passed.
+            if self.try_callee_saved_param_across_calls(function)? {
+                return Ok(());
+            }
             // `h(g(), p)` — a live parameter passed alongside a nested call that produces another arg.
             if self.try_callee_saved_nested_call_arg(function)? {
                 return Ok(());

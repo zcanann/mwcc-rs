@@ -835,6 +835,79 @@ impl Generator {
         Ok(true)
     }
 
+    /// `void f(int a){ g(); h(a); }` — a single word parameter that is live across one or more
+    /// leading bare calls and then passed as the SOLE argument to a final call. mwcc stashes the
+    /// parameter in a callee-saved home (`mr r31,r3`, interleaved into the prologue), runs the
+    /// leading bare calls, then materializes it into the argument register before the final call
+    /// (`mr r3,r31`). This is the fundamental "parameter survives a call" crossing (executor-style
+    /// C++ runners aside — those add a loop). One to three leading bare calls are measured; the
+    /// param passed at a non-zero position or alongside constant arguments defers (a different
+    /// argument schedule), as does any leading call that itself references the parameter.
+    pub(crate) fn try_callee_saved_param_across_calls(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || function.return_expression.is_some()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || !self.frame_slots.is_empty()
+            || function.parameters.len() != 1
+        {
+            return Ok(false);
+        }
+        let parameter = &function.parameters[0];
+        if !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        // Two to four call statements: the final one passes the parameter as its sole argument,
+        // every earlier one is a bare call that does not reference the parameter.
+        if function.statements.len() < 2 || function.statements.len() > 4 {
+            return Ok(false);
+        }
+        let (final_statement, leading) = function.statements.split_last().unwrap();
+        let references_parameter = |expression: &Expression| expression_reads_name(expression, &parameter.name);
+        for statement in leading {
+            match statement {
+                Statement::Expression(Expression::Call { arguments, .. })
+                    if arguments.is_empty() => {}
+                _ => return Ok(false),
+            }
+        }
+        let Statement::Expression(Expression::Call { name: final_name, arguments: final_arguments }) = final_statement else {
+            return Ok(false);
+        };
+        if final_arguments.len() != 1
+            || !matches!(&final_arguments[0], Expression::Variable(name) if *name == parameter.name)
+        {
+            return Ok(false);
+        }
+        // Sanity: the parameter arrives in a general register (r3).
+        match self.locations.get(&parameter.name) {
+            Some(location) if location.class == ValueClass::General => {}
+            _ => return Ok(false),
+        }
+        let incoming = self.locations[&parameter.name].register;
+
+        // A 16-byte frame saving the link register and r31; the `mr r31,r3` stash is interleaved
+        // into the prologue (measured: `stwu; mflr; stw r0,20; stw r31,12; mr r31,r3`).
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let home = self.fresh_virtual_general();
+        self.callee_saved = vec![home];
+        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
+        self.output.instructions.extend(plan.prologue_interleaved(&[incoming]));
+        // The parameter now lives in its callee-saved home; the leading calls run bare, then the
+        // final call marshals it (`mr r3,r31`) from there.
+        if let Some(location) = self.locations.get_mut(&parameter.name) {
+            location.register = home;
+        }
+        for statement in leading {
+            let Statement::Expression(Expression::Call { name, arguments }) = statement else { unreachable!() };
+            self.emit_call(name, arguments, None, false)?;
+        }
+        self.emit_call(final_name, final_arguments, None, false)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// `h(g(), p)` — an outer call whose FIRST argument is a nested (argument-free) call and whose
     /// SECOND argument is the single parameter, which must survive the nested call. mwcc saves the
     /// parameter in r31 (`mr r31,p`), runs the nested call (its result lands in r3 = the outer call's
