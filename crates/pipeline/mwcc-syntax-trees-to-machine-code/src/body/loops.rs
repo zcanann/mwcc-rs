@@ -2485,12 +2485,17 @@ impl Generator {
         {
             return Ok(false);
         }
-        // The body: one bare direct call.
+        // The body: one direct call, bare or passing the counter (measured:
+        // `mr r3,r31` at the body head, ahead of the bl).
         let [Statement::Expression(Expression::Call { name: callee, arguments })] = body.as_slice() else {
             return Ok(false);
         };
-        if !arguments.is_empty()
-            || self.locations.contains_key(callee.as_str())
+        let passes_counter = match arguments.as_slice() {
+            [] => false,
+            [Expression::Variable(variable)] if variable == &counter.name => true,
+            _ => return Ok(false),
+        };
+        if self.locations.contains_key(callee.as_str())
             || self.globals.contains_key(callee.as_str())
             || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
         {
@@ -2519,6 +2524,9 @@ impl Generator {
         let loop_body = self.fresh_label();
         self.emit_branch_to(test);
         self.bind_label(loop_body);
+        if passes_counter {
+            self.output.instructions.push(Instruction::Or { a: 3, s: counter_home, b: counter_home });
+        }
         self.emit_call(&callee, &[], None, false)?;
         self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: counter_home, immediate: 1 });
         self.bind_label(test);
