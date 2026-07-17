@@ -201,6 +201,7 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         call_return_types: call_return_types.clone(),
         fixed_address_arrays: fixed_address_arrays.iter().map(|(name, (address, element))| (name.clone(), (*address as u32, *element))).collect(),
         frame_row_bytes: function.locals.iter().filter_map(|local| local.row_bytes.map(|row| (local.name.clone(), row))).collect(),
+        descending_allocation_top: None,
         skipped_inline_names: skipped_inline_names.clone(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
@@ -323,13 +324,25 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
             interval.prefer = Some(prefer);
         }
     }
-    let allocation = mwcc_vreg::Allocator::allocate(
-        &mwcc_vreg::LinearScan,
-        &liveness.intervals,
-        &liveness.pinned,
-        &liveness.calls,
-        &generator.constraints,
-    )
+    // PASS-ARC STEP 2: a whole-body fill that emitted its values as virtuals
+    // selects the DESCENDING policy (the measured store-fill assignment);
+    // everything else keeps lowest-free LinearScan.
+    let allocation = match generator.descending_allocation_top {
+        Some(top) => mwcc_vreg::Allocator::allocate(
+            &mwcc_vreg::DescendingScan { top },
+            &liveness.intervals,
+            &liveness.pinned,
+            &liveness.calls,
+            &generator.constraints,
+        ),
+        None => mwcc_vreg::Allocator::allocate(
+            &mwcc_vreg::LinearScan,
+            &liveness.intervals,
+            &liveness.pinned,
+            &liveness.calls,
+            &generator.constraints,
+        ),
+    }
         .map_err(|error| mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}")))?;
     mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
     // FRAME-METADATA CONSISTENCY: every callee-saved register the allocation used

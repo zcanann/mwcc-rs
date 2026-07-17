@@ -166,6 +166,10 @@ pub(crate) struct Generator {
     /// Row byte-strides of flattened multi-dimensional FRAME arrays (`float m[3][4]`
     /// -> 16): `m[k]` in value position is the ROW ADDRESS `slot + k*stride`.
     pub(crate) frame_row_bytes: HashMap<String, u16>,
+    /// PASS-ARC STEP 2: when a whole-body fill emitted its values as virtuals, the
+    /// DESCENDING allocation window's top register (r(N+2) for an N-store fill).
+    /// `None` keeps the default LinearScan policy.
+    pub(crate) descending_allocation_top: Option<u8>,
     /// Skipped inline definitions' names — a body calling one defers after
     /// the exact-match templates decline (mwcc inlines; a bl would be wrong).
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
