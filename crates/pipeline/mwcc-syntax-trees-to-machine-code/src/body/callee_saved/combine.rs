@@ -874,11 +874,32 @@ impl Generator {
         let Statement::Expression(Expression::Call { name: final_name, arguments: final_arguments }) = final_statement else {
             return Ok(false);
         };
-        if final_arguments.len() != 1
-            || !matches!(&final_arguments[0], Expression::Variable(name) if *name == parameter.name)
-        {
+        // The final call passes the parameter exactly once (at any position) and, optionally,
+        // small integer constants in the other positions (their `li`s follow the parameter's
+        // `mr`, in ascending position order — measured). Anything else (a second variable, a
+        // global, an out-of-range literal, at most 8 args) defers.
+        if final_arguments.is_empty() || final_arguments.len() > 8 {
             return Ok(false);
         }
+        let mut parameter_position = None;
+        let mut constants: Vec<(u8, i16)> = Vec::new();
+        for (position, argument) in final_arguments.iter().enumerate() {
+            match argument {
+                Expression::Variable(name) if *name == parameter.name => {
+                    if parameter_position.is_some() {
+                        return Ok(false); // the parameter passed twice is a different (duplicating) shape
+                    }
+                    parameter_position = Some(3 + position as u8);
+                }
+                Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                    constants.push((3 + position as u8, *value as i16));
+                }
+                _ => return Ok(false),
+            }
+        }
+        let Some(parameter_register) = parameter_position else {
+            return Ok(false);
+        };
         // Sanity: the parameter arrives in a general register (r3).
         match self.locations.get(&parameter.name) {
             Some(location) if location.class == ValueClass::General => {}
@@ -903,7 +924,15 @@ impl Generator {
             let Statement::Expression(Expression::Call { name, arguments }) = statement else { unreachable!() };
             self.emit_call(name, arguments, None, false)?;
         }
-        self.emit_call(final_name, final_arguments, None, false)?;
+        // The final call's arguments: the saved parameter is marshaled FIRST (`mr rPos,r31`),
+        // then the constants materialize in ascending position order (`li`) — the measured
+        // schedule. `constants` is already in position order. A direct `bl` follows.
+        self.output.instructions.push(Instruction::move_register(parameter_register, home));
+        for &(register, value) in &constants {
+            self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
+        }
+        self.record_relocation(RelocationKind::Rel24, final_name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: final_name.clone() });
         self.emit_epilogue_and_return();
         Ok(true)
     }
