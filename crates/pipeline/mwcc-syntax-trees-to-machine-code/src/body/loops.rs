@@ -2508,8 +2508,9 @@ impl Generator {
         enum BodyStep {
             Call(String, bool),
             StoreCounter(String),
-            /// `if (gFlag) h();` — the flag reloads, a forward beq skips the call.
-            GuardedCall(String, String),
+            /// `if (gFlag) h(); [else k();]` — the flag reloads, a forward beq
+            /// routes to the else (or past the call); a then-side `b` joins.
+            GuardedCall(String, String, Option<String>),
         }
         if body.is_empty() || body.len() > 3 {
             return Ok(false);
@@ -2547,19 +2548,31 @@ impl Generator {
                     let [Statement::Expression(Expression::Call { name: callee, arguments })] = then_body.as_slice() else {
                         return Ok(false);
                     };
-                    if !else_body.is_empty()
-                        || !arguments.is_empty()
+                    let bare_call_ok = |generator: &Self, name: &str| {
+                        !generator.locations.contains_key(name)
+                            && !generator.globals.contains_key(name)
+                            && !matches!(generator.call_return_types.get(name), Some(Type::Float | Type::Double))
+                    };
+                    let else_callee = match else_body.as_slice() {
+                        [] => None,
+                        [Statement::Expression(Expression::Call { name: else_name, arguments: else_arguments })] => {
+                            if !else_arguments.is_empty() || !bare_call_ok(self, else_name) {
+                                return Ok(false);
+                            }
+                            Some(else_name.clone())
+                        }
+                        _ => return Ok(false),
+                    };
+                    if !arguments.is_empty()
                         || self.locations.contains_key(flag.as_str())
                         || !matches!(self.globals.get(flag.as_str()), Some(Type::Int | Type::UnsignedInt))
                         || self.global_array_sizes.contains_key(flag.as_str())
-                        || self.locations.contains_key(callee.as_str())
-                        || self.globals.contains_key(callee.as_str())
-                        || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+                        || !bare_call_ok(self, callee)
                     {
                         return Ok(false);
                     }
                     call_count += 1;
-                    body_steps.push(BodyStep::GuardedCall(flag.clone(), callee.clone()));
+                    body_steps.push(BodyStep::GuardedCall(flag.clone(), callee.clone(), else_callee));
                 }
                 _ => return Ok(false),
             }
@@ -2571,7 +2584,17 @@ impl Generator {
         // two alike), a guarded call = flat 7, a pure call body = 0. The
         // store+guard MIX is unmeasured — defer rather than guess the counter.
         let has_store = body_steps.iter().any(|step| matches!(step, BodyStep::StoreCounter(_)));
-        let has_guard = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(..)));
+        let has_guard = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(_, _, None)));
+        let has_diamond = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(_, _, Some(_))));
+        if has_diamond && (has_store || has_guard || body_steps.len() > 1) {
+            // Only the LONE if/else body's label count is measured.
+            return Err(Diagnostic::error(
+                "a loop body mixing an if/else with other steps needs its label count measured (roadmap)",
+            ));
+        }
+        if has_diamond {
+            self.output.anonymous_label_bump += 8;
+        }
         match (has_store, has_guard) {
             (true, true) => {
                 return Err(Diagnostic::error(
@@ -2616,14 +2639,22 @@ impl Generator {
                     self.record_relocation(RelocationKind::EmbSda21, global);
                     self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 0, offset: 0 });
                 }
-                BodyStep::GuardedCall(flag, callee) => {
-                    let skip = self.fresh_label();
+                BodyStep::GuardedCall(flag, callee, else_callee) => {
+                    let after_then = self.fresh_label();
                     self.record_relocation(RelocationKind::EmbSda21, flag);
                     self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
                     self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
-                    self.emit_branch_conditional_to(12, 2, skip); // beq
+                    self.emit_branch_conditional_to(12, 2, after_then); // beq
                     self.emit_call(callee, &[], None, false)?;
-                    self.bind_label(skip);
+                    if let Some(else_callee) = else_callee {
+                        let join = self.fresh_label();
+                        self.emit_branch_to(join);
+                        self.bind_label(after_then);
+                        self.emit_call(else_callee, &[], None, false)?;
+                        self.bind_label(join);
+                    } else {
+                        self.bind_label(after_then);
+                    }
                 }
             }
         }
