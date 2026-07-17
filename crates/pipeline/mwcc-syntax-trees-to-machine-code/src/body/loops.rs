@@ -146,13 +146,20 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // `i = 0` … `i < N` … `i++` (parsed as `i = i + 1`).
-        if !matches!(initializer, Expression::Assign { target, value }
-            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
-                && matches!(value.as_ref(), Expression::IntegerLiteral(0)))
-        {
-            return Ok(false);
-        }
+        // `i = K` … `i < N` … `i++` (parsed as `i = i + 1`). K must be statically
+        // below the bound (the dropped pre-test is only valid when the first
+        // iteration is certain; a never-running loop is eliminated differently).
+        let start = match initializer {
+            Expression::Assign { target, value }
+                if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name) =>
+            {
+                match value.as_ref() {
+                    Expression::IntegerLiteral(start) if *start >= 0 && *start <= i16::MAX as i64 => *start,
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        };
         let bound = match condition {
             Expression::Binary { operator: BinaryOperator::Less, left, right }
                 if matches!(left.as_ref(), Expression::Variable(name) if name == &counter.name) =>
@@ -176,10 +183,16 @@ impl Generator {
         let [Statement::Expression(Expression::Call { name, arguments })] = body.as_slice() else {
             return Ok(false);
         };
-        if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(variable) if variable == &counter.name) {
+        let passes_counter = match arguments.as_slice() {
+            [] => false,
+            [Expression::Variable(variable)] if variable == &counter.name => true,
+            _ => return Ok(false),
+        };
+        if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
             return Ok(false);
         }
-        if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+        // The dropped pre-test requires the first iteration to be statically certain.
+        if start >= bound {
             return Ok(false);
         }
 
@@ -191,9 +204,11 @@ impl Generator {
         // (measured: extab @10/@11 vs the unbumped @5/@6).
         self.output.anonymous_label_bump = 5;
         self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![home]).prologue());
-        self.output.instructions.push(Instruction::AddImmediate { d: home, a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: home, a: 0, immediate: start as i16 });
         let loop_top = self.output.instructions.len();
-        self.output.instructions.push(Instruction::Or { a: 3, s: home, b: home });
+        if passes_counter {
+            self.output.instructions.push(Instruction::Or { a: 3, s: home, b: home });
+        }
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
         self.output.instructions.push(Instruction::AddImmediate { d: home, a: home, immediate: 1 });
