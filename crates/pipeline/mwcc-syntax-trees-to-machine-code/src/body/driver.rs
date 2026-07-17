@@ -1059,6 +1059,10 @@ impl Generator {
         if self.try_struct_image_init_call(function)? {
             return Ok(());
         }
+        // Constant member stores into a small struct local, then its address to one call.
+        if self.try_struct_member_stores_call(function)? {
+            return Ok(());
+        }
         if self.try_frame_resident(function)? {
             return Ok(());
         }

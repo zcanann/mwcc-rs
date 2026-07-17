@@ -123,6 +123,100 @@ impl Generator {
         Ok(true)
     }
 
+    /// One or two CONSTANT member stores into an uninitialized small struct local,
+    /// then its address passed to ONE call — `GXColor c; c.r = 5; g(&c);`. mwcc
+    /// schedules every materialization greedy-early: with ONE store the argument's
+    /// addi fills the li's latency slot (`li r0,5; addi r3,r1,8; stb r0,8(r1)`);
+    /// with TWO the first li takes r3 and hoists INTO the prologue (between mflr
+    /// and the LR store), the first store consumes it, and r3 is then recycled for
+    /// the argument (`li r3,K0; [stw LR]; li r0,K1; stb r3; addi r3,r1,8; stb r0`).
+    /// Measured on 1.3.2/2.6 for a 4-byte struct; anything wider/deeper defers.
+    pub(crate) fn try_struct_member_stores_call(&mut self, function: &Function) -> Compilation<bool> {
+        if !function.guards.is_empty() || function.return_type != Type::Void || function.return_expression.is_some() {
+            return Ok(false);
+        }
+        if !function.parameters.is_empty() {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if local.is_static || local.array_length.is_some() || local.initializer.is_some() || local.data_bytes.is_some() {
+            return Ok(false);
+        }
+        if !matches!(local.declared_type, Type::Struct { size, .. } if size <= 4) {
+            return Ok(false);
+        }
+        let (stores, call) = match function.statements.as_slice() {
+            [store0 @ Statement::Store { .. }, call] => (vec![store0], call),
+            [store0 @ Statement::Store { .. }, store1 @ Statement::Store { .. }, call] => (vec![store0, store1], call),
+            _ => return Ok(false),
+        };
+        let Statement::Expression(Expression::Call { name, arguments }) = call else {
+            return Ok(false);
+        };
+        let [Expression::AddressOf { operand }] = arguments.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(operand.as_ref(), Expression::Variable(variable) if variable == &local.name) {
+            return Ok(false);
+        }
+        if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+            return Ok(false);
+        }
+        // Each store: a constant into a member of the local, by member width.
+        let mut planned: Vec<(i16, u8, i16)> = Vec::new(); // (slot offset, width bits, value)
+        for statement in &stores {
+            let Statement::Store {
+                target: Expression::Member { base, offset, member_type, index_stride: None },
+                value: Expression::IntegerLiteral(value),
+            } = statement
+            else {
+                return Ok(false);
+            };
+            if !matches!(base.as_ref(), Expression::Variable(variable) if variable == &local.name) {
+                return Ok(false);
+            }
+            if *value < i16::MIN as i64 || *value > i16::MAX as i64 {
+                return Ok(false);
+            }
+            planned.push((8 + *offset as i16, member_type.width(), *value as i16));
+        }
+        let store_of = |width: u8, source: u8, offset: i16| -> Compilation<Instruction> {
+            Ok(match width {
+                8 => Instruction::StoreByte { s: source, a: 1, offset },
+                16 => Instruction::StoreHalfword { s: source, a: 1, offset },
+                32 => Instruction::StoreWord { s: source, a: 1, offset },
+                _ => return Err(Diagnostic::error("an unsupported member width in a struct-local store (roadmap)")),
+            })
+        };
+
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        if planned.len() == 1 {
+            let (offset, width, value) = planned[0];
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: value });
+            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
+            self.output.instructions.push(store_of(width, 0, offset)?);
+        } else {
+            let (offset0, width0, value0) = planned[0];
+            let (offset1, width1, value1) = planned[1];
+            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: value0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: value1 });
+            self.output.instructions.push(store_of(width0, 3, offset0)?);
+            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
+            self.output.instructions.push(store_of(width1, 0, offset1)?);
+        }
+        self.record_relocation(RelocationKind::Rel24, name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// If the function takes the address of any variable, lower it with a stack
     /// frame: lay out a slot per address-taken parameter/local, spill the
     /// parameters in the prologue, and run the body against those slots. Returns
