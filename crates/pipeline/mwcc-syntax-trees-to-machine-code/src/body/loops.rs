@@ -117,6 +117,100 @@ impl Generator {
         Ok(true)
     }
 
+    /// A `void` function whose whole body is a counted call loop —
+    /// `for (i = 0; i < N; i++) g(i);`. The counter lives in the r31 home (it
+    /// crosses the call); the loop is bottom-tested (`0 < N` is statically true, so
+    /// mwcc drops the pre-test): `li r31,0; loop: mr r3,r31; bl g; addi r31,r31,1;
+    /// cmpwi r31,N; blt loop`, then the LR-first epilogue. Measured at 1.3.2/2.6.
+    /// A non-zero start, a non-literal bound, a step other than +1, extra
+    /// arguments, or any other body defers.
+    pub(crate) fn try_counted_call_loop(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() {
+            return Ok(false);
+        }
+        if !function.parameters.is_empty() {
+            return Ok(false);
+        }
+        // The counter: one int local, uninitialized at declaration (`int i;`).
+        let [counter] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if counter.is_static || counter.array_length.is_some() || counter.initializer.is_some() || counter.data_bytes.is_some() {
+            return Ok(false);
+        }
+        if !matches!(counter.declared_type, Type::Int | Type::UnsignedInt) {
+            return Ok(false);
+        }
+        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
+            function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        // `i = 0` … `i < N` … `i++` (parsed as `i = i + 1`).
+        if !matches!(initializer, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::IntegerLiteral(0)))
+        {
+            return Ok(false);
+        }
+        let bound = match condition {
+            Expression::Binary { operator: BinaryOperator::Less, left, right }
+                if matches!(left.as_ref(), Expression::Variable(name) if name == &counter.name) =>
+            {
+                match right.as_ref() {
+                    Expression::IntegerLiteral(bound) if *bound > 0 && *bound <= i16::MAX as i64 => *bound,
+                    _ => return Ok(false),
+                }
+            }
+            _ => return Ok(false),
+        };
+        if !matches!(step, Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(name) if name == &counter.name)
+                && matches!(value.as_ref(), Expression::Binary { operator: BinaryOperator::Add, left, right }
+                    if matches!(left.as_ref(), Expression::Variable(other) if other == &counter.name)
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(1))))
+        {
+            return Ok(false);
+        }
+        // The body: one direct call whose single argument is the counter.
+        let [Statement::Expression(Expression::Call { name, arguments })] = body.as_slice() else {
+            return Ok(false);
+        };
+        if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(variable) if variable == &counter.name) {
+            return Ok(false);
+        }
+        if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+            return Ok(false);
+        }
+
+        self.non_leaf = true;
+        self.frame_size = 16;
+        let home = self.fresh_virtual_general();
+        self.callee_saved = vec![home];
+        // The counted loop's internal labels advance the anonymous-@N counter by 5
+        // (measured: extab @10/@11 vs the unbumped @5/@6).
+        self.output.anonymous_label_bump = 5;
+        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![home]).prologue());
+        self.output.instructions.push(Instruction::AddImmediate { d: home, a: 0, immediate: 0 });
+        let loop_top = self.output.instructions.len();
+        self.output.instructions.push(Instruction::Or { a: 3, s: home, b: home });
+        self.record_relocation(RelocationKind::Rel24, name);
+        self.output.instructions.push(Instruction::BranchAndLink { target: name.to_string() });
+        self.output.instructions.push(Instruction::AddImmediate { d: home, a: home, immediate: 1 });
+        self.output.instructions.push(Instruction::CompareWordImmediate { a: home, immediate: bound as i16 });
+        // `blt loop` — BO 12 (branch-if-true), BI 0 (cr0 LT); backward target.
+        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 0, target: loop_top });
+        // The loop's backward branch makes the LR-reload hoist bail, so the epilogue
+        // is emitted in final order: LR reload FIRST, then the home (measured — the
+        // same order as the do-while counter shape).
+        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
+        self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 });
+        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// A leaf `void` function whose whole body is an EMPTY-body busy-wait on one
     /// fixed-address array element — the hardware-register poll (`while (__EXIRegs[13] & 1);`,
     /// DebuggerDriver/EXI/SI/DSP spin loops). mwcc materializes the ELEMENT address once
