@@ -772,6 +772,50 @@ impl Generator {
         // base-addressed aggregate store is present and the function has two-plus stores of any kind —
         // a lone store, all-offset-0 small-struct fields (direct SDA21), a pointer's members, and scalar
         // globals (no base register) stay byte-exact.
+        // TWO int-literal member stores into ONE small SDA struct global
+        // (`gs.a = 1; gs.b = 2;`): mwcc materializes greedy-early — both values
+        // (first -> r4, second -> r0), then the shared base (r3), then the stores:
+        // the offset-0 store FOLDS its SDA21, the second goes through the base
+        // (measured: li r4,1; li r0,2; li r3,@gs; stw r4,@gs(0); stw r0,4(r3)).
+        if let [Statement::Store { target: target0, value: Expression::IntegerLiteral(value0) }, Statement::Store { target: target1, value: Expression::IntegerLiteral(value1) }] =
+            function.statements.as_slice()
+        {
+            let word_member = |generator: &Self, target: &Expression| -> Option<(String, u16, u32)> {
+                let Expression::Member { base, offset, member_type, index_stride: None } = target else { return None };
+                let Expression::Variable(name) = base.as_ref() else { return None };
+                if generator.locations.contains_key(name.as_str()) {
+                    return None;
+                }
+                let Some(Type::Struct { size, .. }) = generator.globals.get(name.as_str()).copied() else { return None };
+                if !matches!(member_type, Type::Int | Type::UnsignedInt) {
+                    return None;
+                }
+                Some((name.clone(), *offset, size as u32))
+            };
+            if function.return_type == Type::Void
+                && function.return_expression.is_none()
+                && function.guards.is_empty()
+                && function.locals.is_empty()
+                && self.frame_slots.is_empty()
+                && !function_makes_call(function)
+                && self.behavior.global_addressing == GlobalAddressing::SmallData
+                && (i16::MIN as i64..=i16::MAX as i64).contains(value0)
+                && (i16::MIN as i64..=i16::MAX as i64).contains(value1)
+            {
+                if let (Some((name0, 0, size)), Some((name1, offset1, _))) = (word_member(self, target0), word_member(self, target1)) {
+                    if name0 == name1 && offset1 != 0 && size <= 8 {
+                        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *value0 as i16 });
+                        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *value1 as i16 });
+                        self.emit_global_array_base(&name0, size, 3)?;
+                        self.record_relocation(RelocationKind::EmbSda21, &name0);
+                        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 0, offset: 0 });
+                        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: offset1 as i16 });
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
+                }
+            }
+        }
         {
             let mut total_store_count = 0u32;
             let mut has_base_addressed_aggregate_store = false;
