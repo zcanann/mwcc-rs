@@ -634,6 +634,7 @@ fn accumulate_immediate(operator: AccumulatorOp, dst: u8, left: u8, constant: i6
 /// instruction (`srwi`/`srawi`, `divwu`/`divw`, `cmplw`/`cmpw`).
 fn used_in_sign_sensitive_op(expression: &Expression, names: &std::collections::HashSet<&str>) -> bool {
     match expression {
+        Expression::CompoundLiteral { .. } => false,
         Expression::CallThrough { .. } => true, // conservative: an indirect call blocks folds
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative: block folds through a postfix step
@@ -680,6 +681,7 @@ fn has_additive_chain(expression: &Expression) -> bool {
         matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, .. })
     }
     match expression {
+        Expression::CompoundLiteral { .. } => false,
         Expression::CallThrough { .. } => true, // conservative
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative
@@ -710,6 +712,7 @@ fn is_leaf_value(expression: &Expression) -> bool {
 /// Count references to the variable `name` within `expression`.
 fn count_references(name: &str, expression: &Expression) -> usize {
     match expression {
+        Expression::CompoundLiteral { .. } => 0,
         Expression::CallThrough { target, arguments } => {
             count_references(name, target) + arguments.iter().map(|argument| count_references(name, argument)).sum::<usize>()
         }
@@ -738,6 +741,7 @@ fn count_references(name: &str, expression: &Expression) -> usize {
 /// recursively. Names not in `values` (parameters, globals) are left untouched.
 pub(crate) fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> Expression {
     match expression {
+        Expression::CompoundLiteral { .. } => expression.clone(),
         // Never substitute through an indirect call (its target is a live load).
         other @ Expression::CallThrough { .. } => other.clone(),
         other @ Expression::AggregateLiteral(_) => other.clone(),

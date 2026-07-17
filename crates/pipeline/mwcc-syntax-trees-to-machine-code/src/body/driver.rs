@@ -2647,6 +2647,7 @@ impl Generator {
         fn feeds_an_addition(name: &str, expression: &Expression) -> bool {
             let is_local = |operand: &Expression| matches!(operand, Expression::Variable(variable) if variable == name);
             match expression {
+                Expression::CompoundLiteral { .. } => false,
                 Expression::CallThrough { target, arguments } => {
                     feeds_an_addition(name, target)
                         || arguments.iter().any(|argument| feeds_an_addition(name, argument))

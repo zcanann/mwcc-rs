@@ -513,6 +513,21 @@ impl Parser {
                         target_type = mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Pointer);
                     }
                     self.expect(Token::ParenClose)?;
+                    // A COMPOUND LITERAL `(GXColor){ 0, 0, 0xE2, 0x58 }` — a brace
+                    // list after a struct-typed cast: serialize the constant image at
+                    // parse time (the layout lives here). A relocated element defers.
+                    if *self.peek() == Token::BraceOpen {
+                        if let (mwcc_syntax_trees::Type::Struct { .. }, Some(tag)) = (target_type, self.last_struct_tag.clone()) {
+                            let mut relocations = Vec::new();
+                            let bytes = self.parse_one_struct_relocated(&tag, 0, &mut relocations)?;
+                            if !relocations.is_empty() {
+                                return Err(Diagnostic::error("a relocated compound literal is not supported yet (roadmap)"));
+                            }
+                            self.last_struct_tag = None;
+                            return Ok(Expression::CompoundLiteral { struct_tag: tag, bytes });
+                        }
+                        return Err(Diagnostic::error("a non-struct compound literal is not supported yet (roadmap)"));
+                    }
                     // Capture the cast's struct tag before parsing the operand (which may
                     // itself run `parse_type` and overwrite `last_struct_tag`).
                     if matches!(target_type, mwcc_syntax_trees::Type::StructPointer { .. }) {

@@ -150,6 +150,10 @@ impl Generator {
             return Err(Diagnostic::error("a commutative op with a constant-shift left operand orders operands differently (roadmap)"));
         }
         match expression {
+            // A compound-literal VALUE needs the frame-temporary + copy schedule.
+            Expression::CompoundLiteral { .. } => Err(Diagnostic::error(
+                "a compound-literal argument needs the frame-temporary schedule (roadmap)",
+            )),
             Expression::CallThrough { .. } => Err(Diagnostic::error(
                 "an indirect call through a member function pointer is not supported here (captures only)",
             )),

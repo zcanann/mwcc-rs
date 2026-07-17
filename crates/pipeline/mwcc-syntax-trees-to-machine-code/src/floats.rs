@@ -12,6 +12,9 @@ impl Generator {
     /// Evaluate a float expression into float register `destination`.
     pub(crate) fn evaluate_float(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
         match expression {
+            Expression::CompoundLiteral { .. } => Err(Diagnostic::error(
+                "a compound-literal argument needs the frame-temporary schedule (roadmap)",
+            )),
             Expression::CallThrough { .. } => Err(Diagnostic::error(
                 "an indirect call through a member function pointer is not supported here (captures only)",
             )),

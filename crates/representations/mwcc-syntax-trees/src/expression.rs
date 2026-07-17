@@ -16,6 +16,13 @@ pub enum Expression {
     /// A braced aggregate initializer on a LOCAL (`decimal d = { 0, 0, { 0, "" } }`)
     /// — parsed for AST fidelity (the capture hash); general codegen defers on it.
     AggregateLiteral(Vec<Expression>),
+    /// A compound literal `(GXColor){ 0, 0, 0xE2, 0x58 }` — an anonymous struct
+    /// value whose constant image was serialized at parse time (the layout lives
+    /// in the parser). Codegen defers it pending the frame-temporary schedule.
+    CompoundLiteral {
+        struct_tag: String,
+        bytes: Vec<u8>,
+    },
     Binary {
         operator: BinaryOperator,
         left: Box<Expression>,

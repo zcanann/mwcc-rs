@@ -1443,6 +1443,7 @@ fn walk_statement(statement: &Statement, names: &mut HashSet<String>) {
 /// Record `&variable` occurrences within `expression`.
 fn walk(expression: &Expression, names: &mut HashSet<String>) {
     match expression {
+        Expression::CompoundLiteral { .. } => {}
         Expression::CallThrough { target, arguments } => {
             walk(target, names);
             for argument in arguments {

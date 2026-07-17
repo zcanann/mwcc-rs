@@ -479,6 +479,8 @@ impl Generator {
     /// operand is unsigned.
     pub(crate) fn signedness_of(&self, expression: &Expression) -> Compilation<bool> {
         match expression {
+            // A compound literal is a struct value — never a shift operand; treat signed.
+            Expression::CompoundLiteral { .. } => Ok(true),
             // An indirect call's return type is unknown — signed by default,
             // like an unprototyped direct call.
             Expression::CallThrough { .. } => Ok(true),
