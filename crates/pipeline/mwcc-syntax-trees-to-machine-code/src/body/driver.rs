@@ -830,7 +830,9 @@ impl Generator {
             // The SMALL (SDA) 3-store form: values r5/r4 lead, the base li r3 lands
             // THIRD (no migration), the last value r0; the offset-0 store folds
             // (measured mixed-width: li r5; li r4; li r3,@gm; li r0; stw r5,@gm(0);
-            // sth r4,4(r3); stb r0,6(r3)).
+            // sth r4,4(r3); stb r0,6(r3)). The values are VIRTUALS: the physical
+            // base li pins r3 through the stores, so the DESCENDING policy (window
+            // top r5) derives r5/r4 and spills the last value to scratch r0.
             if all_fit
                 && count == 3
                 && plan.iter().all(|(name, _, size, _, _)| name == &plan[0].0 && *size <= 8)
@@ -838,14 +840,16 @@ impl Generator {
                 && plan.windows(2).all(|pair| pair[0].1 < pair[1].1)
             {
                 let name = plan[0].0.clone();
-                self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 0, immediate: plan[0].3 });
-                self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: plan[1].3 });
+                self.descending_allocation_top = Some(count as u8 + 2);
+                let value_virtuals: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
+                self.output.instructions.push(Instruction::AddImmediate { d: value_virtuals[0], a: 0, immediate: plan[0].3 });
+                self.output.instructions.push(Instruction::AddImmediate { d: value_virtuals[1], a: 0, immediate: plan[1].3 });
                 self.emit_global_array_base(&name, plan[0].2, 3)?;
-                self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: plan[2].3 });
+                self.output.instructions.push(Instruction::AddImmediate { d: value_virtuals[2], a: 0, immediate: plan[2].3 });
                 self.record_relocation(RelocationKind::EmbSda21, &name);
-                self.output.instructions.push(store_by_width(plan[0].4, 5, 0, 0));
-                self.output.instructions.push(store_by_width(plan[1].4, 4, 3, plan[1].1 as i16));
-                self.output.instructions.push(store_by_width(plan[2].4, 0, 3, plan[2].1 as i16));
+                self.output.instructions.push(store_by_width(plan[0].4, value_virtuals[0], 0, 0));
+                self.output.instructions.push(store_by_width(plan[1].4, value_virtuals[1], 3, plan[1].1 as i16));
+                self.output.instructions.push(store_by_width(plan[2].4, value_virtuals[2], 3, plan[2].1 as i16));
                 self.emit_epilogue_and_return();
                 return Ok(());
             }
@@ -916,25 +920,29 @@ impl Generator {
                     // forms the base (li r4,v0; lis r3; stwu r4,@lo(r3); li r0; stw).
                     if name0 == name1 && offset0 != offset1 && size > 8 {
                         if offset0 == 0 {
-                            self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *value0 as i16 });
+                            let first = self.fresh_virtual_general_preferring(4);
+                            let second = self.fresh_virtual_general_preferring(0);
+                            self.output.instructions.push(Instruction::AddImmediate { d: first, a: 0, immediate: *value0 as i16 });
                             self.record_relocation(RelocationKind::Addr16Ha, &name0);
                             self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
                             self.record_relocation(RelocationKind::Addr16Lo, &name0);
-                            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 4, a: 3, offset: 0 });
-                            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *value1 as i16 });
-                            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: offset1 as i16 });
+                            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: first, a: 3, offset: 0 });
+                            self.output.instructions.push(Instruction::AddImmediate { d: second, a: 0, immediate: *value1 as i16 });
+                            self.output.instructions.push(Instruction::StoreWord { s: second, a: 3, offset: offset1 as i16 });
                         } else if offset1 == 0 {
                             // The offset-0 store SECOND is unmeasured — defer.
                             return Err(Diagnostic::error("a large-struct store pair ending at offset 0 is not supported yet (roadmap)"));
                         } else {
+                            let first = self.fresh_virtual_general_preferring(4);
+                            let second = self.fresh_virtual_general_preferring(0);
                             self.record_relocation(RelocationKind::Addr16Ha, &name0);
                             self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
-                            self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *value0 as i16 });
+                            self.output.instructions.push(Instruction::AddImmediate { d: first, a: 0, immediate: *value0 as i16 });
                             self.record_relocation(RelocationKind::Addr16Lo, &name0);
                             self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
-                            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *value1 as i16 });
-                            self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: offset0 as i16 });
-                            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: offset1 as i16 });
+                            self.output.instructions.push(Instruction::AddImmediate { d: second, a: 0, immediate: *value1 as i16 });
+                            self.output.instructions.push(Instruction::StoreWord { s: first, a: 3, offset: offset0 as i16 });
+                            self.output.instructions.push(Instruction::StoreWord { s: second, a: 3, offset: offset1 as i16 });
                         }
                         self.emit_epilogue_and_return();
                         return Ok(());
@@ -944,7 +952,9 @@ impl Generator {
                     // order (measured both source orders); one member must sit at
                     // offset 0 (its store folds), distinct members only.
                     if name0 == name1 && offset0 != offset1 && (offset0 == 0 || offset1 == 0) && size <= 8 {
-                        let mut ordered = [(offset0, *value0 as i16, 4u8), (offset1, *value1 as i16, 0u8)];
+                        let first = self.fresh_virtual_general_preferring(4);
+                        let second = self.fresh_virtual_general_preferring(0);
+                        let mut ordered = [(offset0, *value0 as i16, first), (offset1, *value1 as i16, second)];
                         ordered.sort_by_key(|&(offset, _, _)| offset);
                         for &(_, value, register) in &ordered {
                             self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
