@@ -341,30 +341,40 @@ fn depends_on(earlier: &Instruction, later: &Instruction) -> bool {
 fn latency_rank(instruction: &Instruction) -> u8 {
     use Instruction::*;
     match instruction {
-        DivideWord { .. } | DivideWordUnsigned { .. } | FloatDivideSingle { .. } => 3,
+        DivideWord { .. } | DivideWordUnsigned { .. } | FloatDivideSingle { .. }
+        | FloatDivideDouble { .. } => 3,
+        // The DOUBLE multiply family ranks with its single cousins: measured in
+        // the float-table class (canary 1052), a leading `fmul` keeps the run's
+        // head against a latency-chain lis, and a program-order `fmadd` keeps its
+        // place against a later `fmul` — same rank, program order breaks ties.
         MultiplyLow { .. } | MultiplyImmediate { .. } | FloatMultiplySingle { .. }
         | FloatMultiplyAddSingle { .. } | FloatMultiplySubtractSingle { .. }
-        | FloatNegativeMultiplySubtractSingle { .. } => 2,
+        | FloatNegativeMultiplySubtractSingle { .. } | FloatMultiplyDouble { .. }
+        | FloatMultiplyAddDouble { .. } | FloatMultiplySubtractDouble { .. }
+        | FloatNegativeMultiplySubtractDouble { .. } => 2,
         _ => 1,
     }
-}
-
-/// Among the ready instructions (original indices into the run), choose the one
-/// to issue next: the highest latency rank, breaking ties by the lowest original
-/// index (so equal-rank instructions keep program order, and the policy is a
-/// no-op for runs with no long-latency op to hoist).
-fn pick_ready(ready: &[usize], instructions: &[Instruction]) -> usize {
-    ready
-        .iter()
-        .copied()
-        .max_by_key(|&index| (latency_rank(&instructions[index]), std::cmp::Reverse(index)))
-        .unwrap()
 }
 
 /// List-schedule one run of schedulable instructions, given by their original
 /// indices. Returns the original indices in scheduled order.
 fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
     let count = run.len();
+    // An address-formation `lis` (`a == 0`) whose dependent `addi` sits in the
+    // same run heads a latency chain: mwcc issues it at the run's head, ahead of
+    // independent single-cycle materializations (measured: `reg(5, cb)` hoists
+    // `lis r4,cb@ha` above `li r3,5`). Rank it with the long-latency ops. A `lis`
+    // whose consumer is a barrier (the `stwu @lo` fold) is NOT boosted — mwcc
+    // keeps the fold's value `li` ahead of it.
+    let heads_latency_chain: Vec<bool> = (0..count)
+        .map(|k| {
+            matches!(instructions[run[k]], Instruction::AddImmediateShifted { a: 0, .. })
+                && (k + 1..count).any(|later| {
+                    matches!(instructions[run[later]], Instruction::AddImmediate { .. })
+                        && depends_on(&instructions[run[k]], &instructions[run[later]])
+                })
+        })
+        .collect();
     // predecessors[k] = how many earlier-in-run instructions instruction run[k]
     // still depends on; successors[k] = the run-local indices that depend on it.
     let mut remaining_predecessors = vec![0usize; count];
@@ -381,13 +391,15 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
     let mut scheduled = Vec::with_capacity(count);
     let mut placed = vec![false; count];
     while scheduled.len() < count {
-        let ready: Vec<usize> = (0..count)
+        // Among the ready instructions: the highest latency rank first (a
+        // latency-chain-head `lis` counts as rank 2), ties in program order.
+        let chosen = (0..count)
             .filter(|&k| !placed[k] && remaining_predecessors[k] == 0)
-            .collect();
-        // `pick_ready` works in original indices; map the run-local ready set.
-        let ready_original: Vec<usize> = ready.iter().map(|&k| run[k]).collect();
-        let chosen_original = pick_ready(&ready_original, instructions);
-        let chosen = run.iter().position(|&original| original == chosen_original).unwrap();
+            .max_by_key(|&k| {
+                let rank = latency_rank(&instructions[run[k]]).max(if heads_latency_chain[k] { 2 } else { 1 });
+                (rank, std::cmp::Reverse(run[k]))
+            })
+            .unwrap();
 
         placed[chosen] = true;
         scheduled.push(run[chosen]);
@@ -506,6 +518,40 @@ mod tests {
         ];
         let before = stream.clone();
         assert_eq!(fill_address_latency_slots(&mut stream), vec![0, 1, 2, 3, 4]);
+        assert_eq!(stream, before);
+    }
+
+    #[test]
+    fn a_lis_heading_a_latency_chain_issues_at_the_run_head() {
+        // `reg(5, cb)` natural order: `li r3,5; lis r4; addi r4,r4` — the lis has
+        // a dependent addi in the run, so it issues first (measured).
+        let mut stream = vec![
+            Instruction::AddImmediate { d: 3, a: 0, immediate: 5 },
+            Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 4, immediate: 0 },
+            Instruction::BranchAndLink { target: String::from("reg") },
+        ];
+        let permutation = schedule(&mut stream);
+        assert_eq!(
+            stream,
+            vec![
+                Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 },
+                Instruction::AddImmediate { d: 3, a: 0, immediate: 5 },
+                Instruction::AddImmediate { d: 4, a: 4, immediate: 0 },
+                Instruction::BranchAndLink { target: String::from("reg") },
+            ]
+        );
+        assert_eq!(permutation, vec![1, 0, 2, 3]);
+
+        // A lis whose consumer is a barrier (the `stwu @lo` fold), NOT an in-run
+        // addi: no boost — the fold keeps its value `li` ahead of the lis.
+        let mut stream = vec![
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 7 },
+            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
+            Instruction::StoreWordWithUpdate { s: 4, a: 3, offset: 0 },
+        ];
+        let before = stream.clone();
+        assert_eq!(schedule(&mut stream), vec![0, 1, 2]);
         assert_eq!(stream, before);
     }
 

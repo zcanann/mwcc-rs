@@ -29,12 +29,17 @@ impl Generator {
     /// [`Self::emit_global_load_absolute`]). The load is chosen by the global's type.
     pub(crate) fn emit_global_load(&mut self, name: &str, destination: u8) -> Compilation<()> {
         // A FUNCTION name in value position (a callback argument — `reg(cb, 5)`) is
-        // its ADDRESS: an ADDR16 lis/addi pair whose halves mwcc interleaves with the
-        // surrounding schedule (measured: the lis in the argument run, the addi AFTER
-        // the prologue's LR store). That interleave is the scheduler's — defer
-        // precisely rather than report an unknown variable.
+        // its ADDRESS: an ADDR16 lis/addi pair against the function symbol (text
+        // symbols are never small-data, so this bypasses the SDA path). Selection
+        // emits the NATURAL pair; the measured interleave — the lis in the argument
+        // run ahead of the prologue's LR store, the addi after it — is the
+        // save-scheduler's (the lis is an `a == 0` load-immediate form it hoists).
         if !self.globals.contains_key(name) && self.call_return_types.contains_key(name) {
-            return Err(Diagnostic::error("a function name as a value (callback address) needs the address-materialization schedule (roadmap)"));
+            self.record_relocation(RelocationKind::Addr16Ha, name);
+            self.output.instructions.push(Instruction::AddImmediateShifted { d: destination, a: 0, immediate: 0 });
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: 0 });
+            return Ok(());
         }
         self.emit_global_load_value(name, destination)?;
         // A signed `char` global promotes to int with a trailing sign-extension:
