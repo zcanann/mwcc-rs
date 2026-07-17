@@ -366,10 +366,15 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
 /// scheduler's identity policy this is a no-op; it becomes active as the policy
 /// is tuned against the oracle.
 fn schedule_instructions(generator: &mut Generator) {
-    let permutation = if generator.output.pre_scheduled {
+    let permutation: Vec<usize> = if generator.output.pre_scheduled {
         (0..generator.output.instructions.len()).collect()
     } else {
-        mwcc_vreg::schedule(&mut generator.output.instructions)
+        // The `lis -> addi` latency-slot fill runs first (mwcc issues a ready
+        // `li` into the stall slot), then the list scheduler; the relocation
+        // remap composes the two permutations (old -> filled -> scheduled).
+        let slot_fill = mwcc_vreg::fill_address_latency_slots(&mut generator.output.instructions);
+        let list = mwcc_vreg::schedule(&mut generator.output.instructions);
+        slot_fill.into_iter().map(|filled| list[filled]).collect()
     };
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];

@@ -151,6 +151,66 @@ pub fn coalesce_self_moves(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     permutation
 }
 
+/// Fill the `lis -> addi` address-formation latency slot with the first later
+/// independent load-immediate, as mwcc's scheduler does: a dependent `addi`
+/// issued in the very next slot stalls on the `lis` result, so mwcc issues one
+/// ready `li` between them instead (measured across the store-fill corpus:
+/// `lis r3; li v0; addi base,r3; li v1; ...` from the natural `lis; addi; li...`
+/// order). Runs on the VIRTUAL stream, before allocation, so liveness and the
+/// allocator see the slot-filled order. Straight-line functions only — a
+/// reorder would invalidate branch-target indices (the fire-657 constraint).
+/// Returns the old->new index permutation for relocation remap.
+pub fn fill_address_latency_slots(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+    let mut permutation: Vec<usize> = (0..instructions.len()).collect();
+    if has_forward_branch(instructions) {
+        return permutation;
+    }
+    let mut index = 0;
+    while index + 1 < instructions.len() {
+        // The @ha/@lo pair: a `lis` immediately followed by an `addi` that reads it.
+        let stalls = matches!(instructions[index], Instruction::AddImmediateShifted { .. })
+            && matches!(instructions[index + 1], Instruction::AddImmediate { .. })
+            && depends_on(&instructions[index], &instructions[index + 1]);
+        if !stalls {
+            index += 1;
+            continue;
+        }
+        // The candidate fill is the FIRST load-immediate (`li`, i.e. `addi rD,0,…`)
+        // before the next barrier — mwcc fills the single stall slot with the one
+        // ready instruction; anything past the first belongs after the addi.
+        let mut fill = None;
+        let mut cursor = index + 2;
+        while cursor < instructions.len() && !is_barrier(&instructions[cursor]) {
+            if matches!(instructions[cursor], Instruction::AddImmediate { a: 0, .. }) {
+                let independent = (index + 1..cursor).all(|between| {
+                    !depends_on(&instructions[between], &instructions[cursor])
+                        && !depends_on(&instructions[cursor], &instructions[between])
+                });
+                if independent {
+                    fill = Some(cursor);
+                }
+                break;
+            }
+            cursor += 1;
+        }
+        let Some(fill) = fill else {
+            index += 2;
+            continue;
+        };
+        let moved = instructions.remove(fill);
+        instructions.insert(index + 1, moved);
+        for slot in &mut permutation {
+            if *slot == fill {
+                *slot = index + 1;
+            } else if (index + 1..fill).contains(slot) {
+                *slot += 1;
+            }
+        }
+        index += 3; // past the lis, the fill, and the addi
+    }
+    permutation
+}
+
 /// Schedule a non-leaf function's link-register save (`stw r0,20(r1)`) past the
 /// leading argument materializations of its first call. mwcc fills the `mflr`->save
 /// latency gap with up to two ready instructions, so `stwu; mflr r0; li r3,…; stw
@@ -381,6 +441,73 @@ pub fn schedule(instructions: &mut Vec<Instruction>) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lis_addi_latency_slot_takes_the_first_independent_li() {
+        // Natural order `lis; addi; li v0; li v1` — the addi stalls on the lis,
+        // so the first li moves into the slot: `lis; li v0; addi; li v1`.
+        let mut stream = vec![
+            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },  // 0: lis r3,@ha
+            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },         // 1: addi r4,r3,@lo (stalls)
+            Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },         // 2: li v0 (the fill)
+            Instruction::AddImmediate { d: 6, a: 0, immediate: 9 },         // 3: li v1 (stays)
+            Instruction::StoreWord { s: 5, a: 4, offset: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+        let permutation = fill_address_latency_slots(&mut stream);
+        assert_eq!(
+            stream,
+            vec![
+                Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
+                Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },
+                Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
+                Instruction::AddImmediate { d: 6, a: 0, immediate: 9 },
+                Instruction::StoreWord { s: 5, a: 4, offset: 0 },
+                Instruction::BranchToLinkRegister,
+            ]
+        );
+        // The addi (old 1) slides to 2; the fill (old 2) lands at 1.
+        assert_eq!(permutation, vec![0, 2, 1, 3, 4, 5]);
+    }
+
+    #[test]
+    fn the_slot_fill_leaves_dependent_or_absent_candidates_alone() {
+        // The only later li DEFINES the register the addi already wrote (WAW with
+        // the crossed addi) — moving it would reorder the writes, so no fill.
+        let mut stream = vec![
+            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 7 },
+            Instruction::BranchToLinkRegister,
+        ];
+        let before = stream.clone();
+        assert_eq!(fill_address_latency_slots(&mut stream), vec![0, 1, 2, 3]);
+        assert_eq!(stream, before);
+
+        // A barrier (store) before any li: nothing to fill with.
+        let mut stream = vec![
+            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
+            Instruction::StoreWord { s: 4, a: 3, offset: 0 },
+            Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },
+            Instruction::BranchToLinkRegister,
+        ];
+        let before = stream.clone();
+        assert_eq!(fill_address_latency_slots(&mut stream), vec![0, 1, 2, 3, 4]);
+        assert_eq!(stream, before);
+
+        // A forward branch anywhere: the whole function is left untouched.
+        let mut stream = vec![
+            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
+            Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 0, target: 4 },
+            Instruction::BranchToLinkRegister,
+        ];
+        let before = stream.clone();
+        assert_eq!(fill_address_latency_slots(&mut stream), vec![0, 1, 2, 3, 4]);
+        assert_eq!(stream, before);
+    }
 
     #[test]
     fn an_independent_multiply_is_hoisted_ahead_of_a_cheap_op() {

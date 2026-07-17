@@ -859,20 +859,21 @@ impl Generator {
                 && plan.windows(2).all(|pair| pair[0].1 < pair[1].1)
             {
                 let name = plan[0].0.clone();
-                // PASS-ARC STEP 2: the values and the base are VIRTUALS; the
-                // DESCENDING policy (window top r(N+2)) derives the measured
-                // assignment — v0 at the top, the base next, values descending
-                // with r3 recycled after the addi, the last value in r0 — from
-                // liveness alone (fires 851-856; policy landed fire 867).
+                // PASS-ARC STEPS 2+3: emitted in NATURAL order (address pair, then
+                // the values); the latency-slot fill moves the first `li` into the
+                // lis->addi stall slot, and the DESCENDING policy (window top
+                // r(N+2)) then derives the measured assignment — v0 at the top,
+                // the base next, values descending with r3 recycled, the last
+                // value in r0 — schedule and registers both from the pass
+                // (fires 851-856; policies landed fires 867-870).
                 self.descending_allocation_top = Some(count as u8 + 2);
                 let value_virtuals: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
                 let base = self.fresh_virtual_general();
                 self.record_relocation(RelocationKind::Addr16Ha, &name);
                 self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
-                self.output.instructions.push(Instruction::AddImmediate { d: value_virtuals[0], a: 0, immediate: plan[0].3 });
                 self.record_relocation(RelocationKind::Addr16Lo, &name);
                 self.output.instructions.push(Instruction::AddImmediate { d: base, a: 3, immediate: 0 });
-                for index in 1..count {
+                for index in 0..count {
                     self.output.instructions.push(Instruction::AddImmediate { d: value_virtuals[index], a: 0, immediate: plan[index].3 });
                 }
                 for index in 0..count {
