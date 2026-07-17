@@ -2435,49 +2435,30 @@ impl Parser {
                             if *self.peek() == Token::BraceClose {
                                 break;
                             }
-                            let mut negative = false;
-                            if self.eat_keyword(Token::Minus) {
-                                negative = true;
-                            }
-                            // An enumerator (or folded const-int global) element reads as
-                            // its integer value (`{ PAD_CHAN0_BIT, … }`).
-                            let element = match self.advance().clone() {
-                                Token::Identifier(word) => match self.enum_constants.get(&word) {
-                                    Some(&value) => Token::IntegerLiteral(value),
-                                    None => Token::Identifier(word),
-                                },
-                                other => other,
-                            };
-                            match (element, declared_type) {
-                                (Token::FloatLiteral(value), Type::Float) => {
-                                    let value = if negative { -value } else { value };
-                                    bytes.extend_from_slice(&(value as f32).to_be_bytes());
+                            // A float-literal element (optionally negated) keeps the direct
+                            // read; any other element is a CONSTANT EXPRESSION — enums,
+                            // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
+                            let is_float = matches!(self.peek(), Token::FloatLiteral(_))
+                                || (*self.peek() == Token::Minus && matches!(self.peek_at(1), Token::FloatLiteral(_)));
+                            if is_float {
+                                let negative = self.eat_keyword(Token::Minus);
+                                let Token::FloatLiteral(value) = self.advance().clone() else { unreachable!() };
+                                let value = if negative { -value } else { value };
+                                match declared_type {
+                                    Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
+                                    Type::Double => bytes.extend_from_slice(&value.to_be_bytes()),
+                                    _ => return Err(Diagnostic::error("a float element in an integer static array is not supported yet (roadmap)")),
                                 }
-                                (Token::FloatLiteral(value), Type::Double) => {
-                                    let value = if negative { -value } else { value };
-                                    bytes.extend_from_slice(&value.to_be_bytes());
+                            } else {
+                                let value = self.parse_integer_constant()?;
+                                match declared_type {
+                                    Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
+                                    Type::Double => bytes.extend_from_slice(&(value as f64).to_be_bytes()),
+                                    Type::Int | Type::UnsignedInt => bytes.extend_from_slice(&(value as i32).to_be_bytes()),
+                                    Type::Char | Type::UnsignedChar => bytes.push(value as u8),
+                                    Type::Short | Type::UnsignedShort => bytes.extend_from_slice(&(value as i16).to_be_bytes()),
+                                    _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
                                 }
-                                (Token::IntegerLiteral(value), Type::Float) => {
-                                    let value = if negative { -value } else { value };
-                                    bytes.extend_from_slice(&(value as f32).to_be_bytes());
-                                }
-                                (Token::IntegerLiteral(value), Type::Double) => {
-                                    let value = if negative { -value } else { value };
-                                    bytes.extend_from_slice(&(value as f64).to_be_bytes());
-                                }
-                                (Token::IntegerLiteral(value), Type::Int | Type::UnsignedInt) => {
-                                    let value = if negative { -value } else { value };
-                                    bytes.extend_from_slice(&(value as i32).to_be_bytes());
-                                }
-                                (Token::IntegerLiteral(value), Type::Char | Type::UnsignedChar) => {
-                                    let value = if negative { -value } else { value };
-                                    bytes.push(value as u8);
-                                }
-                                (Token::IntegerLiteral(value), Type::Short | Type::UnsignedShort) => {
-                                    let value = if negative { -value } else { value };
-                                    bytes.extend_from_slice(&(value as i16).to_be_bytes());
-                                }
-                                _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
                             }
                             count += 1;
                             if !self.eat_keyword(Token::Comma) {
