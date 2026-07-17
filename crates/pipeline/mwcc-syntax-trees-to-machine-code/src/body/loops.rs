@@ -2574,18 +2574,26 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Expression(Expression::Call { name: callee, arguments })] = body.as_slice() else {
-            return Ok(false);
-        };
-        if !arguments.is_empty()
-            || self.locations.contains_key(callee.as_str())
-            || self.globals.contains_key(callee.as_str())
-            || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
-        {
+        // The body: a run of one to three bare direct calls (measured:
+        // consecutive bl's, structure unchanged).
+        if body.is_empty() || body.len() > 3 {
             return Ok(false);
         }
+        let mut body_calls = Vec::with_capacity(body.len());
+        for statement in body {
+            let Statement::Expression(Expression::Call { name: callee, arguments }) = statement else {
+                return Ok(false);
+            };
+            if !arguments.is_empty()
+                || self.locations.contains_key(callee.as_str())
+                || self.globals.contains_key(callee.as_str())
+                || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+            {
+                return Ok(false);
+            }
+            body_calls.push(callee.clone());
+        }
         let flag = flag.clone();
-        let callee = callee.clone();
 
         self.non_leaf = true;
         let plan = mwcc_vreg::FramePlan::sized_for(Vec::new());
@@ -2598,7 +2606,9 @@ impl Generator {
         let loop_body = self.fresh_label();
         self.emit_branch_to(test);
         self.bind_label(loop_body);
-        self.emit_call(&callee, &[], None, false)?;
+        for callee in &body_calls {
+            self.emit_call(callee, &[], None, false)?;
+        }
         self.bind_label(test);
         self.record_relocation(RelocationKind::EmbSda21, &flag);
         self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
