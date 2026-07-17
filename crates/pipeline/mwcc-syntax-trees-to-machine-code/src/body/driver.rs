@@ -803,6 +803,36 @@ impl Generator {
                 && (i16::MIN as i64..=i16::MAX as i64).contains(value1)
             {
                 if let (Some((name0, offset0, size)), Some((name1, offset1, _))) = (word_member(self, target0), word_member(self, target1)) {
+                    // A LARGE (ADDR16) struct's pair: stores keep SOURCE order, the
+                    // value `li`s fill the lis/addi latency slots (measured both
+                    // orders: lis r3; li r4,v0; addi r3; li r0,v1; stw; stw). An
+                    // offset-0 first store instead FOLDS @lo into a `stwu` that also
+                    // forms the base (li r4,v0; lis r3; stwu r4,@lo(r3); li r0; stw).
+                    if name0 == name1 && offset0 != offset1 && size > 8 {
+                        if offset0 == 0 {
+                            self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *value0 as i16 });
+                            self.record_relocation(RelocationKind::Addr16Ha, &name0);
+                            self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
+                            self.record_relocation(RelocationKind::Addr16Lo, &name0);
+                            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 4, a: 3, offset: 0 });
+                            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *value1 as i16 });
+                            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: offset1 as i16 });
+                        } else if offset1 == 0 {
+                            // The offset-0 store SECOND is unmeasured — defer.
+                            return Err(Diagnostic::error("a large-struct store pair ending at offset 0 is not supported yet (roadmap)"));
+                        } else {
+                            self.record_relocation(RelocationKind::Addr16Ha, &name0);
+                            self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
+                            self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *value0 as i16 });
+                            self.record_relocation(RelocationKind::Addr16Lo, &name0);
+                            self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 0, immediate: *value1 as i16 });
+                            self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: offset0 as i16 });
+                            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: offset1 as i16 });
+                        }
+                        self.emit_epilogue_and_return();
+                        return Ok(());
+                    }
                     // Registers assign by SOURCE order (first store's value -> r4,
                     // second -> r0) while the lis and the stores both run in OFFSET
                     // order (measured both source orders); one member must sit at
