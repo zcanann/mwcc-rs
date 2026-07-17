@@ -1165,6 +1165,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 if let Some(&offset) = data_offsets.get(target) {
                     write_symbol(&mut symtab, strtab.add(target), offset, data_sizes[target], STB_GLOBAL_OBJECT, 0, index_of(data_section[target]) as u16);
                     comment_values.push((data_aligns[target], 0));
+                } else if let Some(function_index) = functions.iter().position(|function| !function.is_static && function.name == target) {
+                    // A unit FUNCTION address-taken by this object (a dispatch table
+                    // referencing functions defined later): mwcc hoists its GLOBAL
+                    // FUNC symbol to the data object's position — this reverse-slot,
+                    // first-seen loop reproduces the measured order (tbl, e3, e2, e1).
+                    // The per-function run below skips it via the global_symbols guard.
+                    let function = &functions[function_index];
+                    let binding = if function.is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
+                    function_symbols[function_index] = (symtab.len() / SYMBOL_SIZE) as u32;
+                    write_symbol(&mut symtab, strtab.add(function.name), function_offset[function_index], function_size[function_index], binding, 0, index_of(text_section) as u16);
+                    let flags = if function.is_weak {
+                        if function.weak_inline { 0x0d00_0000 } else { 0x0e00_0000 }
+                    } else {
+                        0
+                    };
+                    comment_values.push((4, flags | if function.force_active { FORCE_ACTIVE_FLAG } else { 0 }));
                 } else {
                     write_symbol(&mut symtab, strtab.add(target), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
                     comment_values.push((0, 0));

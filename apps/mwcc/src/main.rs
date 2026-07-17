@@ -396,27 +396,11 @@ fn compile(source: &str, source_name: &str, config: mwcc_versions::CompilerConfi
             // still defer.
             let all_null = global.array_length.is_none()
                 && elements.iter().all(|element| matches!(element, PointerElement::Null));
-            // LEAK GUARD (measured, pre-existing): a table whose Symbol element targets
-            // a unit function defined AFTER the table's declaration (a FORWARD
-            // reference) — mwcc pulls the address-taken function's symbol up to the
-            // data object's symtab position (measured `void (*tbl[])(void) = {e1,e2};`
-            // with e1/e2 defined below: real order is tbl, e2, e1 mid-table; ours
-            // keeps definition order — a whole-object DIFF). Exempt: a table declared
-            // after its callees (definition-ordered anyway; 13 support files BYTE),
-            // external targets (undef symbols), a SECTION override and the
-            // single-target/all-null forms (their placement machinery is proven —
-            // bfbb's `.dtors` reference among them). DEFER only the multi-element
-            // forward-referencing table until the interleave is modeled.
-            if global.section.is_none()
-                && !single_target
-                && !all_null
-                && elements.iter().any(|element| {
-                    matches!(element, PointerElement::Symbol(name)
-                        if machine_functions.iter().skip(global.functions_before).any(|function| &function.name == name))
-                })
-            {
-                return Err(Diagnostic::error("an address table forward-referencing unit functions needs the symbol-order interleave (roadmap)"));
-            }
+            // (A table forward-referencing unit functions is handled by the writer's
+            // symbol-order hoist: the address-taken functions' GLOBAL FUNC symbols
+            // emit at the data object's position, reverse-slot first-seen — measured
+            // `{e1,e2}` -> tbl,e2,e1; shuffled `{e2,e1,e3}` -> tbl,e3,e1,e2; a
+            // duplicated element hoists once by its LAST slot.)
             // A `static` symbol ARRAY (`static void (*tbl[])(void) = { e1, e2 };` —
             // item.c's dispatch tables) is measured as the same .sdata object with
             // ADDR32 relocations but the symbol LOCAL — and this path emits it GLOBAL
