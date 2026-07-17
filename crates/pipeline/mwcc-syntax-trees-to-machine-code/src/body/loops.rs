@@ -251,11 +251,14 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
+        if !matches!(kind, LoopKind::While | LoopKind::DoWhile) {
+            return Ok(false);
+        }
         if !body.is_empty() {
             return Ok(false);
         }
@@ -473,11 +476,14 @@ impl Generator {
         if matches!(function.return_type, Type::Float | Type::Double) || function.return_type == Type::Void {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
+        if !matches!(kind, LoopKind::While | LoopKind::DoWhile) {
+            return Ok(false);
+        }
         // A constant default return after the loop (`return 0;`).
         let Some(default_return) = function.return_expression.as_ref() else { return Ok(false) };
         if constant_value(default_return).is_none() {
@@ -723,11 +729,14 @@ impl Generator {
             return Ok(false);
         }
         let alias = alias_local.name.as_str();
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
+        if !matches!(kind, LoopKind::While | LoopKind::DoWhile) {
+            return Ok(false);
+        }
         if !body.is_empty() {
             return Ok(false);
         }
@@ -797,11 +806,14 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
+        if !matches!(kind, LoopKind::While | LoopKind::DoWhile) {
+            return Ok(false);
+        }
         // The condition: a bare `n--` of an int parameter.
         let Expression::PostStep { target, operator: BinaryOperator::Subtract } = condition else {
             return Ok(false);
@@ -1507,11 +1519,14 @@ impl Generator {
         if hx == lx || hx == iy || lx == iy {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
+        if !matches!(kind, LoopKind::While | LoopKind::DoWhile) {
+            return Ok(false);
+        }
         // The condition: hx < BIG, BIG a lis-only constant (low half 0).
         let Expression::Binary { operator: BinaryOperator::Less, left: test_left, right: test_right } =
             condition
@@ -2559,11 +2574,14 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
+        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
             function.statements.as_slice()
         else {
             return Ok(false);
         };
+        if !matches!(kind, LoopKind::While | LoopKind::DoWhile) {
+            return Ok(false);
+        }
         // The condition: a bare small word global (the SDA reload form).
         let Expression::Variable(flag) = condition else {
             return Ok(false);
@@ -2598,13 +2616,16 @@ impl Generator {
         self.non_leaf = true;
         let plan = mwcc_vreg::FramePlan::sized_for(Vec::new());
         self.frame_size = plan.frame_size;
-        // The while loop's internal labels advance the @N counter by 4
-        // (measured: extab @9/@10 vs the unbumped @5/@6).
-        self.output.anonymous_label_bump += 4;
+        // The loop's internal labels advance the @N counter (measured: while 4,
+        // do-while 6 — the family constants).
+        self.output.anonymous_label_bump += if matches!(kind, LoopKind::DoWhile) { 6 } else { 4 };
         self.output.instructions.extend(plan.prologue());
         let test = self.fresh_label();
         let loop_body = self.fresh_label();
-        self.emit_branch_to(test);
+        // The do-while runs its body first: no top entry jump.
+        if matches!(kind, LoopKind::While) {
+            self.emit_branch_to(test);
+        }
         self.bind_label(loop_body);
         for callee in &body_calls {
             self.emit_call(callee, &[], None, false)?;
