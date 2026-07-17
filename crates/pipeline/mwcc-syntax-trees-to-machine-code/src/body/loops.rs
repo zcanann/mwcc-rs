@@ -2511,12 +2511,16 @@ impl Generator {
             /// `if (gFlag) h(); [else k();]` — the flag reloads, a forward beq
             /// routes to the else (or past the call); a then-side `b` joins.
             GuardedCall(String, String, Option<String>),
+            /// `A[i] = i;` — the store through the WALKING POINTER home, which
+            /// advances 4 right after (the base never rematerializes).
+            StoreCounterToArray,
         }
         if body.is_empty() || body.len() > 3 {
             return Ok(false);
         }
         let mut body_steps = Vec::with_capacity(body.len());
         let mut call_count = 0usize;
+        let mut walking_array: Option<String> = None;
         for statement in body {
             match statement {
                 Statement::Expression(Expression::Call { name: callee, arguments }) => {
@@ -2533,6 +2537,27 @@ impl Generator {
                     }
                     call_count += 1;
                     body_steps.push(BodyStep::Call(callee.clone(), passes_counter));
+                }
+                Statement::Store { target: Expression::Index { base, index }, value: Expression::Variable(stored) } => {
+                    let Expression::Variable(array_name) = base.as_ref() else {
+                        return Ok(false);
+                    };
+                    if stored != &counter.name
+                        || !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
+                        || self.locations.contains_key(array_name.as_str())
+                        || !matches!(self.globals.get(array_name.as_str()), Some(Type::Int | Type::UnsignedInt))
+                        || walking_array.is_some()
+                    {
+                        return Ok(false);
+                    }
+                    let Some(&size) = self.global_array_sizes.get(array_name.as_str()) else {
+                        return Ok(false);
+                    };
+                    if size <= 8 {
+                        return Ok(false);
+                    }
+                    walking_array = Some(array_name.clone());
+                    body_steps.push(BodyStep::StoreCounterToArray);
                 }
                 Statement::Store { target: Expression::Variable(global), value: Expression::Variable(stored) } => {
                     if stored != &counter.name
@@ -2583,7 +2608,7 @@ impl Generator {
         // The body's @N advance (measured): a counter-store = flat 5 (one or
         // two alike), a guarded call = flat 7, a pure call body = 0. The
         // store+guard MIX is unmeasured — defer rather than guess the counter.
-        let has_store = body_steps.iter().any(|step| matches!(step, BodyStep::StoreCounter(_)));
+        let has_store = body_steps.iter().any(|step| matches!(step, BodyStep::StoreCounter(_) | BodyStep::StoreCounterToArray));
         let has_guard = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(_, _, None)));
         let has_diamond = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(_, _, Some(_))));
         if has_diamond && (has_store || has_guard || body_steps.len() > 1) {
@@ -2609,19 +2634,36 @@ impl Generator {
             return Ok(false);
         }
 
+        // The walking-pointer home (an array-iota store) is created FIRST so the
+        // pool assigns it r31, then the counter, then the bound (measured order).
+        let base_home = walking_array.as_ref().map(|_| self.fresh_virtual_general());
         let counter_home = self.fresh_virtual_general();
         let bound_home = self.fresh_virtual_general();
-        let plan = mwcc_vreg::FramePlan::sized_for(vec![counter_home, bound_home]);
+        let homes: Vec<u8> = base_home.iter().copied().chain([counter_home, bound_home]).collect();
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
-        self.callee_saved = vec![counter_home, bound_home];
+        self.callee_saved = homes;
         self.epilogue_lr_before_gprs = true;
         self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -plan.frame_size });
         self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 1, offset: plan.frame_size - 4 });
+        let mut save_offset = plan.frame_size - 4;
+        if let (Some(base_home), Some(array)) = (base_home, walking_array.as_ref()) {
+            // The base's high half rides the mflr latency gap; the @lo addi is
+            // the base home's park, interleaved after its save.
+            self.record_relocation(RelocationKind::Addr16Ha, array);
+            self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
+            self.output.instructions.push(Instruction::StoreWord { s: base_home, a: 1, offset: save_offset });
+            self.record_relocation(RelocationKind::Addr16Lo, array);
+            self.output.instructions.push(Instruction::AddImmediate { d: base_home, a: 4, immediate: 0 });
+            save_offset -= 4;
+        } else {
+            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
+        }
+        self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 1, offset: save_offset });
         self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: bound_home, a: 1, offset: plan.frame_size - 8 });
+        self.output.instructions.push(Instruction::StoreWord { s: bound_home, a: 1, offset: save_offset - 4 });
         self.output.instructions.push(Instruction::Or { a: bound_home, s: 3, b: 3 });
         let test = self.fresh_label();
         let loop_body = self.fresh_label();
@@ -2638,6 +2680,11 @@ impl Generator {
                 BodyStep::StoreCounter(global) => {
                     self.record_relocation(RelocationKind::EmbSda21, global);
                     self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 0, offset: 0 });
+                }
+                BodyStep::StoreCounterToArray => {
+                    let base_home = base_home.expect("decode guaranteed the walking pointer");
+                    self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: base_home, offset: 0 });
+                    self.output.instructions.push(Instruction::AddImmediate { d: base_home, a: base_home, immediate: 4 });
                 }
                 BodyStep::GuardedCall(flag, callee, else_callee) => {
                     let after_then = self.fresh_label();

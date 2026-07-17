@@ -375,13 +375,12 @@ impl Generator {
             }
             _ => return Ok(false),
         };
-        // A LARGE (ADDR16) array only — the SMALL (SDA) run uses a different base setup.
         let Some(&total_size) = self.global_array_sizes.get(array_name.as_str()) else {
             return Ok(false);
         };
-        if self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8 {
-            return Ok(false);
-        }
+        // A SMALL (SDA) array (≤8 bytes = exactly two `float`s) uses the SDA base
+        // setup, handled below; anything larger takes the ADDR16 shared-base path.
+        let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
         let double = match self.globals.get(array_name.as_str()) {
             Some(Type::Double) => true,
             Some(Type::Float) => false,
@@ -415,6 +414,41 @@ impl Generator {
             return Ok(false);
         }
         let base = self.lowest_free_general()?;
+        // SMALL (SDA) array: two `float`s. The base `li r3,g@sda21` lands SECOND
+        // (after the first value load); the first store folds the SDA relocation
+        // directly (`stfs f,g@sda21(r0)`), the second rides `4(r3)`. FPRs still
+        // descend f(count-1)..f0; all-same reuses f0 and skips the slot fill.
+        //   distinct:  lfs f1,@a ; li r3,g@sda ; lfs f0,@b ; stfs f1,g@sda ; stfs f0,4(r3)
+        //   all-same:  lfs f0,@a ; li r3,g@sda ; stfs f0,g@sda ; stfs f0,4(r3)
+        if small {
+            let fold_store = |generator: &mut Self, source: u8| {
+                generator.record_relocation(RelocationKind::EmbSda21, &array_name);
+                generator.push_float_store_at(source, 0, 0, double);
+            };
+            if all_same {
+                self.load_float_literal(FLOAT_SCRATCH, values[0], double);
+                self.record_relocation(RelocationKind::EmbSda21, &array_name);
+                self.output.instructions.push(Instruction::AddImmediate { d: base, a: 0, immediate: 0 });
+                fold_store(self, FLOAT_SCRATCH);
+                for i in 1..count {
+                    self.push_float_store_at(FLOAT_SCRATCH, base, (i as i64 * element_size) as i16, double);
+                }
+            } else {
+                let fpr = |i: usize| (count - 1 - i) as u8;
+                self.load_float_literal(fpr(0), values[0], double);
+                self.record_relocation(RelocationKind::EmbSda21, &array_name);
+                self.output.instructions.push(Instruction::AddImmediate { d: base, a: 0, immediate: 0 });
+                for i in 1..count {
+                    self.load_float_literal(fpr(i), values[i], double);
+                }
+                fold_store(self, fpr(0));
+                for i in 1..count {
+                    self.push_float_store_at(fpr(i), base, (i as i64 * element_size) as i16, double);
+                }
+            }
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
         if all_same {
             self.load_float_literal(FLOAT_SCRATCH, values[0], double);
             self.emit_address_high(base, &array_name);
