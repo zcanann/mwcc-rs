@@ -256,6 +256,17 @@ pub enum LogicalOrValueStyle {
     TrueFirst,
 }
 
+/// Scheduling and local-home policy for narrow integer guard blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrowGuardScheduleStyle {
+    /// 2.4.x fills the width-op/compare latency gap and chooses homes from the
+    /// return expression's consumer tree.
+    LatencyInterleavedConsumerTree,
+    /// Build 163 compares first and assigns single-block homes in declaration
+    /// order beginning with r0, then r3 and the remaining volatile registers.
+    CompareFirstDeclarationOrder,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -331,6 +342,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// emits the store before materializing the continuation's return value.
     fn guard_store_precedes_return_value(&self) -> bool {
         false
+    }
+
+    fn narrow_guard_schedule_style(&self) -> NarrowGuardScheduleStyle {
+        NarrowGuardScheduleStyle::LatencyInterleavedConsumerTree
     }
 
     /// How integer `condition ? 1 : 0` (and its complement) is lowered.
@@ -498,6 +513,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn guard_store_precedes_return_value(&self) -> bool {
         true
+    }
+
+    fn narrow_guard_schedule_style(&self) -> NarrowGuardScheduleStyle {
+        NarrowGuardScheduleStyle::CompareFirstDeclarationOrder
     }
 
     fn legacy_float_cast_schedule(&self) -> bool {

@@ -1511,9 +1511,22 @@ impl Generator {
         // operand pins its register, the first local's li pins r3 — the lowest free
         // is r5), validating policy #4 as derived, not hardcoded.
         let result = Eabi::general_result().number;
-        let second_home = self.fresh_virtual_general();
+        let compare_first = self.behavior.narrow_guard_schedule_style
+            == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
+        let (first_home, second_home) = if compare_first {
+            // The outer-false path carries the initializer in r0 straight to
+            // the join. On the outer-true path the record test clobbers r0 only
+            // after that value dies, and the following assignment redefines it.
+            // This path-sensitive split is more precise than linear-scan's
+            // conservative interval, so pin the measured homes explicitly.
+            (GENERAL_SCRATCH, result)
+        } else {
+            (result, self.fresh_virtual_general())
+        };
         self.push_narrow_guard_test(register, 32 - width, constant);
-        self.load_integer_constant(result, i64::from(first_init));
+        if !compare_first {
+            self.load_integer_constant(first_home, i64::from(first_init));
+        }
         if constant != 0 {
             self.output
                 .instructions
@@ -1521,6 +1534,9 @@ impl Generator {
                     a: GENERAL_SCRATCH,
                     immediate: constant,
                 });
+        }
+        if compare_first {
+            self.load_integer_constant(first_home, i64::from(first_init));
         }
         self.load_integer_constant(second_home, i64::from(second_init));
         let outer_branch = self.output.instructions.len();
@@ -1539,7 +1555,7 @@ impl Generator {
             begin: 31,
             end: 31,
         });
-        self.load_integer_constant(result, i64::from(first_new));
+        self.load_integer_constant(first_home, i64::from(first_new));
         let inner_branch = self.output.instructions.len();
         self.output
             .instructions
@@ -1559,7 +1575,7 @@ impl Generator {
         }
         self.output.instructions.push(Instruction::Add {
             d: result,
-            a: result,
+            a: first_home,
             b: second_home,
         });
         self.output
@@ -1715,8 +1731,16 @@ impl Generator {
                     immediate: constant,
                 });
         }
+        let compare_first = self.behavior.narrow_guard_schedule_style
+            == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
+        if signed_char && compare_first {
+            self.output.instructions.push(Instruction::ExtendSignByte {
+                a: load_home,
+                s: load_home,
+            });
+        }
         self.load_integer_constant(const_home, i64::from(second_init));
-        if signed_char {
+        if signed_char && !compare_first {
             self.output.instructions.push(Instruction::ExtendSignByte {
                 a: load_home,
                 s: load_home,
@@ -1955,7 +1979,9 @@ impl Generator {
             blocks.iter().zip(&tests).enumerate()
         {
             self.push_narrow_guard_test(register, 32 - width as u8, constant);
-            if block_index == 0 {
+            let compare_first = self.behavior.narrow_guard_schedule_style
+                == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
+            if block_index == 0 && !compare_first {
                 self.load_integer_constant(homes[0], i64::from(inits[0]));
             }
             if constant != 0 {
@@ -1967,6 +1993,9 @@ impl Generator {
                     });
             }
             if block_index == 0 {
+                if compare_first {
+                    self.load_integer_constant(homes[0], i64::from(inits[0]));
+                }
                 // Every init past the first lands AFTER the compare (measured: li r5;
                 // li r6 both follow cmplwi in the 3-local form).
                 for index in 1..locals.len() {
@@ -2203,10 +2232,23 @@ impl Generator {
                 // parameter's pin ends at the width-op) — and the const local rides
                 // the r0 preference.
                 let result = Eabi::general_result().number;
-                let first_home = self.fresh_virtual_general();
-                let const_home = self.fresh_virtual_general_preferring(GENERAL_SCRATCH);
+                let compare_first = self.behavior.narrow_guard_schedule_style
+                    == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
+                let (first_home, const_home) = if compare_first {
+                    (
+                        self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
+                        self.fresh_virtual_general_preferring(result),
+                    )
+                } else {
+                    (
+                        self.fresh_virtual_general(),
+                        self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
+                    )
+                };
                 self.push_narrow_guard_test(register, 32 - width, compare_constant);
-                self.load_integer_constant(first_home, i64::from(first_init));
+                if !compare_first {
+                    self.load_integer_constant(first_home, i64::from(first_init));
+                }
                 if compare_constant != 0 {
                     self.output
                         .instructions
@@ -2214,6 +2256,9 @@ impl Generator {
                             a: GENERAL_SCRATCH,
                             immediate: compare_constant,
                         });
+                }
+                if compare_first {
+                    self.load_integer_constant(first_home, i64::from(first_init));
                 }
                 self.load_integer_constant(const_home, i64::from(second_init));
                 let branch_index = self.output.instructions.len();
@@ -2407,20 +2452,33 @@ impl Generator {
         // (Phase D policy #1 end-to-end); LinearScan resolves each to its consumer-
         // tree register — including the scratch r0 preference, whose interval starts
         // at the post-compare `li`, after the width-op's physical r0 died.
-        let homes: Vec<u8> = match pairs.len() {
-            2 => vec![
+        let compare_first = self.behavior.narrow_guard_schedule_style
+            == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
+        let homes: Vec<u8> = match (pairs.len(), compare_first) {
+            (2, false) => vec![
                 self.fresh_virtual_general_preferring(result),
                 self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
             ],
-            3 => vec![
+            (3, false) => vec![
                 self.fresh_virtual_general_preferring(result + 1),
                 self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
                 self.fresh_virtual_general_preferring(result),
             ],
+            (2, true) => vec![
+                self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
+                self.fresh_virtual_general_preferring(result),
+            ],
+            (3, true) => vec![
+                self.fresh_virtual_general_preferring(GENERAL_SCRATCH),
+                self.fresh_virtual_general_preferring(result),
+                self.fresh_virtual_general_preferring(result + 1),
+            ],
             _ => return Ok(false),
         };
         self.push_narrow_guard_test(register, 32 - width, constant);
-        self.load_integer_constant(homes[0], i64::from(pairs[0].0));
+        if !compare_first {
+            self.load_integer_constant(homes[0], i64::from(pairs[0].0));
+        }
         if constant != 0 {
             self.output
                 .instructions
@@ -2429,7 +2487,8 @@ impl Generator {
                     immediate: constant,
                 });
         }
-        for (index, &(init, _)) in pairs.iter().enumerate().skip(1) {
+        let init_start = usize::from(!compare_first);
+        for (index, &(init, _)) in pairs.iter().enumerate().skip(init_start) {
             self.load_integer_constant(homes[index], i64::from(init));
         }
         let branch_index = self.output.instructions.len();
@@ -2607,8 +2666,18 @@ impl Generator {
             // result register — the first shape routed through the general allocation
             // machinery (Phase D policy #1 end-to-end); LinearScan resolves it to r3.
             let home = self.fresh_virtual_general_preferring(result);
+            let compare_first = self.behavior.narrow_guard_schedule_style
+                == mwcc_versions::NarrowGuardScheduleStyle::CompareFirstDeclarationOrder;
+            if constant != 0 && compare_first {
+                self.output
+                    .instructions
+                    .push(Instruction::CompareLogicalWordImmediate {
+                        a: GENERAL_SCRATCH,
+                        immediate: constant,
+                    });
+            }
             self.load_integer_constant(home, init_value);
-            if constant != 0 {
+            if constant != 0 && !compare_first {
                 self.output
                     .instructions
                     .push(Instruction::CompareLogicalWordImmediate {

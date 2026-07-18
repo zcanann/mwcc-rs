@@ -19,7 +19,7 @@ use crate::profile::{
     FrameConvention, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowStoreConversionStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
+    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
     WideConstantAddSchedule,
 };
@@ -88,6 +88,7 @@ pub enum Quirk {
     LegacyInPlaceBitFieldExtraction,
     LegacyConstantJoinReturnBeforeLrReload,
     LegacyGuardStoreBeforeReturnValue,
+    LegacyCompareFirstNarrowGuards,
 }
 
 impl Quirk {
@@ -130,6 +131,7 @@ impl Quirk {
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
+            Quirk::LegacyCompareFirstNarrowGuards => QuirkKind::Intentional,
         }
     }
 
@@ -236,6 +238,9 @@ impl Quirk {
             Quirk::LegacyGuardStoreBeforeReturnValue => {
                 "guarded continuation stores precede build 163's return materialization"
             }
+            Quirk::LegacyCompareFirstNarrowGuards => {
+                "narrow guards use build 163's compare-first declaration-order schedule"
+            }
         }
     }
 }
@@ -273,6 +278,8 @@ pub struct Behavior {
     pub constant_join_return_precedes_lr_reload: bool,
     /// Whether guarded continuation stores precede return-value materialization.
     pub guard_store_precedes_return_value: bool,
+    /// Scheduling and local-home policy for narrow integer guard blocks.
+    pub narrow_guard_schedule_style: NarrowGuardScheduleStyle,
     /// Lowering of canonical integer boolean ternaries.
     pub integer_select_style: IntegerSelectStyle,
     /// Instruction family for integer comparisons materialized as 0/1 values.
@@ -380,6 +387,7 @@ impl Behavior {
                 .build
                 .profile
                 .guard_store_precedes_return_value(),
+            narrow_guard_schedule_style: config.build.profile.narrow_guard_schedule_style(),
             integer_select_style: config.build.profile.integer_select_style(),
             integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
             narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
@@ -556,6 +564,11 @@ impl Behavior {
                 Quirk::LegacyGuardStoreBeforeReturnValue,
             ));
         }
+        if self.narrow_guard_schedule_style
+            == NarrowGuardScheduleStyle::CompareFirstDeclarationOrder
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyCompareFirstNarrowGuards));
+        }
         quirks
     }
 }
@@ -609,6 +622,10 @@ mod tests {
         assert!(!behavior.emit_leaf_frame_unwind);
         assert!(behavior.constant_join_return_precedes_lr_reload);
         assert!(behavior.guard_store_precedes_return_value);
+        assert_eq!(
+            behavior.narrow_guard_schedule_style,
+            NarrowGuardScheduleStyle::CompareFirstDeclarationOrder
+        );
         assert!(behavior.legacy_float_cast_schedule);
         assert_eq!(
             behavior.integer_select_style,
