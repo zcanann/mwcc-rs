@@ -147,6 +147,37 @@ impl Generator {
             self.emit_float_select_tail(destination, false_register, false_negate);
             return Ok(());
         }
+        if self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+            && tail
+            && !true_negate
+            && !false_negate
+            && false_register == destination
+            && true_register != destination
+        {
+            // Build 163 keeps the true arm's register as the phi instead of
+            // returning early from the false arm. The true path skips the copy;
+            // the false path overwrites phi, followed by one result move.
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(
+                positive_options ^ 8,
+                condition_bit,
+                false_arm,
+            );
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.output.instructions.push(Instruction::FloatMove {
+                d: true_register,
+                b: false_register,
+            });
+            self.bind_label(join);
+            self.output.instructions.push(Instruction::FloatMove {
+                d: destination,
+                b: true_register,
+            });
+            return Ok(());
+        }
         if tail && !false_negate && false_register == destination {
             self.output
                 .instructions
