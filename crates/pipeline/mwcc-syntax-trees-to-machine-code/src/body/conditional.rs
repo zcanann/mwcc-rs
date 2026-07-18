@@ -82,12 +82,14 @@ impl Generator {
         // `if (c) y = A; else y = B;` is the guard `if (c) y = A` with fall-through B
         // — mwcc normalizes a negated `if (!c)` the same way it does a guard return
         // (keep A as the in-place default, strip the `!`), so route through
-        // normalized_if_select rather than a bare `(c) ? A : B` select.
-        let select = normalized_if_select(
+        // if_select rather than a bare `(c) ? A : B` select.
+        let select = if_select(
             condition,
             &when_true,
             &when_false,
             mwcc_syntax_trees::ConditionalOrigin::IfAssignments,
+            self.behavior.integer_select_style
+                == mwcc_versions::IntegerSelectStyle::Branchless,
         );
         self.evaluate_tail(&select, function.return_type, result)?;
         self.output

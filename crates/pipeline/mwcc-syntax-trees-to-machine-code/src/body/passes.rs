@@ -104,32 +104,34 @@ pub(crate) fn guarded_null_dereference<'a>(
 }
 
 /// Convert a source-level `if` with two value-producing paths into its select
-/// representation while retaining the source form. mwcc strips a leading `!`
-/// and swaps the arms for `if (!c)`, unlike an explicitly written ternary.
-pub(crate) fn normalized_if_select(
+/// representation while retaining the source form. Mainline mwcc strips a
+/// leading `!` and swaps the arms; build 163 preserves the negated condition.
+pub(crate) fn if_select(
     condition: &Expression,
     value: &Expression,
     default: &Expression,
     origin: mwcc_syntax_trees::ConditionalOrigin,
+    normalize_negation: bool,
 ) -> Expression {
-    if let Expression::Unary {
-        operator: UnaryOperator::LogicalNot,
-        operand,
-    } = condition
-    {
-        Expression::Conditional {
-            condition: Box::new((**operand).clone()),
-            when_true: Box::new(default.clone()),
-            when_false: Box::new(value.clone()),
-            origin,
+    if normalize_negation {
+        if let Expression::Unary {
+            operator: UnaryOperator::LogicalNot,
+            operand,
+        } = condition
+        {
+            return Expression::Conditional {
+                condition: Box::new((**operand).clone()),
+                when_true: Box::new(default.clone()),
+                when_false: Box::new(value.clone()),
+                origin,
+            };
         }
-    } else {
-        Expression::Conditional {
-            condition: Box::new(condition.clone()),
-            when_true: Box::new(value.clone()),
-            when_false: Box::new(default.clone()),
-            origin,
-        }
+    }
+    Expression::Conditional {
+        condition: Box::new(condition.clone()),
+        when_true: Box::new(value.clone()),
+        when_false: Box::new(default.clone()),
+        origin,
     }
 }
 

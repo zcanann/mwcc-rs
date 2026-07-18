@@ -3426,11 +3426,13 @@ impl Generator {
                         return Ok(());
                     }
                 }
-                let select = normalized_if_select(
+                let select = if_select(
                     &guard.condition,
                     &guard.value,
                     return_expression,
                     mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+                    self.behavior.integer_select_style
+                        == mwcc_versions::IntegerSelectStyle::Branchless,
                 );
                 // ATTEMPT the select; a fall-through outside its vocabulary (a
                 // table load, a cast) uses mwcc's early-return BRANCH instead
