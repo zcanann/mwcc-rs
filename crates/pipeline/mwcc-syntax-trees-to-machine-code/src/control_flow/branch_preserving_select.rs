@@ -3,6 +3,54 @@
 use super::*;
 
 impl Generator {
+    /// Build 163 keeps a tail select between zero and one single-op value as
+    /// two return paths instead of forming the mainline mask-and-combine idiom.
+    pub(crate) fn try_emit_legacy_computed_zero_tail(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+        tail: bool,
+        origin: ConditionalOrigin,
+    ) -> Compilation<bool> {
+        if self.behavior.integer_select_style
+            != mwcc_versions::IntegerSelectStyle::BranchPreserving
+            || self.non_leaf
+            || !tail
+            || origin == ConditionalOrigin::IfAssignments
+            || self.is_float_value(when_true)
+            || self.is_float_value(when_false)
+        {
+            return Ok(false);
+        }
+        let one_zero_one_computed = (is_zero_literal(when_true)
+            && self.is_single_op_register_value(when_false))
+            || (self.is_single_op_register_value(when_true) && is_zero_literal(when_false));
+        if !one_zero_one_computed {
+            return Ok(false);
+        }
+
+        self.output.anonymous_label_bump += 3;
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        let false_branch = self.output.instructions.len();
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
+        self.evaluate_general(when_true, destination)?;
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
+        let false_arm = self.output.instructions.len();
+        self.patch_forward(false_branch, false_arm);
+        self.evaluate_general(when_false, destination)?;
+        Ok(true)
+    }
+
     /// A direct leaf-to-leaf ternary used as a store value merges into the true
     /// arm's register in build 163. Return the register so the store can consume
     /// it without forcing the value through the ABI result register or scratch.

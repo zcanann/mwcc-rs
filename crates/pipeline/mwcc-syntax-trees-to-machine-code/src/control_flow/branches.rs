@@ -119,6 +119,16 @@ impl Generator {
         )? {
             return Ok(());
         }
+        if self.try_emit_legacy_computed_zero_tail(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            tail,
+            origin,
+        )? {
+            return Ok(());
+        }
         if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
             && tail
             && !self.non_leaf

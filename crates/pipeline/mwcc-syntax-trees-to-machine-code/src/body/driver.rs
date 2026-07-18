@@ -3306,6 +3306,24 @@ impl Generator {
                     if let (Some(condition_register), Some(initializer)) =
                         (condition_register, initializer)
                     {
+                        if self.behavior.integer_select_style
+                            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+                        {
+                            let (options, condition_bit) =
+                                self.emit_condition_test(&guard.condition)?;
+                            self.evaluate(initializer, local.declared_type, result)?;
+                            self.output.instructions.push(
+                                Instruction::BranchConditionalToLinkRegister {
+                                    options: if zero_is_then { options } else { options ^ 8 },
+                                    condition_bit,
+                                },
+                            );
+                            self.load_integer_constant(result, 0);
+                            self.output
+                                .instructions
+                                .push(Instruction::BranchToLinkRegister);
+                            return Ok(());
+                        }
                         self.output.instructions.push(Instruction::Negate {
                             d: GENERAL_SCRATCH,
                             a: condition_register,
