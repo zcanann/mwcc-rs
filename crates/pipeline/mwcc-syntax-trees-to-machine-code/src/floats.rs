@@ -15,6 +15,9 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         match expression {
+            Expression::IndexedUpdateValue { value } => {
+                self.evaluate_float(value, destination)
+            }
             Expression::BitFieldRead { .. } => Err(Diagnostic::error(
                 "a promoted bit-field value is not a float value",
             )),

@@ -101,6 +101,17 @@ pub enum GlobalArrayIndexStyle {
     ExplicitAddress,
 }
 
+/// Whether an indexed read/modify/write preserves the frontend assignment form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexedRmwAssignmentStyle {
+    /// 2.4.x selects indexed load/store instructions for both `a[i] op= x` and
+    /// the equivalent explicitly spelled `a[i] = a[i] op x`.
+    UniformIndexed,
+    /// Build 163 forms an explicit element address only for the explicitly
+    /// spelled assignment; compound assignment remains indexed.
+    PreserveExplicitAddress,
+}
+
 /// Frame and merge policy for type-punned floating parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PunnedFloatFrameConvention {
@@ -347,6 +358,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         GlobalArrayIndexStyle::Indexed
     }
 
+    fn indexed_rmw_assignment_style(&self) -> IndexedRmwAssignmentStyle {
+        IndexedRmwAssignmentStyle::UniformIndexed
+    }
+
     /// Whether `value == 0` negates the value into r0 before `cntlzw`.
     /// This preserves build 163's older equality idiom for both register
     /// leaves and computed values.
@@ -496,6 +511,9 @@ impl CodegenProfile for Gc233Build163 {
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::ExplicitAddress
+    }
+    fn indexed_rmw_assignment_style(&self) -> IndexedRmwAssignmentStyle {
+        IndexedRmwAssignmentStyle::PreserveExplicitAddress
     }
     fn negate_before_zero_equality(&self) -> bool {
         true

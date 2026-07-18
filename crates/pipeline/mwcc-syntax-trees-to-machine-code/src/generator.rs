@@ -619,9 +619,8 @@ impl Generator {
                 ..
             } => Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?),
             Expression::Cast { target_type, .. } => Ok(self.signed_of(*target_type)),
-            Expression::BitFieldRead { promoted_type, .. } => {
-                Ok(self.signed_of(*promoted_type))
-            }
+            Expression::BitFieldRead { promoted_type, .. } => Ok(self.signed_of(*promoted_type)),
+            Expression::IndexedUpdateValue { value } => self.signedness_of(value),
             // `*p` and `p[i]` have the signedness of the pointee.
             Expression::Dereference { pointer } => {
                 Ok(self.pointee_of(pointer)?.element().is_signed())

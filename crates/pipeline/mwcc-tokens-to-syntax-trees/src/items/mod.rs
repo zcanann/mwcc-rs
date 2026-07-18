@@ -44,6 +44,23 @@ fn store_or_assign(
     }
 }
 
+/// Retain the frontend provenance of a variable-indexed update while leaving
+/// constant-index hardware-register and array accesses in their established
+/// lowering paths.
+fn indexed_update_value(target: &Expression, value: Expression) -> Expression {
+    let variable_index = matches!(target,
+        Expression::Index { index, .. }
+            if crate::expressions::fold_constant_expression(index).is_err()
+    );
+    if variable_index {
+        Expression::IndexedUpdateValue {
+            value: Box::new(value),
+        }
+    } else {
+        value
+    }
+}
+
 /// The pointee kind for `<scalar>*`. Pointer-to-pointer and pointer-to-aggregate
 /// are not in the subset yet.
 fn pointee_of(base: Type) -> Compilation<Pointee> {
@@ -3369,14 +3386,18 @@ fn collapse_if_return_chain(statements: &mut Vec<Statement>) {
 /// is unused. Comma lists lower each element.
 fn lower_discarded_post_step(expression: Expression) -> Expression {
     match expression {
-        Expression::PostStep { target, operator } => Expression::Assign {
-            target: target.clone(),
-            value: Box::new(Expression::Binary {
+        Expression::PostStep { target, operator } => {
+            let value = Expression::Binary {
                 operator,
-                left: target,
+                left: target.clone(),
                 right: Box::new(Expression::IntegerLiteral(1)),
-            }),
-        },
+            };
+            let value = indexed_update_value(&target, value);
+            Expression::Assign {
+                target,
+                value: Box::new(value),
+            }
+        }
         Expression::Comma { left, right } => Expression::Comma {
             left: Box::new(lower_discarded_post_step(*left)),
             right: Box::new(lower_discarded_post_step(*right)),

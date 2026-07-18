@@ -16,11 +16,12 @@ use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, ConstantStoreScheduleStyle, FixedAddressRmwStyle,
-    FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle, IntegerSelectStyle,
-    JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle, MaterializationCopyStyle,
-    NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowStoreConversionStyle,
-    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, SymbolTraversalStyle, WideConstantAddSchedule,
+    FrameConvention, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
+    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
+    MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
+    NarrowStoreConversionStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
+    WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -63,6 +64,7 @@ pub enum Quirk {
     LegacyEarlyInPlaceJumpTableBase,
     LegacyPartialNarrowStoreConversionElision,
     LegacyExplicitGlobalArrayAddress,
+    LegacyExplicitIndexedRmwAddress,
     LegacyZeroEqualityNegate,
     LegacyReloadingPunnedFloatFrame,
     LegacyAddImmediateMaterializationCopy,
@@ -102,6 +104,7 @@ impl Quirk {
             Quirk::LegacyEarlyInPlaceJumpTableBase => QuirkKind::Intentional,
             Quirk::LegacyPartialNarrowStoreConversionElision => QuirkKind::Intentional,
             Quirk::LegacyExplicitGlobalArrayAddress => QuirkKind::Intentional,
+            Quirk::LegacyExplicitIndexedRmwAddress => QuirkKind::Intentional,
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
             Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
@@ -158,6 +161,9 @@ impl Quirk {
             }
             Quirk::LegacyExplicitGlobalArrayAddress => {
                 "variable global-array indexes form an explicit address in build 163"
+            }
+            Quirk::LegacyExplicitIndexedRmwAddress => {
+                "explicit indexed read/modify/write assignments preserve an element address in build 163"
             }
             Quirk::LegacyZeroEqualityNegate => {
                 "zero equality negates into r0 before cntlzw in build 163"
@@ -271,6 +277,8 @@ pub struct Behavior {
     pub constant_store_schedule_style: ConstantStoreScheduleStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
+    /// Addressing distinction between compound and explicit indexed RMW syntax.
+    pub indexed_rmw_assignment_style: IndexedRmwAssignmentStyle,
     /// Whether zero equality negates its value into r0 before `cntlzw`.
     pub negate_before_zero_equality: bool,
     /// Frame/merge convention for type-punned floating parameters.
@@ -362,6 +370,7 @@ impl Behavior {
             bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
+            indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
@@ -445,6 +454,9 @@ impl Behavior {
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
+        }
+        if self.indexed_rmw_assignment_style == IndexedRmwAssignmentStyle::PreserveExplicitAddress {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitIndexedRmwAddress));
         }
         if self.negate_before_zero_equality {
             quirks.push(ActiveQuirk::of(Quirk::LegacyZeroEqualityNegate));
@@ -571,6 +583,10 @@ mod tests {
         assert_eq!(
             behavior.global_array_index_style,
             GlobalArrayIndexStyle::ExplicitAddress
+        );
+        assert_eq!(
+            behavior.indexed_rmw_assignment_style,
+            IndexedRmwAssignmentStyle::PreserveExplicitAddress
         );
         assert!(behavior.negate_before_zero_equality);
         assert_eq!(

@@ -50,6 +50,10 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<()> {
+        let (value, indexed_update_syntax) = match value {
+            Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
+            value => (value, false),
+        };
         // `*(T *)0xADDR = v` — a constant-address store (memory-mapped registers, the GX FIFO).
         // mwcc materializes the address base before the value (`lis base, hi`), keeping the base
         // GPR clear of the value's inputs, then stores `st value, lo(base)`. Mirrors the absolute
@@ -224,9 +228,9 @@ impl Generator {
                 }
             }
         }
-        // `a[i] op= rhs` (variable index, leaf rhs) — scale the index once and
-        // reuse it for the indexed load and store, the value flowing through r0.
-        if self.try_emit_indexed_rmw(target, value)? {
+        // Variable-index word read/modify/write, retaining update-vs-explicit
+        // syntax for generation-specific instruction selection.
+        if self.try_emit_indexed_rmw(target, value, indexed_update_syntax)? {
             return Ok(());
         }
         // `a[i].field = v;` — scale the index by the struct size, then store at the

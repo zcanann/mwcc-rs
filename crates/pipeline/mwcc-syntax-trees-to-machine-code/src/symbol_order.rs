@@ -109,6 +109,7 @@ fn contains_call(expression: &Expression) -> bool {
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
+        | Expression::IndexedUpdateValue { value: operand }
         | Expression::AddressOf { operand }
         | Expression::Dereference { pointer: operand }
         | Expression::PostStep {
@@ -272,7 +273,8 @@ fn collect(expression: &Expression, names: &mut Names) {
         Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => collect(operand, names),
+        }
+        | Expression::IndexedUpdateValue { value: operand } => collect(operand, names),
         Expression::Dereference { pointer } => collect(pointer, names),
         Expression::AddressOf { operand } => collect(operand, names),
         Expression::Index { base, index } => {

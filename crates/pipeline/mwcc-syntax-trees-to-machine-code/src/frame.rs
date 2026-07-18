@@ -2768,7 +2768,8 @@ fn walk(expression: &Expression, names: &mut HashSet<String>) {
         Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => walk(operand, names),
+        }
+        | Expression::IndexedUpdateValue { value: operand } => walk(operand, names),
         Expression::Dereference { pointer } => walk(pointer, names),
         Expression::Index { base, index } => {
             walk(base, names);

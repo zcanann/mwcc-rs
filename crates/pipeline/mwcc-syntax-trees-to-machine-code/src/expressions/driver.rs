@@ -41,9 +41,7 @@ impl Generator {
             | Expression::Cast { operand, .. }
             | Expression::BitFieldRead {
                 extracted: operand, ..
-            } => {
-                self.global_pair_plus_register(operand)
-            }
+            } => self.global_pair_plus_register(operand),
             _ => false,
         }
     }
@@ -334,6 +332,9 @@ impl Generator {
             return Err(Diagnostic::error("a commutative op with a constant-shift left operand orders operands differently (roadmap)"));
         }
         match expression {
+            Expression::IndexedUpdateValue { value } => {
+                self.evaluate_general(value, destination)
+            }
             Expression::BitFieldRead { extracted, .. } => {
                 self.evaluate_bit_field_read(extracted, destination)
             }

@@ -95,6 +95,7 @@ impl Parser {
                 left: Box::new(first.clone()),
                 right: Box::new(rhs),
             };
+            let value = super::indexed_update_value(&first, value);
             Ok(store_or_assign(first, value, local_names))
         } else if *self.peek() == Token::Equals {
             self.advance();

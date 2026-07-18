@@ -50,6 +50,13 @@ pub enum Expression {
         extracted: Box<Expression>,
         promoted_type: Type,
     },
+    /// The desugared value of indexed update syntax (`a[i] op= x` or a
+    /// value-discarded `a[i]++`). The wrapper retains frontend provenance for
+    /// versions whose instruction selection distinguishes those forms from an
+    /// explicitly spelled `a[i] = a[i] op x`.
+    IndexedUpdateValue {
+        value: Box<Expression>,
+    },
     /// `*pointer` — load the pointed-to value.
     Dereference {
         pointer: Box<Expression>,

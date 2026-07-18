@@ -146,7 +146,8 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
+        }
+        | Expression::IndexedUpdateValue { value: operand } => {
             count_name_occurrences(operand, name)
         }
         Expression::PostStep { target, .. } => 2 * count_name_occurrences(target, name),
@@ -379,9 +380,8 @@ pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
-            contains_complex_add(operand)
         }
+        | Expression::IndexedUpdateValue { value: operand } => contains_complex_add(operand),
         Expression::Index { base, index } => {
             contains_complex_add(base) || contains_complex_add(index)
         }
@@ -442,7 +442,8 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
+        }
+        | Expression::IndexedUpdateValue { value: operand } => {
             contains_commutative_shift_left(operand)
         }
         Expression::Index { base, index } => {
@@ -494,7 +495,8 @@ fn collect_register_reads(
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
+        }
+        | Expression::IndexedUpdateValue { value: operand } => {
             collect_register_reads(operand, registers, collected)
         }
         Expression::Dereference { pointer } => {
@@ -674,7 +676,8 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
+        }
+        | Expression::IndexedUpdateValue { value: operand } => {
             reads_register_after_call(operand, registers)
         }
         Expression::Dereference { pointer } => reads_register_after_call(pointer, registers),
@@ -739,7 +742,8 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
+        }
+        | Expression::IndexedUpdateValue { value: operand } => {
             reads_register(operand, registers)
         }
         Expression::Dereference { pointer } => reads_register(pointer, registers),
@@ -807,9 +811,11 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
                 || expression_has_call(when_true)
                 || expression_has_call(when_false)
         }
-        Expression::Cast { operand, .. } | Expression::BitFieldRead { extracted: operand, .. } => {
-            expression_has_call(operand)
+        Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
         }
+        | Expression::IndexedUpdateValue { value: operand } => expression_has_call(operand),
         Expression::Dereference { pointer } => expression_has_call(pointer),
         Expression::Index { base, index } => {
             expression_has_call(base) || expression_has_call(index)
@@ -838,7 +844,8 @@ pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
+        }
+        | Expression::IndexedUpdateValue { value: operand } => {
             expression_has_side_effect(operand)
         }
         Expression::Conditional {
@@ -965,9 +972,11 @@ pub(crate) fn register_need(expression: &Expression) -> u32 {
             }
         }
         Expression::Unary { operand, .. } => register_need(operand),
-        Expression::Cast { operand, .. } | Expression::BitFieldRead { extracted: operand, .. } => {
-            register_need(operand)
+        Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
         }
+        | Expression::IndexedUpdateValue { value: operand } => register_need(operand),
         Expression::Conditional {
             when_true,
             when_false,
@@ -1282,6 +1291,7 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
+        | Expression::IndexedUpdateValue { value: operand }
         | Expression::AddressOf { operand }
         | Expression::Dereference { pointer: operand } => {
             collect_computed_subexpressions(operand, into);
@@ -1646,9 +1656,8 @@ pub(crate) fn contains_memory_load(expression: &Expression) -> bool {
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
-            contains_memory_load(operand)
         }
+        | Expression::IndexedUpdateValue { value: operand } => contains_memory_load(operand),
         _ => false,
     }
 }
@@ -1749,7 +1758,8 @@ pub(crate) fn expression_reads_memory(
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => {
+        }
+        | Expression::IndexedUpdateValue { value: operand } => {
             expression_reads_memory(operand, register_names)
         }
         Expression::Conditional {

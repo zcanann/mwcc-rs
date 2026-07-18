@@ -3954,6 +3954,7 @@ impl Generator {
                 | Expression::BitFieldRead {
                     extracted: operand, ..
                 }
+                | Expression::IndexedUpdateValue { value: operand }
                 | Expression::AddressOf { operand } => feeds_an_addition(name, operand),
                 Expression::Conditional {
                     condition,

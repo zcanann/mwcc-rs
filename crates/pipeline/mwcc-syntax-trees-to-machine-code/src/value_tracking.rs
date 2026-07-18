@@ -869,6 +869,7 @@ fn used_in_sign_sensitive_op(
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
+        | Expression::IndexedUpdateValue { value: operand }
         | Expression::AddressOf { operand } => used_in_sign_sensitive_op(operand, names),
         Expression::Dereference { pointer } => used_in_sign_sensitive_op(pointer, names),
         Expression::Conditional {
@@ -951,6 +952,7 @@ fn has_additive_chain(expression: &Expression) -> bool {
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
+        | Expression::IndexedUpdateValue { value: operand }
         | Expression::AddressOf { operand } => has_additive_chain(operand),
         Expression::Conditional {
             condition,
@@ -1022,7 +1024,8 @@ fn count_references(name: &str, expression: &Expression) -> usize {
         Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
             extracted: operand, ..
-        } => count_references(name, operand),
+        }
+        | Expression::IndexedUpdateValue { value: operand } => count_references(name, operand),
         Expression::Dereference { pointer } => count_references(name, pointer),
         Expression::Index { base, index } => {
             count_references(name, base) + count_references(name, index)
@@ -1095,6 +1098,9 @@ pub(crate) fn substitute(
         } => Expression::BitFieldRead {
             extracted: Box::new(substitute(extracted, values)),
             promoted_type: *promoted_type,
+        },
+        Expression::IndexedUpdateValue { value } => Expression::IndexedUpdateValue {
+            value: Box::new(substitute(value, values)),
         },
         Expression::Dereference { pointer } => Expression::Dereference {
             pointer: Box::new(substitute(pointer, values)),
