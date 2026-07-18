@@ -69,15 +69,8 @@ impl Generator {
         reuse_cr0: bool,
     ) -> Compilation<()> {
         // `if (cond) g = X; else g = Y;` — both arms a single store to the same GLOBAL — is
-        // byte-identical to the select `g = cond ? X : Y;`: mwcc coalesces to ONE store,
-        // speculating one value and conditionally overwriting it (constants branchless-ify;
-        // registers `mr`; `li r0,Y; beq; mr r0,X; stw` for the mixed/computed forms). Route
-        // it through the conditional-store path, which is byte-exact-or-defer for whatever X
-        // and Y are — exactly matching the direct-select lowering (so a form it cannot yet
-        // reproduce DEFERS, never emits the two-store retest idiom, which is wrong for a
-        // single coalesced target). This applies ONLY to a direct global (SDA-addressed)
-        // target: a POINTER-dereference store (`*p = 1; else *p = 2;`) keeps the two-exit
-        // branch form below (`cmpwi; beq; li; stw; blr; li; stw; blr`).
+        // coalesced by mainline into the select `g = cond ? X : Y;` and ONE store. Build 163
+        // preserves two source store arms, so it continues to the two-exit path below.
         //
         // The coalescing (this select shortcut AND the retest idiom below) is a STANDALONE-
         // diamond optimization: mwcc does NOT apply it to a diamond reached through an
@@ -95,7 +88,9 @@ impl Generator {
             }],
         ) = (then_body, else_body)
         {
-            if !nested
+            if self.behavior.integer_select_style
+                == mwcc_versions::IntegerSelectStyle::Branchless
+                && !nested
                 && same_operand(then_target, else_target)
                 && matches!(then_target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
             {
@@ -209,7 +204,11 @@ impl Generator {
             && (matches!(condition, Expression::Variable(_))
                 || matches!(condition, Expression::Unary { operator: UnaryOperator::LogicalNot, operand } if matches!(operand.as_ref(), Expression::Variable(_))));
         let is_global_store = |statement: &Statement| matches!(statement, Statement::Store { target: Expression::Variable(name), .. } if self.globals.contains_key(name.as_str()));
-        let use_retest = truthy && is_global_store(&then_body[0]) && is_global_store(&else_body[0]);
+        let use_retest = self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::Branchless
+            && truthy
+            && is_global_store(&then_body[0])
+            && is_global_store(&else_body[0]);
         let branch_index = self.output.instructions.len();
         self.output
             .instructions
