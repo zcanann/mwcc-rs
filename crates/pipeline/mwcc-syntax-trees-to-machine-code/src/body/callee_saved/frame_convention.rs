@@ -215,6 +215,25 @@ impl Generator {
         // [stwu, mflr, scheduled gap..., stw LR] ->
         // [mflr, scheduled gap..., stw LR, stwu].
         self.output.instructions[..=link_store].rotate_left(1);
+        // The same linkage-first convention tears down in the inverse order:
+        // restore SP before writing LR. Most allocator-owned epilogues already
+        // arrive in that order; hand-emitted loop owners still carry the 2.4.x
+        // `mtlr; addi r1` pair, so normalize every such final pair here.
+        for index in 0..self.output.instructions.len().saturating_sub(1) {
+            if matches!(
+                self.output.instructions[index],
+                Instruction::MoveToLinkRegister { s: 0 }
+            ) && matches!(
+                self.output.instructions[index + 1],
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate
+                } if immediate == new_size
+            ) {
+                self.output.instructions.swap(index, index + 1);
+            }
+        }
         self.frame_size = new_size;
     }
 

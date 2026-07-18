@@ -94,7 +94,13 @@ impl Generator {
         // The loop's internal labels advance mwcc's anonymous-`@N` counter — by 6
         // for a do-while, by 4 for a while (the extra top branch, fewer labels).
         self.output.anonymous_label_bump = if matches!(kind, LoopKind::DoWhile) {
-            6
+            // Build 163's older rotated-loop form consumes one fewer internal
+            // ordinal even though the final instructions are otherwise the same.
+            if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+                5
+            } else {
+                6
+            }
         } else {
             4
         };
@@ -643,11 +649,7 @@ impl Generator {
             a: 1,
             offset: 8,
         });
-        self.output.instructions.push(Instruction::Or {
-            a: BOUND,
-            s: bound_incoming,
-            b: bound_incoming,
-        });
+        self.emit_integer_materialization_copy(BOUND, bound_incoming);
         let signed = self.signed_of(local.declared_type);
         self.locations.insert(
             counter.clone(),
