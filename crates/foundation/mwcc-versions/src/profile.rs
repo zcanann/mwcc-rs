@@ -213,6 +213,16 @@ pub enum NarrowCompoundShiftStyle {
     MaterializedCount,
 }
 
+/// Accumulator/exit convention for a logical OR used as an integer value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalOrValueStyle {
+    /// 2.4.x starts from false and materializes true at a shared taken path.
+    FalseFirst,
+    /// 2.3.3 starts from true and exits when either operand succeeds, falling
+    /// through to materialize false only when both fail.
+    TrueFirst,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -389,6 +399,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {
         NarrowCompoundShiftStyle::ImmediateInScratch
     }
+
+    fn logical_or_value_style(&self) -> LogicalOrValueStyle {
+        LogicalOrValueStyle::FalseFirst
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -504,6 +518,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {
         NarrowCompoundShiftStyle::MaterializedCount
+    }
+
+    fn logical_or_value_style(&self) -> LogicalOrValueStyle {
+        LogicalOrValueStyle::TrueFirst
     }
 }
 

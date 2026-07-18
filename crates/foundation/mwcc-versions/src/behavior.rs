@@ -16,10 +16,11 @@ use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, CoefficientTableRelocationStyle,
     FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle,
-    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, MaterializationCopyStyle,
-    NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowStoreCastStyle,
-    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, SymbolTraversalStyle, WideConstantAddSchedule,
+    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
+    MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
+    NarrowStoreCastStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
+    WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -80,6 +81,7 @@ pub enum Quirk {
     LegacyVerbatimAsmFrames,
     LegacyFixedAddressRmw,
     LegacyNarrowCompoundShift,
+    LegacyTrueFirstLogicalOr,
 }
 
 impl Quirk {
@@ -116,6 +118,7 @@ impl Quirk {
             Quirk::LegacyVerbatimAsmFrames => QuirkKind::Intentional,
             Quirk::LegacyFixedAddressRmw => QuirkKind::Intentional,
             Quirk::LegacyNarrowCompoundShift => QuirkKind::Intentional,
+            Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
         }
     }
 
@@ -206,6 +209,7 @@ impl Quirk {
             Quirk::LegacyNarrowCompoundShift => {
                 "narrow compound shifts materialize build 163's count register"
             }
+            Quirk::LegacyTrueFirstLogicalOr => "logical OR values use build 163's true-first exits",
         }
     }
 }
@@ -289,6 +293,8 @@ pub struct Behavior {
     pub fixed_address_rmw_style: FixedAddressRmwStyle,
     /// Constant right-shift lowering for narrow global compound assignments.
     pub narrow_compound_shift_style: NarrowCompoundShiftStyle,
+    /// Accumulator/exit convention for logical OR integer values.
+    pub logical_or_value_style: LogicalOrValueStyle,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -370,6 +376,7 @@ impl Behavior {
             asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
             fixed_address_rmw_style: config.build.profile.fixed_address_rmw_style(),
             narrow_compound_shift_style: config.build.profile.narrow_compound_shift_style(),
+            logical_or_value_style: config.build.profile.logical_or_value_style(),
             global_addressing: config.flags.global_addressing,
         }
     }
@@ -476,6 +483,9 @@ impl Behavior {
         if self.narrow_compound_shift_style == NarrowCompoundShiftStyle::MaterializedCount {
             quirks.push(ActiveQuirk::of(Quirk::LegacyNarrowCompoundShift));
         }
+        if self.logical_or_value_style == LogicalOrValueStyle::TrueFirst {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyTrueFirstLogicalOr));
+        }
         quirks
     }
 }
@@ -570,6 +580,10 @@ mod tests {
         assert_eq!(
             behavior.narrow_compound_shift_style,
             NarrowCompoundShiftStyle::MaterializedCount
+        );
+        assert_eq!(
+            behavior.logical_or_value_style,
+            LogicalOrValueStyle::TrueFirst
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
     }

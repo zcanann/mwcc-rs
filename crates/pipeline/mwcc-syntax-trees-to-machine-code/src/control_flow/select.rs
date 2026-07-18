@@ -73,6 +73,31 @@ impl Generator {
                     .push(Instruction::load_immediate(result, 1));
             }
             BinaryOperator::LogicalOr => {
+                if self.behavior.logical_or_value_style
+                    == mwcc_versions::LogicalOrValueStyle::TrueFirst
+                {
+                    let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(result, 1));
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: left_skip ^ 8,
+                            condition_bit: left_bit,
+                        });
+                    let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: right_skip ^ 8,
+                            condition_bit: right_bit,
+                        });
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(result, 0));
+                    return Ok(());
+                }
                 // test left; result 0; if left true skip to result 1; test right; return 0 if right false; result 1.
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
                 self.output
@@ -165,6 +190,28 @@ impl Generator {
                 }
             }
             BinaryOperator::LogicalOr => {
+                if self.behavior.logical_or_value_style
+                    == mwcc_versions::LogicalOrValueStyle::TrueFirst
+                {
+                    let (left_skip, left_bit) = self.emit_condition_test(left)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(scratch, 1));
+                    let exit = self.fresh_label();
+                    self.emit_branch_conditional_to(left_skip ^ 8, left_bit, exit);
+                    let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                    self.emit_branch_conditional_to(right_skip ^ 8, right_bit, exit);
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(scratch, 0));
+                    self.bind_label(exit);
+                    if result != scratch {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(result, scratch));
+                    }
+                    return Ok(());
+                }
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
                 self.output
                     .instructions
