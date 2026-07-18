@@ -3049,6 +3049,12 @@ impl Generator {
             return Ok(false);
         };
         let result = Eabi::general_result().number;
+        if self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        {
+            self.emit_legacy_select_diamond(condition, &then_arm, &else_arm, result)?;
+            return Ok(true);
+        }
         let then_const = matches!(then_arm, SelectArm::Constant(_));
         let else_const = matches!(else_arm, SelectArm::Constant(_));
 
@@ -3124,6 +3130,81 @@ impl Generator {
         }
         self.emit_epilogue_and_return();
         Ok(true)
+    }
+
+    /// Build 163's source-if select diamond. A false-arm copy normally owns the
+    /// phi register; two copies instead use the true source as the phi. Without
+    /// a false-arm copy, each arm returns directly rather than speculating a value.
+    fn emit_legacy_select_diamond(
+        &mut self,
+        condition: &Expression,
+        then_arm: &SelectArm,
+        else_arm: &SelectArm,
+        result: u8,
+    ) -> Compilation<()> {
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+
+        if let (SelectArm::Copy(then_phi), SelectArm::Copy(else_source)) =
+            (then_arm, else_arm)
+        {
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.emit_select_arm(&SelectArm::Copy(*else_source), *then_phi);
+            self.bind_label(join);
+            if *then_phi != result {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(result, *then_phi));
+            }
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
+
+        if let SelectArm::Copy(phi) = else_arm {
+            if *phi == result {
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options,
+                        condition_bit,
+                    });
+                self.emit_select_arm(then_arm, result);
+            } else {
+                let join = self.fresh_label();
+                self.emit_branch_conditional_to(options, condition_bit, join);
+                self.emit_select_arm(then_arm, *phi);
+                self.bind_label(join);
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(result, *phi));
+            }
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
+
+        if matches!(then_arm, SelectArm::Copy(source) if *source == result) {
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options: options ^ 8,
+                    condition_bit,
+                });
+            self.emit_select_arm(else_arm, result);
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
+
+        let false_arm = self.fresh_label();
+        self.emit_branch_conditional_to(options, condition_bit, false_arm);
+        self.emit_select_arm(then_arm, result);
+        self.emit_epilogue_and_return();
+        self.bind_label(false_arm);
+        self.emit_select_arm(else_arm, result);
+        self.emit_epilogue_and_return();
+        Ok(())
     }
 
     /// One select arm as a value: a register copy, a register ± constant, or a constant.
