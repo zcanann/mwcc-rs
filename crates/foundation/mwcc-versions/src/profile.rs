@@ -181,6 +181,18 @@ pub enum AsmBranchOptimizationStyle {
     PreserveWrittenTargets,
 }
 
+/// Frame and terminal-return handling for an `asm` function without
+/// `nofralloc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsmFunctionFinalizationStyle {
+    /// 2.4.x wraps stack-using bodies in its generated frame and appends `blr`
+    /// only when the written body falls through.
+    GeneratedFrame,
+    /// 2.3.3 leaves the written frame untouched and appends a terminal `blr`
+    /// even when the written body already ends in a control transfer.
+    VerbatimFrameWithTerminalReturn,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -345,6 +357,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn asm_branch_optimization_style(&self) -> AsmBranchOptimizationStyle {
         AsmBranchOptimizationStyle::ChaseAndCollapseReturns
     }
+
+    fn asm_function_finalization_style(&self) -> AsmFunctionFinalizationStyle {
+        AsmFunctionFinalizationStyle::GeneratedFrame
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -448,6 +464,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn asm_branch_optimization_style(&self) -> AsmBranchOptimizationStyle {
         AsmBranchOptimizationStyle::PreserveWrittenTargets
+    }
+
+    fn asm_function_finalization_style(&self) -> AsmFunctionFinalizationStyle {
+        AsmFunctionFinalizationStyle::VerbatimFrameWithTerminalReturn
     }
 }
 

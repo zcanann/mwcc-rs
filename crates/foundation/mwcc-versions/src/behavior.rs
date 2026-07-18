@@ -14,9 +14,9 @@
 use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
-    AsmBranchOptimizationStyle, CoefficientTableRelocationStyle, FrameConvention,
-    GlobalArrayIndexStyle, IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle,
-    LocalDataSymbolOrder, MaterializationCopyStyle, NarrowComputedReturnStyle,
+    AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, CoefficientTableRelocationStyle,
+    FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle, IntegerSelectStyle,
+    JumpTableBaseStyle, LocalDataSymbolOrder, MaterializationCopyStyle, NarrowComputedReturnStyle,
     NarrowStoreCastStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
     WideConstantAddSchedule,
@@ -77,6 +77,7 @@ pub enum Quirk {
     LegacyZeroBaseStaticInlineLabels,
     LegacyInferredArrayFullDataSection,
     LegacyPreservedAsmBranchTargets,
+    LegacyVerbatimAsmFrames,
 }
 
 impl Quirk {
@@ -110,6 +111,7 @@ impl Quirk {
             Quirk::LegacyZeroBaseStaticInlineLabels => QuirkKind::Intentional,
             Quirk::LegacyInferredArrayFullDataSection => QuirkKind::Intentional,
             Quirk::LegacyPreservedAsmBranchTargets => QuirkKind::Intentional,
+            Quirk::LegacyVerbatimAsmFrames => QuirkKind::Intentional,
         }
     }
 
@@ -191,6 +193,9 @@ impl Quirk {
             Quirk::LegacyPreservedAsmBranchTargets => {
                 "asm branches preserve their written labels in build 163"
             }
+            Quirk::LegacyVerbatimAsmFrames => {
+                "asm frames stay verbatim and receive build 163's terminal return"
+            }
         }
     }
 }
@@ -268,6 +273,8 @@ pub struct Behavior {
     pub inferred_array_uses_full_data_section: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
     pub asm_branch_optimization_style: AsmBranchOptimizationStyle,
+    /// Frame wrapper and implicit-return policy for `asm` functions.
+    pub asm_function_finalization_style: AsmFunctionFinalizationStyle,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -346,6 +353,7 @@ impl Behavior {
                 .profile
                 .inferred_array_uses_full_data_section(),
             asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
+            asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
             global_addressing: config.flags.global_addressing,
         }
     }
@@ -441,6 +449,11 @@ impl Behavior {
         {
             quirks.push(ActiveQuirk::of(Quirk::LegacyPreservedAsmBranchTargets));
         }
+        if self.asm_function_finalization_style
+            == AsmFunctionFinalizationStyle::VerbatimFrameWithTerminalReturn
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyVerbatimAsmFrames));
+        }
         quirks
     }
 }
@@ -523,6 +536,10 @@ mod tests {
         assert_eq!(
             behavior.asm_branch_optimization_style,
             AsmBranchOptimizationStyle::PreserveWrittenTargets
+        );
+        assert_eq!(
+            behavior.asm_function_finalization_style,
+            AsmFunctionFinalizationStyle::VerbatimFrameWithTerminalReturn
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
     }

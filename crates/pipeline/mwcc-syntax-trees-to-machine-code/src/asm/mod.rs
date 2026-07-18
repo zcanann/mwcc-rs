@@ -26,7 +26,7 @@ use mwcc_machine_code::{
     Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
 use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function};
-use mwcc_versions::{AsmBranchOptimizationStyle, Behavior};
+use mwcc_versions::{AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, Behavior};
 use std::collections::HashMap;
 
 /// Assemble an inline-`asm` function into a finished [`MachineFunction`]. The
@@ -40,14 +40,18 @@ pub(crate) fn assemble_asm_function(
         .as_ref()
         .expect("assemble_asm_function called on a non-asm function");
 
-    // An asm function WITHOUT a `nofralloc` directive that uses a stack frame gets an
-    // mwcc-generated 16-byte frame wrapped around the verbatim body (BfBB's clang-format
-    // runtime helpers). A frameless leaf (GetR2) has no `stwu`, so it stays verbatim.
+    // In 2.4.x, an asm function WITHOUT `nofralloc` that uses the stack gets a
+    // generated 16-byte frame around its body (BfBB's runtime helpers). Build
+    // 163 leaves the written frame verbatim; a frameless leaf stays verbatim in
+    // either generation.
     let mnemonics = |name: &str| {
         body.iter()
             .any(|item| matches!(item, AsmItem::Instruction(line) if line.mnemonic == name))
     };
-    let auto_frame = !mnemonics("nofralloc") && mnemonics("stwu");
+    let auto_frame = behavior.asm_function_finalization_style
+        == AsmFunctionFinalizationStyle::GeneratedFrame
+        && !mnemonics("nofralloc")
+        && mnemonics("stwu");
 
     // Pass 1: map each label to the index of the instruction it precedes (a label
     // with no following instruction points one past the end — the auto-`blr` slot),
@@ -117,12 +121,19 @@ pub(crate) fn assemble_asm_function(
             }
         }
     }
-    // mwcc appends an implicit `blr` unless the body already ends in a control
-    // transfer (an explicit `blr`, an unconditional branch, …). A `nofralloc`
-    // body is emitted fully VERBATIM — mwcc synthesizes no epilogue, so no
-    // implicit `blr` even when the last instruction is not a terminator (measured:
-    // OSSync.c's SystemCallVector, which ends `rfi; entry …End; nop`).
-    if !mnemonics("nofralloc") && !instructions.last().is_some_and(is_terminator) {
+    // Mainline appends `blr` only for fallthrough; build 163 appends one after
+    // every written body, including one that already ends in a control transfer.
+    // `nofralloc` suppresses both policies and remains fully verbatim (measured:
+    // OSSync.c's SystemCallVector ends `rfi; entry …End; nop`).
+    let written_body_end = instructions.len();
+    let append_terminal_return = !mnemonics("nofralloc")
+        && match behavior.asm_function_finalization_style {
+            AsmFunctionFinalizationStyle::GeneratedFrame => {
+                !instructions.last().is_some_and(is_terminator)
+            }
+            AsmFunctionFinalizationStyle::VerbatimFrameWithTerminalReturn => true,
+        };
+    if append_terminal_return {
         instructions.push(Instruction::BranchToLinkRegister);
     }
     // mwcc's asm branch peepholes (both discovered by probe): a branch whose target
@@ -137,7 +148,7 @@ pub(crate) fn assemble_asm_function(
             &mut instructions,
             &mut relocations,
             &mut entry_points,
-            frfree_position,
+            frfree_position.unwrap_or(written_body_end),
         )?;
     }
 
@@ -162,16 +173,15 @@ fn emits_word(line: &AsmInstruction) -> bool {
 
 /// Wrap an asm body that lacks `nofralloc` (but uses the stack) in mwcc's generated
 /// 16-byte frame: prologue `stwu r1,-16(r1); mr r31,r1` prepended, epilogue
-/// `mr r10,r1; lwz r1,0(r1)` inserted at the `frfree` directive (`frfree_position`,
-/// the index it fell on) — the frame-teardown marker in BfBB's `…; addi; frfree; blr`.
-/// A body with no `frfree` puts the epilogue at the very end (after the return).
+/// `mr r10,r1; lwz r1,0(r1)` inserted at the resolved epilogue position: the
+/// `frfree` directive when present, otherwise the end of the written body. Thus
+/// a compiler-appended `blr` follows teardown while a written `blr` precedes it.
 fn wrap_auto_frame(
     instructions: &mut Vec<Instruction>,
     relocations: &mut [Relocation],
     entry_points: &mut [(String, usize)],
-    frfree_position: Option<usize>,
+    insertion: usize,
 ) -> Compilation<()> {
-    let insertion = frfree_position.unwrap_or(instructions.len());
     // The prologue prepends two instructions (all indices +2), and the epilogue inserts
     // two more at `insertion` (indices at or past it shift another +2).
     let shift = |index: usize| index + 2 + if index >= insertion { 2 } else { 0 };
