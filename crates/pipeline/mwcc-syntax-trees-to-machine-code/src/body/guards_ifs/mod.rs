@@ -11,6 +11,16 @@ mod trailing_if;
 #[allow(unused_imports)]
 use super::*;
 
+impl Generator {
+    /// Whether a comparison's operands are both signed — the case in which
+    /// `emit_condition_test` emits a plain `cmpw`/`cmpwi` with no unsigned
+    /// equality fold, so another branch can consume the same CR0 value.
+    fn comparison_operands_signed(&self, condition: &Expression) -> bool {
+        matches!(condition, Expression::Binary { left, right, .. }
+            if self.signedness_of(left).unwrap_or(false) && self.signedness_of(right).unwrap_or(false))
+    }
+}
+
 /// Whether two conditions are relational comparisons of the SAME operand against the
 /// SAME value (`c > 0` and `c < 0`, both `cmpwi r3,0`). mwcc emits ONE compare and reads
 /// its condition register from both branches; our per-branch re-compare would emit a

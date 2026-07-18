@@ -43,14 +43,6 @@ impl Generator {
         self.emit_condition_test(condition)
     }
 
-    /// Whether a comparison's operands are both signed — the case in which
-    /// `emit_condition_test` emits a plain `cmpw`/`cmpwi` with no unsigned
-    /// equality-fold, so a second branch can ride the same cr0 via the raw table.
-    fn comparison_operands_signed(&self, condition: &Expression) -> bool {
-        matches!(condition, Expression::Binary { left, right, .. }
-            if self.signedness_of(left).unwrap_or(false) && self.signedness_of(right).unwrap_or(false))
-    }
-
     /// The body of [`emit_trailing_if`], threading `reuse_cr0`: when an `else if`
     /// compares the SAME operand against the SAME value as its parent, mwcc emits ONE
     /// `cmpwi` and both branches read that cr0 (`ble`/`bge` off the same compare). The

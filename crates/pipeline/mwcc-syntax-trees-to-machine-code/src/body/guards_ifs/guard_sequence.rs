@@ -4,6 +4,33 @@
 use super::*;
 
 impl Generator {
+    /// Whether build 163 can let `current` branch from the CR0 value produced by
+    /// `previous`.  The false path of an early-return guard reaches the next
+    /// guard without executing an instruction that changes CR0.
+    fn guard_reuses_previous_cr0(
+        &self,
+        previous: &Expression,
+        current: &Expression,
+    ) -> bool {
+        self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+            && shares_condition_register(previous, current)
+            && self.comparison_operands_signed(previous)
+    }
+
+    /// Return the branch-if-false encoding for a comparison whose operands are
+    /// already represented in CR0.
+    fn reused_guard_branch(condition: &Expression) -> Compilation<(u8, u8)> {
+        let Expression::Binary { operator, .. } = condition else {
+            return Err(Diagnostic::error(
+                "guard CR0 reuse expects a comparison (roadmap)",
+            ));
+        };
+        false_branch_bo_bi(*operator).ok_or_else(|| {
+            Diagnostic::error("guard CR0 reuse expects a relational comparison (roadmap)")
+        })
+    }
+
     pub(crate) fn emit_guard_sequence(
         &mut self,
         guards: &[GuardedReturn],
@@ -20,9 +47,8 @@ impl Generator {
 
         // mwcc reuses one `cmpwi` across consecutive guards that test the same operand against the
         // same constant: `if (a < 0) ...; if (a == 0) ...` shares `cmpwi r3,0`, the second guard
-        // branching on the same result (`bne`). That cross-guard condition-register reuse is not
-        // modeled — each guard here emits its own compare — so a sequence containing such a pair
-        // would emit a redundant second `cmpwi` (a byte diff). Defer it rather than ship that.
+        // branching on the same result (`bne`). Build 163 preserves the guards and threads CR0;
+        // mainline may instead remove the second comparison through a branchless tail fold.
         let guard_count = guards.len();
         for (pair_index, pair) in guards.windows(2).enumerate() {
             if let (Some(first), Some(second)) = (
@@ -30,6 +56,12 @@ impl Generator {
                 guard_comparison_key(&pair[1].condition),
             ) {
                 if first == second {
+                    if self.guard_reuses_previous_cr0(
+                        &pair[0].condition,
+                        &pair[1].condition,
+                    ) {
+                        continue;
+                    }
                     // When the SECOND guard of the pair is the LAST guard, it folds with the final
                     // return into a select (the `is_last` path below). If that select lowers
                     // branchlessly (sign-mask `srawi`/`srwi`, or a consecutive-constant sign select)
@@ -74,6 +106,11 @@ impl Generator {
 
         for (index, guard) in guards.iter().enumerate() {
             let is_last = index + 1 == guards.len();
+            let reuse_cr0 = index > 0
+                && self.guard_reuses_previous_cr0(
+                    &guards[index - 1].condition,
+                    &guard.condition,
+                );
 
             // A null-guarded dereference `if (!p) return CONST; return *p;` cannot fold branchless
             // (dereferencing null is unsafe); mwcc emits a real branch with the deref in the
@@ -129,6 +166,31 @@ impl Generator {
             // is a constant (the select's constant-arm forms cover `(a>10) ? 1 : a` etc., which
             // the in-result `bnelr` path below cannot — it needs a register value).
             if is_last && (!final_in_result || constant_value(&guard.value).is_some()) {
+                // The legacy tail is still a source-level guard diamond.  Its
+                // first branch reads the previous guard's comparison directly;
+                // evaluating a synthesized select would redundantly re-compare.
+                if reuse_cr0 {
+                    let (options, condition_bit) = Self::reused_guard_branch(&guard.condition)?;
+                    let false_branch = self.output.instructions.len();
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options,
+                            condition_bit,
+                            target: 0,
+                        });
+                    self.evaluate_tail(&guard.value, return_type, result)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchToLinkRegister);
+                    let false_arm = self.output.instructions.len();
+                    self.patch_forward(false_branch, false_arm);
+                    self.evaluate_tail(final_return, return_type, result)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchToLinkRegister);
+                    return Ok(());
+                }
                 let select = if_select(
                     &guard.condition,
                     &guard.value,
@@ -163,7 +225,11 @@ impl Generator {
                 }
             }
 
-            let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
+            let (options, condition_bit) = if reuse_cr0 {
+                Self::reused_guard_branch(&guard.condition)?
+            } else {
+                self.emit_condition_test(&guard.condition)?
+            };
             // A (non-last) guard with a CONSTANT value: forward-branch past the return when the
             // condition is false, load the constant into the result, and return —
             // `cmpwi; bge skip; li result, c; blr; skip:`. (A constant has no leaf register, so the
