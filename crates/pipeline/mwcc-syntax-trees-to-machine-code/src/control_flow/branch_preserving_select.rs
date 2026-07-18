@@ -3,6 +3,90 @@
 use super::*;
 
 impl Generator {
+    /// Build 163's leaf/computed tail selects normally merge through the leaf
+    /// register when the leaf is the true arm. A power-of-two multiply is the
+    /// exception: mwcc mutates the ABI result register in place and returns from
+    /// each arm, regardless of which side contains the multiply.
+    pub(crate) fn try_emit_legacy_leaf_computed_tail_select(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+        tail: bool,
+        origin: ConditionalOrigin,
+    ) -> Compilation<bool> {
+        if self.behavior.integer_select_style
+            != mwcc_versions::IntegerSelectStyle::BranchPreserving
+            || self.non_leaf
+            || !tail
+            || origin == ConditionalOrigin::IfAssignments
+            || self.is_float_value(when_true)
+            || self.is_float_value(when_false)
+        {
+            return Ok(false);
+        }
+        if super::absolute_value::absolute_value_target(condition, when_true, when_false).is_some() {
+            return Ok(false);
+        }
+        let true_register = leaf_name(when_true).and_then(|name| self.lookup_general(name));
+        let false_register = leaf_name(when_false).and_then(|name| self.lookup_general(name));
+        if true_register == Some(destination) || false_register == Some(destination) {
+            return Ok(false);
+        }
+        let true_computed = self.is_single_op_register_value(when_true);
+        let false_computed = self.is_single_op_register_value(when_false);
+        if !((true_register.is_some() && false_computed)
+            || (true_computed && false_register.is_some()))
+        {
+            return Ok(false);
+        }
+
+        let power_of_two_multiply = |arm: &Expression| {
+            matches!(arm,
+                Expression::Binary { operator: BinaryOperator::Multiply, left, right }
+                    if [left.as_ref(), right.as_ref()].iter().any(|operand|
+                        constant_value(operand).is_some_and(|value|
+                            value > 0 && (value & (value - 1)) == 0)))
+        };
+        let computed_arm = if true_computed {
+            when_true
+        } else {
+            when_false
+        };
+        if power_of_two_multiply(computed_arm) {
+            self.output.anonymous_label_bump += 3;
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_branch = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
+            self.evaluate_general(when_true, destination)?;
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
+            let false_arm = self.output.instructions.len();
+            self.patch_forward(false_branch, false_arm);
+            self.evaluate_general(when_false, destination)?;
+            return Ok(true);
+        }
+
+        let Some(phi) = true_register else {
+            return Ok(false);
+        };
+        self.emit_legacy_phi_merge(condition, when_true, when_false, phi, true)?;
+        if destination != phi {
+            self.output
+                .instructions
+                .push(Instruction::move_register(destination, phi));
+        }
+        Ok(true)
+    }
+
     /// Build 163 keeps a tail select containing one or two single-op computed
     /// arms as two return paths. The other arm may be a 16-bit constant; leaf
     /// merges and conditional assignments use separate lowering paths.
@@ -183,7 +267,7 @@ impl Generator {
                 .push(Instruction::Branch { target: 0 });
             let false_arm = self.output.instructions.len();
             self.patch_forward(false_branch, false_arm);
-            self.place_select_value(when_false, phi)?;
+            self.place_legacy_phi_value(when_false, phi)?;
             let join = self.output.instructions.len();
             if let Instruction::Branch { target } = &mut self.output.instructions[join_branch] {
                 *target = join;
@@ -199,11 +283,23 @@ impl Generator {
                     condition_bit,
                     target: 0,
                 });
-            self.place_select_value(when_true, phi)?;
+            self.place_legacy_phi_value(when_true, phi)?;
             let join = self.output.instructions.len();
             self.patch_forward(false_branch, join);
         }
         Ok(())
+    }
+
+    fn place_legacy_phi_value(
+        &mut self,
+        value: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        if self.is_single_op_register_value(value) {
+            self.evaluate_general(value, destination)
+        } else {
+            self.place_select_value(value, destination)
+        }
     }
 }
 

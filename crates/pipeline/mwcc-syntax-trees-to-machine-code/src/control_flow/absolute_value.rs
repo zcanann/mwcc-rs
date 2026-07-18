@@ -113,7 +113,7 @@ impl Generator {
 }
 
 /// The shared signed leaf and whether the non-negated value is the true arm.
-fn absolute_value_target<'e>(
+pub(super) fn absolute_value_target<'e>(
     condition: &'e Expression,
     when_true: &'e Expression,
     when_false: &'e Expression,
