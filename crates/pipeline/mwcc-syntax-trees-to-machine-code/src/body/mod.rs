@@ -2,6 +2,7 @@
 //!
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
+mod call_prologue;
 mod callee_saved;
 mod conditional;
 mod dispatchers;
