@@ -18,7 +18,7 @@ use crate::profile::{
     FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowStoreCastStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
+    NarrowStoreConversionStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
     WideConstantAddSchedule,
 };
@@ -61,7 +61,7 @@ pub enum Quirk {
     LegacyFullWidthNarrowComputedReturn,
     LegacyCarryCorrectedPowerOfTwoDivision,
     LegacyEarlyInPlaceJumpTableBase,
-    LegacyPartialNarrowStoreCastElision,
+    LegacyPartialNarrowStoreConversionElision,
     LegacyExplicitGlobalArrayAddress,
     LegacyZeroEqualityNegate,
     LegacyReloadingPunnedFloatFrame,
@@ -98,7 +98,7 @@ impl Quirk {
             Quirk::LegacyFullWidthNarrowComputedReturn => QuirkKind::Intentional,
             Quirk::LegacyCarryCorrectedPowerOfTwoDivision => QuirkKind::Intentional,
             Quirk::LegacyEarlyInPlaceJumpTableBase => QuirkKind::Intentional,
-            Quirk::LegacyPartialNarrowStoreCastElision => QuirkKind::Intentional,
+            Quirk::LegacyPartialNarrowStoreConversionElision => QuirkKind::Intentional,
             Quirk::LegacyExplicitGlobalArrayAddress => QuirkKind::Intentional,
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
             Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
@@ -149,8 +149,8 @@ impl Quirk {
             Quirk::LegacyEarlyInPlaceJumpTableBase => {
                 "jump tables finish their base in place before scaling the index in build 163"
             }
-            Quirk::LegacyPartialNarrowStoreCastElision => {
-                "signed narrow stores preserve casts outside build 163's binary-ALU fold set"
+            Quirk::LegacyPartialNarrowStoreConversionElision => {
+                "signed narrow stores preserve conversions outside build 163's binary-ALU fold set"
             }
             Quirk::LegacyExplicitGlobalArrayAddress => {
                 "variable global-array indexes form an explicit address in build 163"
@@ -253,8 +253,8 @@ pub struct Behavior {
     pub signed_power_of_two_division_style: SignedPowerOfTwoDivisionStyle,
     /// Address-materialization schedule for switch jump tables.
     pub jump_table_base_style: JumpTableBaseStyle,
-    /// Elimination policy for redundant signed narrow casts before narrow stores.
-    pub narrow_store_cast_style: NarrowStoreCastStyle,
+    /// Elimination policy for redundant signed narrow conversions before narrow stores.
+    pub narrow_store_conversion_style: NarrowStoreConversionStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Whether zero equality negates its value into r0 before `cntlzw`.
@@ -344,7 +344,7 @@ impl Behavior {
                 .profile
                 .signed_power_of_two_division_style(),
             jump_table_base_style: config.build.profile.jump_table_base_style(),
-            narrow_store_cast_style: config.build.profile.narrow_store_cast_style(),
+            narrow_store_conversion_style: config.build.profile.narrow_store_conversion_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
@@ -414,8 +414,12 @@ impl Behavior {
         if self.jump_table_base_style == JumpTableBaseStyle::EarlyInPlace {
             quirks.push(ActiveQuirk::of(Quirk::LegacyEarlyInPlaceJumpTableBase));
         }
-        if self.narrow_store_cast_style == NarrowStoreCastStyle::PreserveOutsideBinaryAlu {
-            quirks.push(ActiveQuirk::of(Quirk::LegacyPartialNarrowStoreCastElision));
+        if self.narrow_store_conversion_style
+            == NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
+        {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyPartialNarrowStoreConversionElision,
+            ));
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));

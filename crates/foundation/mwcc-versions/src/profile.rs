@@ -69,14 +69,15 @@ pub enum JumpTableBaseStyle {
     EarlyInPlace,
 }
 
-/// Elimination policy for a signed narrowing cast immediately consumed by a
-/// byte/halfword store of the same width.
+/// Elimination policy for an explicit or implicit signed narrowing conversion
+/// immediately consumed by a byte/halfword store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NarrowStoreCastStyle {
-    /// 2.4.x recognizes the store itself truncates and removes the cast.
-    ElideRedundantCast,
+pub enum NarrowStoreConversionStyle {
+    /// 2.4.x recognizes the store itself truncates and removes the conversion.
+    ElideRedundantConversion,
     /// 2.3.3 removes the cast only after truncation-safe binary ALU operators;
-    /// scalar/load, shift, unary, divide, and remainder operands keep it.
+    /// wider scalar/load/call, shift, unary, divide, and remainder operands keep
+    /// both explicit casts and implicit assignment conversions.
     PreserveOutsideBinaryAlu,
 }
 
@@ -309,8 +310,8 @@ pub trait CodegenProfile: core::fmt::Debug {
         JumpTableBaseStyle::LateCopyToResultRegister
     }
 
-    fn narrow_store_cast_style(&self) -> NarrowStoreCastStyle {
-        NarrowStoreCastStyle::ElideRedundantCast
+    fn narrow_store_conversion_style(&self) -> NarrowStoreConversionStyle {
+        NarrowStoreConversionStyle::ElideRedundantConversion
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
@@ -454,8 +455,8 @@ impl CodegenProfile for Gc233Build163 {
     fn jump_table_base_style(&self) -> JumpTableBaseStyle {
         JumpTableBaseStyle::EarlyInPlace
     }
-    fn narrow_store_cast_style(&self) -> NarrowStoreCastStyle {
-        NarrowStoreCastStyle::PreserveOutsideBinaryAlu
+    fn narrow_store_conversion_style(&self) -> NarrowStoreConversionStyle {
+        NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {

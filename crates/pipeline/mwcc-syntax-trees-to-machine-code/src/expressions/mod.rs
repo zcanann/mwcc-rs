@@ -7,6 +7,7 @@ mod calls;
 mod driver;
 mod global_array_index;
 mod globals;
+mod implicit_narrow_store;
 mod members;
 mod narrow_compound;
 mod operands;

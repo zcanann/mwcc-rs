@@ -1,5 +1,6 @@
 //! Assignment and store placement, comma side effects.
 
+use super::implicit_narrow_store::legacy_narrow_store_binary_alu;
 #[allow(unused_imports)]
 use super::*;
 
@@ -717,6 +718,9 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.place_store_value(right, pointee);
         }
+        if let Some(source) = self.try_place_converted_narrow_store_constant(value, pointee) {
+            return Ok(source);
+        }
         // A constant pre-materialized into a fixed register (a distinct-constant
         // store run) reuses that register instead of re-materializing.
         if let Some(constant) = constant_value(value) {
@@ -878,6 +882,9 @@ impl Generator {
                 return Err(Diagnostic::error("a narrow value stored to a wider integer target needs a widening coercion (roadmap)"));
             }
         }
+        if let Some(source) = self.try_place_implicit_narrow_store_value(value, pointee)? {
+            return Ok(source);
+        }
         if let Expression::Variable(name) = value {
             // A bare identifier that is neither a local nor a known data global is
             // an external symbol (a function, typically) — store its *address*. mwcc
@@ -942,8 +949,8 @@ impl Generator {
         } = value
         {
             if target_type.width() < 32 && pointee.element().width() <= target_type.width() {
-                let legacy_preserves_cast = self.behavior.narrow_store_cast_style
-                    == mwcc_versions::NarrowStoreCastStyle::PreserveOutsideBinaryAlu
+                let legacy_preserves_cast = self.behavior.narrow_store_conversion_style
+                    == mwcc_versions::NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
                     && self.signed_of(*target_type)
                     && !self.is_float_value(operand)
                     && !self.is_float_operand(operand)
@@ -1022,22 +1029,4 @@ impl Generator {
         evaluated?;
         Ok(GENERAL_SCRATCH)
     }
-}
-
-/// Build 163's older redundant-cast pass recognizes only binary operations whose
-/// low result bits are independent of the discarded high bits. Other integer
-/// operands retain an explicit `extsb`/`extsh` before the narrow store.
-fn legacy_narrow_store_binary_alu(expression: &Expression) -> bool {
-    matches!(
-        expression,
-        Expression::Binary {
-            operator: BinaryOperator::Add
-                | BinaryOperator::Subtract
-                | BinaryOperator::Multiply
-                | BinaryOperator::BitAnd
-                | BinaryOperator::BitOr
-                | BinaryOperator::BitXor,
-            ..
-        }
-    )
 }
