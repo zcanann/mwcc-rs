@@ -284,6 +284,22 @@ impl Generator {
         }
         let index_register = self.general_register_of_leaf(index)?;
         let shift = stride.trailing_zeros() as u8;
+        if self.emit_legacy_global_struct_array_address(
+            name,
+            total_size,
+            index_register,
+            stride,
+            offset,
+            destination,
+        )? {
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                destination,
+                offset as i16,
+            )?);
+            return Ok(());
+        }
         let small =
             self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
         if small {
@@ -399,6 +415,28 @@ impl Generator {
         }
         let index_register = self.general_register_of_leaf(index)?;
         let shift = stride.trailing_zeros() as u8;
+        if self.emit_legacy_global_struct_array_address(
+            name,
+            total_size,
+            index_register,
+            stride,
+            offset,
+            index_register,
+        )? {
+            let source = if let Some(constant) = constant_value(value) {
+                self.load_integer_constant(GENERAL_SCRATCH, constant);
+                GENERAL_SCRATCH
+            } else {
+                self.general_register_of_leaf(value)?
+            };
+            self.output.instructions.push(displacement_store(
+                pointee,
+                source,
+                index_register,
+                offset as i16,
+            )?);
+            return Ok(());
+        }
         // `@ha` is a VIRTUAL the allocator places: the index/value pinned ranges force
         // it past them, and a constant value's reuse of the register is the same vreg
         // redefined (one spanning range — the allocator keeps the home).

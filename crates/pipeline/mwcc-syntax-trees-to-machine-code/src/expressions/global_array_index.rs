@@ -81,6 +81,71 @@ impl Generator {
         Ok(true)
     }
 
+    /// Form the address of a variable-indexed global struct-array element using
+    /// build 163's offset-sensitive schedule. A zero-offset member scales into
+    /// the eventual address register between `lis` and `addi`; a nonzero member
+    /// first materializes the base, then scales through r0.
+    pub(crate) fn emit_legacy_global_struct_array_address(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        index: u8,
+        stride: u16,
+        member_offset: u16,
+        address: u8,
+    ) -> Compilation<bool> {
+        if self.behavior.global_array_index_style
+            != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
+            || !stride.is_power_of_two()
+        {
+            return Ok(false);
+        }
+        let high = self.fresh_virtual_general();
+        self.emit_address_high(high, name);
+        let shift = stride.trailing_zeros() as u8;
+        if member_offset == 0 {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: address,
+                    s: index,
+                    shift,
+                });
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: high,
+                immediate: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: address,
+                a: GENERAL_SCRATCH,
+                b: address,
+            });
+        } else {
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: high,
+                a: high,
+                immediate: 0,
+            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: index,
+                    shift,
+                });
+            self.output.instructions.push(Instruction::Add {
+                d: address,
+                a: high,
+                b: GENERAL_SCRATCH,
+            });
+        }
+        Ok(true)
+    }
+
     pub(crate) fn emit_legacy_global_array_variable_store(
         &mut self,
         name: &str,
