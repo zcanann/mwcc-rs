@@ -69,6 +69,17 @@ pub enum JumpTableBaseStyle {
     EarlyInPlace,
 }
 
+/// Elimination policy for a signed narrowing cast immediately consumed by a
+/// byte/halfword store of the same width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrowStoreCastStyle {
+    /// 2.4.x recognizes the store itself truncates and removes the cast.
+    ElideRedundantCast,
+    /// 2.3.3 removes the cast only after truncation-safe binary ALU operators;
+    /// scalar/load, shift, unary, divide, and remainder operands keep it.
+    PreserveOutsideBinaryAlu,
+}
+
 /// Instruction shape used for a variable-indexed file-scope array element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalArrayIndexStyle {
@@ -246,6 +257,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         JumpTableBaseStyle::LateCopyToResultRegister
     }
 
+    fn narrow_store_cast_style(&self) -> NarrowStoreCastStyle {
+        NarrowStoreCastStyle::ElideRedundantCast
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -366,6 +381,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn jump_table_base_style(&self) -> JumpTableBaseStyle {
         JumpTableBaseStyle::EarlyInPlace
+    }
+    fn narrow_store_cast_style(&self) -> NarrowStoreCastStyle {
+        NarrowStoreCastStyle::PreserveOutsideBinaryAlu
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {

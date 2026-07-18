@@ -937,6 +937,17 @@ impl Generator {
         } = value
         {
             if target_type.width() < 32 && pointee.element().width() <= target_type.width() {
+                let legacy_preserves_cast = self.behavior.narrow_store_cast_style
+                    == mwcc_versions::NarrowStoreCastStyle::PreserveOutsideBinaryAlu
+                    && self.signed_of(*target_type)
+                    && !self.is_float_value(operand)
+                    && !self.is_float_operand(operand)
+                    && !matches!(operand.as_ref(), Expression::Call { .. })
+                    && !legacy_narrow_store_binary_alu(operand);
+                if legacy_preserves_cast {
+                    self.emit_cast_to_integer(*target_type, operand, GENERAL_SCRATCH)?;
+                    return Ok(GENERAL_SCRATCH);
+                }
                 // An integer leaf stores straight from its own register (no scratch move).
                 if matches!(operand.as_ref(), Expression::Variable(name) if self.lookup_general(name).is_some())
                 {
@@ -1006,4 +1017,22 @@ impl Generator {
         evaluated?;
         Ok(GENERAL_SCRATCH)
     }
+}
+
+/// Build 163's older redundant-cast pass recognizes only binary operations whose
+/// low result bits are independent of the discarded high bits. Other integer
+/// operands retain an explicit `extsb`/`extsh` before the narrow store.
+fn legacy_narrow_store_binary_alu(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Binary {
+            operator: BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::Multiply
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitXor,
+            ..
+        }
+    )
 }
