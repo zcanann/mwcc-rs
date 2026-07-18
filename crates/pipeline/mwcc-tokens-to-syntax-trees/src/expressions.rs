@@ -2,7 +2,7 @@
 //! unary operators, casts, and primary factors.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{BinaryOperator, Expression, Type, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, ConditionalOrigin, Expression, Type, UnaryOperator};
 use mwcc_tokens::Token;
 
 use crate::parser::Parser;
@@ -59,6 +59,7 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
             condition,
             when_true,
             when_false,
+            ..
         } => {
             if fold_constant_expression(condition)? != 0 {
                 fold_constant_expression(when_true)?
@@ -197,6 +198,7 @@ impl Parser {
                 condition: Box::new(condition),
                 when_true: Box::new(when_true),
                 when_false: Box::new(when_false),
+                origin: ConditionalOrigin::Ternary,
             });
         }
         // assignment is the lowest precedence and right-associative: `a = b = c`.
@@ -1071,10 +1073,12 @@ pub(crate) fn substitute_variables(
             condition,
             when_true,
             when_false,
+            origin,
         } => Expression::Conditional {
             condition: Box::new(substitute_variables(condition, map)),
             when_true: Box::new(substitute_variables(when_true, map)),
             when_false: Box::new(substitute_variables(when_false, map)),
+            origin: *origin,
         },
         Expression::Call { name, arguments } => Expression::Call {
             name: name.clone(),

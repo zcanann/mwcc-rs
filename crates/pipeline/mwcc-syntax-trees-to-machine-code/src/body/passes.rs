@@ -103,15 +103,14 @@ pub(crate) fn guarded_null_dereference<'a>(
     None
 }
 
-/// The branchless select for a guard `if (cond) return value;` with fall-through
-/// `default`. mwcc keeps the *guard value* as the in-place default, so a negated
-/// guard `if (!c) ...` is compiled by stripping the `!` and swapping the arms —
-/// `(c) ? default : value` — not as the bare `(!c) ? value : default` a ternary
-/// would (mwcc normalizes only on the guard path, not a written ternary).
-pub(crate) fn guard_select(
+/// Convert a source-level `if` with two value-producing paths into its select
+/// representation while retaining the source form. mwcc strips a leading `!`
+/// and swaps the arms for `if (!c)`, unlike an explicitly written ternary.
+pub(crate) fn normalized_if_select(
     condition: &Expression,
     value: &Expression,
     default: &Expression,
+    origin: mwcc_syntax_trees::ConditionalOrigin,
 ) -> Expression {
     if let Expression::Unary {
         operator: UnaryOperator::LogicalNot,
@@ -122,12 +121,14 @@ pub(crate) fn guard_select(
             condition: Box::new((**operand).clone()),
             when_true: Box::new(default.clone()),
             when_false: Box::new(value.clone()),
+            origin,
         }
     } else {
         Expression::Conditional {
             condition: Box::new(condition.clone()),
             when_true: Box::new(value.clone()),
             when_false: Box::new(default.clone()),
+            origin,
         }
     }
 }
@@ -1484,9 +1485,7 @@ pub(crate) fn function_calls_any(
             | E::BitFieldRead {
                 extracted: operand, ..
             }
-            | E::AddressOf { operand } => {
-                expression_calls(operand, names)
-            }
+            | E::AddressOf { operand } => expression_calls(operand, names),
             E::Dereference { pointer } => expression_calls(pointer, names),
             E::Index { base, index } => {
                 expression_calls(base, names) || expression_calls(index, names)
@@ -1496,6 +1495,7 @@ pub(crate) fn function_calls_any(
                 condition,
                 when_true,
                 when_false,
+                ..
             } => {
                 expression_calls(condition, names)
                     || expression_calls(when_true, names)

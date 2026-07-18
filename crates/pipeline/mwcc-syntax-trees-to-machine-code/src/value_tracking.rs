@@ -876,6 +876,7 @@ fn used_in_sign_sensitive_op(
             condition,
             when_true,
             when_false,
+            ..
         } => {
             used_in_sign_sensitive_op(condition, names)
                 || used_in_sign_sensitive_op(when_true, names)
@@ -958,6 +959,7 @@ fn has_additive_chain(expression: &Expression) -> bool {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             has_additive_chain(condition)
                 || has_additive_chain(when_true)
@@ -1016,6 +1018,7 @@ fn count_references(name: &str, expression: &Expression) -> usize {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             count_references(name, condition)
                 + count_references(name, when_true)
@@ -1080,10 +1083,12 @@ pub(crate) fn substitute(
             condition,
             when_true,
             when_false,
+            origin,
         } => Expression::Conditional {
             condition: Box::new(substitute(condition, values)),
             when_true: Box::new(substitute(when_true, values)),
             when_false: Box::new(substitute(when_false, values)),
+            origin: *origin,
         },
         Expression::Cast {
             target_type,

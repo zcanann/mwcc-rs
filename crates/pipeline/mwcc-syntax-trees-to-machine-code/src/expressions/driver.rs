@@ -423,8 +423,13 @@ impl Generator {
                 }
                 self.emit_unary(*operator, operand, destination)
             }
-            Expression::Conditional { condition, when_true, when_false } => {
-                self.emit_conditional(condition, when_true, when_false, destination, false)
+            Expression::Conditional {
+                condition,
+                when_true,
+                when_false,
+                origin,
+            } => {
+                self.emit_conditional(condition, when_true, when_false, destination, false, *origin)
             }
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),

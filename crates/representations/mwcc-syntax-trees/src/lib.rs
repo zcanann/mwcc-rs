@@ -7,7 +7,11 @@ mod function;
 mod operators;
 mod types;
 
-pub use expression::Expression;
-pub use function::{ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, PointerElement, Statement, SwitchArm, TranslationUnit};
+pub use expression::{ConditionalOrigin, Expression};
+pub use function::{
+    ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, GlobalDeclaration,
+    GuardedReturn, LocalDeclaration, LoopKind, Parameter, PointerElement, Statement, SwitchArm,
+    TranslationUnit,
+};
 pub use operators::{BinaryOperator, UnaryOperator};
 pub use types::{Pointee, Type};

@@ -77,6 +77,7 @@ impl Generator {
                 condition,
                 when_true,
                 when_false,
+                ..
             } => {
                 self.contains_narrow_leaf(condition)
                     || self.contains_narrow_leaf(when_true)

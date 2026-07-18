@@ -997,6 +997,7 @@ impl Generator {
             condition,
             when_true,
             when_false,
+            origin,
         } = value
         {
             if leaf_name(when_true).is_some()
@@ -1005,7 +1006,14 @@ impl Generator {
                 && constant_value(when_false).is_none()
             {
                 let false_register = self.general_register_of_leaf(when_false)?;
-                self.emit_conditional(condition, when_true, when_false, false_register, false)?;
+                self.emit_conditional(
+                    condition,
+                    when_true,
+                    when_false,
+                    false_register,
+                    false,
+                    *origin,
+                )?;
                 return Ok(false_register);
             }
         }

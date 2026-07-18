@@ -3426,7 +3426,12 @@ impl Generator {
                         return Ok(());
                     }
                 }
-                let select = guard_select(&guard.condition, &guard.value, return_expression);
+                let select = normalized_if_select(
+                    &guard.condition,
+                    &guard.value,
+                    return_expression,
+                    mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+                );
                 // ATTEMPT the select; a fall-through outside its vocabulary (a
                 // table load, a cast) uses mwcc's early-return BRANCH instead
                 // (measured) — roll back and take the guard-sequence path.
@@ -3747,6 +3752,7 @@ impl Generator {
                 condition,
                 when_true,
                 when_false,
+                origin,
             } => match value_type {
                 Type::Float | Type::Double => {
                     self.emit_float_conditional(condition, when_true, when_false, result, true)
@@ -3760,7 +3766,9 @@ impl Generator {
                     let relocations_before = self.output.relocations.len();
                     let virtuals_before = self.next_virtual;
                     let bump_before = self.output.anonymous_label_bump;
-                    match self.emit_conditional(condition, when_true, when_false, result, true) {
+                    match self
+                        .emit_conditional(condition, when_true, when_false, result, true, *origin)
+                    {
                         Ok(()) => Ok(()),
                         Err(error) => {
                             self.output.instructions.truncate(instructions_before);
@@ -3960,6 +3968,7 @@ impl Generator {
                     condition,
                     when_true,
                     when_false,
+                    ..
                 } => {
                     feeds_an_addition(name, condition)
                         || feeds_an_addition(name, when_true)

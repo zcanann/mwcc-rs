@@ -11,8 +11,8 @@ mod types;
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
-    Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter,
-    Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
+    ConditionalOrigin, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration,
+    LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
 };
 use mwcc_tokens::Token;
 
@@ -150,6 +150,7 @@ pub(crate) fn expression_calls(
             condition,
             when_true,
             when_false,
+            ..
         } => {
             expression_calls(condition, names)
                 || expression_calls(when_true, names)
@@ -3377,6 +3378,7 @@ fn collapse_if_return_chain(statements: &mut Vec<Statement>) {
             condition: Box::new(condition),
             when_true: Box::new(when_true),
             when_false: Box::new(when_false),
+            origin: ConditionalOrigin::IfReturns,
         })));
     }
 }

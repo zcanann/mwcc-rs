@@ -2760,6 +2760,7 @@ fn walk(expression: &Expression, names: &mut HashSet<String>) {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             walk(condition, names);
             walk(when_true, names);

@@ -563,6 +563,13 @@ pub(crate) fn ast_hash(function: &Function) -> u64 {
     // multi-dim local has no template), so stripping it preserves all ~130 hashes —
     // the same fire-465 re-bake hazard the `section` strip above avoids.
     let key = key.replace(", row_bytes: None", "");
+    // Conditional source provenance guides generic instruction selection but is
+    // not part of a capture's historical identity. Strip every variant so adding
+    // the metadata does not invalidate the baked hashes of captured functions.
+    let key = key
+        .replace(", origin: Ternary", "")
+        .replace(", origin: IfReturns", "")
+        .replace(", origin: IfAssignments", "");
     key.hash(&mut hasher);
     hasher.finish()
 }

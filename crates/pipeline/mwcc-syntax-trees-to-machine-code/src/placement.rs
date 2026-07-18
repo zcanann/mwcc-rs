@@ -615,6 +615,7 @@ impl Generator {
                 condition,
                 when_true,
                 when_false,
+                ..
             } => {
                 self.collect_registers(condition, registers);
                 self.collect_registers(when_true, registers);

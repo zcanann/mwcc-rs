@@ -211,7 +211,12 @@ impl Generator {
                 Ok(())
             }
             Expression::Unary { .. } => Err(Diagnostic::error("only float negation is supported as a float unary")),
-            Expression::Conditional { condition, when_true, when_false } => {
+            Expression::Conditional {
+                condition,
+                when_true,
+                when_false,
+                ..
+            } => {
                 self.emit_float_conditional(condition, when_true, when_false, destination, false)
             }
             Expression::Cast { operand, target_type } => self.emit_cast_to_float(operand, destination, *target_type == Type::Double),

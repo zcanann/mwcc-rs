@@ -19,6 +19,7 @@ impl Generator {
         when_false: &Expression,
         destination: u8,
         tail: bool,
+        origin: ConditionalOrigin,
     ) -> Compilation<()> {
         // A logical (&&/||) condition feeding a select/guard would compute the operator as a
         // 0/1 value and then re-normalize/select on it (`(a&&b) ? 1 : 0` -> `(a&&b) != 0`),
@@ -48,6 +49,7 @@ impl Generator {
                 condition: inner_condition,
                 when_true: inner_true,
                 when_false: inner_false,
+                origin: inner_origin,
             } = when_false
             {
                 if leaf_name(when_true).is_some() || constant_value(when_true).is_some() {
@@ -76,6 +78,7 @@ impl Generator {
                         inner_false,
                         destination,
                         tail,
+                        *inner_origin,
                     );
                 }
             }
@@ -106,12 +109,13 @@ impl Generator {
         let simple_arm =
             |arm: &Expression| leaf_name(arm).is_some() || constant_value(arm).is_some();
         let integer_arms = !self.is_float_value(when_true) && !self.is_float_value(when_false);
-        if self.try_emit_legacy_memory_select(
+        if self.try_emit_legacy_phi_select(
             condition,
             when_true,
             when_false,
             destination,
             tail,
+            origin,
         )? {
             return Ok(());
         }

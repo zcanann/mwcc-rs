@@ -1,21 +1,22 @@
-//! Build-163 merge lowering for integer selects tested by a memory load.
+//! Build-163 shared-register lowering for simple integer selects.
 
 use super::*;
 
 impl Generator {
-    pub(crate) fn try_emit_legacy_memory_select(
+    pub(crate) fn try_emit_legacy_phi_select(
         &mut self,
         condition: &Expression,
         when_true: &Expression,
         when_false: &Expression,
         destination: u8,
         tail: bool,
+        origin: ConditionalOrigin,
     ) -> Compilation<bool> {
         if self.behavior.integer_select_style != mwcc_versions::IntegerSelectStyle::BranchPreserving
             || !tail
-            || !memory_test_condition(condition)
             || self.is_float_value(when_true)
             || self.is_float_value(when_false)
+            || origin == ConditionalOrigin::IfReturns
         {
             return Ok(false);
         }
@@ -29,6 +30,22 @@ impl Generator {
         let Some(phi) = true_register.or(false_register) else {
             return Ok(false);
         };
+        // A true arm already in the ABI result register takes mwcc's compact
+        // conditional-return form (max/min/clamp). The same applies when the
+        // only leaf is a false arm already in the result register.
+        if true_register == Some(destination)
+            || (true_register.is_none() && false_register == Some(destination))
+        {
+            return Ok(false);
+        }
+        let false_leaf_reads_condition =
+            leaf_name(when_false).is_some_and(|name| expression_reads_name(condition, name));
+        if true_register.is_none()
+            && !memory_test_condition(condition)
+            && !false_leaf_reads_condition
+        {
+            return Ok(false);
+        }
 
         self.output.anonymous_label_bump += 3;
         let (options, condition_bit) = self.emit_condition_test(condition)?;

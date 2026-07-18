@@ -415,13 +415,21 @@ impl Generator {
             condition,
             when_true,
             when_false,
+            origin,
         } = select
         else {
             return Ok(false);
         };
         let shifted_true = Expression::IntegerLiteral(constant_value(when_true).unwrap() + delta);
         let shifted_false = Expression::IntegerLiteral(constant_value(when_false).unwrap() + delta);
-        self.emit_conditional(condition, &shifted_true, &shifted_false, destination, false)?;
+        self.emit_conditional(
+            condition,
+            &shifted_true,
+            &shifted_false,
+            destination,
+            false,
+            *origin,
+        )?;
         Ok(true)
     }
 }

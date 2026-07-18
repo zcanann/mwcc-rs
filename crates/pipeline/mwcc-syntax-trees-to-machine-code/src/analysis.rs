@@ -163,6 +163,7 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
             condition,
             when_true,
             when_false,
+            ..
         } => {
             count_name_occurrences(condition, name)
                 + count_name_occurrences(when_true, name)
@@ -389,6 +390,7 @@ pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             contains_complex_add(condition)
                 || contains_complex_add(when_true)
@@ -453,6 +455,7 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             contains_commutative_shift_left(condition)
                 || contains_commutative_shift_left(when_true)
@@ -514,6 +517,7 @@ fn collect_register_reads(
             condition,
             when_true,
             when_false,
+            ..
         } => {
             collect_register_reads(condition, registers, collected);
             collect_register_reads(when_true, registers, collected);
@@ -689,6 +693,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
             condition,
             when_true,
             when_false,
+            ..
         } => {
             reads_register_after_call(condition, registers)
                 || reads_register_after_call(when_true, registers)
@@ -743,9 +748,7 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand } => {
-            reads_register(operand, registers)
-        }
+        | Expression::IndexedUpdateValue { value: operand } => reads_register(operand, registers),
         Expression::Dereference { pointer } => reads_register(pointer, registers),
         Expression::AddressOf { operand } => reads_register(operand, registers),
         Expression::Index { base, index } => {
@@ -758,6 +761,7 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
             condition,
             when_true,
             when_false,
+            ..
         } => {
             reads_register(condition, registers)
                 || reads_register(when_true, registers)
@@ -806,6 +810,7 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             expression_has_call(condition)
                 || expression_has_call(when_true)
@@ -845,13 +850,12 @@ pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand } => {
-            expression_has_side_effect(operand)
-        }
+        | Expression::IndexedUpdateValue { value: operand } => expression_has_side_effect(operand),
         Expression::Conditional {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             expression_has_side_effect(condition)
                 || expression_has_side_effect(when_true)
@@ -1136,13 +1140,20 @@ pub(crate) fn structurally_equal(a: &Expression, b: &Expression) -> bool {
                 condition: ca,
                 when_true: ta,
                 when_false: fa,
+                origin: oa,
             },
             Expression::Conditional {
                 condition: cb,
                 when_true: tb,
                 when_false: fb,
+                origin: ob,
             },
-        ) => structurally_equal(ca, cb) && structurally_equal(ta, tb) && structurally_equal(fa, fb),
+        ) => {
+            oa == ob
+                && structurally_equal(ca, cb)
+                && structurally_equal(ta, tb)
+                && structurally_equal(fa, fb)
+        }
         (
             Expression::Cast {
                 target_type: ta,
@@ -1300,6 +1311,7 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
             condition,
             when_true,
             when_false,
+            ..
         } => {
             collect_computed_subexpressions(condition, into);
             collect_computed_subexpressions(when_true, into);
@@ -1766,6 +1778,7 @@ pub(crate) fn expression_reads_memory(
             condition,
             when_true,
             when_false,
+            ..
         } => {
             expression_reads_memory(condition, register_names)
                 || expression_reads_memory(when_true, register_names)

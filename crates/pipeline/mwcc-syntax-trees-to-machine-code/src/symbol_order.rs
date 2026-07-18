@@ -103,6 +103,7 @@ fn contains_call(expression: &Expression) -> bool {
             condition,
             when_true,
             when_false,
+            ..
         } => contains_call(condition) || contains_call(when_true) || contains_call(when_false),
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
@@ -288,6 +289,7 @@ fn collect(expression: &Expression, names: &mut Names) {
             condition,
             when_true,
             when_false,
+            ..
         } => {
             collect(condition, names);
             collect(when_true, names);

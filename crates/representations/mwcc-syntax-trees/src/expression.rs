@@ -3,6 +3,18 @@
 use crate::operators::{BinaryOperator, UnaryOperator};
 use crate::types::{Pointee, Type};
 
+/// The source-level construct represented by a conditional expression.
+///
+/// Some mwcc releases select different control-flow shapes for an explicitly
+/// written ternary, an if/return chain, and an if/else assignment even after
+/// those constructs have otherwise converged on the same value expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionalOrigin {
+    Ternary,
+    IfReturns,
+    IfAssignments,
+}
+
 /// An expression.
 #[derive(Debug, Clone)]
 pub enum Expression {
@@ -36,6 +48,7 @@ pub enum Expression {
         condition: Box<Expression>,
         when_true: Box<Expression>,
         when_false: Box<Expression>,
+        origin: ConditionalOrigin,
     },
     Cast {
         target_type: Type,

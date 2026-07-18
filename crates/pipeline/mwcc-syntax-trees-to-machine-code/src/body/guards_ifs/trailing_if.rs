@@ -103,6 +103,7 @@ impl Generator {
                     condition: Box::new(condition.clone()),
                     when_true: Box::new(then_value.clone()),
                     when_false: Box::new(else_value.clone()),
+                    origin: mwcc_syntax_trees::ConditionalOrigin::IfAssignments,
                 };
                 return self.emit_store(then_target, &select);
             }

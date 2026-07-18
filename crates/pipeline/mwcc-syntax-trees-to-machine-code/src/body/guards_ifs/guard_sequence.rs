@@ -43,11 +43,17 @@ impl Generator {
                     if second_is_last
                         && (!final_in_result || constant_value(&pair[1].value).is_some())
                     {
-                        let select = guard_select(&pair[1].condition, &pair[1].value, final_return);
+                        let select = normalized_if_select(
+                            &pair[1].condition,
+                            &pair[1].value,
+                            final_return,
+                            mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+                        );
                         if let Expression::Conditional {
                             condition,
                             when_true,
                             when_false,
+                            ..
                         } = &select
                         {
                             if crate::control_flow::select_folds_branchless(
@@ -121,7 +127,12 @@ impl Generator {
             // is a constant (the select's constant-arm forms cover `(a>10) ? 1 : a` etc., which
             // the in-result `bnelr` path below cannot — it needs a register value).
             if is_last && (!final_in_result || constant_value(&guard.value).is_some()) {
-                let select = guard_select(&guard.condition, &guard.value, final_return);
+                let select = normalized_if_select(
+                    &guard.condition,
+                    &guard.value,
+                    final_return,
+                    mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+                );
                 // ATTEMPT the select; when its lowering has no vocabulary for
                 // the fall-through (a table load, a cast) mwcc uses a real
                 // early-return BRANCH instead (measured: `cmpwi;bne;li;blr;

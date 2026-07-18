@@ -23,8 +23,9 @@ impl Generator {
     /// match.
     /// `T y; if (c) y = A; else y = B; return y;` — both arms assign the same local,
     /// which is then returned, so the body is the select `return (c) ? A : B`. mwcc
-    /// compiles it identically to `if (c) return A; return B`. A call in the body
-    /// (value live across a branch) is the keystone's and defers.
+    /// remains distinct from a return guard in releases whose register merge
+    /// policy depends on source form. A call in the body (value live across a
+    /// branch) is the keystone's and defers.
     pub(crate) fn try_conditional_assign(&mut self, function: &Function) -> Compilation<bool> {
         let [local] = function.locals.as_slice() else {
             return Ok(false);
@@ -63,7 +64,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // guard_select's early-return / in-place layout matches mwcc only when the fall-through
+        // The early-return / in-place layout matches mwcc only when the fall-through
         // (else) arm is itself a leaf. With an initializer present, a LEAF then-arm and a COMPUTED
         // else-arm (`int y=a; if(c) y=b; else y=a+1;`) drive mwcc to a SCRATCH-select
         // (`<test>; <else into r0>; b<!c>; <then into r0>; mr result,r0`) that this path does not
@@ -81,8 +82,13 @@ impl Generator {
         // `if (c) y = A; else y = B;` is the guard `if (c) y = A` with fall-through B
         // — mwcc normalizes a negated `if (!c)` the same way it does a guard return
         // (keep A as the in-place default, strip the `!`), so route through
-        // guard_select rather than a bare `(c) ? A : B` select.
-        let select = guard_select(condition, &when_true, &when_false);
+        // normalized_if_select rather than a bare `(c) ? A : B` select.
+        let select = normalized_if_select(
+            condition,
+            &when_true,
+            &when_false,
+            mwcc_syntax_trees::ConditionalOrigin::IfAssignments,
+        );
         self.evaluate_tail(&select, function.return_type, result)?;
         self.output
             .instructions
