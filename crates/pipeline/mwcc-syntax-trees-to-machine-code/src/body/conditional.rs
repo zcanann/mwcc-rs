@@ -2926,6 +2926,34 @@ impl Generator {
             return Ok(true);
         }
 
+        // Build 163 preserves the source if/else diamond here. When the returned
+        // parameter already occupies r3, each arm exits directly; otherwise the
+        // arms join at one final move from the parameter's home register.
+        if self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let else_label = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, else_label);
+            self.emit_conditional_reassign_body(&then_order, home)?;
+            if home == result {
+                self.emit_epilogue_and_return();
+                self.bind_label(else_label);
+                self.emit_conditional_reassign_body(&else_order, home)?;
+            } else {
+                let join = self.fresh_label();
+                self.emit_branch_to(join);
+                self.bind_label(else_label);
+                self.emit_conditional_reassign_body(&else_order, home)?;
+                self.bind_label(join);
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(result, home));
+            }
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
+
         // RE-TEST SPLIT: two independent guards — the then-arm, then the same compare
         // RE-EMITTED with the branch sense inverted for the else-arm; the second guard
         // folds to a conditional return when the merge is empty (the single-sided rules).
