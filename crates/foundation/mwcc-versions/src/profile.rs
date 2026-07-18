@@ -267,6 +267,16 @@ pub enum NarrowGuardScheduleStyle {
     CompareFirstDeclarationOrder,
 }
 
+/// Instruction ordering used by the specialized `__va_arg` ALIGN schedules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VaArgScheduleStyle {
+    /// 2.4.x fills independent latency slots with store/address computations.
+    LatencyInterleaved,
+    /// Build 163 serializes the byte-store constant through r0 and preserves
+    /// the address-before-store-value order in the register-counter arm.
+    SerialScratch,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -346,6 +356,10 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     fn narrow_guard_schedule_style(&self) -> NarrowGuardScheduleStyle {
         NarrowGuardScheduleStyle::LatencyInterleavedConsumerTree
+    }
+
+    fn va_arg_schedule_style(&self) -> VaArgScheduleStyle {
+        VaArgScheduleStyle::LatencyInterleaved
     }
 
     /// How integer `condition ? 1 : 0` (and its complement) is lowered.
@@ -517,6 +531,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn narrow_guard_schedule_style(&self) -> NarrowGuardScheduleStyle {
         NarrowGuardScheduleStyle::CompareFirstDeclarationOrder
+    }
+
+    fn va_arg_schedule_style(&self) -> VaArgScheduleStyle {
+        VaArgScheduleStyle::SerialScratch
     }
 
     fn legacy_float_cast_schedule(&self) -> bool {

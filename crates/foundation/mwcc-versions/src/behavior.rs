@@ -20,7 +20,7 @@ use crate::profile::{
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
     NarrowGuardScheduleStyle, NarrowStoreConversionStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle, VaArgScheduleStyle,
     WideConstantAddSchedule,
 };
 
@@ -89,6 +89,7 @@ pub enum Quirk {
     LegacyConstantJoinReturnBeforeLrReload,
     LegacyGuardStoreBeforeReturnValue,
     LegacyCompareFirstNarrowGuards,
+    LegacySerialVaArgSchedule,
 }
 
 impl Quirk {
@@ -132,6 +133,7 @@ impl Quirk {
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
             Quirk::LegacyCompareFirstNarrowGuards => QuirkKind::Intentional,
+            Quirk::LegacySerialVaArgSchedule => QuirkKind::Intentional,
         }
     }
 
@@ -241,6 +243,9 @@ impl Quirk {
             Quirk::LegacyCompareFirstNarrowGuards => {
                 "narrow guards use build 163's compare-first declaration-order schedule"
             }
+            Quirk::LegacySerialVaArgSchedule => {
+                "__va_arg ALIGN paths use build 163's serial r0 schedule"
+            }
         }
     }
 }
@@ -280,6 +285,8 @@ pub struct Behavior {
     pub guard_store_precedes_return_value: bool,
     /// Scheduling and local-home policy for narrow integer guard blocks.
     pub narrow_guard_schedule_style: NarrowGuardScheduleStyle,
+    /// Scheduling policy for specialized `__va_arg` ALIGN paths.
+    pub va_arg_schedule_style: VaArgScheduleStyle,
     /// Lowering of canonical integer boolean ternaries.
     pub integer_select_style: IntegerSelectStyle,
     /// Instruction family for integer comparisons materialized as 0/1 values.
@@ -388,6 +395,7 @@ impl Behavior {
                 .profile
                 .guard_store_precedes_return_value(),
             narrow_guard_schedule_style: config.build.profile.narrow_guard_schedule_style(),
+            va_arg_schedule_style: config.build.profile.va_arg_schedule_style(),
             integer_select_style: config.build.profile.integer_select_style(),
             integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
             narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
@@ -569,6 +577,9 @@ impl Behavior {
         {
             quirks.push(ActiveQuirk::of(Quirk::LegacyCompareFirstNarrowGuards));
         }
+        if self.va_arg_schedule_style == VaArgScheduleStyle::SerialScratch {
+            quirks.push(ActiveQuirk::of(Quirk::LegacySerialVaArgSchedule));
+        }
         quirks
     }
 }
@@ -626,6 +637,7 @@ mod tests {
             behavior.narrow_guard_schedule_style,
             NarrowGuardScheduleStyle::CompareFirstDeclarationOrder
         );
+        assert_eq!(behavior.va_arg_schedule_style, VaArgScheduleStyle::SerialScratch);
         assert!(behavior.legacy_float_cast_schedule);
         assert_eq!(
             behavior.integer_select_style,

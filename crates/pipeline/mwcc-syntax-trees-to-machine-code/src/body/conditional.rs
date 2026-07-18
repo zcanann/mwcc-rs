@@ -153,7 +153,14 @@ impl Generator {
             .unwrap()
             + 1;
         let addr_home = arm.reg_register; // reclaimed once the store consumed it
-        self.emit_align_store_arm(&arm, value_register, addr_home);
+        let store_register = if self.behavior.va_arg_schedule_style
+            == mwcc_versions::VaArgScheduleStyle::SerialScratch
+        {
+            GENERAL_SCRATCH
+        } else {
+            value_register
+        };
+        self.emit_align_store_arm(&arm, store_register, value_register, addr_home);
         self.output
             .instructions
             .push(Instruction::move_register(result, addr_home));
@@ -320,20 +327,37 @@ impl Generator {
 
     /// Emit the measured ALIGN-arm schedule (everything up to and including the
     /// member store-back; the caller emits the join/return).
-    fn emit_align_store_arm(&mut self, arm: &AlignStoreArm, value_register: u8, addr_home: u8) {
-        self.load_integer_constant(value_register, i64::from(arm.store_constant));
+    fn emit_align_store_arm(
+        &mut self,
+        arm: &AlignStoreArm,
+        store_register: u8,
+        mask_register: u8,
+        addr_home: u8,
+    ) {
+        self.load_integer_constant(store_register, i64::from(arm.store_constant));
+        let serial_scratch = self.behavior.va_arg_schedule_style
+            == mwcc_versions::VaArgScheduleStyle::SerialScratch;
+        if serial_scratch {
+            self.output.instructions.push(Instruction::StoreByte {
+                s: store_register,
+                a: arm.reg_register,
+                offset: 0,
+            });
+        }
         self.output.instructions.push(Instruction::AddImmediate {
             d: GENERAL_SCRATCH,
             a: arm.size_register,
             immediate: -1,
         });
-        self.output.instructions.push(Instruction::StoreByte {
-            s: value_register,
-            a: arm.reg_register,
-            offset: 0,
-        });
+        if !serial_scratch {
+            self.output.instructions.push(Instruction::StoreByte {
+                s: store_register,
+                a: arm.reg_register,
+                offset: 0,
+            });
+        }
         self.output.instructions.push(Instruction::Nor {
-            a: value_register,
+            a: mask_register,
             s: GENERAL_SCRATCH,
             b: GENERAL_SCRATCH,
         });
@@ -354,7 +378,7 @@ impl Generator {
         });
         self.output.instructions.push(Instruction::And {
             a: addr_home,
-            s: value_register,
+            s: mask_register,
             b: GENERAL_SCRATCH,
         });
         self.output.instructions.push(Instruction::Add {
@@ -786,16 +810,31 @@ impl Generator {
             a: arm.list_register,
             offset: *then_offset as i16,
         });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: GENERAL_SCRATCH,
-            a: g_register,
-            immediate: store_value,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: arm.list_register,
-            a: g_register,
-            immediate: pre_increment,
-        });
+        let serial_scratch = self.behavior.va_arg_schedule_style
+            == mwcc_versions::VaArgScheduleStyle::SerialScratch;
+        if serial_scratch {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: arm.list_register,
+                a: g_register,
+                immediate: pre_increment,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: g_register,
+                immediate: store_value,
+            });
+        } else {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: g_register,
+                immediate: store_value,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: arm.list_register,
+                a: g_register,
+                immediate: pre_increment,
+            });
+        }
         if shift > 0 {
             self.output
                 .instructions
@@ -827,7 +866,17 @@ impl Generator {
         }
         // Else arm: the fire-672 schedule; g's register (dead past the compare)
         // is the value register, reg's the join home.
-        self.emit_align_store_arm(&arm, g_register, arm.reg_register);
+        let store_register = if serial_scratch {
+            GENERAL_SCRATCH
+        } else {
+            g_register
+        };
+        self.emit_align_store_arm(
+            &arm,
+            store_register,
+            g_register,
+            arm.reg_register,
+        );
         let join = self.output.instructions.len();
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_index] {
             *target = join;
