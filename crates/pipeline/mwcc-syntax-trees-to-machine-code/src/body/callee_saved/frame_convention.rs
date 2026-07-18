@@ -332,6 +332,7 @@ impl Generator {
             }
         }
         self.output.instructions[..=link_store].rotate_left(1);
+        self.delay_plain_frame_update_past_narrow_condition(link_store);
         for index in 0..self.output.instructions.len().saturating_sub(1) {
             if matches!(
                 self.output.instructions[index],
@@ -348,6 +349,68 @@ impl Generator {
             }
         }
         self.frame_size = 8;
+    }
+
+    /// Move a build-163 plain frame's final stack update past a register-only
+    /// narrow condition prefix. Memory conditions deliberately stay below the
+    /// update because their load uses r0 after LR is safely stored.
+    fn delay_plain_frame_update_past_narrow_condition(&mut self, frame_update: usize) {
+        if !matches!(
+            self.output.instructions.get(frame_update),
+            Some(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -8
+            })
+        ) {
+            return;
+        }
+
+        // Build 163 delays the final stack update until after a register-only
+        // narrow condition has been widened/compared. Memory conditions stay
+        // below the update because their load uses r0 after LR is safely stored.
+        // Keep this normalization deliberately narrow: it only crosses the
+        // extension/mask + compare family, never a load or arbitrary ALU node.
+        let Some(branch_offset) = self.output.instructions[frame_update + 1..]
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::BranchConditionalForward { .. })
+            })
+        else {
+            return;
+        };
+        let branch = frame_update + 1 + branch_offset;
+        let prefix = &self.output.instructions[frame_update + 1..branch];
+        let contains_narrowing = prefix.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::ExtendSignByte { .. }
+                    | Instruction::ExtendSignByteRecord { .. }
+                    | Instruction::ExtendSignHalfword { .. }
+                    | Instruction::ExtendSignHalfwordRecord { .. }
+                    | Instruction::ClearLeftImmediate { .. }
+                    | Instruction::ClearLeftImmediateRecord { .. }
+            )
+        });
+        let is_narrow_compare_prefix = !prefix.is_empty()
+            && prefix.iter().all(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::ExtendSignByte { .. }
+                        | Instruction::ExtendSignByteRecord { .. }
+                        | Instruction::ExtendSignHalfword { .. }
+                        | Instruction::ExtendSignHalfwordRecord { .. }
+                        | Instruction::ClearLeftImmediate { .. }
+                        | Instruction::ClearLeftImmediateRecord { .. }
+                        | Instruction::CompareWordImmediate { .. }
+                        | Instruction::CompareWord { .. }
+                        | Instruction::CompareLogicalWordImmediate { .. }
+                        | Instruction::CompareLogicalWord { .. }
+                )
+            });
+        if contains_narrowing && is_narrow_compare_prefix {
+            self.output.instructions[frame_update..branch].rotate_left(1);
+        }
     }
 
     /// Build 163 reserves an additional eight bytes below the spill image for
