@@ -4,6 +4,57 @@
 use super::*;
 
 impl Generator {
+    /// Build 163 materializes the low relocated byte-table base in r0, adds the
+    /// unscaled (optionally u8-normalized) index to form one element address,
+    /// then loads through displacement zero instead of using `lbzx`.
+    pub(crate) fn emit_legacy_global_byte_array_variable_load(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        pointee: Pointee,
+        index: u8,
+        normalize_unsigned_byte: bool,
+        destination: u8,
+    ) -> Compilation<bool> {
+        if self.behavior.global_array_index_style
+            != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
+        {
+            return Ok(false);
+        }
+        let high = self.fresh_virtual_general();
+        self.emit_address_high(high, name);
+        if normalize_unsigned_byte {
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: index,
+                    s: index,
+                    clear: 24,
+                });
+        }
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: high,
+            immediate: 0,
+        });
+        let address = if destination == GENERAL_SCRATCH {
+            index
+        } else {
+            destination
+        };
+        self.output.instructions.push(Instruction::Add {
+            d: address,
+            a: GENERAL_SCRATCH,
+            b: index,
+        });
+        self.output
+            .instructions
+            .push(displacement_load(pointee, destination, address, 0)?);
+        Ok(true)
+    }
+
     pub(crate) fn emit_legacy_global_array_variable_load(
         &mut self,
         name: &str,

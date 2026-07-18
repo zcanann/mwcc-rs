@@ -924,6 +924,18 @@ impl Generator {
                     return Err(Diagnostic::error("an unsigned short parameter as a byte-array index is not supported yet (roadmap)"));
                 }
             }
+            let legacy_index_expression = byte_normalized.unwrap_or(index);
+            let legacy_index = self.general_register_of_leaf(legacy_index_expression)?;
+            if self.emit_legacy_global_byte_array_variable_load(
+                name,
+                total_size,
+                pointee,
+                legacy_index,
+                byte_normalized.is_some(),
+                destination,
+            )? {
+                return Ok(());
+            }
             if let Some(operand) = byte_normalized {
                 let source = self.general_register_of_leaf(operand)?;
                 let high = self.fresh_virtual_general();
