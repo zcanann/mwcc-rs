@@ -20,6 +20,26 @@ impl Generator {
         &self,
         function: &Function,
     ) -> Option<Function> {
+        // GC/1.2.5n preserves the source-order early-return diamond.  Its later
+        // integer-select pipeline does not perform the guard/tail folds modeled by
+        // value tracking, even when moving the guard would be semantically safe.
+        let legacy_source_order_guard = matches!(
+            function.statements.first(),
+            Some(Statement::If {
+                condition,
+                then_body,
+                else_body,
+            }) if else_body.is_empty()
+                && matches!(then_body.as_slice(), [Statement::Return(Some(value))]
+                    if matches!(value, Expression::Variable(_))
+                        || !matches!(condition, Expression::Variable(_)))
+        );
+        if self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+            && legacy_source_order_guard
+        {
+            return None;
+        }
         if !matches!(function.statements.first(), Some(Statement::If { .. })) {
             return None;
         }

@@ -4,6 +4,55 @@
 use super::*;
 
 impl Generator {
+    fn emit_ordered_early_return_with_tracked_tail(
+        &mut self,
+        function: &Function,
+        condition: &Expression,
+        value: &Expression,
+        tail: &[Statement],
+    ) -> Compilation<()> {
+        let result = mwcc_target::Eabi::general_result().number;
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result))
+        {
+            // A value already in r3 reduces the source diamond to a conditional return.
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options: options ^ 8,
+                    condition_bit,
+                });
+        } else {
+            let branch_index = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
+            self.evaluate_tail(value, function.return_type, result)?;
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
+            let continuation = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_index]
+            {
+                *target = continuation;
+            }
+        }
+
+        let reduced = Function {
+            statements: tail.to_vec(),
+            ..function.clone()
+        };
+        if !self.try_value_tracking(&reduced)? {
+            return Err(Diagnostic::error("an ordered early-return continuation outside the value-tracking shape is not supported yet (roadmap)"));
+        }
+        Ok(())
+    }
+
     /// The ordered early-return BRANCH form: a single leading `if (c) return v;` whose body
     /// continues with pure reassignments. Where the constant fold does not apply (a register
     /// guard value, or a tail still reading the result register's parameter), mwcc emits a
@@ -533,55 +582,26 @@ impl Generator {
             .filter(|parameter| tail_reads_parameter(&parameter.name))
             .count();
 
+        // The legacy branch-preserving pipeline keeps an ordered early return ahead
+        // of its continuation.  If the guarded value is already in r3 this is a
+        // conditional return (`b<true>lr`); otherwise it is the literal source
+        // diamond followed by the independently compiled value-tracked tail.
+        if self.behavior.integer_select_style
+            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+            && !reads_written(condition)
+        {
+            self.emit_ordered_early_return_with_tracked_tail(
+                function, condition, value, rest,
+            )?;
+            return Ok(true);
+        }
+
         // The branch form is mwcc's shape for a tail reading TWO-plus distinct parameters
         // (`add r3,r4,r5` after the branch), with a condition reading no reassigned name.
         if distinct_parameter_reads >= 2 && !reads_written(condition) {
-            // The guard block: branch past it when the condition is false, else the value and
-            // return. emit_condition_test yields the skip-when-false encoding directly.
-            let result = mwcc_target::Eabi::general_result().number;
-            let (options, condition_bit) = self.emit_condition_test(condition)?;
-            if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result))
-            {
-                // The guard VALUE already occupies the result register, so mwcc returns it with a
-                // single conditional branch-to-lr (`bgtlr`) — the forward branch over a `blr` whose
-                // value move would be a no-op is redundant. options^8 turns the skip-when-false
-                // encoding into return-when-true.
-                self.output
-                    .instructions
-                    .push(Instruction::BranchConditionalToLinkRegister {
-                        options: options ^ 8,
-                        condition_bit,
-                    });
-            } else {
-                let branch_index = self.output.instructions.len();
-                self.output
-                    .instructions
-                    .push(Instruction::BranchConditionalForward {
-                        options,
-                        condition_bit,
-                        target: 0,
-                    });
-                self.evaluate_tail(value, function.return_type, result)?;
-                self.output
-                    .instructions
-                    .push(Instruction::BranchToLinkRegister);
-                let continuation = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } =
-                    &mut self.output.instructions[branch_index]
-                {
-                    *target = continuation;
-                }
-            }
-
-            // The continuation is a pure value-tracking body; anything it cannot compile must
-            // DEFER (the guard block is already in the output).
-            let reduced = Function {
-                statements: rest.to_vec(),
-                ..function.clone()
-            };
-            if !self.try_value_tracking(&reduced)? {
-                return Err(Diagnostic::error("an early-return continuation outside the value-tracking shape is not supported yet (roadmap)"));
-            }
+            self.emit_ordered_early_return_with_tracked_tail(
+                function, condition, value, rest,
+            )?;
             return Ok(true);
         }
 
