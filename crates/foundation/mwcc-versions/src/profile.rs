@@ -327,6 +327,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// Whether an ordered early-return guard with a materialized store tail
+    /// emits the store before materializing the continuation's return value.
+    fn guard_store_precedes_return_value(&self) -> bool {
+        false
+    }
+
     /// How integer `condition ? 1 : 0` (and its complement) is lowered.
     fn integer_select_style(&self) -> IntegerSelectStyle {
         IntegerSelectStyle::Branchless
@@ -487,6 +493,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn constant_join_return_precedes_lr_reload(&self) -> bool {
+        true
+    }
+
+    fn guard_store_precedes_return_value(&self) -> bool {
         true
     }
 

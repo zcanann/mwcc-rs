@@ -526,15 +526,22 @@ impl Generator {
                     )?);
                     emit_return_value(self);
                 } else {
-                    // CASE B — materialize the value in r0, schedule the return between, then store.
+                    // CASE B — materialize the value in r0. Mainline schedules the return
+                    // between production and the store; build 163 completes the store first.
                     self.evaluate_general(stored, GENERAL_SCRATCH)?;
-                    emit_return_value(self);
-                    self.output.instructions.push(displacement_store(
+                    let store = displacement_store(
                         pointee,
                         GENERAL_SCRATCH,
                         pointer_register,
                         offset,
-                    )?);
+                    )?;
+                    if self.behavior.guard_store_precedes_return_value {
+                        self.output.instructions.push(store);
+                        emit_return_value(self);
+                    } else {
+                        emit_return_value(self);
+                        self.output.instructions.push(store);
+                    }
                 }
                 self.emit_epilogue_and_return();
                 return Ok(true);

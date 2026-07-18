@@ -87,6 +87,7 @@ pub enum Quirk {
     LegacyInterleavedConstantStores,
     LegacyInPlaceBitFieldExtraction,
     LegacyConstantJoinReturnBeforeLrReload,
+    LegacyGuardStoreBeforeReturnValue,
 }
 
 impl Quirk {
@@ -128,6 +129,7 @@ impl Quirk {
             Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
+            Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
         }
     }
 
@@ -231,6 +233,9 @@ impl Quirk {
             Quirk::LegacyConstantJoinReturnBeforeLrReload => {
                 "constant non-leaf join returns precede build 163's link-register reload"
             }
+            Quirk::LegacyGuardStoreBeforeReturnValue => {
+                "guarded continuation stores precede build 163's return materialization"
+            }
         }
     }
 }
@@ -266,6 +271,8 @@ pub struct Behavior {
     pub emit_leaf_frame_unwind: bool,
     /// Whether constant non-leaf join returns precede the saved-LR reload.
     pub constant_join_return_precedes_lr_reload: bool,
+    /// Whether guarded continuation stores precede return-value materialization.
+    pub guard_store_precedes_return_value: bool,
     /// Lowering of canonical integer boolean ternaries.
     pub integer_select_style: IntegerSelectStyle,
     /// Instruction family for integer comparisons materialized as 0/1 values.
@@ -369,6 +376,10 @@ impl Behavior {
                 .build
                 .profile
                 .constant_join_return_precedes_lr_reload(),
+            guard_store_precedes_return_value: config
+                .build
+                .profile
+                .guard_store_precedes_return_value(),
             integer_select_style: config.build.profile.integer_select_style(),
             integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
             narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
@@ -540,6 +551,11 @@ impl Behavior {
                 Quirk::LegacyConstantJoinReturnBeforeLrReload,
             ));
         }
+        if self.guard_store_precedes_return_value {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyGuardStoreBeforeReturnValue,
+            ));
+        }
         quirks
     }
 }
@@ -592,6 +608,7 @@ mod tests {
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
         assert!(!behavior.emit_leaf_frame_unwind);
         assert!(behavior.constant_join_return_precedes_lr_reload);
+        assert!(behavior.guard_store_precedes_return_value);
         assert!(behavior.legacy_float_cast_schedule);
         assert_eq!(
             behavior.integer_select_style,
