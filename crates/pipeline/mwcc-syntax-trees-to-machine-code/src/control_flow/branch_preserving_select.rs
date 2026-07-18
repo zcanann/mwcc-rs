@@ -87,10 +87,10 @@ impl Generator {
         Ok(true)
     }
 
-    /// Build 163 keeps a tail select containing one or two single-op computed
-    /// arms as two return paths. The other arm may be a 16-bit constant; leaf
-    /// merges and conditional assignments use separate lowering paths.
-    pub(crate) fn try_emit_legacy_computed_tail_select(
+    /// Build 163 keeps a select containing one or two single-op computed arms
+    /// as explicit control flow. A tail uses two return paths; a store/scratch
+    /// value uses a full diamond. The other arm may be a 16-bit constant.
+    pub(crate) fn try_emit_legacy_computed_select(
         &mut self,
         condition: &Expression,
         when_true: &Expression,
@@ -102,7 +102,7 @@ impl Generator {
         if self.behavior.integer_select_style
             != mwcc_versions::IntegerSelectStyle::BranchPreserving
             || self.non_leaf
-            || !tail
+            || (!tail && destination != GENERAL_SCRATCH)
             || origin == ConditionalOrigin::IfAssignments
             || self.is_float_value(when_true)
             || self.is_float_value(when_false)
@@ -132,12 +132,27 @@ impl Generator {
                 target: 0,
             });
         self.evaluate_general(when_true, destination)?;
-        self.output
-            .instructions
-            .push(Instruction::BranchToLinkRegister);
+        let join_branch = if tail {
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
+            None
+        } else {
+            let branch = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
+            Some(branch)
+        };
         let false_arm = self.output.instructions.len();
         self.patch_forward(false_branch, false_arm);
         self.evaluate_general(when_false, destination)?;
+        if let Some(join_branch) = join_branch {
+            let join = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[join_branch] {
+                *target = join;
+            }
+        }
         Ok(true)
     }
 
