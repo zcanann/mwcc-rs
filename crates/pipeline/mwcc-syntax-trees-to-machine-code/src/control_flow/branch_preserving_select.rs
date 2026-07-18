@@ -3,9 +3,10 @@
 use super::*;
 
 impl Generator {
-    /// Build 163 keeps a tail select between zero and one single-op value as
-    /// two return paths instead of forming the mainline mask-and-combine idiom.
-    pub(crate) fn try_emit_legacy_computed_zero_tail(
+    /// Build 163 keeps a tail select containing one or two single-op computed
+    /// arms as two return paths. The other arm may be a 16-bit constant; leaf
+    /// merges and conditional assignments use separate lowering paths.
+    pub(crate) fn try_emit_legacy_computed_tail_select(
         &mut self,
         condition: &Expression,
         when_true: &Expression,
@@ -24,10 +25,15 @@ impl Generator {
         {
             return Ok(false);
         }
-        let one_zero_one_computed = (is_zero_literal(when_true)
-            && self.is_single_op_register_value(when_false))
-            || (self.is_single_op_register_value(when_true) && is_zero_literal(when_false));
-        if !one_zero_one_computed {
+        let true_computed = self.is_single_op_register_value(when_true);
+        let false_computed = self.is_single_op_register_value(when_false);
+        let constant_fits = |arm: &Expression| {
+            constant_value(arm).is_some_and(|value| i16::try_from(value).is_ok())
+        };
+        if !(true_computed || constant_fits(when_true))
+            || !(false_computed || constant_fits(when_false))
+            || !(true_computed || false_computed)
+        {
             return Ok(false);
         }
 

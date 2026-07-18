@@ -119,7 +119,7 @@ impl Generator {
         )? {
             return Ok(());
         }
-        if self.try_emit_legacy_computed_zero_tail(
+        if self.try_emit_legacy_computed_tail_select(
             condition,
             when_true,
             when_false,
