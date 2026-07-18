@@ -26,11 +26,15 @@ use mwcc_machine_code::{
     Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
 use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function};
+use mwcc_versions::{AsmBranchOptimizationStyle, Behavior};
 use std::collections::HashMap;
 
 /// Assemble an inline-`asm` function into a finished [`MachineFunction`]. The
 /// caller has already established `function.asm_body` is `Some`.
-pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineFunction> {
+pub(crate) fn assemble_asm_function(
+    function: &Function,
+    behavior: Behavior,
+) -> Compilation<MachineFunction> {
     let body = function
         .asm_body
         .as_ref()
@@ -124,7 +128,10 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     // mwcc's asm branch peepholes (both discovered by probe): a branch whose target
     // is another unconditional branch chases to the final target; a branch whose
     // final target is a `blr` becomes the branch-to-link form.
-    apply_branch_peepholes(&mut instructions);
+    if behavior.asm_branch_optimization_style == AsmBranchOptimizationStyle::ChaseAndCollapseReturns
+    {
+        apply_branch_peepholes(&mut instructions);
+    }
     if auto_frame {
         wrap_auto_frame(
             &mut instructions,

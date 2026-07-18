@@ -171,6 +171,16 @@ pub enum ReadOnlySectionAnchorOrder {
     BeforeDataObjects,
 }
 
+/// Optimizations applied after resolving labels in an `asm` function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsmBranchOptimizationStyle {
+    /// 2.4.x chases unconditional branch chains and replaces branches whose
+    /// final target is `blr` with the corresponding link-register form.
+    ChaseAndCollapseReturns,
+    /// 2.3.3 preserves the target written in the assembly source.
+    PreserveWrittenTargets,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -331,6 +341,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn inferred_array_uses_full_data_section(&self) -> bool {
         false
     }
+
+    fn asm_branch_optimization_style(&self) -> AsmBranchOptimizationStyle {
+        AsmBranchOptimizationStyle::ChaseAndCollapseReturns
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -430,6 +444,10 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn inferred_array_uses_full_data_section(&self) -> bool {
         true
+    }
+
+    fn asm_branch_optimization_style(&self) -> AsmBranchOptimizationStyle {
+        AsmBranchOptimizationStyle::PreserveWrittenTargets
     }
 }
 

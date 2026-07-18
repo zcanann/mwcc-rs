@@ -14,11 +14,12 @@
 use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
-    CoefficientTableRelocationStyle, FrameConvention, GlobalArrayIndexStyle,
-    IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder,
-    MaterializationCopyStyle, NarrowComputedReturnStyle, NarrowStoreCastStyle,
-    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, SymbolTraversalStyle, WideConstantAddSchedule,
+    AsmBranchOptimizationStyle, CoefficientTableRelocationStyle, FrameConvention,
+    GlobalArrayIndexStyle, IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle,
+    LocalDataSymbolOrder, MaterializationCopyStyle, NarrowComputedReturnStyle,
+    NarrowStoreCastStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
+    WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -75,6 +76,7 @@ pub enum Quirk {
     LegacyZeroBasedInlineLocalStatics,
     LegacyZeroBaseStaticInlineLabels,
     LegacyInferredArrayFullDataSection,
+    LegacyPreservedAsmBranchTargets,
 }
 
 impl Quirk {
@@ -107,6 +109,7 @@ impl Quirk {
             Quirk::LegacyZeroBasedInlineLocalStatics => QuirkKind::Intentional,
             Quirk::LegacyZeroBaseStaticInlineLabels => QuirkKind::Intentional,
             Quirk::LegacyInferredArrayFullDataSection => QuirkKind::Intentional,
+            Quirk::LegacyPreservedAsmBranchTargets => QuirkKind::Intentional,
         }
     }
 
@@ -185,6 +188,9 @@ impl Quirk {
             Quirk::LegacyInferredArrayFullDataSection => {
                 "inferred-length arrays bypass build 163's small-data sections"
             }
+            Quirk::LegacyPreservedAsmBranchTargets => {
+                "asm branches preserve their written labels in build 163"
+            }
         }
     }
 }
@@ -260,6 +266,8 @@ pub struct Behavior {
     pub skipped_static_inline_label_base: u8,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
+    /// Post-resolution optimization of branches written in `asm` functions.
+    pub asm_branch_optimization_style: AsmBranchOptimizationStyle,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -337,6 +345,7 @@ impl Behavior {
                 .build
                 .profile
                 .inferred_array_uses_full_data_section(),
+            asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
             global_addressing: config.flags.global_addressing,
         }
     }
@@ -428,6 +437,10 @@ impl Behavior {
         if self.inferred_array_uses_full_data_section {
             quirks.push(ActiveQuirk::of(Quirk::LegacyInferredArrayFullDataSection));
         }
+        if self.asm_branch_optimization_style == AsmBranchOptimizationStyle::PreserveWrittenTargets
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyPreservedAsmBranchTargets));
+        }
         quirks
     }
 }
@@ -507,6 +520,10 @@ mod tests {
         );
         assert!(!behavior.mark_single_precision_extab);
         assert_eq!(behavior.plain_inline_localstatic_base, 0);
+        assert_eq!(
+            behavior.asm_branch_optimization_style,
+            AsmBranchOptimizationStyle::PreserveWrittenTargets
+        );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
     }
 }

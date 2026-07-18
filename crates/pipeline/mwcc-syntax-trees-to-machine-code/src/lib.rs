@@ -58,7 +58,7 @@ pub fn lower_function(
     // An inline-`asm` function is emitted verbatim — no register allocation,
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {
-        return asm::assemble_asm_function(function);
+        return asm::assemble_asm_function(function, Behavior::resolve(&config));
     }
     // A STATIC CONST float/double global is DE-NAMED by mwcc: every read compiles
     // as the literal value, pooled anonymously (@N in .sdata2) with no named
