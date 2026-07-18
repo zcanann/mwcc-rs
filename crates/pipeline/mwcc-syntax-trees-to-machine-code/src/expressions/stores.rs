@@ -1000,6 +1000,14 @@ impl Generator {
             origin,
         } = value
         {
+            if let Some(phi) = self.try_emit_legacy_store_phi_select(
+                condition,
+                when_true,
+                when_false,
+                *origin,
+            )? {
+                return Ok(phi);
+            }
             if leaf_name(when_true).is_some()
                 && leaf_name(when_false).is_some()
                 && constant_value(when_true).is_none()

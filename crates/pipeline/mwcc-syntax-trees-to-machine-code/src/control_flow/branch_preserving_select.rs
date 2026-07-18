@@ -3,6 +3,46 @@
 use super::*;
 
 impl Generator {
+    /// A direct leaf-to-leaf ternary used as a store value merges into the true
+    /// arm's register in build 163. Return the register so the store can consume
+    /// it without forcing the value through the ABI result register or scratch.
+    pub(crate) fn try_emit_legacy_store_phi_select(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        origin: ConditionalOrigin,
+    ) -> Compilation<Option<u8>> {
+        if self.behavior.integer_select_style
+            != mwcc_versions::IntegerSelectStyle::BranchPreserving
+            || self.non_leaf
+            || origin != ConditionalOrigin::Ternary
+            || self.is_float_value(when_true)
+            || self.is_float_value(when_false)
+        {
+            return Ok(None);
+        }
+        let Some(true_register) =
+            leaf_name(when_true).and_then(|name| self.lookup_general(name))
+        else {
+            return Ok(None);
+        };
+        if leaf_name(when_false)
+            .and_then(|name| self.lookup_general(name))
+            .is_none()
+        {
+            return Ok(None);
+        }
+        self.emit_legacy_phi_merge(
+            condition,
+            when_true,
+            when_false,
+            true_register,
+            true,
+        )?;
+        Ok(Some(true_register))
+    }
+
     pub(crate) fn try_emit_legacy_phi_select(
         &mut self,
         condition: &Expression,
@@ -47,9 +87,32 @@ impl Generator {
             return Ok(false);
         }
 
+        self.emit_legacy_phi_merge(
+            condition,
+            when_true,
+            when_false,
+            phi,
+            true_register.is_some(),
+        )?;
+        if destination != phi {
+            self.output
+                .instructions
+                .push(Instruction::move_register(destination, phi));
+        }
+        Ok(true)
+    }
+
+    fn emit_legacy_phi_merge(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        phi: u8,
+        true_is_phi: bool,
+    ) -> Compilation<()> {
         self.output.anonymous_label_bump += 3;
         let (options, condition_bit) = self.emit_condition_test(condition)?;
-        if true_register.is_some() {
+        if true_is_phi {
             // Keep the true arm in its source register. The true path jumps over
             // the false-arm move/materialization; the false path replaces it.
             let false_branch = self.output.instructions.len();
@@ -86,12 +149,7 @@ impl Generator {
             let join = self.output.instructions.len();
             self.patch_forward(false_branch, join);
         }
-        if destination != phi {
-            self.output
-                .instructions
-                .push(Instruction::move_register(destination, phi));
-        }
-        Ok(true)
+        Ok(())
     }
 }
 
