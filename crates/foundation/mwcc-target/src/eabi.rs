@@ -11,6 +11,8 @@ pub struct Eabi;
 impl Eabi {
     /// First general-purpose argument register (r3).
     pub const FIRST_GENERAL_ARGUMENT: u8 = 3;
+    /// Last general-purpose argument register (r10).
+    pub const LAST_GENERAL_ARGUMENT: u8 = 10;
     /// First float argument register (f1).
     pub const FIRST_FLOAT_ARGUMENT: u8 = 1;
 

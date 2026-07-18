@@ -379,7 +379,6 @@ impl Generator {
         // the next GPR is even), so `f(int x, long long a)` puts x in r3 and a in r5:r6. A float/
         // double/struct param alongside a long long (FPRs or aggregates) and an argument list that
         // overflows r3..r10 both defer.
-        const LAST_GENERAL_ARGUMENT: u8 = Eabi::FIRST_GENERAL_ARGUMENT + 7; // r10
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut param_pair: std::collections::HashMap<&str, (u8, Option<u8>)> =
             std::collections::HashMap::new();
@@ -389,7 +388,7 @@ impl Generator {
                     if next_general % 2 == 0 {
                         next_general += 1; // a long-long pair starts on an odd register
                     }
-                    if next_general + 1 > LAST_GENERAL_ARGUMENT {
+                    if next_general + 1 > Eabi::LAST_GENERAL_ARGUMENT {
                         return Err(Diagnostic::error("a long-long argument that overflows to the stack is not modeled yet (roadmap)"));
                     }
                     param_pair.insert(parameter.name.as_str(), (next_general, Some(next_general + 1)));
@@ -397,7 +396,7 @@ impl Generator {
                 }
                 Type::Int | Type::UnsignedInt | Type::Short | Type::UnsignedShort | Type::Char | Type::UnsignedChar
                 | Type::Pointer(_) | Type::StructPointer { .. } => {
-                    if next_general > LAST_GENERAL_ARGUMENT {
+                    if next_general > Eabi::LAST_GENERAL_ARGUMENT {
                         return Err(Diagnostic::error("an integer argument that overflows to the stack is not modeled yet (roadmap)"));
                     }
                     param_pair.insert(parameter.name.as_str(), (next_general, None));

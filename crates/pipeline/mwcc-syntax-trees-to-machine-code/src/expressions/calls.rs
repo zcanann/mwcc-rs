@@ -630,7 +630,25 @@ impl Generator {
                         "argument would clobber a register a later argument needs (roadmap)",
                     ));
                 }
-                self.evaluate_general(argument, next_general)?;
+                // In a MULTI-argument remap, a dying incoming parameter shifted
+                // DOWN into an earlier ABI argument register is a value
+                // materialization. Build 163 uses `addi d,s,0` for that direction;
+                // a single-argument move and a duplicated earlier argument
+                // (`g(a,a)`, r3 -> r4) remain `mr`. Mainline uses `mr` throughout.
+                let downward_word_copy = self
+                    .leaf_info(argument)
+                    .ok()
+                    .filter(|(source, width, _)| {
+                        arguments.len() > 1
+                            && *width == 32
+                            && *source > next_general
+                            && *source <= Eabi::LAST_GENERAL_ARGUMENT
+                    });
+                if let Some((source, _, _)) = downward_word_copy {
+                    self.emit_integer_materialization_copy(next_general, source);
+                } else {
+                    self.evaluate_general(argument, next_general)?;
+                }
                 next_general += 1;
             }
         }
