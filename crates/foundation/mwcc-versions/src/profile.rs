@@ -321,6 +321,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         true
     }
 
+    /// In a non-leaf if/else join with a constant integer return, whether the
+    /// return value is materialized before reloading the saved link register.
+    fn constant_join_return_precedes_lr_reload(&self) -> bool {
+        false
+    }
+
     /// How integer `condition ? 1 : 0` (and its complement) is lowered.
     fn integer_select_style(&self) -> IntegerSelectStyle {
         IntegerSelectStyle::Branchless
@@ -478,6 +484,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn emit_leaf_frame_unwind(&self) -> bool {
         false
+    }
+
+    fn constant_join_return_precedes_lr_reload(&self) -> bool {
+        true
     }
 
     fn legacy_float_cast_schedule(&self) -> bool {

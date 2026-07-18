@@ -2821,38 +2821,18 @@ impl Generator {
                 {
                     *target = join_label;
                 }
-                // A non-void function materializes its constant return BETWEEN the LR reload and
-                // the mtlr (mwcc: `join: lwz r0,20; li r3,C; mtlr; addi; blr`). The reload-hoist
-                // pass bails on the join's forward branches, so emit the epilogue explicitly here
-                // rather than via emit_epilogue_and_return (which would place the return value
-                // BEFORE the reload). This handler builds a plain 16-byte frame with no callee-
-                // saved GPRs, so the epilogue is exactly reload-LR / mtlr / teardown.
+                // A non-void function materializes its constant return beside the LR reload:
+                // mainline uses `lwz r0,20; li r3,C`, while build 163 uses `li r3,C; lwz r0,20`.
+                // The reload-hoist pass bails on the join's forward branches, so emit this
+                // schedule explicitly. This handler builds a plain 16-byte frame with no
+                // callee-saved GPRs, leaving only mtlr / teardown after the two scheduled ops.
                 if let Some(constant) = function
                     .return_expression
                     .as_ref()
                     .filter(|_| function.return_type != Type::Void)
                     .and_then(|expression| constant_value(expression))
                 {
-                    self.output.instructions.push(Instruction::LoadWord {
-                        d: 0,
-                        a: 1,
-                        offset: self.frame_size + 4,
-                    });
-                    self.load_integer_constant(
-                        mwcc_target::Eabi::general_result().number,
-                        constant,
-                    );
-                    self.output
-                        .instructions
-                        .push(Instruction::MoveToLinkRegister { s: 0 });
-                    self.output.instructions.push(Instruction::AddImmediate {
-                        d: 1,
-                        a: 1,
-                        immediate: self.frame_size,
-                    });
-                    self.output
-                        .instructions
-                        .push(Instruction::BranchToLinkRegister);
+                    self.emit_non_leaf_constant_join_epilogue(constant);
                 } else {
                     self.emit_epilogue_and_return();
                 }

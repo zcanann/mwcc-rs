@@ -9,6 +9,43 @@
 use super::*;
 
 impl Generator {
+    /// Emit the shared epilogue for a non-leaf if/else join returning a small
+    /// integer constant. Mainline reloads LR before materializing the result;
+    /// build 163 schedules those independent instructions in the opposite order.
+    pub(crate) fn emit_non_leaf_constant_join_epilogue(&mut self, constant: i64) {
+        let emit_return = |generator: &mut Self| {
+            generator.load_integer_constant(
+                mwcc_target::Eabi::general_result().number,
+                constant,
+            );
+        };
+        let emit_lr_reload = |generator: &mut Self| {
+            generator.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: generator.frame_size + 4,
+            });
+        };
+        if self.behavior.constant_join_return_precedes_lr_reload {
+            emit_return(self);
+            emit_lr_reload(self);
+        } else {
+            emit_lr_reload(self);
+            emit_return(self);
+        }
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: self.frame_size,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
+    }
+
     /// A LEAF if/else diamond with a return continuation: both arms are pure stores, no
     /// call/locals/guards, an int/unsigned return. Two byte-exact forms:
     ///

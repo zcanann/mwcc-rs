@@ -86,6 +86,7 @@ pub enum Quirk {
     LegacyTrueFirstLogicalOr,
     LegacyInterleavedConstantStores,
     LegacyInPlaceBitFieldExtraction,
+    LegacyConstantJoinReturnBeforeLrReload,
 }
 
 impl Quirk {
@@ -126,6 +127,7 @@ impl Quirk {
             Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
             Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
+            Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
         }
     }
 
@@ -226,6 +228,9 @@ impl Quirk {
             Quirk::LegacyInPlaceBitFieldExtraction => {
                 "bit-field unit loads extract in place in build 163"
             }
+            Quirk::LegacyConstantJoinReturnBeforeLrReload => {
+                "constant non-leaf join returns precede build 163's link-register reload"
+            }
         }
     }
 }
@@ -259,6 +264,8 @@ pub struct Behavior {
     pub frame_convention: FrameConvention,
     /// Whether stack-using leaf functions carry unwind-table entries.
     pub emit_leaf_frame_unwind: bool,
+    /// Whether constant non-leaf join returns precede the saved-LR reload.
+    pub constant_join_return_precedes_lr_reload: bool,
     /// Lowering of canonical integer boolean ternaries.
     pub integer_select_style: IntegerSelectStyle,
     /// Instruction family for integer comparisons materialized as 0/1 values.
@@ -358,6 +365,10 @@ impl Behavior {
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
             emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
+            constant_join_return_precedes_lr_reload: config
+                .build
+                .profile
+                .constant_join_return_precedes_lr_reload(),
             integer_select_style: config.build.profile.integer_select_style(),
             integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
             narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
@@ -524,6 +535,11 @@ impl Behavior {
         if self.logical_or_value_style == LogicalOrValueStyle::TrueFirst {
             quirks.push(ActiveQuirk::of(Quirk::LegacyTrueFirstLogicalOr));
         }
+        if self.constant_join_return_precedes_lr_reload {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyConstantJoinReturnBeforeLrReload,
+            ));
+        }
         quirks
     }
 }
@@ -575,6 +591,7 @@ mod tests {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5N));
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
         assert!(!behavior.emit_leaf_frame_unwind);
+        assert!(behavior.constant_join_return_precedes_lr_reload);
         assert!(behavior.legacy_float_cast_schedule);
         assert_eq!(
             behavior.integer_select_style,
