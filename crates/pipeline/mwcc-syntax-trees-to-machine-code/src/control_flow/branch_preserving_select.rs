@@ -233,9 +233,27 @@ impl Generator {
         }
         let false_leaf_reads_condition =
             leaf_name(when_false).is_some_and(|name| expression_reads_name(condition, name));
+        let signed_zero_relational = match condition {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } if is_zero_literal(right)
+                && matches!(
+                    operator,
+                    BinaryOperator::Less
+                        | BinaryOperator::Greater
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::GreaterEqual
+                ) => self.signedness_of(left)?,
+            _ => false,
+        };
         if true_register.is_none()
             && !memory_test_condition(condition)
             && !false_leaf_reads_condition
+            // Build 163's complemented sign select overwrites the false leaf
+            // with zero on the true path, then moves that shared register to r3.
+            && !(is_zero_literal(when_true) && signed_zero_relational)
         {
             return Ok(false);
         }
