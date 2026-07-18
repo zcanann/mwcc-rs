@@ -4,6 +4,7 @@
 mod early_return;
 mod guard_block;
 mod guard_sequence;
+mod guarded_access;
 mod leading;
 mod live_across;
 mod trailing_if;

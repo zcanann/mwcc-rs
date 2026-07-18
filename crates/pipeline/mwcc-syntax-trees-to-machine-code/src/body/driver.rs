@@ -3393,35 +3393,14 @@ impl Generator {
                     return_expression,
                     function.return_type,
                 ) {
-                    if let Some(pointer_register) = self.lookup_general(pointer) {
-                        self.output
-                            .instructions
-                            .push(Instruction::CompareLogicalWordImmediate {
-                                a: pointer_register,
-                                immediate: 0,
-                            });
-                        let branch_index = self.output.instructions.len();
-                        self.output
-                            .instructions
-                            .push(Instruction::BranchConditionalForward {
-                                options: 12,
-                                condition_bit: 2,
-                                target: 0,
-                            });
-                        self.evaluate_tail(hot, function.return_type, result)?;
-                        self.output
-                            .instructions
-                            .push(Instruction::BranchToLinkRegister);
-                        let cold_label = self.output.instructions.len();
-                        if let Instruction::BranchConditionalForward { target, .. } =
-                            &mut self.output.instructions[branch_index]
-                        {
-                            *target = cold_label;
-                        }
-                        self.evaluate_tail(cold, function.return_type, result)?;
-                        self.output
-                            .instructions
-                            .push(Instruction::BranchToLinkRegister);
+                    if self.emit_guarded_null_access(
+                        &guard.condition,
+                        pointer,
+                        hot,
+                        cold,
+                        function.return_type,
+                        result,
+                    )? {
                         return Ok(());
                     }
                 }
