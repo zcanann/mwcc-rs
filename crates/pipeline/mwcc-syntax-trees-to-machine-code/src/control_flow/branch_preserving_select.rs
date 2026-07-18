@@ -290,7 +290,11 @@ impl Generator {
             }
             _ => false,
         };
+        // An if/else assignment has a named merge variable even when only its
+        // false source is a leaf. Build 163 overwrites that leaf's register on
+        // the true path, then moves the shared value to the return register.
         if true_register.is_none()
+            && origin != ConditionalOrigin::IfAssignments
             && !memory_test_condition(condition)
             && !false_leaf_reads_condition
             // Build 163's complemented sign select overwrites the false leaf
