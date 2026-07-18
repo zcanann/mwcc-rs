@@ -2,6 +2,7 @@
 //!
 //! Split by family (fire 539); behavior-identical.
 
+mod absolute_value;
 mod branches;
 mod float;
 mod passes;
