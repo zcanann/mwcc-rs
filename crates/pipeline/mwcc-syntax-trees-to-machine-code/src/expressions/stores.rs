@@ -152,7 +152,12 @@ impl Generator {
                 })?;
                 match self.behavior.global_addressing {
                     GlobalAddressing::SmallData => {
-                        let source = self.place_store_value(value, pointee)?;
+                        let source = match self
+                            .try_legacy_narrow_global_compound_shift(name, pointee, value)?
+                        {
+                            Some(source) => source,
+                            None => self.place_store_value(value, pointee)?,
+                        };
                         self.record_relocation(RelocationKind::EmbSda21, name);
                         self.output
                             .instructions

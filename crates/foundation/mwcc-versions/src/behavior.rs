@@ -17,9 +17,9 @@ use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, CoefficientTableRelocationStyle,
     FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, MaterializationCopyStyle,
-    NarrowComputedReturnStyle, NarrowStoreCastStyle, PunnedFloatFrameConvention,
-    ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
-    SymbolTraversalStyle, WideConstantAddSchedule,
+    NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowStoreCastStyle,
+    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle,
+    SmallZeroDataLayoutStyle, SymbolTraversalStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -79,6 +79,7 @@ pub enum Quirk {
     LegacyPreservedAsmBranchTargets,
     LegacyVerbatimAsmFrames,
     LegacyFixedAddressRmw,
+    LegacyNarrowCompoundShift,
 }
 
 impl Quirk {
@@ -114,6 +115,7 @@ impl Quirk {
             Quirk::LegacyPreservedAsmBranchTargets => QuirkKind::Intentional,
             Quirk::LegacyVerbatimAsmFrames => QuirkKind::Intentional,
             Quirk::LegacyFixedAddressRmw => QuirkKind::Intentional,
+            Quirk::LegacyNarrowCompoundShift => QuirkKind::Intentional,
         }
     }
 
@@ -201,6 +203,9 @@ impl Quirk {
             Quirk::LegacyFixedAddressRmw => {
                 "fixed-address halfword updates use build 163's page base and promoted mask"
             }
+            Quirk::LegacyNarrowCompoundShift => {
+                "narrow compound shifts materialize build 163's count register"
+            }
         }
     }
 }
@@ -282,6 +287,8 @@ pub struct Behavior {
     pub asm_function_finalization_style: AsmFunctionFinalizationStyle,
     /// Base and mask selection for fixed-address halfword RMW leaves.
     pub fixed_address_rmw_style: FixedAddressRmwStyle,
+    /// Constant right-shift lowering for narrow global compound assignments.
+    pub narrow_compound_shift_style: NarrowCompoundShiftStyle,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -362,6 +369,7 @@ impl Behavior {
             asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
             asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
             fixed_address_rmw_style: config.build.profile.fixed_address_rmw_style(),
+            narrow_compound_shift_style: config.build.profile.narrow_compound_shift_style(),
             global_addressing: config.flags.global_addressing,
         }
     }
@@ -465,6 +473,9 @@ impl Behavior {
         if self.fixed_address_rmw_style == FixedAddressRmwStyle::MaterializedPageWithPromotedMask {
             quirks.push(ActiveQuirk::of(Quirk::LegacyFixedAddressRmw));
         }
+        if self.narrow_compound_shift_style == NarrowCompoundShiftStyle::MaterializedCount {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyNarrowCompoundShift));
+        }
         quirks
     }
 }
@@ -555,6 +566,10 @@ mod tests {
         assert_eq!(
             behavior.fixed_address_rmw_style,
             FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+        );
+        assert_eq!(
+            behavior.narrow_compound_shift_style,
+            NarrowCompoundShiftStyle::MaterializedCount
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
     }

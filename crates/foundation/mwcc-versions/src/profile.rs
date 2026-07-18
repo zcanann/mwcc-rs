@@ -204,6 +204,15 @@ pub enum FixedAddressRmwStyle {
     MaterializedPageWithPromotedMask,
 }
 
+/// Lowering of a constant right-shift compound assignment to a narrow global.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrowCompoundShiftStyle {
+    /// 2.4.x loads into r0 and uses the immediate shift form.
+    ImmediateInScratch,
+    /// 2.3.3 loads into r3, materializes the count in r0, and uses `sraw`.
+    MaterializedCount,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -376,6 +385,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn fixed_address_rmw_style(&self) -> FixedAddressRmwStyle {
         FixedAddressRmwStyle::FoldedDisplacementWithNarrowMask
     }
+
+    fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {
+        NarrowCompoundShiftStyle::ImmediateInScratch
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -487,6 +500,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn fixed_address_rmw_style(&self) -> FixedAddressRmwStyle {
         FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+    }
+
+    fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {
+        NarrowCompoundShiftStyle::MaterializedCount
     }
 }
 

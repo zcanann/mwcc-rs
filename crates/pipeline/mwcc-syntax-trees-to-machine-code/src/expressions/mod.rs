@@ -8,6 +8,7 @@ mod driver;
 mod global_array_index;
 mod globals;
 mod members;
+mod narrow_compound;
 mod operands;
 mod passes;
 mod pointers;
