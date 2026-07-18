@@ -37,7 +37,11 @@ impl Generator {
             Expression::Binary { left, right, .. } => {
                 self.global_pair_plus_register(left) || self.global_pair_plus_register(right)
             }
-            Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            Expression::Unary { operand, .. }
+            | Expression::Cast { operand, .. }
+            | Expression::BitFieldRead {
+                extracted: operand, ..
+            } => {
                 self.global_pair_plus_register(operand)
             }
             _ => false,
@@ -330,6 +334,9 @@ impl Generator {
             return Err(Diagnostic::error("a commutative op with a constant-shift left operand orders operands differently (roadmap)"));
         }
         match expression {
+            Expression::BitFieldRead { extracted, .. } => {
+                self.evaluate_bit_field_read(extracted, destination)
+            }
             // A compound-literal VALUE needs the frame-temporary + copy schedule.
             Expression::CompoundLiteral { .. } => Err(Diagnostic::error(
                 "a compound-literal argument needs the frame-temporary schedule (roadmap)",

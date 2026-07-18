@@ -620,7 +620,10 @@ impl Generator {
                 self.collect_registers(when_true, registers);
                 self.collect_registers(when_false, registers);
             }
-            Expression::Cast { operand, .. } => self.collect_registers(operand, registers),
+            Expression::Cast { operand, .. }
+            | Expression::BitFieldRead {
+                extracted: operand, ..
+            } => self.collect_registers(operand, registers),
             // `base->field` / `base[index]` / `*pointer` read the base pointer's register (and an
             // index its own) — needed so the call-argument clobber guard sees that `g(p[0], p[1])`
             // reuses p across both arguments (otherwise the first load clobbers the base: a miscompile).

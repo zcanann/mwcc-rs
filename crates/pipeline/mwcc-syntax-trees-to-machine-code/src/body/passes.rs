@@ -1479,7 +1479,12 @@ pub(crate) fn function_calls_any(
             E::Binary { left, right, .. } => {
                 expression_calls(left, names) || expression_calls(right, names)
             }
-            E::Unary { operand, .. } | E::Cast { operand, .. } | E::AddressOf { operand } => {
+            E::Unary { operand, .. }
+            | E::Cast { operand, .. }
+            | E::BitFieldRead {
+                extracted: operand, ..
+            }
+            | E::AddressOf { operand } => {
                 expression_calls(operand, names)
             }
             E::Dereference { pointer } => expression_calls(pointer, names),

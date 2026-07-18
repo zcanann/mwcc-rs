@@ -82,7 +82,10 @@ impl Generator {
                     || self.contains_narrow_leaf(when_true)
                     || self.contains_narrow_leaf(when_false)
             }
-            Expression::Cast { operand, .. } => self.contains_narrow_leaf(operand),
+            Expression::Cast { operand, .. }
+            | Expression::BitFieldRead {
+                extracted: operand, ..
+            } => self.contains_narrow_leaf(operand),
             // A narrow memory load (member or dereference of a sub-word type) is
             // also a narrow operand for this purpose — computing with it into the
             // scratch then truncating is the same unmodeled optimization.

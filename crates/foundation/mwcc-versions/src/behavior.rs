@@ -14,13 +14,13 @@
 use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
-    AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, CoefficientTableRelocationStyle,
-    ConstantStoreScheduleStyle, FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle,
-    IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder,
-    LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
-    NarrowComputedReturnStyle, NarrowStoreConversionStyle, PunnedFloatFrameConvention,
-    ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
-    SymbolTraversalStyle, WideConstantAddSchedule,
+    AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
+    CoefficientTableRelocationStyle, ConstantStoreScheduleStyle, FixedAddressRmwStyle,
+    FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle, IntegerSelectStyle,
+    JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle, MaterializationCopyStyle,
+    NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowStoreConversionStyle,
+    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle,
+    SmallZeroDataLayoutStyle, SymbolTraversalStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -83,6 +83,7 @@ pub enum Quirk {
     LegacyNarrowCompoundShift,
     LegacyTrueFirstLogicalOr,
     LegacyInterleavedConstantStores,
+    LegacyInPlaceBitFieldExtraction,
 }
 
 impl Quirk {
@@ -121,6 +122,7 @@ impl Quirk {
             Quirk::LegacyNarrowCompoundShift => QuirkKind::Intentional,
             Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
             Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
+            Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
         }
     }
 
@@ -215,6 +217,9 @@ impl Quirk {
             Quirk::LegacyInterleavedConstantStores => {
                 "distinct constant-store runs use build 163's interleaved pair schedule"
             }
+            Quirk::LegacyInPlaceBitFieldExtraction => {
+                "bit-field unit loads extract in place in build 163"
+            }
         }
     }
 }
@@ -260,6 +265,8 @@ pub struct Behavior {
     pub jump_table_base_style: JumpTableBaseStyle,
     /// Elimination policy for redundant signed narrow conversions before narrow stores.
     pub narrow_store_conversion_style: NarrowStoreConversionStyle,
+    /// Placement of the containing-unit load for source-level bit-field reads.
+    pub bit_field_load_placement: BitFieldLoadPlacement,
     /// Scheduling of distinct constant values consumed by consecutive stores.
     pub constant_store_schedule_style: ConstantStoreScheduleStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
@@ -352,6 +359,7 @@ impl Behavior {
                 .signed_power_of_two_division_style(),
             jump_table_base_style: config.build.profile.jump_table_base_style(),
             narrow_store_conversion_style: config.build.profile.narrow_store_conversion_style(),
+            bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -428,6 +436,9 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(
                 Quirk::LegacyPartialNarrowStoreConversionElision,
             ));
+        }
+        if self.bit_field_load_placement == BitFieldLoadPlacement::ResultRegister {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyInPlaceBitFieldExtraction));
         }
         if self.constant_store_schedule_style == ConstantStoreScheduleStyle::InterleavedPairs {
             quirks.push(ActiveQuirk::of(Quirk::LegacyInterleavedConstantStores));
@@ -599,6 +610,10 @@ mod tests {
         assert_eq!(
             behavior.logical_or_value_style,
             LogicalOrValueStyle::TrueFirst
+        );
+        assert_eq!(
+            behavior.bit_field_load_placement,
+            BitFieldLoadPlacement::ResultRegister
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
     }

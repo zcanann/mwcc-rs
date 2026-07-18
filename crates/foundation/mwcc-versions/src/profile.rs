@@ -81,6 +81,17 @@ pub enum NarrowStoreConversionStyle {
     PreserveOutsideBinaryAlu,
 }
 
+/// Register used for the containing-unit load of a source-level bit-field read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitFieldLoadPlacement {
+    /// 2.4.x loads a non-leaf bit-field unit through r0, then extracts into the
+    /// requested result register.
+    Scratch,
+    /// 2.3.3 loads the unit directly into the result register and extracts in
+    /// place. Ordinary explicit shift/mask expressions still use r0.
+    ResultRegister,
+}
+
 /// Instruction shape used for a variable-indexed file-scope array element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalArrayIndexStyle {
@@ -324,6 +335,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         NarrowStoreConversionStyle::ElideRedundantConversion
     }
 
+    fn bit_field_load_placement(&self) -> BitFieldLoadPlacement {
+        BitFieldLoadPlacement::Scratch
+    }
+
     fn constant_store_schedule_style(&self) -> ConstantStoreScheduleStyle {
         ConstantStoreScheduleStyle::PreloadAll
     }
@@ -471,6 +486,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn narrow_store_conversion_style(&self) -> NarrowStoreConversionStyle {
         NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
+    }
+    fn bit_field_load_placement(&self) -> BitFieldLoadPlacement {
+        BitFieldLoadPlacement::ResultRegister
     }
     fn constant_store_schedule_style(&self) -> ConstantStoreScheduleStyle {
         ConstantStoreScheduleStyle::InterleavedPairs

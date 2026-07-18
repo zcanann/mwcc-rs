@@ -433,6 +433,21 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        self.try_emit_rotate_mask_loading_value_into(operator, left, right, destination, None)
+    }
+
+    /// Emit the same fused rotate-and-mask while optionally forcing its input
+    /// expression into a particular register. Source-level bit-field reads use
+    /// this narrow hook for build 163's in-place unit load; ordinary explicit
+    /// mask expressions leave `input_destination` unset and retain r0 placement.
+    pub(crate) fn try_emit_rotate_mask_loading_value_into(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        input_destination: Option<u8>,
+    ) -> Compilation<bool> {
         let Some((value, rotate, begin, end, needs_unsigned)) =
             self.fused_rotate_mask(operator, left, right)?
         else {
@@ -449,7 +464,12 @@ impl Generator {
         // in its register — and only a genuinely computed value (`a*b+c`) lands in
         // the scratch, matching mwcc's `rlwinm d,reg,…` / `<compute> r0; rlwinm d,r0`.
         let register =
-            if let Some(register) = leaf_name(value).and_then(|name| self.lookup_general(name)) {
+            if let Some(register) = input_destination {
+                self.evaluate_general(value, register)?;
+                register
+            } else if let Some(register) =
+                leaf_name(value).and_then(|name| self.lookup_general(name))
+            {
                 register
             } else if self.is_simple_word_load(value) {
                 self.evaluate_general(value, GENERAL_SCRATCH)?;
@@ -464,6 +484,34 @@ impl Generator {
             a: destination,
             s: register,
             shift: rotate,
+            begin,
+            end,
+        });
+        Ok(true)
+    }
+
+    /// Emit a mask-only extraction (`value & contiguous_mask`) while forcing
+    /// the value into `input_destination`. Bit-fields ending at the low edge of
+    /// their allocation unit have no preceding shift, so they do not enter the
+    /// general shift+mask fusion above.
+    pub(crate) fn try_emit_mask_loading_value_into(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        input_destination: u8,
+    ) -> Compilation<bool> {
+        let Some(mask) = constant_value(right).map(|value| value as u32) else {
+            return Ok(false);
+        };
+        let Some((begin, end)) = mask_to_run(mask) else {
+            return Ok(false);
+        };
+        self.evaluate_general(left, input_destination)?;
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: destination,
+            s: input_destination,
+            shift: 0,
             begin,
             end,
         });

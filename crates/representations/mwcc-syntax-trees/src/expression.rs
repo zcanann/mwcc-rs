@@ -41,6 +41,15 @@ pub enum Expression {
         target_type: Type,
         operand: Box<Expression>,
     },
+    /// A bit-field extraction after its required C integer promotion. `extracted`
+    /// retains the unit load/shift/mask expression used for instruction selection;
+    /// `promoted_type` records whether the field promotes to `int` or remains
+    /// `unsigned int`. Keeping this source form distinct prevents build-specific
+    /// bit-field allocation from leaking into ordinary explicit mask expressions.
+    BitFieldRead {
+        extracted: Box<Expression>,
+        promoted_type: Type,
+    },
     /// `*pointer` — load the pointed-to value.
     Dereference {
         pointer: Box<Expression>,

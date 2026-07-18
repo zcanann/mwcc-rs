@@ -15,6 +15,9 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         match expression {
+            Expression::BitFieldRead { .. } => Err(Diagnostic::error(
+                "a promoted bit-field value is not a float value",
+            )),
             Expression::CompoundLiteral { .. } => Err(Diagnostic::error(
                 "a compound-literal argument needs the frame-temporary schedule (roadmap)",
             )),

@@ -923,7 +923,7 @@ impl Parser {
                         } else {
                             load
                         };
-                        expression = if width as u32 == load_bits {
+                        let extracted = if width as u32 == load_bits {
                             value
                         } else {
                             let mask = (1i64 << width) - 1;
@@ -932,6 +932,18 @@ impl Parser {
                                 left: Box::new(value),
                                 right: Box::new(Expression::IntegerLiteral(mask)),
                             }
+                        };
+                        // A narrow unsigned bit-field undergoes integer promotion to
+                        // `int`; a full-width unsigned field remains `unsigned int`.
+                        // Keep that conversion explicit in the AST instead of erasing
+                        // the bit-field provenance into an ordinary load/shift/mask.
+                        expression = Expression::BitFieldRead {
+                            promoted_type: if width < 32 {
+                                Type::Int
+                            } else {
+                                Type::UnsignedInt
+                            },
+                            extracted: Box::new(extracted),
                         };
                         struct_tag = None;
                         continue;

@@ -3952,6 +3952,9 @@ impl Generator {
                 }
                 Expression::Unary { operand, .. }
                 | Expression::Cast { operand, .. }
+                | Expression::BitFieldRead {
+                    extracted: operand, ..
+                }
                 | Expression::AddressOf { operand } => feeds_an_addition(name, operand),
                 Expression::Conditional {
                     condition,

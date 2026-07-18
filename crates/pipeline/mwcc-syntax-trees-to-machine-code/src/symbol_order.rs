@@ -106,6 +106,9 @@ fn contains_call(expression: &Expression) -> bool {
         } => contains_call(condition) || contains_call(when_true) || contains_call(when_false),
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
         | Expression::AddressOf { operand }
         | Expression::Dereference { pointer: operand }
         | Expression::PostStep {
@@ -266,7 +269,10 @@ fn collect(expression: &Expression, names: &mut Names) {
             }
         }
         Expression::Unary { operand, .. } => collect(operand, names),
-        Expression::Cast { operand, .. } => collect(operand, names),
+        Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => collect(operand, names),
         Expression::Dereference { pointer } => collect(pointer, names),
         Expression::AddressOf { operand } => collect(operand, names),
         Expression::Index { base, index } => {

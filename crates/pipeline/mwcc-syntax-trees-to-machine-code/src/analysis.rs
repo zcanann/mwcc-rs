@@ -142,7 +142,11 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
         Expression::Binary { left, right, .. } => {
             count_name_occurrences(left, name) + count_name_occurrences(right, name)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             count_name_occurrences(operand, name)
         }
         Expression::PostStep { target, .. } => 2 * count_name_occurrences(target, name),
@@ -201,6 +205,7 @@ pub(crate) fn name_nesting_depth(expression: &Expression, name: &str) -> Option<
         Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
             name_nesting_depth(operand, name).map(|depth| depth + 1)
         }
+        Expression::BitFieldRead { extracted, .. } => name_nesting_depth(extracted, name),
         _ => None,
     }
 }
@@ -370,7 +375,11 @@ pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
         Expression::Binary { left, right, .. } => {
             contains_complex_add(left) || contains_complex_add(right)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             contains_complex_add(operand)
         }
         Expression::Index { base, index } => {
@@ -429,7 +438,11 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
         Expression::Binary { left, right, .. } => {
             contains_commutative_shift_left(left) || contains_commutative_shift_left(right)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             contains_commutative_shift_left(operand)
         }
         Expression::Index { base, index } => {
@@ -477,7 +490,11 @@ fn collect_register_reads(
             collect_register_reads(left, registers, collected);
             collect_register_reads(right, registers, collected);
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             collect_register_reads(operand, registers, collected)
         }
         Expression::Dereference { pointer } => {
@@ -653,7 +670,11 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
         Expression::Index { base, index } => pair(base, index),
         Expression::Assign { target, value } => pair(target, value),
         Expression::Comma { left, right } => pair(left, right),
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             reads_register_after_call(operand, registers)
         }
         Expression::Dereference { pointer } => reads_register_after_call(pointer, registers),
@@ -714,7 +735,11 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
         Expression::Binary { left, right, .. } => {
             reads_register(left, registers) || reads_register(right, registers)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             reads_register(operand, registers)
         }
         Expression::Dereference { pointer } => reads_register(pointer, registers),
@@ -782,7 +807,9 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
                 || expression_has_call(when_true)
                 || expression_has_call(when_false)
         }
-        Expression::Cast { operand, .. } => expression_has_call(operand),
+        Expression::Cast { operand, .. } | Expression::BitFieldRead { extracted: operand, .. } => {
+            expression_has_call(operand)
+        }
         Expression::Dereference { pointer } => expression_has_call(pointer),
         Expression::Index { base, index } => {
             expression_has_call(base) || expression_has_call(index)
@@ -807,7 +834,11 @@ pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
         Expression::Comma { left, right } => {
             expression_has_side_effect(left) || expression_has_side_effect(right)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             expression_has_side_effect(operand)
         }
         Expression::Conditional {
@@ -899,6 +930,9 @@ pub(crate) fn function_makes_call(function: &Function) -> bool {
 }
 
 pub(crate) fn is_complex(expression: &Expression) -> bool {
+    if let Expression::BitFieldRead { extracted, .. } = expression {
+        return is_complex(extracted);
+    }
     matches!(
         expression,
         Expression::Binary { .. }
@@ -931,7 +965,9 @@ pub(crate) fn register_need(expression: &Expression) -> u32 {
             }
         }
         Expression::Unary { operand, .. } => register_need(operand),
-        Expression::Cast { operand, .. } => register_need(operand),
+        Expression::Cast { operand, .. } | Expression::BitFieldRead { extracted: operand, .. } => {
+            register_need(operand)
+        }
         Expression::Conditional {
             when_true,
             when_false,
@@ -1108,6 +1144,16 @@ pub(crate) fn structurally_equal(a: &Expression, b: &Expression) -> bool {
                 operand: pb,
             },
         ) => ta == tb && structurally_equal(pa, pb),
+        (
+            Expression::BitFieldRead {
+                extracted: ea,
+                promoted_type: ta,
+            },
+            Expression::BitFieldRead {
+                extracted: eb,
+                promoted_type: tb,
+            },
+        ) => ta == tb && structurally_equal(ea, eb),
         (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => {
             structurally_equal(pa, pb)
         }
@@ -1233,6 +1279,9 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
             collect_computed_subexpressions(operand, into);
         }
         Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
         | Expression::AddressOf { operand }
         | Expression::Dereference { pointer: operand } => {
             collect_computed_subexpressions(operand, into);
@@ -1535,6 +1584,7 @@ pub(crate) fn needs_scratch(expression: &Expression) -> bool {
         }
         Expression::Conditional { .. } => true,
         Expression::Cast { .. } => true,
+        Expression::BitFieldRead { extracted, .. } => needs_scratch(extracted),
         _ => false,
     }
 }
@@ -1571,6 +1621,9 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
         // conditionals and casts are only handled at the top of an evaluation,
         // not nested inside the single-scratch tree model
         Expression::Conditional { .. } | Expression::Cast { .. } => false,
+        Expression::BitFieldRead { extracted, .. } => {
+            fits_single_scratch(extracted, destination_is_scratch)
+        }
         _ => true,
     }
 }
@@ -1589,7 +1642,11 @@ pub(crate) fn contains_memory_load(expression: &Expression) -> bool {
         Expression::Binary { left, right, .. } => {
             contains_memory_load(left) || contains_memory_load(right)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             contains_memory_load(operand)
         }
         _ => false,
@@ -1602,6 +1659,9 @@ pub(crate) fn contains_memory_load(expression: &Expression) -> bool {
 /// schedule mwcc avoids by hoisting both loads first (the keystone allocator). Two BARE loads keep
 /// their loads adjacent (`lwz; lwz; combine`) and stay byte-exact, so they are not compound.
 pub(crate) fn is_compound_load(expression: &Expression) -> bool {
+    if let Expression::BitFieldRead { extracted, .. } = expression {
+        return is_compound_load(extracted);
+    }
     matches!(
         expression,
         Expression::Binary { .. } | Expression::Unary { .. } | Expression::Cast { .. }
@@ -1685,7 +1745,11 @@ pub(crate) fn expression_reads_memory(
             expression_reads_memory(left, register_names)
                 || expression_reads_memory(right, register_names)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => {
             expression_reads_memory(operand, register_names)
         }
         Expression::Conditional {

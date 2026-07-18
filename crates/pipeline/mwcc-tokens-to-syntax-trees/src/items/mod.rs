@@ -115,6 +115,9 @@ pub(crate) fn expression_calls(
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
         | Expression::AddressOf { operand } => expression_calls(operand, names),
         Expression::Dereference { pointer } => expression_calls(pointer, names),
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {

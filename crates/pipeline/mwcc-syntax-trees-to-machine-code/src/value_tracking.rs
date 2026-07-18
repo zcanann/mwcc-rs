@@ -866,6 +866,9 @@ fn used_in_sign_sensitive_op(
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
         | Expression::AddressOf { operand } => used_in_sign_sensitive_op(operand, names),
         Expression::Dereference { pointer } => used_in_sign_sensitive_op(pointer, names),
         Expression::Conditional {
@@ -945,6 +948,9 @@ fn has_additive_chain(expression: &Expression) -> bool {
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
         | Expression::AddressOf { operand } => has_additive_chain(operand),
         Expression::Conditional {
             condition,
@@ -1013,7 +1019,10 @@ fn count_references(name: &str, expression: &Expression) -> usize {
                 + count_references(name, when_true)
                 + count_references(name, when_false)
         }
-        Expression::Cast { operand, .. } => count_references(name, operand),
+        Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => count_references(name, operand),
         Expression::Dereference { pointer } => count_references(name, pointer),
         Expression::Index { base, index } => {
             count_references(name, base) + count_references(name, index)
@@ -1079,6 +1088,13 @@ pub(crate) fn substitute(
         } => Expression::Cast {
             target_type: *target_type,
             operand: Box::new(substitute(operand, values)),
+        },
+        Expression::BitFieldRead {
+            extracted,
+            promoted_type,
+        } => Expression::BitFieldRead {
+            extracted: Box::new(substitute(extracted, values)),
+            promoted_type: *promoted_type,
         },
         Expression::Dereference { pointer } => Expression::Dereference {
             pointer: Box::new(substitute(pointer, values)),
