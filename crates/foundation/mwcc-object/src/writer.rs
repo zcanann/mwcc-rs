@@ -8,7 +8,7 @@
 //! Float/stack-frame functions add `.sdata2` / `extab` / `extabindex` sections,
 //! pooled across all functions in the unit.
 
-use crate::{DataObject, ObjectInput, RelocationTarget};
+use crate::{CommentFormat, DataObject, ObjectInput, RelocationTarget};
 use std::collections::HashMap;
 
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
@@ -62,14 +62,12 @@ const COMMENT_PREFIX: [u8; 56] = [
 /// byte-identical to the old pad+align reading when every flag is 0; a WEAK
 /// function carries flags 0x0e000000 (measured: weak-first, weak-last, and
 /// weak-only orderings all place the 0x0e word right after the weak align).
-fn comment_record(version: (u8, u8, u8), build: u16, symbol_records: &[(u32, u32)]) -> Vec<u8> {
+fn comment_record(format: CommentFormat, symbol_records: &[(u32, u32)]) -> Vec<u8> {
     let mut record = COMMENT_PREFIX.to_vec();
-    // Byte 11 is a format marker: 0x0a for every supported build except GC/2.7
-    // (build 108), which bumped it to 0x0b. Bytes 12..15 are the version itself.
-    record[11] = if build == 108 { 0x0b } else { 0x0a };
-    record[12] = version.0;
-    record[13] = version.1;
-    record[14] = version.2;
+    record[11] = format.marker;
+    record[12] = format.version.0;
+    record[13] = format.version.1;
+    record[14] = format.version.2;
     record.extend_from_slice(&[0, 0, 0, 0]);
     for &(alignment, flags) in symbol_records {
         record.extend_from_slice(&alignment.to_be_bytes());
@@ -132,9 +130,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         text.extend_from_slice(functions[index].text);
     }
 
-    let has_text_relocations = functions.iter().any(|function| !function.relocations.is_empty());
+    let has_text_relocations = functions
+        .iter()
+        .any(|function| !function.relocations.is_empty());
     let has_frame = functions.iter().any(|function| function.frame.is_some());
-    let has_constants = functions.iter().any(|function| !function.constants.is_empty());
+    let has_constants = functions
+        .iter()
+        .any(|function| !function.constants.is_empty());
     // Each defined object is routed to a section by const-ness, size, and whether
     // it is initialized: a writable global to `.sdata` (initialized) or `.sbss`
     // (zero), a const one to `.sdata2` (≤ 8 bytes) or `.rodata` (larger). mwcc lays
@@ -154,24 +156,59 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             };
         }
         if object.is_const {
-            if object.size <= 8 { ".sdata2" } else { ".rodata" }
-        } else if object.size <= 8 {
-            if object.initial_bytes.is_some() { ".sdata" } else { ".sbss" }
+            if object.size <= 8 && !object.force_full_data_section {
+                ".sdata2"
+            } else {
+                ".rodata"
+            }
+        } else if object.size <= 8 && !object.force_full_data_section {
+            if object.initial_bytes.is_some() {
+                ".sdata"
+            } else {
+                ".sbss"
+            }
         } else if object.initial_bytes.is_some() {
             ".data"
         } else {
             ".bss"
         }
     };
-    let has_sdata = input.data_objects.iter().any(|object| section_of(object) == ".sdata");
-    let has_sbss = input.data_objects.iter().any(|object| section_of(object) == ".sbss");
-    let has_rodata = input.data_objects.iter().any(|object| section_of(object) == ".rodata")
-        || input.functions.iter().any(|function| !function.anonymous_rodata.is_empty());
-    let has_const_sdata2 = input.data_objects.iter().any(|object| section_of(object) == ".sdata2");
-    let has_file_data = input.data_objects.iter().any(|object| section_of(object) == ".data");
-    let has_bss = input.data_objects.iter().any(|object| section_of(object) == ".bss");
-    let has_ctors = input.data_objects.iter().any(|object| section_of(object) == ".ctors");
-    let has_dtors = input.data_objects.iter().any(|object| section_of(object) == ".dtors");
+    let has_sdata = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".sdata");
+    let has_sbss = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".sbss");
+    let has_rodata = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".rodata")
+        || input
+            .functions
+            .iter()
+            .any(|function| !function.anonymous_rodata.is_empty());
+    let has_const_sdata2 = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".sdata2");
+    let has_file_data = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".data");
+    let has_bss = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".bss");
+    let has_ctors = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".ctors");
+    let has_dtors = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".dtors");
 
     let mut data_section: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     let mut data_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
@@ -191,21 +228,37 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // declaration order: four zero bytes per entry, each patched by an `ADDR32`
     // relocation to its function.
     let mut ctors_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".ctors") {
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| section_of(object) == ".ctors")
+    {
         place(object, ".ctors", &mut ctors_size);
     }
     let mut dtors_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".dtors") {
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| section_of(object) == ".dtors")
+    {
         place(object, ".dtors", &mut dtors_size);
     }
     // The const `.sdata2` globals occupy the FRONT of the constant pool (ahead of
     // any function float constants), in forward declaration order.
     let mut sdata2_global_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".sdata2") {
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| section_of(object) == ".sdata2")
+    {
         place(object, ".sdata2", &mut sdata2_global_size);
     }
     let mut rodata_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".rodata") {
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| section_of(object) == ".rodata")
+    {
         place(object, ".rodata", &mut rodata_size);
     }
     // Anonymous `.rodata` blobs follow the named const objects, 4-aligned
@@ -229,15 +282,26 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .functions
         .iter()
         .enumerate()
-        .flat_map(|(function_index, function)| function.string_names.iter().map(move |name| (name.as_str(), function_index)))
+        .flat_map(|(function_index, function)| {
+            function
+                .string_names
+                .iter()
+                .map(move |name| (name.as_str(), function_index))
+        })
         .collect();
     let mut file_data_size = 0u32;
     for object in input.data_objects.iter().filter(|object| {
-        section_of(object) == ".data" && !string_owner.contains_key(object.name) && object.static_local_owner.is_none()
+        section_of(object) == ".data"
+            && !string_owner.contains_key(object.name)
+            && object.static_local_owner.is_none()
     }) {
         place(object, ".data", &mut file_data_size);
     }
-    let mut jump_table_offset: Vec<Vec<Option<u32>>> = input.functions.iter().map(|function| vec![None; function.jump_tables.len()]).collect();
+    let mut jump_table_offset: Vec<Vec<Option<u32>>> = input
+        .functions
+        .iter()
+        .map(|function| vec![None; function.jump_tables.len()])
+        .collect();
     for (function_index, function) in input.functions.iter().enumerate() {
         // The function's own `.data` STATIC LOCALS lead its block (declared at
         // the body top, before any string literal use — bfbb's pow_10$1224 at
@@ -248,7 +312,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             place(object, ".data", &mut file_data_size);
         }
         for name in &function.string_names {
-            if let Some(object) = input.data_objects.iter().find(|object| object.name == name.as_str() && section_of(object) == ".data") {
+            if let Some(object) = input
+                .data_objects
+                .iter()
+                .find(|object| object.name == name.as_str() && section_of(object) == ".data")
+            {
                 place(object, ".data", &mut file_data_size);
             }
         }
@@ -258,7 +326,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             file_data_size += table.entries.len() as u32 * 4;
         }
     }
-    let has_jump_table = input.functions.iter().any(|function| !function.jump_tables.is_empty());
+    let has_jump_table = input
+        .functions
+        .iter()
+        .any(|function| !function.jump_tables.is_empty());
     // Large zero `.bss` lays out in SYMBOL-EMISSION order, not declaration order:
     // referenced objects first (in the order functions reference them — their
     // `symbol_order`, across functions in source order), then any unreferenced ones
@@ -270,36 +341,88 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // A capture-emitted function has an EMPTY symbol_order — its `.text`
         // relocations carry the reference order instead (measured: wind_waker
         // abort_exit, whose __atexit_funcs places by first reference).
-        let relocation_names = function.relocations.iter().filter_map(|relocation| match &relocation.target {
-            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
-            _ => None,
-        });
-        for name in function.symbol_order.iter().map(|name| name.as_str()).chain(relocation_names) {
-            if let Some(object) = input.data_objects.iter().find(|object| object.name == name && section_of(object) == ".bss") {
+        let relocation_names =
+            function
+                .relocations
+                .iter()
+                .filter_map(|relocation| match &relocation.target {
+                    RelocationTarget::External(name)
+                    | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+                    _ => None,
+                });
+        for name in function
+            .symbol_order
+            .iter()
+            .map(|name| name.as_str())
+            .chain(relocation_names)
+        {
+            if let Some(object) = input
+                .data_objects
+                .iter()
+                .find(|object| object.name == name && section_of(object) == ".bss")
+            {
                 if placed_bss.insert(object.name) {
                     place(object, ".bss", &mut bss_size);
                 }
             }
         }
     }
-    for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".bss") {
+    for object in input
+        .data_objects
+        .iter()
+        .rev()
+        .filter(|object| section_of(object) == ".bss")
+    {
         if placed_bss.insert(object.name) {
             place(object, ".bss", &mut bss_size);
         }
     }
     let mut sdata_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".sdata") {
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| section_of(object) == ".sdata")
+    {
         place(object, ".sdata", &mut sdata_size);
     }
     // mwcc lays `.sbss` out as: EXPLICITLY zero-initialized globals (`int a = 0;`) in
     // DECLARATION order, then UNINITIALIZED globals (`int a;`) in REVERSE declaration order.
     // (An all-uninitialized `.sbss` therefore just reverses, as before.)
     let mut sbss_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| section_of(object) == ".sbss" && object.is_explicit_zero) {
-        place(object, ".sbss", &mut sbss_size);
-    }
-    for object in input.data_objects.iter().rev().filter(|object| section_of(object) == ".sbss" && !object.is_explicit_zero) {
-        place(object, ".sbss", &mut sbss_size);
+    if input.object_format.small_zero_statics_in_declaration_order {
+        for object in input.data_objects.iter().filter(|object| {
+            section_of(object) == ".sbss" && !object.is_static && object.is_explicit_zero
+        }) {
+            place(object, ".sbss", &mut sbss_size);
+        }
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| section_of(object) == ".sbss" && object.is_static)
+        {
+            place(object, ".sbss", &mut sbss_size);
+        }
+        for object in input.data_objects.iter().rev().filter(|object| {
+            section_of(object) == ".sbss" && !object.is_static && !object.is_explicit_zero
+        }) {
+            place(object, ".sbss", &mut sbss_size);
+        }
+    } else {
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| section_of(object) == ".sbss" && object.is_explicit_zero)
+        {
+            place(object, ".sbss", &mut sbss_size);
+        }
+        for object in input
+            .data_objects
+            .iter()
+            .rev()
+            .filter(|object| section_of(object) == ".sbss" && !object.is_explicit_zero)
+        {
+            place(object, ".sbss", &mut sbss_size);
+        }
     }
     // `.sdata`/`.rodata`/`.data` file bytes: each initialized object's bytes at its
     // offset. (`.sdata2` const-global bytes are laid into the pool below, with the
@@ -333,7 +456,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // index, every entry filled by an `ADDR32` relocation (so the file bytes are
     // zero). Each table is recorded at its offset; `.data` is 8-aligned.
 
-
     // `.sdata2` constant pool — the const globals routed here (laid out above) come
     // first, then every function's float constants appended in source order, each at
     // its natural alignment. Record the byte offset of each function's j-th constant.
@@ -359,7 +481,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let fresh_slot = |sdata2: &mut Vec<u8>| {
                 // An 8-byte STATIC-SLOT entry is a struct IMAGE (two floats/ints):
                 // it aligns 4, unlike a genuine double constant (align 8).
-                let alignment = if constant.byte_width == 8 && constant.static_slot { 4 } else { constant.byte_width as usize };
+                let alignment = if constant.byte_width == 8 && constant.static_slot {
+                    4
+                } else {
+                    constant.byte_width as usize
+                };
                 while sdata2.len() % alignment != 0 {
                     sdata2.push(0);
                 }
@@ -375,7 +501,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let offset = if constant.force_new {
                 fresh_slot(&mut sdata2)
             } else {
-                *pooled_offset.entry((constant.bits, constant.byte_width)).or_insert_with(|| fresh_slot(&mut sdata2))
+                *pooled_offset
+                    .entry((constant.bits, constant.byte_width))
+                    .or_insert_with(|| fresh_slot(&mut sdata2))
             };
             offsets.push(offset);
         }
@@ -407,7 +535,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .flat_map(|function| function.string_names.iter().map(String::as_str))
         .collect();
-    let pooled_string_count = input.data_objects.iter().filter(|object| object.is_static && object.name.starts_with('@')).count() as u32;
+    let pooled_string_count = input
+        .data_objects
+        .iter()
+        .filter(|object| object.is_static && object.name.starts_with('@'))
+        .count() as u32;
     let function_string_total: u32 = functions.iter().map(|function| function.string_count).sum();
     // A FILE-SCOPE pooled string declared BETWEEN functions (`static const
     // char* const p = "…"` mid-file — ansi_fp's strikers revision) numbers
@@ -421,8 +553,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && object.functions_before > 0
             && !function_string_names.contains(object.name)
     };
-    let in_stream_file_strings = input.data_objects.iter().filter(|object| is_in_stream_file_string(object)).count() as u32;
-    let mut counter = 5u32 + pooled_string_count - function_string_total - in_stream_file_strings;
+    let in_stream_file_strings = input
+        .data_objects
+        .iter()
+        .filter(|object| is_in_stream_file_string(object))
+        .count() as u32;
+    let mut counter = u32::from(input.object_format.initial_anonymous_counter)
+        + pooled_string_count
+        - function_string_total
+        - in_stream_file_strings;
     // The `@N` of a pooled constant a later function reuses is the one the first
     // function got — a deduped reuse consumes no new number, so the reusing
     // function's subsequent unwind `@N` shift down accordingly.
@@ -440,7 +579,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         counter += input
             .data_objects
             .iter()
-            .filter(|object| is_in_stream_file_string(object) && object.functions_before == function_index)
+            .filter(|object| {
+                is_in_stream_file_string(object) && object.functions_before == function_index
+            })
             .count() as u32;
         let owned_statics: Vec<&DataObject> = input
             .data_objects
@@ -462,14 +603,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // This function's own strings sit at the front of its `@N` block, before
         // its constants — unless string_number_after_constants places them
         // after the first K constants (creation order — bfbb's __dec2num).
-        if function.string_number_after_constants.is_none() && function.string_number_after_rodata.is_none() {
+        if function.string_number_after_constants.is_none()
+            && function.string_number_after_rodata.is_none()
+        {
             number += function.string_count;
         }
         // The anonymous rodata blob numbers BEFORE the pool constants
         // (measured: __strtold's table @26 precedes its pool double @147).
         {
             let mut numbers_of_blobs = Vec::new();
-            for (blob_index, (_, anonymous_offset)) in function.anonymous_rodata.iter().enumerate() {
+            for (blob_index, (_, anonymous_offset)) in function.anonymous_rodata.iter().enumerate()
+            {
                 // string_number_after_rodata: the strings (and a gap before
                 // them) number between blob K-1 and blob K (strtold's "NAN("
                 // @53 between "INFINITY" @39 and the template @54).
@@ -501,8 +645,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 match numbered_static_slot.get(&(constant.bits, constant.byte_width)) {
                     Some(&existing) => numbers.push(existing),
                     None => {
-                        let number_of_slot = counter + owned_statics.len() as u32 + static_slot_seen - 1;
-                        numbered_static_slot.insert((constant.bits, constant.byte_width), number_of_slot);
+                        let number_of_slot =
+                            counter + owned_statics.len() as u32 + static_slot_seen - 1;
+                        numbered_static_slot
+                            .insert((constant.bits, constant.byte_width), number_of_slot);
                         numbers.push(number_of_slot);
                         static_slot_seen += 1;
                     }
@@ -558,7 +704,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         } else {
             frame_numbers.push(None);
         }
-        counter = number + 4;
+        let post_function_bump = function.post_function_anonymous_bump.unwrap_or_else(|| {
+            if function.frame.is_some() {
+                input.object_format.post_framed_function_anonymous_bump
+            } else {
+                input.object_format.post_leaf_function_anonymous_bump
+            }
+        });
+        counter = number + u32::from(post_function_bump);
     }
 
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The
@@ -578,7 +731,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // runtime's `__mem.c` uses `.init`). A TU's functions share one code section
     // (mixed `.text`/`.init` is not modeled); the derived names follow the same
     // `.mwcats<sec>` / `.rela<sec>` shape mwcc uses.
-    let text_section: &str = input.functions.iter().find_map(|function| function.section).unwrap_or(".text");
+    let text_section: &str = input
+        .functions
+        .iter()
+        .find_map(|function| function.section)
+        .unwrap_or(".text");
     let mwcats_section: String = format!(".mwcats{text_section}");
     let rela_text_section: String = format!(".rela{text_section}");
     let rela_mwcats_section: String = format!(".rela{mwcats_section}");
@@ -630,28 +787,43 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     // The `.rela.*` sections follow their target sections' order, so `.rela.sdata`
     // (→ `.sdata`) precedes `.rela.mwcats.text` (→ `.mwcats.text`, last).
-    let has_data_relocs = input.data_objects.iter().any(|object| section_of(object) == ".data" && !object.relocations.is_empty());
+    let has_data_relocs = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".data" && !object.relocations.is_empty());
     if has_jump_table || has_data_relocs {
         order.push(".rela.data");
     }
-    let has_sdata_relocs = input.data_objects.iter().any(|object| section_of(object) == ".sdata" && !object.relocations.is_empty());
+    let has_sdata_relocs = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".sdata" && !object.relocations.is_empty());
     if has_sdata_relocs {
         order.push(".rela.sdata");
     }
     // `.rela.ctors`/`.rela.dtors` follow their target sections' relative order —
     // after `.rela.text` and the data relas, before `.rela.mwcats.text` (measured).
-    let has_ctors_relocs = input.data_objects.iter().any(|object| section_of(object) == ".ctors" && !object.relocations.is_empty());
+    let has_ctors_relocs = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".ctors" && !object.relocations.is_empty());
     if has_ctors_relocs {
         order.push(".rela.ctors");
     }
-    let has_dtors_relocs = input.data_objects.iter().any(|object| section_of(object) == ".dtors" && !object.relocations.is_empty());
+    let has_dtors_relocs = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".dtors" && !object.relocations.is_empty());
     if has_dtors_relocs {
         order.push(".rela.dtors");
     }
     // `.rela.sdata2` — a `static const` pointer-to-symbol global in the read-only pool
     // carries an ADDR32 (the global-destructor reference when __declspec is macro'd off).
     // `.sdata2` is the last data section, so its rela precedes only `.rela.mwcats`.
-    let has_sdata2_relocs = input.data_objects.iter().any(|object| section_of(object) == ".sdata2" && !object.relocations.is_empty());
+    let has_sdata2_relocs = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".sdata2" && !object.relocations.is_empty());
     if has_sdata2_relocs {
         order.push(".rela.sdata2");
     }
@@ -670,10 +842,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [text_section, "extab", "extabindex", ".ctors", ".dtors", ".rodata", ".data", ".bss", ".sdata", ".sbss", ".sdata2", &mwcats_section]
-        .into_iter()
-        .filter(|name| order.contains(name))
-        .collect();
+    let content_sections: Vec<&str> = [
+        text_section,
+        "extab",
+        "extabindex",
+        ".ctors",
+        ".dtors",
+        ".rodata",
+        ".data",
+        ".bss",
+        ".sdata",
+        ".sbss",
+        ".sdata2",
+        &mwcats_section,
+    ]
+    .into_iter()
+    .filter(|name| order.contains(name))
+    .collect();
     // The `.comment` trailer carries one record per symbol *after* the null and
     // FILE entries, holding that symbol's alignment (0 for an undefined external).
     // Values are collected here in symbol-emission order.
@@ -682,7 +867,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // objects it holds: a `__attribute__((aligned(32)))` global makes its `.bss`/`.sdata`
     // 32-aligned rather than the 8-byte default (dolphin DMA buffers). Compute the per-
     // section max object alignment (data_aligns/data_section are fully populated by now).
-    let mut section_max_align: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut section_max_align: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
     for (name, section) in &data_section {
         let entry = section_max_align.entry(*section).or_insert(0);
         *entry = (*entry).max(data_aligns[name]);
@@ -697,7 +883,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut strtab = StringTable::new();
     let mut symtab = Vec::new();
     write_symbol(&mut symtab, 0, 0, 0, 0, 0, 0); // null
-    write_symbol(&mut symtab, strtab.add(input.source_name), 0, 0, STT_FILE, 0, SHN_ABS);
+    write_symbol(
+        &mut symtab,
+        strtab.add(input.source_name),
+        0,
+        0,
+        STT_FILE,
+        0,
+        SHN_ABS,
+    );
     for name in &content_sections {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
         comment_values.push((section_align(name), 0));
@@ -714,7 +908,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .flat_map(|function| function.relocations.iter())
         .filter_map(|relocation| match &relocation.target {
-            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => {
+                Some(name.as_str())
+            }
             _ => None,
         })
         .filter(|name| input.inline_asm_symbols.iter().any(|symbol| symbol == name))
@@ -734,7 +930,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // SKIPPED here and emitted at its source position in the per-function run below
     // (both const and non-const — byte-verified). Their indices are kept so a function
     // relocation that targets one resolves locally.
-    let mut local_data_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut local_data_symbols: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
+    let mut emitted_zero_static: std::collections::HashSet<&str> = std::collections::HashSet::new();
     // A function-body string's `@N` data object carries its bytes here (for section layout) but its
     // SYMBOL is emitted per-function in the `@N` run below, interleaved with that function's
     // constants/unwind entries — so skip those objects in this grouped static run. (A FILE-SCOPE
@@ -744,7 +942,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Initialized statics — plus EXPLICITLY zero-initialized small `.sbss` ones — first, in
     // FORWARD declaration order (same interleaving mwcc uses for exported globals).
     let static_forward = |object: &DataObject| {
-        !is_zero_section(object.name) || (data_section[object.name] == ".sbss" && object.is_explicit_zero)
+        !is_zero_section(object.name)
+            || (data_section[object.name] == ".sbss" && object.is_explicit_zero)
+    };
+    let is_pending_zero_static = |object: &DataObject| {
+        object.is_static
+            && is_zero_section(object.name)
+            && !static_forward(object)
+            && object.static_local_owner.is_none()
     };
     // A `.rodata` base ANCHOR: when codegen addresses the read-only tables
     // through one section-relative base (s_atan's atanhi/atanlo/aT off a
@@ -758,9 +963,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         })
     });
     let mut rodata_anchor_emitted = false;
+    if rodata_anchor_needed && input.object_format.rodata_anchor_before_data_symbols {
+        local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add("...rodata.0"),
+            0,
+            0,
+            0,
+            0,
+            index_of(".rodata") as u16,
+        );
+        comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
+        rodata_anchor_emitted = true;
+    }
     for object in &input.data_objects {
         if object.is_static
-            && static_forward(object)
+            && (static_forward(object)
+                || input.object_format.local_data_symbols_in_declaration_order)
             && !function_string_names.contains(object.name)
             && object.static_local_owner.is_none()
             // Declared BETWEEN functions -> emitted at its source position in
@@ -769,17 +989,90 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             // front regardless of declaration position (measured).
             && (object.functions_before == 0 || object.section.is_some())
         {
+            if is_pending_zero_static(object) {
+                emitted_zero_static.insert(object.name);
+            }
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
-            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+            write_symbol(
+                &mut symtab,
+                strtab.add(object.name),
+                data_offsets[object.name],
+                data_sizes[object.name],
+                STB_LOCAL_OBJECT,
+                0,
+                section,
+            );
             comment_values.push((data_aligns[object.name], 0));
-            if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
+            if rodata_anchor_needed
+                && !rodata_anchor_emitted
+                && data_section[object.name] == ".rodata"
+            {
                 local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
                 write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
                 // .comment record (1, 0x00100000) — measured; the flag bit marks
                 // the section-anchor entry.
-                comment_values.push((1, 0x0010_0000));
+                comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
                 rodata_anchor_emitted = true;
+            }
+        }
+    }
+    // Symbol bookkeeping is declared before the optional interleaving pin: a
+    // pinned sequence can contain both zero statics and static functions.
+    let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
+    let mut local_function_symbols: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
+    let mut emitted_early_func: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // An exact whole-TU capture may pin the legacy symbol-creation timeline:
+    // zero statics materialize at first reference while static functions appear
+    // at a prior declaration or definition, interleaved with those data symbols.
+    // Names not in the pin continue through the general policies below.
+    for name in input.local_symbol_order {
+        if let Some(object) = input
+            .data_objects
+            .iter()
+            .find(|object| object.name == name && is_pending_zero_static(object))
+        {
+            if emitted_zero_static.insert(object.name) {
+                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(object.name),
+                    data_offsets[object.name],
+                    data_sizes[object.name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    section,
+                );
+                comment_values.push((data_aligns[object.name], 0));
+            }
+            continue;
+        }
+        if let Some(index) = functions.iter().position(|function| {
+            function.is_static && !function.implicit_local && function.name == name
+        }) {
+            if emitted_early_func.insert(index) {
+                let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(functions[index].name),
+                    function_offset[index],
+                    function_size[index],
+                    STB_LOCAL_FUNC,
+                    0,
+                    index_of(text_section) as u16,
+                );
+                comment_values.push((
+                    4,
+                    if functions[index].force_active {
+                        FORCE_ACTIVE_FLAG
+                    } else {
+                        0
+                    },
+                ));
+                function_symbols[index] = symbol;
+                local_function_symbols.insert(functions[index].name, symbol);
             }
         }
     }
@@ -788,29 +1081,39 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // (their symbol_order, falling back to relocation order — measured:
     // wind_waker abort_exit interleaves __atexit_funcs by its first use),
     // then any unreferenced ones in REVERSE declaration order.
-    let is_pending_zero_static = |object: &DataObject| {
-        object.is_static
-            && is_zero_section(object.name)
-            && !static_forward(object)
-            && object.static_local_owner.is_none()
-    };
-    let mut emitted_zero_static: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for function in functions {
-        let relocation_names = function.relocations.iter().filter_map(|relocation| match &relocation.target {
-            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
-            _ => None,
-        });
+        let relocation_names =
+            function
+                .relocations
+                .iter()
+                .filter_map(|relocation| match &relocation.target {
+                    RelocationTarget::External(name)
+                    | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+                    _ => None,
+                });
         // TEXT-RELOCATION order, not symbol_order: mwcc's scheduler hoists a
         // loop-invariant table base (lis/addi) ABOVE the loop guard, and the
         // zero-static symbol run follows the FIRST TEXT REFERENCE (measured:
         // wind_waker abort_exit — __atexit_funcs before __atexit_curr_func,
         // opposite to the AST order symbol_order carries).
         for name in relocation_names {
-            if let Some(object) = input.data_objects.iter().find(|object| object.name == name && is_pending_zero_static(object)) {
+            if let Some(object) = input
+                .data_objects
+                .iter()
+                .find(|object| object.name == name && is_pending_zero_static(object))
+            {
                 if emitted_zero_static.insert(object.name) {
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[object.name]) as u16;
-                    write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(object.name),
+                        data_offsets[object.name],
+                        data_sizes[object.name],
+                        STB_LOCAL_OBJECT,
+                        0,
+                        section,
+                    );
                     comment_values.push((data_aligns[object.name], 0));
                 }
             }
@@ -820,7 +1123,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if is_pending_zero_static(object) && !emitted_zero_static.contains(object.name) {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
-            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+            write_symbol(
+                &mut symtab,
+                strtab.add(object.name),
+                data_offsets[object.name],
+                data_sizes[object.name],
+                STB_LOCAL_OBJECT,
+                0,
+                section,
+            );
             comment_values.push((data_aligns[object.name], 0));
         }
     }
@@ -829,8 +1140,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // entries (mwcc emits `static int f(){…}` here, ahead of any unwind `@N`). Their
     // symbol indices are recorded by function index so a call relocation resolves to
     // the local symbol; the global run below skips them.
-    let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
-    let mut local_function_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut static_slot_symbols: HashMap<(usize, usize), u32> = HashMap::new();
     let mut static_slot_symbol_by_value: HashMap<(u64, u8), u32> = HashMap::new();
     // One `.sdata2` symbol per distinct constant — declared here so the EARLY
@@ -860,16 +1169,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // order, ahead of statics first seen at their definition. The per-function
     // loop below skips any function emitted here (measured: OSAlarm's
     // `DecrementerExceptionHandler`, prototyped at the top of the file).
-    let mut emitted_early_func: std::collections::HashSet<usize> = std::collections::HashSet::new();
     for name in input.forward_declared_statics {
-        if let Some(index) = functions
-            .iter()
-            .position(|function| function.is_static && !function.implicit_local && function.name == name.as_str())
-        {
+        if let Some(index) = functions.iter().position(|function| {
+            function.is_static && !function.implicit_local && function.name == name.as_str()
+        }) {
             if emitted_early_func.insert(index) {
                 let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                write_symbol(&mut symtab, strtab.add(functions[index].name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
-                comment_values.push((4, if functions[index].force_active { FORCE_ACTIVE_FLAG } else { 0 }));
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(functions[index].name),
+                    function_offset[index],
+                    function_size[index],
+                    STB_LOCAL_FUNC,
+                    0,
+                    index_of(text_section) as u16,
+                );
+                comment_values.push((
+                    4,
+                    if functions[index].force_active {
+                        FORCE_ACTIVE_FLAG
+                    } else {
+                        0
+                    },
+                ));
                 function_symbols[index] = symbol;
                 local_function_symbols.insert(functions[index].name, symbol);
             }
@@ -895,21 +1217,40 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             {
                 if data_marker_pending && data_section[object.name] == ".data" {
                     local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
-                    write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add("...data.0"),
+                        0,
+                        0,
+                        0,
+                        0,
+                        index_of(".data") as u16,
+                    );
                     comment_values.push((1, 0x0010_0000));
                     data_marker_pending = false;
                 }
                 local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[object.name]) as u16;
-                write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(object.name),
+                    data_offsets[object.name],
+                    data_sizes[object.name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    section,
+                );
                 comment_values.push((data_aligns[object.name], 0));
                 // The `...rodata.0` anchor also follows the FIRST .rodata
                 // static in the INTERLEAVED source-position run (pikmin
                 // e_pow's `bp`, declared after scalbn).
-                if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
+                if rodata_anchor_needed
+                    && !rodata_anchor_emitted
+                    && data_section[object.name] == ".rodata"
+                {
                     local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
                     write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
-                    comment_values.push((1, 0x0010_0000));
+                    comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
                     rodata_anchor_emitted = true;
                 }
             }
@@ -929,14 +1270,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     Some(&number) => strtab.add(&format!("{}${}", object.name, number)),
                     None => strtab.add(object.name),
                 };
-                write_symbol(&mut symtab, display, data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                write_symbol(
+                    &mut symtab,
+                    display,
+                    data_offsets[object.name],
+                    data_sizes[object.name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    section,
+                );
                 comment_values.push((data_aligns[object.name], 0));
                 // The `...rodata.0` anchor also follows the FIRST .rodata
                 // static LOCAL (pikmin inverse_trig's atan_coeff$N).
-                if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
+                if rodata_anchor_needed
+                    && !rodata_anchor_emitted
+                    && data_section[object.name] == ".rodata"
+                {
                     local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
                     write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
-                    comment_values.push((1, 0x0010_0000));
+                    comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
                     rodata_anchor_emitted = true;
                 }
             }
@@ -947,7 +1299,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // `.mwcats` relocation, NOT for call resolution (calls bind the ghost).
         if function.implicit_local {
             function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
+            write_symbol(
+                &mut symtab,
+                strtab.add(function.name),
+                function_offset[index],
+                function_size[index],
+                STB_LOCAL_FUNC,
+                0,
+                index_of(text_section) as u16,
+            );
             comment_values.push((4, 0)); // a function is 4-aligned
         }
         // This function's NEW strings sit at the FRONT of its `@N` block, before its constants and
@@ -957,17 +1317,35 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // (When string_number_after_constants / string_number_after_rodata is
         // set, the string SYMBOLS also emit at the deferred position — handled
         // inside the constants loop below / the blob loop.)
-        if function.string_number_after_constants.is_none() && function.string_number_after_rodata.is_none() {
+        if function.string_number_after_constants.is_none()
+            && function.string_number_after_rodata.is_none()
+        {
             for name in &function.string_names {
                 if data_marker_pending && data_section[name.as_str()] == ".data" {
                     local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
-                    write_symbol(&mut symtab, strtab.add("...data.0"), 0, 0, 0, 0, index_of(".data") as u16);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add("...data.0"),
+                        0,
+                        0,
+                        0,
+                        0,
+                        index_of(".data") as u16,
+                    );
                     comment_values.push((1, 0x0010_0000));
                     data_marker_pending = false;
                 }
                 local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[name.as_str()]) as u16;
-                write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(name),
+                    data_offsets[name.as_str()],
+                    data_sizes[name.as_str()],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    section,
+                );
                 comment_values.push((data_aligns[name.as_str()], 0));
             }
         }
@@ -981,9 +1359,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 if let Some((position, _)) = function.string_number_after_rodata {
                     if position == blob_index as u32 {
                         for name in &function.string_names {
-                            local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                            local_data_symbols
+                                .insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                             let section = index_of(data_section[name.as_str()]) as u16;
-                            write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                            write_symbol(
+                                &mut symtab,
+                                strtab.add(name),
+                                data_offsets[name.as_str()],
+                                data_sizes[name.as_str()],
+                                STB_LOCAL_OBJECT,
+                                0,
+                                section,
+                            );
                             comment_values.push((data_aligns[name.as_str()], 0));
                         }
                     }
@@ -991,16 +1378,33 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 symbols_of_blobs.push((symtab.len() / SYMBOL_SIZE) as u32);
                 let name = strtab.add(&format!("@{}", number));
                 let size = function.anonymous_rodata[blob_index].0.len() as u32;
-                write_symbol(&mut symtab, name, rodata_blob_offset[index][blob_index], size, STB_LOCAL_OBJECT, 0, index_of(".rodata") as u16);
+                write_symbol(
+                    &mut symtab,
+                    name,
+                    rodata_blob_offset[index][blob_index],
+                    size,
+                    STB_LOCAL_OBJECT,
+                    0,
+                    index_of(".rodata") as u16,
+                );
                 // The blob's `.comment` alignment record is 4 (measured on __strtold's @26).
                 comment_values.push((4, 0));
             }
             if let Some((position, _)) = function.string_number_after_rodata {
                 if position as usize >= function.anonymous_rodata.len() {
                     for name in &function.string_names {
-                        local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                        local_data_symbols
+                            .insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                         let section = index_of(data_section[name.as_str()]) as u16;
-                        write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(name),
+                            data_offsets[name.as_str()],
+                            data_sizes[name.as_str()],
+                            STB_LOCAL_OBJECT,
+                            0,
+                            section,
+                        );
                         comment_values.push((data_aligns[name.as_str()], 0));
                     }
                 }
@@ -1013,7 +1417,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 for name in &function.string_names {
                     local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[name.as_str()]) as u16;
-                    write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(name),
+                        data_offsets[name.as_str()],
+                        data_sizes[name.as_str()],
+                        STB_LOCAL_OBJECT,
+                        0,
+                        section,
+                    );
                     comment_values.push((data_aligns[name.as_str()], 0));
                 }
             }
@@ -1021,7 +1433,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             // static function — a later function reusing it binds the same
             // symbol.
             if constant.image {
-                if let Some(&early) = static_slot_symbol_by_value.get(&(constant.bits, constant.byte_width)) {
+                if let Some(&early) =
+                    static_slot_symbol_by_value.get(&(constant.bits, constant.byte_width))
+                {
                     symbols.push(early);
                     continue;
                 }
@@ -1035,8 +1449,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     }
                     symbols.push(symbol);
                     let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
-                    write_symbol(&mut symtab, name, constant_offsets[index][constant_index], constant.byte_width as u32, STB_LOCAL_OBJECT, 0, index_of(".sdata2") as u16);
-                    comment_values.push((if constant.byte_width == 8 && constant.static_slot { 4 } else { constant.byte_width as u32 }, 0));
+                    write_symbol(
+                        &mut symtab,
+                        name,
+                        constant_offsets[index][constant_index],
+                        constant.byte_width as u32,
+                        STB_LOCAL_OBJECT,
+                        0,
+                        index_of(".sdata2") as u16,
+                    );
+                    comment_values.push((
+                        if constant.byte_width == 8 && constant.static_slot {
+                            4
+                        } else {
+                            constant.byte_width as u32
+                        },
+                        0,
+                    ));
                 }
             }
         }
@@ -1049,7 +1478,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 for name in &function.string_names {
                     local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[name.as_str()]) as u16;
-                    write_symbol(&mut symtab, strtab.add(name), data_offsets[name.as_str()], data_sizes[name.as_str()], STB_LOCAL_OBJECT, 0, section);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(name),
+                        data_offsets[name.as_str()],
+                        data_sizes[name.as_str()],
+                        STB_LOCAL_OBJECT,
+                        0,
+                        section,
+                    );
                     comment_values.push((data_aligns[name.as_str()], 0));
                 }
             }
@@ -1057,9 +1494,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if let Some(frame) = &frame_numbers[index] {
             extab_entry_symbols.push((symtab.len() / SYMBOL_SIZE) as u32);
             let extab_name = strtab.add(&format!("@{}", frame.extab));
-            write_symbol(&mut symtab, extab_name, frame.extab_entry_offset, 8, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extab") as u16);
+            write_symbol(
+                &mut symtab,
+                extab_name,
+                frame.extab_entry_offset,
+                8,
+                STB_LOCAL_OBJECT,
+                STV_HIDDEN,
+                index_of("extab") as u16,
+            );
             let extabindex_name = strtab.add(&format!("@{}", frame.extabindex));
-            write_symbol(&mut symtab, extabindex_name, frame.extabindex_entry_offset, 12, STB_LOCAL_OBJECT, STV_HIDDEN, index_of("extabindex") as u16);
+            write_symbol(
+                &mut symtab,
+                extabindex_name,
+                frame.extabindex_entry_offset,
+                12,
+                STB_LOCAL_OBJECT,
+                STV_HIDDEN,
+                index_of("extabindex") as u16,
+            );
             // The unwind entries are 4-aligned objects.
             comment_values.push((4, 0));
             comment_values.push((4, 0));
@@ -1073,7 +1526,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             symbols_of_tables.push((symtab.len() / SYMBOL_SIZE) as u32);
             let name = strtab.add(&format!("@{}", jump_table_numbers[index][table_index]));
             let size = table.entries.len() as u32 * 4;
-            write_symbol(&mut symtab, name, jump_table_offset[index][table_index].unwrap(), size, STB_LOCAL_OBJECT, 0, index_of(".data") as u16);
+            write_symbol(
+                &mut symtab,
+                name,
+                jump_table_offset[index][table_index].unwrap(),
+                size,
+                STB_LOCAL_OBJECT,
+                0,
+                index_of(".data") as u16,
+            );
             comment_values.push((4, 0));
         }
         jump_table_symbols.push(symbols_of_tables);
@@ -1083,10 +1544,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // static_locals_lead flips the pair (mp4 alloc's get_malloc_pool:
         // protopool$129, init$130, then the FUNC).
         if function.is_static && !function.implicit_local && !emitted_early_func.contains(&index) {
-            let emit_func = |symtab: &mut Vec<u8>, strtab: &mut StringTable, comment_values: &mut Vec<(u32, u32)>| {
+            let emit_func = |symtab: &mut Vec<u8>,
+                             strtab: &mut StringTable,
+                             comment_values: &mut Vec<(u32, u32)>| {
                 let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
-                write_symbol(symtab, strtab.add(function.name), function_offset[index], function_size[index], STB_LOCAL_FUNC, 0, index_of(text_section) as u16);
-                comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
+                write_symbol(
+                    symtab,
+                    strtab.add(function.name),
+                    function_offset[index],
+                    function_size[index],
+                    STB_LOCAL_FUNC,
+                    0,
+                    index_of(text_section) as u16,
+                );
+                comment_values.push((
+                    4,
+                    if function.force_active {
+                        FORCE_ACTIVE_FLAG
+                    } else {
+                        0
+                    },
+                )); // a function is 4-aligned
                 symbol
             };
             if !function.static_locals_lead {
@@ -1106,14 +1584,26 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         Some(&number) => strtab.add(&format!("{}${}", object.name, number)),
                         None => strtab.add(object.name),
                     };
-                    write_symbol(&mut symtab, display, data_offsets[object.name], data_sizes[object.name], STB_LOCAL_OBJECT, 0, section);
+                    write_symbol(
+                        &mut symtab,
+                        display,
+                        data_offsets[object.name],
+                        data_sizes[object.name],
+                        STB_LOCAL_OBJECT,
+                        0,
+                        section,
+                    );
                     comment_values.push((data_aligns[object.name], 0));
                     // The `...rodata.0` anchor also follows the FIRST .rodata
                     // static LOCAL (pikmin inverse_trig's atan_coeff$N).
-                    if rodata_anchor_needed && !rodata_anchor_emitted && data_section[object.name] == ".rodata" {
-                        local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                    if rodata_anchor_needed
+                        && !rodata_anchor_emitted
+                        && data_section[object.name] == ".rodata"
+                    {
+                        local_data_symbols
+                            .insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
                         write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
-                        comment_values.push((1, 0x0010_0000));
+                        comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
                         rodata_anchor_emitted = true;
                     }
                 }
@@ -1157,26 +1647,69 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
                 global_symbols.insert(target, (symtab.len() / SYMBOL_SIZE) as u32);
                 if let Some(&offset) = data_offsets.get(target) {
-                    write_symbol(&mut symtab, strtab.add(target), offset, data_sizes[target], STB_GLOBAL_OBJECT, 0, index_of(data_section[target]) as u16);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(target),
+                        offset,
+                        data_sizes[target],
+                        STB_GLOBAL_OBJECT,
+                        0,
+                        index_of(data_section[target]) as u16,
+                    );
                     comment_values.push((data_aligns[target], 0));
-                } else if let Some(function_index) = functions.iter().position(|function| !function.is_static && function.name == target) {
+                } else if let Some(function_index) = functions
+                    .iter()
+                    .position(|function| !function.is_static && function.name == target)
+                {
                     // A unit FUNCTION address-taken by this object (a dispatch table
                     // referencing functions defined later): mwcc hoists its GLOBAL
                     // FUNC symbol to the data object's position — this reverse-slot,
                     // first-seen loop reproduces the measured order (tbl, e3, e2, e1).
                     // The per-function run below skips it via the global_symbols guard.
                     let function = &functions[function_index];
-                    let binding = if function.is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
+                    let binding = if function.is_weak {
+                        STB_WEAK_FUNC
+                    } else {
+                        STB_GLOBAL_FUNC
+                    };
                     function_symbols[function_index] = (symtab.len() / SYMBOL_SIZE) as u32;
-                    write_symbol(&mut symtab, strtab.add(function.name), function_offset[function_index], function_size[function_index], binding, 0, index_of(text_section) as u16);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(function.name),
+                        function_offset[function_index],
+                        function_size[function_index],
+                        binding,
+                        0,
+                        index_of(text_section) as u16,
+                    );
                     let flags = if function.is_weak {
-                        if function.weak_inline { 0x0d00_0000 } else { 0x0e00_0000 }
+                        if function.weak_inline {
+                            0x0d00_0000
+                        } else {
+                            0x0e00_0000
+                        }
                     } else {
                         0
                     };
-                    comment_values.push((4, flags | if function.force_active { FORCE_ACTIVE_FLAG } else { 0 }));
+                    comment_values.push((
+                        4,
+                        flags
+                            | if function.force_active {
+                                FORCE_ACTIVE_FLAG
+                            } else {
+                                0
+                            },
+                    ));
                 } else {
-                    write_symbol(&mut symtab, strtab.add(target), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(target),
+                        0,
+                        0,
+                        STB_GLOBAL_NOTYPE,
+                        0,
+                        SHN_UNDEF,
+                    );
                     comment_values.push((0, 0));
                 }
             }
@@ -1218,8 +1751,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // relocation targets (measured: the UNDEF `__destroy_global_chain` lands
         // right after the `.dtors` object referencing it).
         !object.is_static
-            && (matches!(section_name, ".sdata" | ".data" | ".sdata2" | ".rodata" | ".ctors" | ".dtors")
-                || (section_name == ".sbss" && object.is_explicit_zero))
+            && (matches!(
+                section_name,
+                ".sdata" | ".data" | ".sdata2" | ".rodata" | ".ctors" | ".dtors"
+            ) || (section_name == ".sbss" && object.is_explicit_zero))
     };
     // The always-present initialized sections (`.sdata`/`.data`, and the read-only
     // `.sdata2`/`.rodata`) emit their symbols up front in declaration order; the
@@ -1248,7 +1783,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .relocations
             .iter()
             .filter_map(|relocation| match &relocation.target {
-                RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
+                RelocationTarget::External(name)
+                | RelocationTarget::ExternalWithAddend(name, _) => Some(name.as_str()),
                 _ => None,
             })
             .collect();
@@ -1278,21 +1814,53 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // A CALLED inline-asm helper (static inline, skipped) was DECLARED
         // before the function — mwcc orders it with the prototyped externals,
         // not the implicit call-site run (measured: pikmin s_ldexp).
-        let local_callees: std::collections::HashSet<&str> =
-            function.local_undefined_callees.iter().map(|name| name.as_str()).collect();
+        let local_callees: std::collections::HashSet<&str> = function
+            .local_undefined_callees
+            .iter()
+            .map(|name| name.as_str())
+            .collect();
         let implicit: std::collections::HashSet<&str> = function
             .implicit_external_callees
             .iter()
             .map(|name| name.as_str())
             .filter(|name| !referenced_inline_asm.contains(name) && !local_callees.contains(name))
             .collect();
-        let (implicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = ordered.into_iter().partition(|name| implicit.contains(name));
+        let (implicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = ordered
+            .into_iter()
+            .partition(|name| implicit.contains(name));
+        // Build 163 creates an absolute-address symbol while materializing its
+        // ADDR16 pair, before it registers the current function. SDA21 data
+        // references and calls retain the ordinary function-first ordering.
+        let absolute_targets: std::collections::HashSet<&str> = function
+            .relocations
+            .iter()
+            .filter(|relocation| matches!(relocation.elf_type, 4 | 5 | 6))
+            .filter_map(|relocation| match &relocation.target {
+                RelocationTarget::External(name)
+                | RelocationTarget::ExternalWithAddend(name, _)
+                    if !function
+                        .referenced_function_symbols
+                        .iter()
+                        .any(|function_name| function_name == name) =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        let (absolute_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) =
+            if input.object_format.function_symbol_before_references {
+                explicit_ordered
+                    .into_iter()
+                    .partition(|name| absolute_targets.contains(name))
+            } else {
+                (Vec::new(), explicit_ordered)
+            };
         // The register save/restore HELPERS (_savegpr_N/_restgpr_N) are created
         // while mwcc compiles the PROLOGUE/EPILOGUE — before the function's
         // symbol — even though they are unprototyped (measured: strtoul).
-        let (helper_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) = implicit_ordered
-            .into_iter()
-            .partition(|name| {
+        let (helper_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) =
+            implicit_ordered.into_iter().partition(|name| {
                 name.starts_with("_savegpr_")
                     || name.starts_with("_restgpr_")
                     || name.starts_with("_savefpr_")
@@ -1304,7 +1872,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         macro_rules! emit_referenced {
             ($names:expr) => {
                 for name in $names {
-                    if global_symbols.contains_key(name) || local_data_symbols.contains_key(name) || local_function_symbols.contains_key(name) {
+                    if global_symbols.contains_key(name)
+                        || local_data_symbols.contains_key(name)
+                        || local_function_symbols.contains_key(name)
+                    {
                         continue;
                     }
                     // A call to a function defined LATER in this unit emits
@@ -1313,16 +1884,31 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     // fflush FUNC before fclose's own symbol) or its IMPLICIT
                     // run when not (AC: [fclose, fflush FUNC, free UND]) — the
                     // definition's own position run then skips it.
-                    if let Some(forward) = functions
-                        .iter()
-                        .position(|later| !later.is_static && !later.implicit_local && later.name == name)
-                    {
+                    if let Some(forward) = functions.iter().position(|later| {
+                        !later.is_static && !later.implicit_local && later.name == name
+                    }) {
                         global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                         function_symbols[forward] = (symtab.len() / SYMBOL_SIZE) as u32;
-                        let binding = if functions[forward].is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
-                        write_symbol(&mut symtab, strtab.add(name), function_offset[forward], function_size[forward], binding, 0, index_of(text_section) as u16);
+                        let binding = if functions[forward].is_weak {
+                            STB_WEAK_FUNC
+                        } else {
+                            STB_GLOBAL_FUNC
+                        };
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(name),
+                            function_offset[forward],
+                            function_size[forward],
+                            binding,
+                            0,
+                            index_of(text_section) as u16,
+                        );
                         let flags = if functions[forward].is_weak {
-                            if functions[forward].weak_inline { 0x0d00_0000 } else { 0x0e00_0000 }
+                            if functions[forward].weak_inline {
+                                0x0d00_0000
+                            } else {
+                                0x0e00_0000
+                            }
                         } else {
                             0
                         };
@@ -1332,18 +1918,98 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                     if let Some(&offset) = data_offsets.get(name) {
                         let section = index_of(data_section[name]) as u16;
-                        write_symbol(&mut symtab, strtab.add(name), offset, data_sizes[name], STB_GLOBAL_OBJECT, 0, section);
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(name),
+                            offset,
+                            data_sizes[name],
+                            STB_GLOBAL_OBJECT,
+                            0,
+                            section,
+                        );
                         comment_values.push((data_aligns[name], 0));
                     } else if referenced_inline_asm.contains(name) {
                         // a CALLED static-inline asm helper stays LOCAL (info 0).
                         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
                         comment_values.push((0, 0));
                     } else {
-                        write_symbol(&mut symtab, strtab.add(name), 0, 0, STB_GLOBAL_NOTYPE, 0, SHN_UNDEF);
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(name),
+                            0,
+                            0,
+                            STB_GLOBAL_NOTYPE,
+                            0,
+                            SHN_UNDEF,
+                        );
                         comment_values.push((0, 0)); // an undefined external has no alignment
                     }
                 }
             };
+        }
+        macro_rules! emit_current_function_symbol {
+            () => {
+                if !function.is_static && !global_symbols.contains_key(function.name) {
+                    function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
+                    let binding = if function.is_weak {
+                        STB_WEAK_FUNC
+                    } else {
+                        STB_GLOBAL_FUNC
+                    };
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(function.name),
+                        function_offset[index],
+                        function_size[index],
+                        binding,
+                        0,
+                        index_of(text_section) as u16,
+                    );
+                    let flags = if function.is_weak {
+                        if function.weak_inline {
+                            0x0d00_0000
+                        } else {
+                            0x0e00_0000
+                        }
+                    } else {
+                        0
+                    };
+                    comment_values.push((
+                        4,
+                        flags
+                            | if function.force_active {
+                                FORCE_ACTIVE_FLAG
+                            } else {
+                                0
+                            },
+                    ));
+                    global_symbols.insert(function.name, function_symbols[index]);
+                    for (name, byte_offset) in &function.entry_points {
+                        global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(name),
+                            function_offset[index] + byte_offset,
+                            0,
+                            STB_GLOBAL_NOTYPE,
+                            0,
+                            index_of(text_section) as u16,
+                        );
+                        comment_values.push((
+                            4,
+                            if function.force_active {
+                                FORCE_ACTIVE_FLAG
+                            } else {
+                                0
+                            },
+                        ));
+                    }
+                }
+            };
+        }
+        if input.object_format.function_symbol_before_references {
+            emit_referenced!(absolute_ordered);
+            emit_current_function_symbol!();
         }
         // Prototyped externals first, then the save/restore helpers, then the
         // function's own symbol, then the remaining implicit callees.
@@ -1351,32 +2017,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         emit_referenced!(helper_ordered);
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
-        if !function.is_static && !global_symbols.contains_key(function.name) {
-            function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
-            let binding = if function.is_weak { STB_WEAK_FUNC } else { STB_GLOBAL_FUNC };
-            write_symbol(&mut symtab, strtab.add(function.name), function_offset[index], function_size[index], binding, 0, index_of(text_section) as u16);
-            // A declspec-weak function carries 0x0e; a WEAK-MATERIALIZED plain
-            // inline carries the weak-OBJECT flag 0x0d (measured: strikers mbstowcs).
-            let flags = if function.is_weak {
-                if function.weak_inline { 0x0d00_0000 } else { 0x0e00_0000 }
-            } else {
-                0
-            };
-            comment_values.push((4, flags | if function.force_active { FORCE_ACTIVE_FLAG } else { 0 })); // a function is 4-aligned
-            // A LATER function's call to this one resolves to the defined
-            // symbol (no UND duplicate — FILE_POS's fseek -> _fseek). A
-            // FORWARD-referenced function already emitted at its first
-            // reference (the contains_key guard above).
-            global_symbols.insert(function.name, function_symbols[index]);
-            // Inline-`asm` `entry <name>` points: GLOBAL NOTYPE symbols at offsets
-            // within this function's `.text`, emitted immediately after the function's
-            // own symbol (mwcc's `_savefpr_14` … register save/restore entry points).
-            for (name, byte_offset) in &function.entry_points {
-                global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-                write_symbol(&mut symtab, strtab.add(name), function_offset[index] + byte_offset, 0, STB_GLOBAL_NOTYPE, 0, index_of(text_section) as u16);
-                comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 }));
-            }
-        }
+        emit_current_function_symbol!();
         // A STATIC asm function's own symbol is LOCAL (emitted in the local run
         // above); its GLOBAL `entry` points still emit HERE, at the function's source
         // position in the global run (wind_waker's `ASM static` runtime.c — the local
@@ -1385,8 +2026,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if function.is_static {
             for (name, byte_offset) in &function.entry_points {
                 global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-                write_symbol(&mut symtab, strtab.add(name), function_offset[index] + byte_offset, 0, STB_GLOBAL_NOTYPE, 0, index_of(text_section) as u16);
-                comment_values.push((4, if function.force_active { FORCE_ACTIVE_FLAG } else { 0 }));
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(name),
+                    function_offset[index] + byte_offset,
+                    0,
+                    STB_GLOBAL_NOTYPE,
+                    0,
+                    index_of(text_section) as u16,
+                );
+                comment_values.push((
+                    4,
+                    if function.force_active {
+                        FORCE_ACTIVE_FLAG
+                    } else {
+                        0
+                    },
+                ));
             }
         }
         emit_referenced!(implicit_ordered);
@@ -1412,18 +2068,31 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // mixed .bss/.sbss set reverses too, independent of section). `static` objects
     // are local and never appear here.
     for object in input.data_objects.iter().rev() {
-        if !object.is_static && !object.name.is_empty() && !global_symbols.contains_key(object.name) {
+        if !object.is_static && !object.name.is_empty() && !global_symbols.contains_key(object.name)
+        {
             global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
-            let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
+            let binding = if object.is_weak {
+                STB_WEAK_OBJECT
+            } else {
+                STB_GLOBAL_OBJECT
+            };
             // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
             let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
-            write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
+            write_symbol(
+                &mut symtab,
+                strtab.add(object.name),
+                data_offsets[object.name],
+                data_sizes[object.name],
+                binding,
+                0,
+                section,
+            );
             comment_values.push((data_aligns[object.name], flags));
         }
     }
     // The `.comment` trailer is now fully determined by the symbol alignments.
-    let comment = comment_record(input.version, input.build, &comment_values);
+    let comment = comment_record(input.object_format.comment, &comment_values);
 
     // 3. Relocation payloads (now that symbol indices are fixed). Each function's
     //    `.text` relocations are rebased by its `.text` offset; a relocation
@@ -1447,17 +2116,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         .or_else(|| local_function_symbols.get(name.as_str()))
                         .unwrap_or_else(|| &global_symbols[name.as_str()])
                 }
-                RelocationTarget::Constant(constant_index) => constant_symbols[index][*constant_index],
+                RelocationTarget::Constant(constant_index) => {
+                    constant_symbols[index][*constant_index]
+                }
                 RelocationTarget::ConstantWithAddend(constant_index, addend) => {
                     rela_addend = *addend as u32;
                     constant_symbols[index][*constant_index]
                 }
                 RelocationTarget::JumpTable => jump_table_symbols[index][0],
-                RelocationTarget::JumpTableAt(table_index) => jump_table_symbols[index][*table_index],
+                RelocationTarget::JumpTableAt(table_index) => {
+                    jump_table_symbols[index][*table_index]
+                }
                 RelocationTarget::AnonymousRodata => rodata_blob_symbols[index][0],
-                RelocationTarget::AnonymousRodataAt(blob_index) => rodata_blob_symbols[index][*blob_index],
+                RelocationTarget::AnonymousRodataAt(blob_index) => {
+                    rodata_blob_symbols[index][*blob_index]
+                }
             };
-            write_rela(&mut rela_text, function_offset[index] + relocation.offset, symbol, relocation.elf_type, rela_addend);
+            write_rela(
+                &mut rela_text,
+                function_offset[index] + relocation.offset,
+                symbol,
+                relocation.elf_type,
+                rela_addend,
+            );
         }
     }
     // `.rela.data` — each jump-table entry is an `ADDR32` to its function with the
@@ -1472,15 +2153,33 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let table = &function.jump_tables[table_index];
             let base = jump_table_offset[index][table_index].unwrap();
             for (entry_index, &body_offset) in table.entries.iter().enumerate() {
-                write_rela(&mut rela_data, base + entry_index as u32 * 4, function_symbols[index], R_PPC_ADDR32, body_offset);
+                write_rela(
+                    &mut rela_data,
+                    base + entry_index as u32 * 4,
+                    function_symbols[index],
+                    R_PPC_ADDR32,
+                    body_offset,
+                );
             }
         }
     }
     let mut rela_extabindex = Vec::new();
     for (index, frame) in frame_numbers.iter().enumerate() {
         if let Some(frame) = frame {
-            write_rela(&mut rela_extabindex, frame.extabindex_entry_offset, function_symbols[index], R_PPC_ADDR32, 0); // -> the function
-            write_rela(&mut rela_extabindex, frame.extabindex_entry_offset + 8, extab_entry_symbols[index], R_PPC_ADDR32, 0); // -> its extab entry
+            write_rela(
+                &mut rela_extabindex,
+                frame.extabindex_entry_offset,
+                function_symbols[index],
+                R_PPC_ADDR32,
+                0,
+            ); // -> the function
+            write_rela(
+                &mut rela_extabindex,
+                frame.extabindex_entry_offset + 8,
+                extab_entry_symbols[index],
+                R_PPC_ADDR32,
+                0,
+            ); // -> its extab entry
         }
     }
     // One `.mwcats` record + relocation per COMPILER-GENERATED function, packed
@@ -1493,7 +2192,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if function.is_asm {
             continue;
         }
-        write_rela(&mut rela_mwcats, mwcats_position * 8 + 4, function_symbols[index], R_PPC_ADDR32, 0);
+        write_rela(
+            &mut rela_mwcats,
+            mwcats_position * 8 + 4,
+            function_symbols[index],
+            R_PPC_ADDR32,
+            0,
+        );
         mwcats_position += 1;
     }
     // `.rela.sdata`/`.rela.data` — a pointer global's `ADDR32` to the symbol it
@@ -1513,7 +2218,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            write_rela(&mut rela_sdata, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+            write_rela(
+                &mut rela_sdata,
+                data_offsets[object.name] + relocation.offset,
+                resolve_data_target(&relocation.target),
+                R_PPC_ADDR32,
+                relocation.addend as u32,
+            );
         }
     }
     let mut rela_sdata2 = Vec::new();
@@ -1522,7 +2233,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            write_rela(&mut rela_sdata2, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+            write_rela(
+                &mut rela_sdata2,
+                data_offsets[object.name] + relocation.offset,
+                resolve_data_target(&relocation.target),
+                R_PPC_ADDR32,
+                relocation.addend as u32,
+            );
         }
     }
     for object in &input.data_objects {
@@ -1530,7 +2247,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            write_rela(&mut rela_data, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+            write_rela(
+                &mut rela_data,
+                data_offsets[object.name] + relocation.offset,
+                resolve_data_target(&relocation.target),
+                R_PPC_ADDR32,
+                relocation.addend as u32,
+            );
         }
     }
     // `.rela.ctors`/`.rela.dtors`: each chain reference's `ADDR32` to its function.
@@ -1540,7 +2263,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter() {
-            write_rela(&mut rela_ctors, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+            write_rela(
+                &mut rela_ctors,
+                data_offsets[object.name] + relocation.offset,
+                resolve_data_target(&relocation.target),
+                R_PPC_ADDR32,
+                relocation.addend as u32,
+            );
         }
     }
     let mut rela_dtors = Vec::new();
@@ -1549,7 +2278,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
-            write_rela(&mut rela_dtors, data_offsets[object.name] + relocation.offset, resolve_data_target(&relocation.target), R_PPC_ADDR32, relocation.addend as u32);
+            write_rela(
+                &mut rela_dtors,
+                data_offsets[object.name] + relocation.offset,
+                resolve_data_target(&relocation.target),
+                R_PPC_ADDR32,
+                relocation.addend as u32,
+            );
         }
     }
 
@@ -1594,24 +2329,77 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             shstrtab.add(display)
         })
         .collect();
-    let offset_of = |name: &str| name_offsets[order.iter().position(|entry| *entry == name).unwrap()];
+    let offset_of =
+        |name: &str| name_offsets[order.iter().position(|entry| *entry == name).unwrap()];
 
     // 6. Assemble the full section table (NULL first), each with its payload.
     let symtab_section = index_of(".symtab");
-    let mut sections = vec![Section { name_offset: 0, sh_type: 0, flags: 0, link: 0, info: 0, align: 0, entry_size: 0, payload: Vec::new(), size: 0 }];
+    let mut sections = vec![Section {
+        name_offset: 0,
+        sh_type: 0,
+        flags: 0,
+        link: 0,
+        info: 0,
+        align: 0,
+        entry_size: 0,
+        payload: Vec::new(),
+        size: 0,
+    }];
     // `mem_size` is the in-memory size; it overrides `payload.len()` only when the
     // payload is empty, which is how a NOBITS section (`.sbss`) carries a size with
     // no file bytes. Every other section passes 0 and takes its payload length.
-    let mut push = |name: &str, sh_type, flags, link, info, align, entry_size, payload: Vec<u8>, mem_size: u32| {
-        let size = if payload.is_empty() { mem_size } else { payload.len() as u32 };
-        sections.push(Section { name_offset: offset_of(name), sh_type, flags, link, info, align, entry_size, payload, size });
+    let mut push = |name: &str,
+                    sh_type,
+                    flags,
+                    link,
+                    info,
+                    align,
+                    entry_size,
+                    payload: Vec<u8>,
+                    mem_size: u32| {
+        let size = if payload.is_empty() {
+            mem_size
+        } else {
+            payload.len() as u32
+        };
+        sections.push(Section {
+            name_offset: offset_of(name),
+            sh_type,
+            flags,
+            link,
+            info,
+            align,
+            entry_size,
+            payload,
+            size,
+        });
     };
     if has_functions {
-        push(text_section, SHT_PROGBITS, SHF_WRITE_EXEC, 0, 0, 4, 0, text.to_vec(), 0);
+        push(
+            text_section,
+            SHT_PROGBITS,
+            SHF_WRITE_EXEC,
+            0,
+            0,
+            4,
+            0,
+            text.to_vec(),
+            0,
+        );
     }
     if has_frame {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
-        push("extabindex", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extabindex, 0);
+        push(
+            "extabindex",
+            SHT_PROGBITS,
+            SHF_ALLOC,
+            0,
+            0,
+            4,
+            0,
+            extabindex,
+            0,
+        );
     }
     // `.ctors`/`.dtors`: PROGBITS, ALLOC (read-only), 4-aligned — the chain
     // reference words (the `ADDR32` relocations live in `.rela.ctors`/`.rela.dtors`).
@@ -1624,62 +2412,222 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // `.rodata` (read-only const data) then the large writable `.data`/`.bss`
     // precede the small-data sections, matching the section-name order above.
     if has_rodata {
-        push(".rodata", SHT_PROGBITS, SHF_ALLOC, 0, 0, section_align(".rodata"), 0, rodata, 0);
+        push(
+            ".rodata",
+            SHT_PROGBITS,
+            SHF_ALLOC,
+            0,
+            0,
+            section_align(".rodata"),
+            0,
+            rodata,
+            0,
+        );
     }
     if has_data {
         // `.data` holds the creation-order layout computed above — file data
         // and jump tables interleaved; table bytes stay zero (ADDR32
         // relocations fill them at link time).
-        push(".data", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".data"), 0, file_data, 0);
+        push(
+            ".data",
+            SHT_PROGBITS,
+            SHF_WRITE_ALLOC,
+            0,
+            0,
+            section_align(".data"),
+            0,
+            file_data,
+            0,
+        );
     }
     if has_bss {
         // `.bss` is NOBITS (large zero-initialized globals): a size, no file bytes.
-        push(".bss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".bss"), 0, Vec::new(), bss_size);
+        push(
+            ".bss",
+            SHT_NOBITS,
+            SHF_WRITE_ALLOC,
+            0,
+            0,
+            section_align(".bss"),
+            0,
+            Vec::new(),
+            bss_size,
+        );
     }
     // Defined small data (`.sdata`/`.sbss`) precedes the read-only constant pool
     // (`.sdata2`), matching the section-name order above.
     if has_sdata {
         // `.sdata` holds the initialized values as file bytes.
-        push(".sdata", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".sdata"), 0, sdata, 0);
+        push(
+            ".sdata",
+            SHT_PROGBITS,
+            SHF_WRITE_ALLOC,
+            0,
+            0,
+            section_align(".sdata"),
+            0,
+            sdata,
+            0,
+        );
     }
     if has_sbss {
         // `.sbss` is NOBITS: no file bytes, but `sh_size` is the in-memory size.
-        push(".sbss", SHT_NOBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".sbss"), 0, Vec::new(), sbss_size);
+        push(
+            ".sbss",
+            SHT_NOBITS,
+            SHF_WRITE_ALLOC,
+            0,
+            0,
+            section_align(".sbss"),
+            0,
+            Vec::new(),
+            sbss_size,
+        );
     }
     if has_constants || has_const_sdata2 {
-        push(".sdata2", SHT_PROGBITS, SHF_WRITE_ALLOC, 0, 0, section_align(".sdata2"), 0, sdata2, 0);
+        push(
+            ".sdata2",
+            SHT_PROGBITS,
+            SHF_WRITE_ALLOC,
+            0,
+            0,
+            section_align(".sdata2"),
+            0,
+            sdata2,
+            0,
+        );
     }
     if has_mwcats {
-        push(&mwcats_section, SHT_MWCATS, 0, index_of(text_section), 0, 4, 1, mwcats, 0);
+        push(
+            &mwcats_section,
+            SHT_MWCATS,
+            0,
+            index_of(text_section),
+            0,
+            4,
+            1,
+            mwcats,
+            0,
+        );
     }
     if has_text_relocations {
-        push(&rela_text_section, SHT_RELA, 0, symtab_section, index_of(text_section), 4, 12, rela_text, 0);
+        push(
+            &rela_text_section,
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(text_section),
+            4,
+            12,
+            rela_text,
+            0,
+        );
     }
     if has_frame {
-        push(".relaextabindex", SHT_RELA, 0, symtab_section, index_of("extabindex"), 4, 12, rela_extabindex, 0);
+        push(
+            ".relaextabindex",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of("extabindex"),
+            4,
+            12,
+            rela_extabindex,
+            0,
+        );
     }
     if has_jump_table || has_data_relocs {
-        push(".rela.data", SHT_RELA, 0, symtab_section, index_of(".data"), 4, 12, rela_data, 0);
+        push(
+            ".rela.data",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".data"),
+            4,
+            12,
+            rela_data,
+            0,
+        );
     }
     if has_sdata_relocs {
-        push(".rela.sdata", SHT_RELA, 0, symtab_section, index_of(".sdata"), 4, 12, rela_sdata, 0);
+        push(
+            ".rela.sdata",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".sdata"),
+            4,
+            12,
+            rela_sdata,
+            0,
+        );
     }
     // Push order MUST match the `order` vector: `.rela.dtors` (early target) before
     // `.rela.sdata2` (late target). They are mutually exclusive in practice, but keep
     // the invariant so a future TU carrying both lays out correctly.
     if has_ctors_relocs {
-        push(".rela.ctors", SHT_RELA, 0, symtab_section, index_of(".ctors"), 4, 12, rela_ctors, 0);
+        push(
+            ".rela.ctors",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".ctors"),
+            4,
+            12,
+            rela_ctors,
+            0,
+        );
     }
     if has_dtors_relocs {
-        push(".rela.dtors", SHT_RELA, 0, symtab_section, index_of(".dtors"), 4, 12, rela_dtors, 0);
+        push(
+            ".rela.dtors",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".dtors"),
+            4,
+            12,
+            rela_dtors,
+            0,
+        );
     }
     if has_sdata2_relocs {
-        push(".rela.sdata2", SHT_RELA, 0, symtab_section, index_of(".sdata2"), 4, 12, rela_sdata2, 0);
+        push(
+            ".rela.sdata2",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".sdata2"),
+            4,
+            12,
+            rela_sdata2,
+            0,
+        );
     }
     if has_mwcats {
-        push(&rela_mwcats_section, SHT_RELA, 0, symtab_section, index_of(&mwcats_section), 4, 12, rela_mwcats, 0);
+        push(
+            &rela_mwcats_section,
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(&mwcats_section),
+            4,
+            12,
+            rela_mwcats,
+            0,
+        );
     }
-    push(".symtab", SHT_SYMTAB, 0, index_of(".strtab"), first_global_index, 4, 16, symtab, 0);
+    push(
+        ".symtab",
+        SHT_SYMTAB,
+        0,
+        index_of(".strtab"),
+        first_global_index,
+        4,
+        16,
+        symtab,
+        0,
+    );
     // Metrowerks stamps string tables with sh_entsize = 1.
     push(".strtab", SHT_STRTAB, 0, 0, 0, 1, 1, strtab.bytes, 0);
     push(".shstrtab", SHT_STRTAB, 0, 0, 0, 1, 1, shstrtab.bytes, 0);
@@ -1709,7 +2657,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
 
     // 8. Emit: header, payloads, padding, section headers.
     let mut output = Vec::new();
-    write_elf_header(&mut output, section_headers_offset, sections.len() as u16, index_of(".shstrtab") as u16);
+    write_elf_header(
+        &mut output,
+        section_headers_offset,
+        sections.len() as u16,
+        index_of(".shstrtab") as u16,
+    );
     for (section, &section_offset) in sections.iter().zip(&offsets) {
         // Pad to the section's aligned offset, then emit its payload.
         while output.len() < section_offset as usize {
@@ -1722,8 +2675,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     for (section, &section_offset) in sections.iter().zip(&offsets) {
         write_section_header(
-            &mut output, section.name_offset, section.sh_type, section.flags, section_offset, section.size,
-            section.link, section.info, section.align, section.entry_size,
+            &mut output,
+            section.name_offset,
+            section.sh_type,
+            section.flags,
+            section_offset,
+            section.size,
+            section.link,
+            section.info,
+            section.align,
+            section.entry_size,
         );
     }
     output
@@ -1745,7 +2706,12 @@ impl StringTable {
     }
 }
 
-fn write_elf_header(output: &mut Vec<u8>, section_headers_offset: u32, section_count: u16, shstrndx: u16) {
+fn write_elf_header(
+    output: &mut Vec<u8>,
+    section_headers_offset: u32,
+    section_count: u16,
+    shstrndx: u16,
+) {
     output.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
     output.push(1); // ELFCLASS32
     output.push(2); // ELFDATA2MSB (big-endian)
@@ -1776,7 +2742,15 @@ fn write_u32(output: &mut Vec<u8>, value: u32) {
     output.extend_from_slice(&value.to_be_bytes());
 }
 
-fn write_symbol(output: &mut Vec<u8>, name: u32, value: u32, size: u32, info: u8, other: u8, section_index: u16) {
+fn write_symbol(
+    output: &mut Vec<u8>,
+    name: u32,
+    value: u32,
+    size: u32,
+    info: u8,
+    other: u8,
+    section_index: u16,
+) {
     write_u32(output, name);
     write_u32(output, value);
     write_u32(output, size);
@@ -1814,4 +2788,22 @@ fn write_section_header(
     write_u32(output, info);
     write_u32(output, alignment);
     write_u32(output, entry_size);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_comment_format_is_independent_of_compiler_identity() {
+        let record = comment_record(
+            CommentFormat {
+                marker: 0x08,
+                version: (2, 3, 0),
+            },
+            &[],
+        );
+        assert_eq!(record[11], 0x08);
+        assert_eq!(&record[12..16], &[2, 3, 0, 1]);
+    }
 }

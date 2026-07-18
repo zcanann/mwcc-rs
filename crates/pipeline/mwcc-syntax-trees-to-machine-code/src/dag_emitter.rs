@@ -78,17 +78,30 @@ struct Builder {
 
 impl Builder {
     fn raw_param(&self, register: u8) -> Option<u32> {
-        self.sources.iter().find_map(|&(value, source)| match source {
-            ValueSource::Parameter(parameter) if parameter == register => Some(value),
-            _ => None,
-        })
+        self.sources
+            .iter()
+            .find_map(|&(value, source)| match source {
+                ValueSource::Parameter(parameter) if parameter == register => Some(value),
+                _ => None,
+            })
     }
 
     fn value_of(&self, id: u32) -> ValueSource {
-        self.sources.iter().find(|(value, _)| *value == id).map(|&(_, source)| source).expect("known value")
+        self.sources
+            .iter()
+            .find(|(value, _)| *value == id)
+            .map(|&(_, source)| source)
+            .expect("known value")
     }
 
-    fn push(&mut self, kind: OpKind, latency: u32, gate: u32, reads: Vec<u32>, template: Template) -> u32 {
+    fn push(
+        &mut self,
+        kind: OpKind,
+        latency: u32,
+        gate: u32,
+        reads: Vec<u32>,
+        template: Template,
+    ) -> u32 {
         let value = self.next_value;
         self.next_value += 1;
         let mut node = DagNode::new("", latency).kind(kind).gate(gate);
@@ -96,7 +109,8 @@ impl Builder {
         node.writes = vec![value];
         self.nodes.push(node);
         self.templates.push(template);
-        self.sources.push((value, ValueSource::Node(self.nodes.len() - 1)));
+        self.sources
+            .push((value, ValueSource::Node(self.nodes.len() - 1)));
         value
     }
 
@@ -106,7 +120,13 @@ impl Builder {
         // A bare small constant is an `li` node (no reads).
         if let Some(constant) = constant_value(expression) {
             let immediate = i16::try_from(constant).ok()?;
-            return Some(self.push(OpKind::Alu, 1, 1, vec![], Template::LoadImmediate(immediate)));
+            return Some(self.push(
+                OpKind::Alu,
+                1,
+                1,
+                vec![],
+                Template::LoadImmediate(immediate),
+            ));
         }
         match expression {
             Expression::Variable(name) => {
@@ -119,7 +139,11 @@ impl Builder {
                     // A repeat read shares the extension node (measured: one
                     // extsb, two consumers — the DagNode.extension candidacy
                     // rule covers both the shared and in-place register forms).
-                    if let Some(&(_, value)) = self.extended.iter().find(|(extended, _)| *extended == register) {
+                    if let Some(&(_, value)) = self
+                        .extended
+                        .iter()
+                        .find(|(extended, _)| *extended == register)
+                    {
                         return Some(value);
                     }
                     let template = match (location.signed, location.width) {
@@ -138,24 +162,42 @@ impl Builder {
             }
             // `*p` through a pointer parameter: a word load.
             Expression::Dereference { pointer } => {
-                let Expression::Variable(name) = pointer.as_ref() else { return None };
+                let Expression::Variable(name) = pointer.as_ref() else {
+                    return None;
+                };
                 let location = generator.locations.get(name.as_str())?;
-                if location.pointee != Some(Pointee::Int) && location.pointee != Some(Pointee::UnsignedInt) {
+                if location.pointee != Some(Pointee::Int)
+                    && location.pointee != Some(Pointee::UnsignedInt)
+                {
                     return None;
                 }
                 let pointer_value = self.expression(pointer, generator)?;
                 Some(self.push(OpKind::Load, 2, 2, vec![pointer_value], Template::LoadWord))
             }
-            Expression::Binary { operator, left, right } => {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
                 let constant_right = constant_value(right);
                 let constant_left = constant_value(left);
                 match operator {
                     BinaryOperator::Add => {
                         if let Some(constant) = constant_right.or(constant_left) {
-                            let operand = if constant_right.is_some() { left } else { right };
+                            let operand = if constant_right.is_some() {
+                                left
+                            } else {
+                                right
+                            };
                             let immediate = i16::try_from(constant).ok()?;
                             let value = self.expression(operand, generator)?;
-                            return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::AddImmediate(immediate)));
+                            return Some(self.push(
+                                OpKind::Alu,
+                                1,
+                                1,
+                                vec![value],
+                                Template::AddImmediate(immediate),
+                            ));
                         }
                         let a = self.expression(left, generator)?;
                         let b = self.expression(right, generator)?;
@@ -163,9 +205,17 @@ impl Builder {
                     }
                     BinaryOperator::Subtract => {
                         if let Some(constant) = constant_right {
-                            let immediate = i16::try_from(constant).ok().and_then(|value| value.checked_neg())?;
+                            let immediate = i16::try_from(constant)
+                                .ok()
+                                .and_then(|value| value.checked_neg())?;
                             let value = self.expression(left, generator)?;
-                            return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::AddImmediate(immediate)));
+                            return Some(self.push(
+                                OpKind::Alu,
+                                1,
+                                1,
+                                vec![value],
+                                Template::AddImmediate(immediate),
+                            ));
                         }
                         let a = self.expression(left, generator)?;
                         let b = self.expression(right, generator)?;
@@ -173,16 +223,32 @@ impl Builder {
                     }
                     BinaryOperator::Multiply => {
                         let constant = constant_right.or(constant_left)?;
-                        let operand = if constant_right.is_some() { left } else { right };
+                        let operand = if constant_right.is_some() {
+                            left
+                        } else {
+                            right
+                        };
                         let value = self.expression(operand, generator)?;
                         if constant > 0 && (constant as u64).is_power_of_two() {
                             let shift = (constant as u64).trailing_zeros() as u8;
-                            return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftLeftImmediate(shift)));
+                            return Some(self.push(
+                                OpKind::Alu,
+                                1,
+                                1,
+                                vec![value],
+                                Template::ShiftLeftImmediate(shift),
+                            ));
                         }
                         let immediate = i16::try_from(constant).ok()?;
                         // mulli weighs 3 for priority but gates consumers at 2 (measured);
                         // one integer multiplier — two mulli never dual-issue.
-                        let node = self.push(OpKind::Alu, 3, 2, vec![value], Template::MultiplyImmediate(immediate));
+                        let node = self.push(
+                            OpKind::Alu,
+                            3,
+                            2,
+                            vec![value],
+                            Template::MultiplyImmediate(immediate),
+                        );
                         self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_MUL);
                         Some(node)
                     }
@@ -191,9 +257,12 @@ impl Builder {
                         // collapses the zero-extension and the shift into ONE
                         // rlwinm (measured). A shared extension or a shift past
                         // the width is unprobed — defer those.
-                        if let (Expression::Variable(name), Some(k)) =
-                            (left.as_ref(), constant_right.and_then(|constant| u8::try_from(constant).ok()).filter(|k| *k >= 1))
-                        {
+                        if let (Expression::Variable(name), Some(k)) = (
+                            left.as_ref(),
+                            constant_right
+                                .and_then(|constant| u8::try_from(constant).ok())
+                                .filter(|k| *k >= 1),
+                        ) {
                             if let Some(location) = generator.locations.get(name.as_str()) {
                                 if matches!(location.width, 8 | 16) && !location.signed {
                                     let register = generator.lookup_general(name)?;
@@ -216,53 +285,121 @@ impl Builder {
                         // (plain rlwinm/logical forms). Unknown signedness defers
                         // — a guess either way is wrong bytes.
                         let unsigned = promoted_unsigned(left, generator)?;
-                        if let Some(shift) = constant_right.and_then(|constant| u8::try_from(constant).ok()).filter(|shift| *shift < 32) {
+                        if let Some(shift) = constant_right
+                            .and_then(|constant| u8::try_from(constant).ok())
+                            .filter(|shift| *shift < 32)
+                        {
                             let value = self.expression(left, generator)?;
                             if unsigned {
-                                return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightLogicalImmediate(shift)));
+                                return Some(self.push(
+                                    OpKind::Alu,
+                                    1,
+                                    1,
+                                    vec![value],
+                                    Template::ShiftRightLogicalImmediate(shift),
+                                ));
                             }
                             // srawi writes XER.CA — two cannot dual-issue (measured).
-                            let node = self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftRightAlgebraicImmediate(shift));
+                            let node = self.push(
+                                OpKind::Alu,
+                                1,
+                                1,
+                                vec![value],
+                                Template::ShiftRightAlgebraicImmediate(shift),
+                            );
                             self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_XER);
                             return Some(node);
                         }
                         let value = self.expression(left, generator)?;
                         let amount = self.expression(right, generator)?;
                         if unsigned {
-                            return Some(self.push(OpKind::Alu, 1, 1, vec![value, amount], Template::ShiftRightWord));
+                            return Some(self.push(
+                                OpKind::Alu,
+                                1,
+                                1,
+                                vec![value, amount],
+                                Template::ShiftRightWord,
+                            ));
                         }
-                        let node = self.push(OpKind::Alu, 1, 1, vec![value, amount], Template::ShiftRightAlgebraicWord);
+                        let node = self.push(
+                            OpKind::Alu,
+                            1,
+                            1,
+                            vec![value, amount],
+                            Template::ShiftRightAlgebraicWord,
+                        );
                         self.nodes.last_mut().expect("just pushed").hazard = Some(HAZARD_XER);
                         Some(node)
                     }
                     BinaryOperator::ShiftLeft => {
-                        if let Some(shift) = constant_right.and_then(|constant| u8::try_from(constant).ok()).filter(|shift| *shift < 32) {
+                        if let Some(shift) = constant_right
+                            .and_then(|constant| u8::try_from(constant).ok())
+                            .filter(|shift| *shift < 32)
+                        {
                             let value = self.expression(left, generator)?;
-                            return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::ShiftLeftImmediate(shift)));
+                            return Some(self.push(
+                                OpKind::Alu,
+                                1,
+                                1,
+                                vec![value],
+                                Template::ShiftLeftImmediate(shift),
+                            ));
                         }
                         let value = self.expression(left, generator)?;
                         let amount = self.expression(right, generator)?;
-                        Some(self.push(OpKind::Alu, 1, 1, vec![value, amount], Template::ShiftLeftWord))
+                        Some(self.push(
+                            OpKind::Alu,
+                            1,
+                            1,
+                            vec![value, amount],
+                            Template::ShiftLeftWord,
+                        ))
                     }
                     BinaryOperator::BitXor => {
-                        let constant = u32::try_from(constant_right.or(constant_left)?).ok().filter(|constant| *constant <= 0xffff)?;
-                        let operand = if constant_right.is_some() { left } else { right };
+                        let constant = u32::try_from(constant_right.or(constant_left)?)
+                            .ok()
+                            .filter(|constant| *constant <= 0xffff)?;
+                        let operand = if constant_right.is_some() {
+                            left
+                        } else {
+                            right
+                        };
                         let value = self.expression(operand, generator)?;
-                        Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::XorImmediate(constant as u16)))
+                        Some(self.push(
+                            OpKind::Alu,
+                            1,
+                            1,
+                            vec![value],
+                            Template::XorImmediate(constant as u16),
+                        ))
                     }
                     BinaryOperator::BitAnd => {
                         let mask = u32::try_from(constant_right.or(constant_left)?).ok()?;
-                        let operand = if constant_right.is_some() { left } else { right };
+                        let operand = if constant_right.is_some() {
+                            left
+                        } else {
+                            right
+                        };
                         let (begin, end) = contiguous_or_wrap_mask(mask)?;
                         let value = self.expression(operand, generator)?;
                         Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::Mask(begin, end)))
                     }
                     BinaryOperator::BitOr => {
                         let constant = u32::try_from(constant_right.or(constant_left)?).ok()?;
-                        let operand = if constant_right.is_some() { left } else { right };
+                        let operand = if constant_right.is_some() {
+                            left
+                        } else {
+                            right
+                        };
                         let value = self.expression(operand, generator)?;
                         if constant <= 0xffff {
-                            return Some(self.push(OpKind::Alu, 1, 1, vec![value], Template::OrImmediate(constant as u16)));
+                            return Some(self.push(
+                                OpKind::Alu,
+                                1,
+                                1,
+                                vec![value],
+                                Template::OrImmediate(constant as u16),
+                            ));
                         }
                         if constant & 0xffff == 0 {
                             return Some(self.push(
@@ -303,35 +440,57 @@ fn promoted_unsigned(expression: &Expression, generator: &Generator) -> Option<b
             }
             match generator.globals.get(name.as_str())? {
                 Type::UnsignedInt => Some(true),
-                Type::Int | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort => Some(false),
+                Type::Int | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort => {
+                    Some(false)
+                }
                 _ => None,
             }
         }
         Expression::Dereference { pointer } => {
-            let Expression::Variable(name) = pointer.as_ref() else { return None };
+            let Expression::Variable(name) = pointer.as_ref() else {
+                return None;
+            };
             match generator.locations.get(name.as_str())?.pointee? {
                 Pointee::UnsignedInt => Some(true),
-                Pointee::Int | Pointee::Char | Pointee::UnsignedChar | Pointee::Short | Pointee::UnsignedShort => Some(false),
+                Pointee::Int
+                | Pointee::Char
+                | Pointee::UnsignedChar
+                | Pointee::Short
+                | Pointee::UnsignedShort => Some(false),
                 _ => None,
             }
         }
-        Expression::Cast { target_type, operand: _ } => match target_type {
+        Expression::Cast {
+            target_type,
+            operand: _,
+        } => match target_type {
             Type::UnsignedInt => Some(true),
-            Type::Int | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort => Some(false),
+            Type::Int | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort => {
+                Some(false)
+            }
             _ => None,
         },
-        Expression::Binary { operator, left, right } => match operator {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => match operator {
             BinaryOperator::Add
             | BinaryOperator::Subtract
             | BinaryOperator::Multiply
             | BinaryOperator::BitAnd
             | BinaryOperator::BitOr
-            | BinaryOperator::BitXor => match (promoted_unsigned(left, generator), promoted_unsigned(right, generator)) {
+            | BinaryOperator::BitXor => match (
+                promoted_unsigned(left, generator),
+                promoted_unsigned(right, generator),
+            ) {
                 (Some(true), _) | (_, Some(true)) => Some(true),
                 (Some(false), Some(false)) => Some(false),
                 _ => None,
             },
-            BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => promoted_unsigned(left, generator),
+            BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => {
+                promoted_unsigned(left, generator)
+            }
             _ => None,
         },
         _ => None,
@@ -344,7 +503,9 @@ fn contiguous_or_wrap_mask(mask: u32) -> Option<(u8, u8)> {
     }
     let rotated = mask.rotate_right(mask.trailing_zeros() % 32);
     // After rotating the low run to the bottom, a single run is (2^n - 1)-shaped.
-    if rotated.leading_zeros() + rotated.count_ones() + rotated.trailing_zeros() == 32 && rotated.trailing_zeros() == 0 {
+    if rotated.leading_zeros() + rotated.count_ones() + rotated.trailing_zeros() == 32
+        && rotated.trailing_zeros() == 0
+    {
         let begin = mask.leading_zeros() as u8;
         let end = (31 - mask.trailing_zeros()) as u8;
         if begin as u32 + mask.count_ones() - 1 == end as u32 {
@@ -356,7 +517,8 @@ fn contiguous_or_wrap_mask(mask: u32) -> Option<(u8, u8)> {
     if complement != 0 && mask.leading_zeros() == 0 && mask.trailing_zeros() == 0 {
         let run_start = complement.leading_zeros();
         let run_length = complement.count_ones();
-        let expected = ((u64::MAX >> run_start) as u32) & !((u64::MAX >> (run_start + run_length)) as u32);
+        let expected =
+            ((u64::MAX >> run_start) as u32) & !((u64::MAX >> (run_start + run_length)) as u32);
         if complement == expected {
             return Some(((run_start + run_length) as u8, run_start as u8 - 1));
         }
@@ -381,7 +543,9 @@ impl Generator {
         // Void multi-store bodies, or INT-returning bodies with at least one
         // store (a pure computed return stays with the proven direct paths).
         let returns_int = matches!(function.return_type, Type::Int | Type::UnsignedInt);
-        if !(function.return_type == Type::Void || (returns_int && function.return_expression.is_some())) {
+        if !(function.return_type == Type::Void
+            || (returns_int && function.return_expression.is_some()))
+        {
             return Ok(false);
         }
         if self.behavior.global_addressing != GlobalAddressing::SmallData {
@@ -408,23 +572,28 @@ impl Generator {
             };
             let value = builder.next_value;
             builder.next_value += 1;
-            builder.sources.push((value, ValueSource::Parameter(register)));
+            builder
+                .sources
+                .push((value, ValueSource::Parameter(register)));
             params.push((value, register));
         }
         for parameter in &function.parameters {
-            let Some(register) = self.lookup_general(&parameter.name) else { continue };
+            let Some(register) = self.lookup_general(&parameter.name) else {
+                continue;
+            };
             let reads: usize = function
                 .statements
                 .iter()
                 .map(|statement| match statement {
-                    Statement::Store { value, .. } => count_name_occurrences(value, &parameter.name),
+                    Statement::Store { value, .. } => {
+                        count_name_occurrences(value, &parameter.name)
+                    }
                     _ => 0,
                 })
                 .sum::<usize>()
-                + function
-                    .return_expression
-                    .as_ref()
-                    .map_or(0, |expression| count_name_occurrences(expression, &parameter.name));
+                + function.return_expression.as_ref().map_or(0, |expression| {
+                    count_name_occurrences(expression, &parameter.name)
+                });
             if reads == 1 {
                 builder.read_once.push(register);
             }
@@ -437,23 +606,42 @@ impl Generator {
         let bare_loads = function
             .statements
             .iter()
-            .filter(|statement| matches!(statement, Statement::Store { value: Expression::Dereference { .. }, .. }))
+            .filter(|statement| {
+                matches!(
+                    statement,
+                    Statement::Store {
+                        value: Expression::Dereference { .. },
+                        ..
+                    }
+                )
+            })
             .count();
         if bare_loads >= 2 {
             return Ok(false);
         }
         let mut stored: Vec<&str> = Vec::new();
         for statement in &function.statements {
-            let Statement::Store { target, value } = statement else { return Ok(false) };
-            let Expression::Variable(global) = target else { return Ok(false) };
-            if !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt)) {
+            let Statement::Store { target, value } = statement else {
+                return Ok(false);
+            };
+            let Expression::Variable(global) = target else {
+                return Ok(false);
+            };
+            if !matches!(
+                self.globals.get(global.as_str()),
+                Some(Type::Int | Type::UnsignedInt)
+            ) {
                 return Ok(false);
             }
-            if self.global_array_sizes.contains_key(global.as_str()) || stored.contains(&global.as_str()) {
+            if self.global_array_sizes.contains_key(global.as_str())
+                || stored.contains(&global.as_str())
+            {
                 return Ok(false);
             }
             stored.push(global.as_str());
-            let Some(value_id) = builder.expression(value, self) else { return Ok(false) };
+            let Some(value_id) = builder.expression(value, self) else {
+                return Ok(false);
+            };
             // Distinct globals do not alias: no group (the model reorders freely).
             let mut node = DagNode::new("", 1).kind(OpKind::Store);
             node.reads = vec![value_id];
@@ -461,10 +649,13 @@ impl Generator {
             // dying-param reuse), so the return final's r3 write must emit
             // after this store when the analytic timing binds (linearize).
             node.r3_chain_store = function.parameters.iter().any(|parameter| {
-                self.lookup_general(&parameter.name) == Some(3) && count_name_occurrences(value, &parameter.name) > 0
+                self.lookup_general(&parameter.name) == Some(3)
+                    && count_name_occurrences(value, &parameter.name) > 0
             });
             builder.nodes.push(node);
-            builder.templates.push(Template::StoreGlobal(global.clone()));
+            builder
+                .templates
+                .push(Template::StoreGlobal(global.clone()));
         }
         // The RETURN chain: a consumerless value node — the register model
         // forces its result into r3 (the contracts' return mode).
@@ -477,7 +668,9 @@ impl Generator {
             // SEQUENTIALLY (wrong order).
             if let Expression::Variable(_) = return_expression {
                 let nodes_before = builder.nodes.len();
-                let Some(value) = builder.expression(return_expression, self) else { return Ok(false) };
+                let Some(value) = builder.expression(return_expression, self) else {
+                    return Ok(false);
+                };
                 if builder.nodes.len() == nodes_before {
                     match builder.value_of(value) {
                         // A WIDE bare param is a raw register: the return is an mr node.
@@ -491,8 +684,16 @@ impl Generator {
                 }
                 // A fresh narrow extension IS the return op (measured: extsb r3,r3).
             } else if let Some(constant) = constant_value(return_expression) {
-                let Ok(immediate) = i16::try_from(constant) else { return Ok(false) };
-                builder.push(OpKind::Alu, 1, 1, vec![], Template::LoadImmediate(immediate));
+                let Ok(immediate) = i16::try_from(constant) else {
+                    return Ok(false);
+                };
+                builder.push(
+                    OpKind::Alu,
+                    1,
+                    1,
+                    vec![],
+                    Template::LoadImmediate(immediate),
+                );
             } else if builder.expression(return_expression, self).is_none() {
                 return Ok(false);
             }
@@ -517,7 +718,10 @@ impl Generator {
         let order = linearize(&builder.nodes);
         if std::env::var("DAG_DEBUG").is_ok() {
             for (index, node) in builder.nodes.iter().enumerate() {
-                eprintln!("node {index}: kind={:?} lat={} gate={} reads={:?} writes={:?}", node.kind, node.latency, node.gate_latency, node.reads, node.writes);
+                eprintln!(
+                    "node {index}: kind={:?} lat={} gate={} reads={:?} writes={:?}",
+                    node.kind, node.latency, node.gate_latency, node.reads, node.writes
+                );
             }
             eprintln!("order: {order:?}");
         }
@@ -525,23 +729,33 @@ impl Generator {
         let register_of = |source: ValueSource, registers: &[Option<u8>]| -> Compilation<u8> {
             match source {
                 ValueSource::Parameter(register) => Ok(register),
-                ValueSource::Node(node) => registers[node]
-                    .ok_or_else(|| Diagnostic::error("dag emitter: an unassigned value register (roadmap)")),
+                ValueSource::Node(node) => registers[node].ok_or_else(|| {
+                    Diagnostic::error("dag emitter: an unassigned value register (roadmap)")
+                }),
             }
         };
         for &node in &order {
             let operand = |index: usize| -> Compilation<u8> {
-                register_of(builder.value_of(builder.nodes[node].reads[index]), &registers)
+                register_of(
+                    builder.value_of(builder.nodes[node].reads[index]),
+                    &registers,
+                )
             };
             let destination = registers[node];
             let instruction = match &builder.templates[node] {
-                Template::LoadImmediate(immediate) => Instruction::load_immediate(destination.expect("value node"), *immediate),
+                Template::LoadImmediate(immediate) => {
+                    Instruction::load_immediate(destination.expect("value node"), *immediate)
+                }
                 Template::AddImmediate(immediate) => Instruction::AddImmediate {
                     d: destination.expect("value node"),
                     a: operand(0)?,
                     immediate: *immediate,
                 },
-                Template::Add => Instruction::Add { d: destination.expect("value node"), a: operand(0)?, b: operand(1)? },
+                Template::Add => Instruction::Add {
+                    d: destination.expect("value node"),
+                    a: operand(0)?,
+                    b: operand(1)?,
+                },
                 Template::Subtract => Instruction::SubtractFrom {
                     d: destination.expect("value node"),
                     a: operand(1)?,
@@ -557,16 +771,20 @@ impl Generator {
                     s: operand(0)?,
                     shift: *shift,
                 },
-                Template::ShiftRightAlgebraicImmediate(shift) => Instruction::ShiftRightAlgebraicImmediate {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
-                    shift: *shift,
-                },
-                Template::ShiftRightLogicalImmediate(shift) => Instruction::ShiftRightLogicalImmediate {
-                    a: destination.expect("value node"),
-                    s: operand(0)?,
-                    shift: *shift,
-                },
+                Template::ShiftRightAlgebraicImmediate(shift) => {
+                    Instruction::ShiftRightAlgebraicImmediate {
+                        a: destination.expect("value node"),
+                        s: operand(0)?,
+                        shift: *shift,
+                    }
+                }
+                Template::ShiftRightLogicalImmediate(shift) => {
+                    Instruction::ShiftRightLogicalImmediate {
+                        a: destination.expect("value node"),
+                        s: operand(0)?,
+                        shift: *shift,
+                    }
+                }
                 Template::SignExtendByte => Instruction::ExtendSignByte {
                     a: destination.expect("value node"),
                     s: operand(0)?,
@@ -624,7 +842,9 @@ impl Generator {
                     s: operand(0)?,
                     b: operand(1)?,
                 },
-                Template::Move => Instruction::move_register(destination.expect("value node"), operand(0)?),
+                Template::Move => {
+                    Instruction::move_register(destination.expect("value node"), operand(0)?)
+                }
                 Template::LoadWord => Instruction::LoadWord {
                     d: destination.expect("value node"),
                     a: operand(0)?,
@@ -632,7 +852,11 @@ impl Generator {
                 },
                 Template::StoreGlobal(global) => {
                     self.record_relocation(RelocationKind::EmbSda21, global);
-                    Instruction::StoreWord { s: operand(0)?, a: 0, offset: 0 }
+                    Instruction::StoreWord {
+                        s: operand(0)?,
+                        a: 0,
+                        offset: 0,
+                    }
                 }
             };
             self.output.instructions.push(instruction);

@@ -4,10 +4,10 @@
 //! `if`-return guards, then a final return; precedence-climbing expressions).
 //! `lib.rs` wires the parser modules and exposes the entry point.
 
-use std::collections::HashMap;
 use mwcc_core::Compilation;
 use mwcc_syntax_trees::TranslationUnit;
 use mwcc_tokens::Token;
+use std::collections::HashMap;
 
 mod expressions;
 mod items;
@@ -17,7 +17,12 @@ use parser::Parser;
 
 /// Parse a token stream into a translation unit (file-scope globals + the
 /// function definition).
-pub fn parse_translation_unit(tokens: Vec<Token>, char_is_signed: bool) -> Compilation<TranslationUnit> {
+pub fn parse_translation_unit(
+    tokens: Vec<Token>,
+    char_is_signed: bool,
+    plain_inline_localstatic_base: u8,
+    skipped_static_inline_label_base: u8,
+) -> Compilation<TranslationUnit> {
     // "East" pointee qualifiers (`u8 const* i`, `int volatile* p`) are
     // codegen-transparent — the qualifier binds the POINTEE, which access
     // codegen doesn't distinguish. Normalize them away when they directly
@@ -35,7 +40,59 @@ pub fn parse_translation_unit(tokens: Vec<Token>, char_is_signed: bool) -> Compi
             index += 1;
         }
     }
-    let mut parser =
-        Parser { tokens, position: 0, char_is_signed, last_member_array_bytes: None, global_structs: std::collections::HashMap::new(), block_renames: Vec::new(), rename_counter: 0, defer_codegen: false, deferred_function_names: Vec::new(), skipped_inline_functions: 0, static_local_prebumps: std::collections::HashMap::new(), counted_enum_positions: std::collections::HashSet::new(), implicitly_materialized: Vec::new(), weak_materialized: Vec::new(), weak_functions: std::collections::HashSet::new(), section_functions: std::collections::HashMap::new(), skipped_inline_names: std::collections::HashSet::new(), inline_bodies: std::collections::HashMap::new(), cplusplus: false, cplusplus_stack: Vec::new(), force_active: false, structs: HashMap::new(), variable_structs: HashMap::new(), function_return_structs: HashMap::new(), fixed_address_globals: HashMap::new(), fixed_address_arrays: HashMap::new(), variable_types: HashMap::new(), variable_array_bytes: HashMap::new(), global_sizes: HashMap::new(), last_struct_tag: None, asm_parameters: Vec::new(), expression_struct_tag: None, typedefs: HashMap::new(), last_type_was_const: false, last_pointer_const: false, last_type_was_volatile: false, inline_asm_symbols: Vec::new(), plain_inline_asm_helpers: Vec::new(), struct_typedefs: HashMap::new(), struct_pointer_typedefs: HashMap::new(), array_typedefs: HashMap::new(), row_pointer_typedefs: HashMap::new(), last_array_typedef: None, decayed_row_pointers: HashMap::new(), enum_constants: HashMap::new(), variadic_definitions: std::collections::HashSet::new(), unfolded_float_element: None, initializer_pending: Vec::new(), pending_sinit: Vec::new() };
+    let mut parser = Parser {
+        tokens,
+        position: 0,
+        char_is_signed,
+        plain_inline_localstatic_base,
+        skipped_static_inline_label_base,
+        last_member_array_bytes: None,
+        global_structs: std::collections::HashMap::new(),
+        block_renames: Vec::new(),
+        rename_counter: 0,
+        defer_codegen: false,
+        deferred_function_names: Vec::new(),
+        skipped_inline_functions: 0,
+        static_local_prebumps: std::collections::HashMap::new(),
+        counted_enum_positions: std::collections::HashSet::new(),
+        implicitly_materialized: Vec::new(),
+        weak_materialized: Vec::new(),
+        weak_functions: std::collections::HashSet::new(),
+        static_functions: std::collections::HashSet::new(),
+        section_functions: std::collections::HashMap::new(),
+        skipped_inline_names: std::collections::HashSet::new(),
+        inline_bodies: std::collections::HashMap::new(),
+        cplusplus: false,
+        cplusplus_stack: Vec::new(),
+        force_active: false,
+        structs: HashMap::new(),
+        variable_structs: HashMap::new(),
+        function_return_structs: HashMap::new(),
+        fixed_address_globals: HashMap::new(),
+        fixed_address_arrays: HashMap::new(),
+        variable_types: HashMap::new(),
+        variable_array_bytes: HashMap::new(),
+        global_sizes: HashMap::new(),
+        last_struct_tag: None,
+        asm_parameters: Vec::new(),
+        expression_struct_tag: None,
+        typedefs: HashMap::new(),
+        last_type_was_const: false,
+        last_pointer_const: false,
+        last_type_was_volatile: false,
+        inline_asm_symbols: Vec::new(),
+        plain_inline_asm_helpers: Vec::new(),
+        struct_typedefs: HashMap::new(),
+        struct_pointer_typedefs: HashMap::new(),
+        array_typedefs: HashMap::new(),
+        row_pointer_typedefs: HashMap::new(),
+        last_array_typedef: None,
+        decayed_row_pointers: HashMap::new(),
+        enum_constants: HashMap::new(),
+        variadic_definitions: std::collections::HashSet::new(),
+        unfolded_float_element: None,
+        initializer_pending: Vec::new(),
+        pending_sinit: Vec::new(),
+    };
     parser.translation_unit()
 }

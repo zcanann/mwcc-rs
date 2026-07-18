@@ -46,42 +46,109 @@ impl Generator {
         self.frame_size = 16;
         self.non_leaf = true;
         if owns_protopool {
-            self.output.static_locals.push(("protopool".to_string(), None, 56, 4, false));
+            self.output
+                .static_locals
+                .push(("protopool".to_string(), None, 56, 4, false));
             self.output.static_locals_lead = true;
             self.output.static_local_adjust = 30; // measured: protopool$71
         }
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [10, 13, 17, 18] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.emit_branch_conditional_to(12, 2, labels[&18]); // beq
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 4, offset: -4 });
-        self.output.instructions.push(Instruction::ClearLeftImmediateRecord { a: 0, s: 5, clear: 31 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 4,
+            offset: -4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediateRecord {
+                a: 0,
+                s: 5,
+                clear: 31,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&10]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 5, offset: 8 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 5,
+            offset: 8,
+        });
         self.emit_branch_to(labels[&13]); // b
         self.bind_label(labels[&10]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: -8 });
-        self.output.instructions.push(Instruction::AndContiguousMask { a: 5, s: 0, begin: 0, end: 28 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 5, immediate: -8 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: -8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::AndContiguousMask {
+                a: 5,
+                s: 0,
+                begin: 0,
+                end: 28,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: -8,
+        });
         self.bind_label(labels[&13]);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 68 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 5,
+                immediate: 68,
+            });
         self.emit_branch_conditional_to(12, 1, labels[&17]); // bgt
         self.record_relocation(RelocationKind::Rel24, "deallocate_from_fixed_pools");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "deallocate_from_fixed_pools".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "deallocate_from_fixed_pools".to_string(),
+        });
         self.emit_branch_to(labels[&18]); // b
         self.bind_label(labels[&17]);
         self.record_relocation(RelocationKind::Rel24, "deallocate_from_var_pools");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "deallocate_from_var_pools".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "deallocate_from_var_pools".to_string(),
+        });
         self.bind_label(labels[&18]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

@@ -37,41 +37,108 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
         self.record_relocation(RelocationKind::Addr16Ha, "__OSSystemCallVectorStart");
-        self.output.instructions.push(Instruction::load_immediate_shifted(4, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(4, 0));
         self.record_relocation(RelocationKind::Addr16Ha, "__OSSystemCallVectorEnd");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.record_relocation(RelocationKind::Addr16Lo, "__OSSystemCallVectorStart");
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::load_immediate_shifted(5, -32768));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(5, -32768));
         self.record_relocation(RelocationKind::Addr16Lo, "__OSSystemCallVectorEnd");
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 5, immediate: 3072 });
-        self.output.instructions.push(Instruction::SubtractFrom { d: 5, a: 4, b: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 3,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 5,
+            immediate: 3072,
+        });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFrom { d: 5, a: 4, b: 0 });
         self.record_relocation(RelocationKind::Rel24, "memcpy");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "memcpy".to_string() });
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, -32768));
-        self.output.instructions.push(Instruction::load_immediate(4, 256));
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 3072 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "memcpy".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, -32768));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(4, 256));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 3072,
+        });
         self.record_relocation(RelocationKind::Rel24, "DCFlushRangeNoSync");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "DCFlushRangeNoSync".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "DCFlushRangeNoSync".to_string(),
+        });
         self.output.instructions.push(Instruction::Synchronize);
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, -32768));
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 3072 });
-        self.output.instructions.push(Instruction::load_immediate(4, 256));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, -32768));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 3072,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(4, 256));
         self.record_relocation(RelocationKind::Rel24, "ICInvalidateRange");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "ICInvalidateRange".to_string() });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "ICInvalidateRange".to_string(),
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

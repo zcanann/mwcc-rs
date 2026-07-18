@@ -38,20 +38,55 @@ impl Generator {
         // ahead of this first global function's own symbol (measured: OSSync.c).
         self.output.phantom_externals = vec!["__OSf32tos16".to_string(), "__OSf32tou8".to_string()];
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::load_immediate(4, 0));
-        self.output.instructions.push(Instruction::load_immediate(0, -1));
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: 12 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: 8 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: 16 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: 28 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: 24 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(4, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, -1));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: 16,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: 28,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: 24,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

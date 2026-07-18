@@ -13,6 +13,13 @@
 
 use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
+use crate::profile::{
+    CoefficientTableRelocationStyle, FrameConvention, GlobalArrayIndexStyle,
+    IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder,
+    MaterializationCopyStyle, NarrowComputedReturnStyle, PunnedFloatFrameConvention,
+    ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
+    SymbolTraversalStyle, WideConstantAddSchedule,
+};
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +49,31 @@ pub enum Quirk {
     /// before loading the bias double (`lfd f1,0(0)`), reversing the mainline
     /// schedule. Unique to GC/2.0p1.
     FloatCastStoresValueFirst,
+    /// Build 163's int-to-float lowering stores a biased signed value through
+    /// r0 before materializing the high word in that same register.
+    LegacyFloatCastSchedule,
+    /// Build 163 preserves a compare/branch diamond for canonical integer
+    /// boolean ternaries instead of using the 2.4.x branchless idioms.
+    LegacyBranchPreservingIntegerSelect,
+    LegacyCarryChainComparisonValues,
+    LegacyFullWidthNarrowComputedReturn,
+    LegacyCarryCorrectedPowerOfTwoDivision,
+    LegacyEarlyInPlaceJumpTableBase,
+    LegacyExplicitGlobalArrayAddress,
+    LegacyZeroEqualityNegate,
+    LegacyReloadingPunnedFloatFrame,
+    LegacyAddImmediateMaterializationCopy,
+    LegacySerialWideConstantAdd,
+    LegacySymbolCreationOrder,
+    LegacyLocalDataDeclarationOrder,
+    LegacyForwardSmallZeroStatics,
+    LegacyCoefficientTableSectionAnchor,
+    LegacyEarlyReadOnlySectionAnchor,
+    LegacyUnmarkedReadOnlySectionAnchor,
+    LegacyUnmarkedSinglePrecisionExtab,
+    LegacyZeroBasedInlineLocalStatics,
+    LegacyZeroBaseStaticInlineLabels,
+    LegacyInferredArrayFullDataSection,
 }
 
 impl Quirk {
@@ -52,14 +84,102 @@ impl Quirk {
             Quirk::UnsignedPlainChar => QuirkKind::Intentional,
             // A scheduling change introduced by the 2.0 patch release.
             Quirk::FloatCastStoresValueFirst => QuirkKind::Intentional,
+            Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
+            Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
+            Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
+            Quirk::LegacyFullWidthNarrowComputedReturn => QuirkKind::Intentional,
+            Quirk::LegacyCarryCorrectedPowerOfTwoDivision => QuirkKind::Intentional,
+            Quirk::LegacyEarlyInPlaceJumpTableBase => QuirkKind::Intentional,
+            Quirk::LegacyExplicitGlobalArrayAddress => QuirkKind::Intentional,
+            Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
+            Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
+            Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
+            Quirk::LegacySerialWideConstantAdd => QuirkKind::Intentional,
+            Quirk::LegacySymbolCreationOrder => QuirkKind::Intentional,
+            Quirk::LegacyLocalDataDeclarationOrder => QuirkKind::Intentional,
+            Quirk::LegacyForwardSmallZeroStatics => QuirkKind::Intentional,
+            Quirk::LegacyCoefficientTableSectionAnchor => QuirkKind::Intentional,
+            Quirk::LegacyEarlyReadOnlySectionAnchor => QuirkKind::Intentional,
+            Quirk::LegacyUnmarkedReadOnlySectionAnchor => QuirkKind::Intentional,
+            Quirk::LegacyUnmarkedSinglePrecisionExtab => QuirkKind::Intentional,
+            Quirk::LegacyZeroBasedInlineLocalStatics => QuirkKind::Intentional,
+            Quirk::LegacyZeroBaseStaticInlineLabels => QuirkKind::Intentional,
+            Quirk::LegacyInferredArrayFullDataSection => QuirkKind::Intentional,
         }
     }
 
     /// A one-line human explanation, for inspection and the artifact dump.
     pub fn summary(self) -> &'static str {
         match self {
-            Quirk::UnsignedPlainChar => "plain `char` defaults to unsigned (build 53 / -char unsigned)",
-            Quirk::FloatCastStoresValueFirst => "int->float stores the value before loading the bias double (GC/2.0p1)",
+            Quirk::UnsignedPlainChar => {
+                "plain `char` defaults to unsigned (build 53 / -char unsigned)"
+            }
+            Quirk::FloatCastStoresValueFirst => {
+                "int->float stores the value before loading the bias double (GC/2.0p1)"
+            }
+            Quirk::LegacyFloatCastSchedule => {
+                "int->float uses build 163's r0 scratch/store schedule"
+            }
+            Quirk::LegacyBranchPreservingIntegerSelect => {
+                "integer ternaries preserve build 163's source-level branch shape"
+            }
+            Quirk::LegacyCarryChainComparisonValues => {
+                "integer comparison values use build 163's carry-chain idioms"
+            }
+            Quirk::LegacyFullWidthNarrowComputedReturn => {
+                "computed narrow returns leave a full-width result in build 163"
+            }
+            Quirk::LegacyCarryCorrectedPowerOfTwoDivision => {
+                "signed power-of-two division uses build 163's srawi/addze quotient"
+            }
+            Quirk::LegacyEarlyInPlaceJumpTableBase => {
+                "jump tables finish their base in place before scaling the index in build 163"
+            }
+            Quirk::LegacyExplicitGlobalArrayAddress => {
+                "variable global-array indexes form an explicit address in build 163"
+            }
+            Quirk::LegacyZeroEqualityNegate => {
+                "zero equality negates into r0 before cntlzw in build 163"
+            }
+            Quirk::LegacyReloadingPunnedFloatFrame => {
+                "punned float frames use build 163's padded, spill-reloading merge"
+            }
+            Quirk::LegacyAddImmediateMaterializationCopy => {
+                "integer value materializations use build 163's add-immediate-zero copy encoding"
+            }
+            Quirk::LegacySerialWideConstantAdd => {
+                "64-bit constant carry chains serialize their word constants through r0"
+            }
+            Quirk::LegacySymbolCreationOrder => {
+                "symbols follow build 163 creation order across data, calls, and assignments"
+            }
+            Quirk::LegacyLocalDataDeclarationOrder => {
+                "local data symbols preserve declaration order across initialized and zero sections"
+            }
+            Quirk::LegacyForwardSmallZeroStatics => {
+                "file-scope static zero data is laid out first in declaration order"
+            }
+            Quirk::LegacyCoefficientTableSectionAnchor => {
+                "coefficient-table bases relocate through the read-only section anchor"
+            }
+            Quirk::LegacyEarlyReadOnlySectionAnchor => {
+                "the read-only section anchor precedes named data symbols"
+            }
+            Quirk::LegacyUnmarkedReadOnlySectionAnchor => {
+                "the read-only section anchor carries no comment attribute flags"
+            }
+            Quirk::LegacyUnmarkedSinglePrecisionExtab => {
+                "unsaved single-precision use leaves build 163's extab FPU bit clear"
+            }
+            Quirk::LegacyZeroBasedInlineLocalStatics => {
+                "plain-inline static-local suffixes start at zero instead of three"
+            }
+            Quirk::LegacyZeroBaseStaticInlineLabels => {
+                "dropped static-inline definitions have no base anonymous-label cost"
+            }
+            Quirk::LegacyInferredArrayFullDataSection => {
+                "inferred-length arrays bypass build 163's small-data sections"
+            }
         }
     }
 }
@@ -77,6 +197,8 @@ pub struct Behavior {
     /// In the int->float conversion, whether the value store is scheduled before
     /// the bias load (GC/2.0p1's order).
     pub float_cast_value_store_first: bool,
+    /// Whether int-to-float uses build 163's r0 scratch/store ordering.
+    pub legacy_float_cast_schedule: bool,
     /// In a non-leaf `if`-prologue, whether the saved-LR store precedes a leading
     /// float-constant load rather than filling the mflr->store latency slot with it
     /// (GC/2.0p1's order).
@@ -87,6 +209,50 @@ pub struct Behavior {
     /// In `frexp`, whether the mantissa scaling `fmul` precedes the `*eptr` store
     /// (GC/2.0p1's order).
     pub frexp_scale_before_eptr_store: bool,
+    /// Placement/order of the non-leaf linkage area.
+    pub frame_convention: FrameConvention,
+    /// Whether stack-using leaf functions carry unwind-table entries.
+    pub emit_leaf_frame_unwind: bool,
+    /// Lowering of canonical integer boolean ternaries.
+    pub integer_select_style: IntegerSelectStyle,
+    /// Instruction family for integer comparisons materialized as 0/1 values.
+    pub integer_comparison_value_style: IntegerComparisonValueStyle,
+    /// Whether a computed same-width narrow return emits its explicit cast.
+    pub narrow_computed_return_style: NarrowComputedReturnStyle,
+    /// Lowering family for signed division/remainder by a power of two.
+    pub signed_power_of_two_division_style: SignedPowerOfTwoDivisionStyle,
+    /// Address-materialization schedule for switch jump tables.
+    pub jump_table_base_style: JumpTableBaseStyle,
+    /// Addressing shape for variable-indexed file-scope arrays.
+    pub global_array_index_style: GlobalArrayIndexStyle,
+    /// Whether zero equality negates its value into r0 before `cntlzw`.
+    pub negate_before_zero_equality: bool,
+    /// Frame/merge convention for type-punned floating parameters.
+    pub punned_float_frame_convention: PunnedFloatFrameConvention,
+    /// Encoding of generation-specific integer value materializations.
+    pub materialization_copy_style: MaterializationCopyStyle,
+    /// Scheduling of unequal constant words in a 64-bit add/subtract.
+    pub wide_constant_add_schedule: WideConstantAddSchedule,
+    /// AST traversal used to assign referenced symbol indices.
+    pub symbol_traversal_style: SymbolTraversalStyle,
+    /// Ordering of file-scope LOCAL data symbols across data sections.
+    pub local_data_symbol_order: LocalDataSymbolOrder,
+    /// Physical layout of `.sbss` objects.
+    pub small_zero_data_layout_style: SmallZeroDataLayoutStyle,
+    /// Relocation identity used by shared coefficient-table bases.
+    pub coefficient_table_relocation_style: CoefficientTableRelocationStyle,
+    /// Symbol-table placement of `...rodata.0` relative to named data.
+    pub read_only_section_anchor_order: ReadOnlySectionAnchorOrder,
+    /// `.comment` flags attached to the read-only section anchor.
+    pub read_only_section_anchor_comment_flags: u32,
+    /// Whether unsaved single-precision use sets the extab FPU bit.
+    pub mark_single_precision_extab: bool,
+    /// First `$localstaticN` suffix within each plain inline definition.
+    pub plain_inline_localstatic_base: u8,
+    /// Base anonymous-label cost of a skipped static-inline definition.
+    pub skipped_static_inline_label_base: u8,
+    /// Whether initialized `T a[] = ...` objects bypass small-data routing.
+    pub inferred_array_uses_full_data_section: bool,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -104,7 +270,11 @@ pub struct ActiveQuirk {
 
 impl ActiveQuirk {
     fn of(quirk: Quirk) -> Self {
-        ActiveQuirk { quirk, kind: quirk.kind(), summary: quirk.summary() }
+        ActiveQuirk {
+            quirk,
+            kind: quirk.kind(),
+            summary: quirk.summary(),
+        }
     }
 }
 
@@ -115,9 +285,50 @@ impl Behavior {
         Behavior {
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
+            legacy_float_cast_schedule: config.build.profile.legacy_float_cast_schedule(),
             lr_save_precedes_float_const: config.build.profile.lr_save_precedes_float_const(),
-            float_compare_value_before_const: config.build.profile.float_compare_value_before_const(),
+            float_compare_value_before_const: config
+                .build
+                .profile
+                .float_compare_value_before_const(),
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
+            frame_convention: config.build.profile.frame_convention(),
+            emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
+            integer_select_style: config.build.profile.integer_select_style(),
+            integer_comparison_value_style: config.build.profile.integer_comparison_value_style(),
+            narrow_computed_return_style: config.build.profile.narrow_computed_return_style(),
+            signed_power_of_two_division_style: config
+                .build
+                .profile
+                .signed_power_of_two_division_style(),
+            jump_table_base_style: config.build.profile.jump_table_base_style(),
+            global_array_index_style: config.build.profile.global_array_index_style(),
+            negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
+            punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
+            materialization_copy_style: config.build.profile.materialization_copy_style(),
+            wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
+            symbol_traversal_style: config.build.profile.symbol_traversal_style(),
+            local_data_symbol_order: config.build.profile.local_data_symbol_order(),
+            small_zero_data_layout_style: config.build.profile.small_zero_data_layout_style(),
+            coefficient_table_relocation_style: config
+                .build
+                .profile
+                .coefficient_table_relocation_style(),
+            read_only_section_anchor_order: config.build.profile.read_only_section_anchor_order(),
+            read_only_section_anchor_comment_flags: config
+                .build
+                .profile
+                .read_only_section_anchor_comment_flags(),
+            mark_single_precision_extab: config.build.profile.mark_single_precision_extab(),
+            plain_inline_localstatic_base: config.build.profile.plain_inline_localstatic_base(),
+            skipped_static_inline_label_base: config
+                .build
+                .profile
+                .skipped_static_inline_label_base(),
+            inferred_array_uses_full_data_section: config
+                .build
+                .profile
+                .inferred_array_uses_full_data_section(),
             global_addressing: config.flags.global_addressing,
         }
     }
@@ -132,6 +343,79 @@ impl Behavior {
         }
         if self.float_cast_value_store_first {
             quirks.push(ActiveQuirk::of(Quirk::FloatCastStoresValueFirst));
+        }
+        if self.legacy_float_cast_schedule {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyFloatCastSchedule));
+        }
+        if self.integer_select_style == IntegerSelectStyle::BranchPreserving {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyBranchPreservingIntegerSelect));
+        }
+        if self.integer_comparison_value_style == IntegerComparisonValueStyle::LegacyCarryChain {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyCarryChainComparisonValues));
+        }
+        if self.narrow_computed_return_style == NarrowComputedReturnStyle::FullWidthResult {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyFullWidthNarrowComputedReturn));
+        }
+        if self.signed_power_of_two_division_style
+            == SignedPowerOfTwoDivisionStyle::CarryCorrectedQuotient
+        {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyCarryCorrectedPowerOfTwoDivision,
+            ));
+        }
+        if self.jump_table_base_style == JumpTableBaseStyle::EarlyInPlace {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyEarlyInPlaceJumpTableBase));
+        }
+        if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
+        }
+        if self.negate_before_zero_equality {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyZeroEqualityNegate));
+        }
+        if self.punned_float_frame_convention == PunnedFloatFrameConvention::LegacyReloading {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingPunnedFloatFrame));
+        }
+        if self.materialization_copy_style == MaterializationCopyStyle::AddImmediateZero {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyAddImmediateMaterializationCopy,
+            ));
+        }
+        if self.wide_constant_add_schedule == WideConstantAddSchedule::SerialScratchWords {
+            quirks.push(ActiveQuirk::of(Quirk::LegacySerialWideConstantAdd));
+        }
+        if self.symbol_traversal_style == SymbolTraversalStyle::LegacyCreationOrder {
+            quirks.push(ActiveQuirk::of(Quirk::LegacySymbolCreationOrder));
+        }
+        if self.local_data_symbol_order == LocalDataSymbolOrder::DeclarationOrder {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyLocalDataDeclarationOrder));
+        }
+        if self.small_zero_data_layout_style
+            == SmallZeroDataLayoutStyle::LegacyStaticDeclarationOrderFirst
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyForwardSmallZeroStatics));
+        }
+        if self.coefficient_table_relocation_style
+            == CoefficientTableRelocationStyle::SectionAnchorForComplexDag
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyCoefficientTableSectionAnchor));
+        }
+        if self.read_only_section_anchor_order == ReadOnlySectionAnchorOrder::BeforeDataObjects {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyEarlyReadOnlySectionAnchor));
+        }
+        if self.read_only_section_anchor_comment_flags == 0 {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyUnmarkedReadOnlySectionAnchor));
+        }
+        if !self.mark_single_precision_extab {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyUnmarkedSinglePrecisionExtab));
+        }
+        if self.plain_inline_localstatic_base == 0 {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyZeroBasedInlineLocalStatics));
+        }
+        if self.skipped_static_inline_label_base == 0 {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyZeroBaseStaticInlineLabels));
+        }
+        if self.inferred_array_uses_full_data_section {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyInferredArrayFullDataSection));
         }
         quirks
     }
@@ -164,7 +448,10 @@ mod tests {
         assert!(!plain.float_cast_value_store_first);
         let patched = Behavior::resolve(&CompilerConfig::new(build::GC_2_0P1));
         assert!(patched.float_cast_value_store_first);
-        assert_eq!(patched.active_quirks()[0].quirk, Quirk::FloatCastStoresValueFirst);
+        assert_eq!(
+            patched.active_quirks()[0].quirk,
+            Quirk::FloatCastStoresValueFirst
+        );
     }
 
     #[test]
@@ -174,5 +461,41 @@ mod tests {
         let behavior = Behavior::resolve(&config);
         assert!(!behavior.char_is_signed);
         assert_eq!(behavior.active_quirks()[0].quirk, Quirk::UnsignedPlainChar);
+    }
+
+    #[test]
+    fn build_163_uses_linkage_first_frames() {
+        let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5N));
+        assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
+        assert!(!behavior.emit_leaf_frame_unwind);
+        assert!(behavior.legacy_float_cast_schedule);
+        assert_eq!(
+            behavior.integer_select_style,
+            IntegerSelectStyle::BranchPreserving
+        );
+        assert_eq!(
+            behavior.global_array_index_style,
+            GlobalArrayIndexStyle::ExplicitAddress
+        );
+        assert!(behavior.negate_before_zero_equality);
+        assert_eq!(
+            behavior.punned_float_frame_convention,
+            PunnedFloatFrameConvention::LegacyReloading
+        );
+        assert_eq!(
+            behavior.materialization_copy_style,
+            MaterializationCopyStyle::AddImmediateZero
+        );
+        assert_eq!(
+            behavior.wide_constant_add_schedule,
+            WideConstantAddSchedule::SerialScratchWords
+        );
+        assert_eq!(
+            behavior.symbol_traversal_style,
+            SymbolTraversalStyle::LegacyCreationOrder
+        );
+        assert!(!behavior.mark_single_precision_extab);
+        assert_eq!(behavior.plain_inline_localstatic_base, 0);
+        assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
     }
 }

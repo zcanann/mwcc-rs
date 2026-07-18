@@ -4,7 +4,8 @@
 // When the address fits the signed 16-bit displacement (high half zero), mwcc loads/stores off
 // the r0=0 base with no `lis`. The store materializes the base before the value (kept clear of
 // the value's registers), mirroring the absolute global store. Float/double pointees and the
-// char-return-into-r0 case (r0 can't be an address base) deliberately defer.
+// A value loaded into scratch r0 uses a separate lowest-free GPR for the base,
+// because r0 in a D-form load's address field means literal zero.
 void st_u8 (unsigned char  v) { *(volatile unsigned char  *)0xCC008000 = v; }  // lis r4; stb v,lo(r4)
 void st_u16(unsigned short v) { *(volatile unsigned short *)0xCC008000 = v; }  // lis r4; sth v,lo(r4)
 void st_u32(unsigned int   v) { *(volatile unsigned int   *)0xCC008000 = v; }  // lis r4; stw v,lo(r4)

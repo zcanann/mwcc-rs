@@ -8,14 +8,12 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const MBS_MBTOWC_WW_AST_HASH: u64 = 0x9d1b8b7778ca353c; // ww (f517)
-// NOTE: the HASH is shared with BfBB (same source text) but ww's stream is a
-// bare blr (the empty static callee inlined away) — the ctx arm disambiguates.
+                                                        // NOTE: the HASH is shared with BfBB (same source text) but ww's stream is a
+                                                        // bare blr (the empty static callee inlined away) — the ctx arm disambiguates.
 
 impl Generator {
     pub(super) fn try_mbs_mbtowc_ww(&mut self, function: &Function) -> Compilation<bool> {
-        if function.name != "mbtowc"
-            || !self.frame_slots.is_empty()
-        {
+        if function.name != "mbtowc" || !self.frame_slots.is_empty() {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
@@ -32,11 +30,14 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

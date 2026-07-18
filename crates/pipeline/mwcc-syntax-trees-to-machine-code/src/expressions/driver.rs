@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_versions::IntegerComparisonValueStyle;
 
 impl Generator {
     /// `(g+h)+x` (recursively): an Add whose LEFT is an Add of two GLOBAL leaves
@@ -12,13 +13,20 @@ impl Generator {
             matches!(operand, Expression::Variable(name)
                 if !self.locations.contains_key(name.as_str()) && self.globals.contains_key(name.as_str()))
         };
-        let is_register = |operand: &Expression| {
-            matches!(operand, Expression::Variable(name) if self.locations.contains_key(name.as_str()))
-        };
+        let is_register = |operand: &Expression| matches!(operand, Expression::Variable(name) if self.locations.contains_key(name.as_str()));
         match expression {
-            Expression::Binary { operator: BinaryOperator::Add, left, right } => {
+            Expression::Binary {
+                operator: BinaryOperator::Add,
+                left,
+                right,
+            } => {
                 if is_register(right) {
-                    if let Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right } = left.as_ref() {
+                    if let Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: inner_left,
+                        right: inner_right,
+                    } = left.as_ref()
+                    {
                         if is_global(inner_left) && is_global(inner_right) {
                             return true;
                         }
@@ -29,12 +37,18 @@ impl Generator {
             Expression::Binary { left, right, .. } => {
                 self.global_pair_plus_register(left) || self.global_pair_plus_register(right)
             }
-            Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => self.global_pair_plus_register(operand),
+            Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+                self.global_pair_plus_register(operand)
+            }
             _ => false,
         }
     }
 
-    pub(crate) fn evaluate_general(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn evaluate_general(
+        &mut self,
+        expression: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         // A compile-time-constant expression — folded constant arithmetic
         // (`2 + 3`, `FLAG_A | FLAG_B`, `1 << 3`) or a side-effect-free identity
         // (`x - x`, `x ^ x`) — materializes the value directly, as mwcc folds it.
@@ -58,7 +72,10 @@ impl Generator {
                 sorted.sort_unstable();
                 sorted.dedup();
                 let distinct = names.len() == leaves.len() && sorted.len() == names.len();
-                let registers: Option<Vec<u8>> = leaves.iter().map(|leaf| self.general_register_of_leaf(leaf).ok()).collect();
+                let registers: Option<Vec<u8>> = leaves
+                    .iter()
+                    .map(|leaf| self.general_register_of_leaf(leaf).ok())
+                    .collect();
                 if let (true, Some(registers)) = (distinct, registers) {
                     if !registers.contains(&GENERAL_SCRATCH) {
                         let last = registers.len() - 1;
@@ -69,15 +86,41 @@ impl Generator {
                         let save_v1 = registers[0] == destination;
                         let save_register = registers[1].min(registers[2]);
                         let v1_register = if save_v1 { save_register } else { registers[0] };
-                        self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: registers[1], b: registers[2] });
-                        if save_v1 {
-                            self.output.instructions.push(Instruction::move_register(save_register, registers[0]));
+                        self.output.instructions.push(Instruction::Add {
+                            d: GENERAL_SCRATCH,
+                            a: registers[1],
+                            b: registers[2],
+                        });
+                        let delay_v1_materialization = save_v1
+                            && self.behavior.materialization_copy_style
+                                == MaterializationCopyStyle::AddImmediateZero;
+                        if save_v1 && !delay_v1_materialization {
+                            self.emit_integer_materialization_copy(save_register, registers[0]);
                         }
                         for &register in &registers[3..last] {
-                            self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: register });
+                            self.output.instructions.push(Instruction::Add {
+                                d: GENERAL_SCRATCH,
+                                a: GENERAL_SCRATCH,
+                                b: register,
+                            });
                         }
-                        self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: registers[last] });
-                        self.output.instructions.push(Instruction::Add { d: destination, a: v1_register, b: destination });
+                        // Build 163 uses the independent folds to fill the
+                        // staging copy's issue window, placing its `addi` right
+                        // before the final result add. Mainline's `mr` remains
+                        // eager, immediately after the opening fold.
+                        if delay_v1_materialization {
+                            self.emit_integer_materialization_copy(save_register, registers[0]);
+                        }
+                        self.output.instructions.push(Instruction::Add {
+                            d: destination,
+                            a: GENERAL_SCRATCH,
+                            b: registers[last],
+                        });
+                        self.output.instructions.push(Instruction::Add {
+                            d: destination,
+                            a: v1_register,
+                            b: destination,
+                        });
                         return Ok(());
                     }
                 }
@@ -90,12 +133,24 @@ impl Generator {
         // addi -1`). Reproduce it directly. Two register-resident variable leaves + a signed-16
         // constant only; a both-`±c` pair (`(a-1)+(b-1)`, different var order) or a global/memory leaf
         // falls through to the defer below.
-        if let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression {
+        if let Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } = expression
+        {
             // Parse a `variable ± constant` term into (var name, constant, inner operator). A nested
             // `fn` (not a closure) so the returned `&str` borrows from the input via lifetime elision.
             fn variable_plus_constant(operand: &Expression) -> Option<(&str, i64, BinaryOperator)> {
-                if let Expression::Binary { operator: inner @ (BinaryOperator::Add | BinaryOperator::Subtract), left: il, right: ir } = operand {
-                    if let (Expression::Variable(name), Some(constant)) = (il.as_ref(), crate::analysis::constant_value(ir)) {
+                if let Expression::Binary {
+                    operator: inner @ (BinaryOperator::Add | BinaryOperator::Subtract),
+                    left: il,
+                    right: ir,
+                } = operand
+                {
+                    if let (Expression::Variable(name), Some(constant)) =
+                        (il.as_ref(), crate::analysis::constant_value(ir))
+                    {
                         return Some((name.as_str(), constant, *inner));
                     }
                 }
@@ -109,28 +164,60 @@ impl Generator {
                 },
             };
             if let Some((x_name, constant, inner_operator, y_name)) = reassociation {
-                let signed = if inner_operator == BinaryOperator::Subtract { constant.checked_neg() } else { Some(constant) };
+                let signed = if inner_operator == BinaryOperator::Subtract {
+                    constant.checked_neg()
+                } else {
+                    Some(constant)
+                };
                 if let Some(signed) = signed {
-                    if let (Ok(immediate), Some(x_register), Some(y_register)) =
-                        (i16::try_from(signed), self.lookup_general(x_name), self.lookup_general(y_name))
-                    {
-                        self.output.instructions.push(Instruction::Add { d: destination, a: x_register, b: y_register });
-                        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate });
+                    if let (Ok(immediate), Some(x_register), Some(y_register)) = (
+                        i16::try_from(signed),
+                        self.lookup_general(x_name),
+                        self.lookup_general(y_name),
+                    ) {
+                        self.output.instructions.push(Instruction::Add {
+                            d: destination,
+                            a: x_register,
+                            b: y_register,
+                        });
+                        self.output.instructions.push(Instruction::AddImmediate {
+                            d: destination,
+                            a: destination,
+                            immediate,
+                        });
                         return Ok(());
                     }
                 }
             }
             // BOTH operands `variable ± constant` (`(a-1)+(b-1)`): mwcc groups them with the SECOND
             // term's variable FIRST and sums the (signed) constants — `add r3,r4,r3; addi r3,r3,-2`.
-            if let (Some((x1_name, c1, op1)), Some((x2_name, c2, op2))) = (variable_plus_constant(left), variable_plus_constant(right)) {
-                let signed = |constant: i64, operator: BinaryOperator| if operator == BinaryOperator::Subtract { constant.checked_neg() } else { Some(constant) };
+            if let (Some((x1_name, c1, op1)), Some((x2_name, c2, op2))) =
+                (variable_plus_constant(left), variable_plus_constant(right))
+            {
+                let signed = |constant: i64, operator: BinaryOperator| {
+                    if operator == BinaryOperator::Subtract {
+                        constant.checked_neg()
+                    } else {
+                        Some(constant)
+                    }
+                };
                 if let (Some(s1), Some(s2)) = (signed(c1, op1), signed(c2, op2)) {
                     if let Some(sum) = s1.checked_add(s2) {
-                        if let (Ok(immediate), Some(x1_register), Some(x2_register)) =
-                            (i16::try_from(sum), self.lookup_general(x1_name), self.lookup_general(x2_name))
-                        {
-                            self.output.instructions.push(Instruction::Add { d: destination, a: x2_register, b: x1_register });
-                            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate });
+                        if let (Ok(immediate), Some(x1_register), Some(x2_register)) = (
+                            i16::try_from(sum),
+                            self.lookup_general(x1_name),
+                            self.lookup_general(x2_name),
+                        ) {
+                            self.output.instructions.push(Instruction::Add {
+                                d: destination,
+                                a: x2_register,
+                                b: x1_register,
+                            });
+                            self.output.instructions.push(Instruction::AddImmediate {
+                                d: destination,
+                                a: destination,
+                                immediate,
+                            });
                             return Ok(());
                         }
                     }
@@ -144,22 +231,56 @@ impl Generator {
         // r3,r3,-1; add r3,r4,r3`). Register-resident variable leaves + signed-16 const; a non-scratch
         // destination only (the r0 save must not alias the destination). Nested/global cases defer.
         if destination != GENERAL_SCRATCH {
-            if let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = expression {
-                if let (Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right }, Some(constant)) =
-                    (left.as_ref(), crate::analysis::constant_value(right))
+            if let Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                left,
+                right,
+            } = expression
+            {
+                if let (
+                    Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: inner_left,
+                        right: inner_right,
+                    },
+                    Some(constant),
+                ) = (left.as_ref(), crate::analysis::constant_value(right))
                 {
-                    if let (Expression::Variable(first_name), Expression::Variable(second_name)) = (inner_left.as_ref(), inner_right.as_ref()) {
+                    if let (Expression::Variable(first_name), Expression::Variable(second_name)) =
+                        (inner_left.as_ref(), inner_right.as_ref())
+                    {
                         if let Some(negated) = constant.checked_neg() {
-                            if let (Ok(immediate), Some(first_register), Some(second_register)) =
-                                (i16::try_from(negated), self.lookup_general(first_name), self.lookup_general(second_name))
-                            {
+                            if let (Ok(immediate), Some(first_register), Some(second_register)) = (
+                                i16::try_from(negated),
+                                self.lookup_general(first_name),
+                                self.lookup_general(second_name),
+                            ) {
                                 if first_register == destination {
-                                    self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, first_register));
-                                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: second_register, immediate });
-                                    self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: destination });
+                                    self.output.instructions.push(Instruction::move_register(
+                                        GENERAL_SCRATCH,
+                                        first_register,
+                                    ));
+                                    self.output.instructions.push(Instruction::AddImmediate {
+                                        d: destination,
+                                        a: second_register,
+                                        immediate,
+                                    });
+                                    self.output.instructions.push(Instruction::Add {
+                                        d: destination,
+                                        a: GENERAL_SCRATCH,
+                                        b: destination,
+                                    });
                                 } else {
-                                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: second_register, immediate });
-                                    self.output.instructions.push(Instruction::Add { d: destination, a: first_register, b: destination });
+                                    self.output.instructions.push(Instruction::AddImmediate {
+                                        d: destination,
+                                        a: second_register,
+                                        immediate,
+                                    });
+                                    self.output.instructions.push(Instruction::Add {
+                                        d: destination,
+                                        a: first_register,
+                                        b: destination,
+                                    });
                                 }
                                 return Ok(());
                             }
@@ -171,7 +292,9 @@ impl Generator {
         // Other reassociated add-trees (nested non-leaf operands, mixed with `*`) still diverge in
         // register allocation — defer rather than emit wrong bytes (#20 allocator).
         if crate::analysis::contains_complex_add(expression) {
-            return Err(Diagnostic::error("a reassociated integer add-tree needs the keystone allocator (roadmap)"));
+            return Err(Diagnostic::error(
+                "a reassociated integer add-tree needs the keystone allocator (roadmap)",
+            ));
         }
         // `(g+h)+x` — a two-GLOBAL inner sum plus a register leaf: mwcc reassociates
         // the register operand INTO the first add (`lwz g; lwz h; add r3,g,x; add
@@ -185,7 +308,12 @@ impl Generator {
         // allocator orients the intermediates opposite to ours (first mullw -> r4,
         // second -> r3, measured) — wrong bytes. The single-addend form matches;
         // defer the both-addend sibling until the allocator models it.
-        if let Expression::Binary { operator: BinaryOperator::Multiply, left, right } = expression {
+        if let Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left,
+            right,
+        } = expression
+        {
             let mul_plus_const = |operand: &Expression| {
                 matches!(operand, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left: inner, right: constant }
                     if matches!(inner.as_ref(), Expression::Binary { operator: BinaryOperator::Multiply, .. })
@@ -802,7 +930,10 @@ impl Generator {
         match expression {
             Expression::FloatLiteral(_) => true,
             Expression::Variable(_) => self.is_float_leaf(expression),
-            Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Float | Pointee::Double)),
+            Expression::Dereference { pointer } => matches!(
+                self.pointee_of(pointer),
+                Ok(Pointee::Float | Pointee::Double)
+            ),
             Expression::Index { base, .. } => {
                 // A pointer/array element whose pointee is float/double — OR an element of a
                 // file-scope float/double array (whose base is not in `locations`, so `pointee_of`
@@ -815,13 +946,20 @@ impl Generator {
             Expression::Member { member_type, .. } => *member_type == Type::Float,
             // A cast TO a float type is a float value (`(double)x`); a cast to a
             // non-float type is not, regardless of the operand.
-            Expression::Cast { target_type, .. } => matches!(target_type, Type::Float | Type::Double),
+            Expression::Cast { target_type, .. } => {
+                matches!(target_type, Type::Float | Type::Double)
+            }
             _ => false,
         }
     }
 
     /// Emit a prefix unary operator into `destination`.
-    pub(crate) fn emit_unary(&mut self, operator: UnaryOperator, operand: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_unary(
+        &mut self,
+        operator: UnaryOperator,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         let d = destination;
         match operator {
             UnaryOperator::Negate => {
@@ -831,25 +969,63 @@ impl Generator {
                     return Ok(());
                 }
                 // -(-x) == x
-                if let Expression::Unary { operator: UnaryOperator::Negate, operand: inner } = operand {
+                if let Expression::Unary {
+                    operator: UnaryOperator::Negate,
+                    operand: inner,
+                } = operand
+                {
                     return self.evaluate_general(inner, d);
                 }
                 // -(x < 0) / -(x > 0): the sign-bit comparison idioms end in a logical
                 // shift (`srwi 31`, giving 0/1); negating the boolean is just the
                 // arithmetic shift (`srawi 31`, giving 0/-1) instead — no separate
                 // `neg`, and (for `>`) the operand stays live for the `andc`.
-                if let Expression::Binary { operator: comparison @ (BinaryOperator::Less | BinaryOperator::Greater), left, right } = operand {
+                if let Expression::Binary {
+                    operator: comparison @ (BinaryOperator::Less | BinaryOperator::Greater),
+                    left,
+                    right,
+                } = operand
+                {
+                    if self.behavior.integer_comparison_value_style
+                        == IntegerComparisonValueStyle::LegacyCarryChain
+                    {
+                        self.evaluate_general(operand, GENERAL_SCRATCH)?;
+                        self.output.instructions.push(Instruction::Negate {
+                            d,
+                            a: GENERAL_SCRATCH,
+                        });
+                        return Ok(());
+                    }
                     if is_zero_literal(right) && self.signedness_of(left)? {
                         if *comparison == BinaryOperator::Less {
                             // -(x < 0) = srawi d, x, 31
                             let source = self.place_operand_or_scratch(left, d)?;
-                            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: source, shift: 31 });
+                            self.output.instructions.push(
+                                Instruction::ShiftRightAlgebraicImmediate {
+                                    a: d,
+                                    s: source,
+                                    shift: 31,
+                                },
+                            );
                         } else {
                             // -(x > 0) = neg r0,x; andc r0,r0,x; srawi d,r0,31
                             self.evaluate_general(left, d)?;
-                            self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: d });
-                            self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: d });
-                            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                            self.output.instructions.push(Instruction::Negate {
+                                d: GENERAL_SCRATCH,
+                                a: d,
+                            });
+                            self.output.instructions.push(Instruction::AndComplement {
+                                a: GENERAL_SCRATCH,
+                                s: GENERAL_SCRATCH,
+                                b: d,
+                            });
+                            self.output.instructions.push(
+                                Instruction::ShiftRightAlgebraicImmediate {
+                                    a: d,
+                                    s: GENERAL_SCRATCH,
+                                    shift: 31,
+                                },
+                            );
                         }
                         return Ok(());
                     }
@@ -858,25 +1034,41 @@ impl Generator {
                     Some(scratch) => scratch,
                     None => self.place_operand_or_scratch(operand, d)?,
                 };
-                self.output.instructions.push(Instruction::Negate { d, a: source });
+                self.output
+                    .instructions
+                    .push(Instruction::Negate { d, a: source });
             }
             UnaryOperator::BitNot => {
                 // ~(~x) == x
-                if let Expression::Unary { operator: UnaryOperator::BitNot, operand: inner } = operand {
+                if let Expression::Unary {
+                    operator: UnaryOperator::BitNot,
+                    operand: inner,
+                } = operand
+                {
                     return self.evaluate_general(inner, d);
                 }
                 // `~(a | b)` / `~(a & b)` / `~(a ^ b)` fuse to a single nor / nand /
                 // eqv. Both operands must be in registers: two leaves, or a leaf and
                 // a constant materialized into the scratch (`li r0,c; nor d,a,r0`).
-                if let Expression::Binary { operator: inner @ (BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor), left, right } = operand {
+                if let Expression::Binary {
+                    operator:
+                        inner
+                        @ (BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor),
+                    left,
+                    right,
+                } = operand
+                {
                     let left_register = leaf_name(left).and_then(|name| self.lookup_general(name));
-                    let right_register = leaf_name(right).and_then(|name| self.lookup_general(name));
+                    let right_register =
+                        leaf_name(right).and_then(|name| self.lookup_general(name));
                     let registers = match (left_register, right_register) {
                         (Some(ra), Some(rb)) => Some((ra, rb)),
-                        (Some(ra), None) => constant_value(right).filter(|c| fits_signed_16(*c)).map(|constant| {
-                            self.load_integer_constant(GENERAL_SCRATCH, constant);
-                            (ra, GENERAL_SCRATCH)
-                        }),
+                        (Some(ra), None) => constant_value(right)
+                            .filter(|c| fits_signed_16(*c))
+                            .map(|constant| {
+                                self.load_integer_constant(GENERAL_SCRATCH, constant);
+                                (ra, GENERAL_SCRATCH)
+                            }),
                         _ => None,
                     };
                     if let Some((ra, rb)) = registers {
@@ -892,7 +1084,11 @@ impl Generator {
                     Some(scratch) => scratch,
                     None => self.place_operand_or_scratch(operand, d)?,
                 };
-                self.output.instructions.push(Instruction::Nor { a: d, s: source, b: source });
+                self.output.instructions.push(Instruction::Nor {
+                    a: d,
+                    s: source,
+                    b: source,
+                });
             }
             UnaryOperator::LogicalNot => {
                 // Fold a chain of `!`: mwcc collapses repeated negations by parity.
@@ -900,15 +1096,28 @@ impl Generator {
                 // chain is `inner == 0` — and `!comparison` flips the comparison.
                 let mut negations = 1usize;
                 let mut inner = operand;
-                while let Expression::Unary { operator: UnaryOperator::LogicalNot, operand: next } = inner {
+                while let Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand: next,
+                } = inner
+                {
                     negations += 1;
                     inner = next;
                 }
                 let odd = negations % 2 == 1;
                 // `!(comparison)` is the flipped comparison; an even chain keeps it.
-                if let Expression::Binary { operator, left, right } = inner {
+                if let Expression::Binary {
+                    operator,
+                    left,
+                    right,
+                } = inner
+                {
                     if is_comparison(*operator) {
-                        let resolved = if odd { flip_comparison(*operator) } else { Some(*operator) };
+                        let resolved = if odd {
+                            flip_comparison(*operator)
+                        } else {
+                            Some(*operator)
+                        };
                         if let Some(operator) = resolved {
                             return self.emit_comparison(operator, left, right, d);
                         }
@@ -924,8 +1133,19 @@ impl Generator {
                     Some(scratch) => scratch,
                     None => self.place_operand_or_scratch(inner, d)?,
                 };
-                self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
+                self.output
+                    .instructions
+                    .push(Instruction::CountLeadingZeros {
+                        a: GENERAL_SCRATCH,
+                        s: source,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: GENERAL_SCRATCH,
+                        shift: 5,
+                    });
             }
         }
         Ok(())

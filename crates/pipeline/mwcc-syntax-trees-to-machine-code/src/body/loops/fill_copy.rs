@@ -46,8 +46,13 @@ impl Generator {
             return Ok(false);
         }
         let alias = alias_local.name.as_str();
-        let [Statement::Loop { kind, initializer: None, condition: Some(condition), step: None, body }] =
-            function.statements.as_slice()
+        let [Statement::Loop {
+            kind,
+            initializer: None,
+            condition: Some(condition),
+            step: None,
+            body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -59,18 +64,26 @@ impl Generator {
         }
         // The condition: *p++ = *src++ (both POSTFIX — the old pointers).
         let post_deref = |expression: &Expression| -> Option<String> {
-            let Expression::Dereference { pointer } = expression else { return None };
-            let Expression::PostStep { target, operator: BinaryOperator::Add } = pointer.as_ref()
+            let Expression::Dereference { pointer } = expression else {
+                return None;
+            };
+            let Expression::PostStep {
+                target,
+                operator: BinaryOperator::Add,
+            } = pointer.as_ref()
             else {
                 return None;
             };
-            let Expression::Variable(name) = target.as_ref() else { return None };
+            let Expression::Variable(name) = target.as_ref() else {
+                return None;
+            };
             Some(name.clone())
         };
         let Expression::Assign { target, value } = condition else {
             return Ok(false);
         };
-        if post_deref(target).as_deref() != Some(alias) || post_deref(value).as_deref() != Some(source)
+        if post_deref(target).as_deref() != Some(alias)
+            || post_deref(value).as_deref() != Some(source)
         {
             return Ok(false);
         }
@@ -87,16 +100,38 @@ impl Generator {
         let carry = top + 1;
         let alias_register = top + 2;
         // -- emit --
-        self.output.instructions.push(Instruction::move_register(alias_register, dst_register));
+        self.output
+            .instructions
+            .push(Instruction::move_register(alias_register, dst_register));
         let loop_at = self.fresh_label();
         self.bind_label(loop_at);
-        self.output.instructions.push(Instruction::LoadByteZero { d: carry, a: src_register, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: src_register, a: src_register, immediate: 1 });
-        self.output.instructions.push(Instruction::ExtendSignByteRecord { a: 0, s: carry });
-        self.output.instructions.push(Instruction::StoreByte { s: carry, a: alias_register, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: alias_register, a: alias_register, immediate: 1 });
+        self.output.instructions.push(Instruction::LoadByteZero {
+            d: carry,
+            a: src_register,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: src_register,
+            a: src_register,
+            immediate: 1,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ExtendSignByteRecord { a: 0, s: carry });
+        self.output.instructions.push(Instruction::StoreByte {
+            s: carry,
+            a: alias_register,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: alias_register,
+            a: alias_register,
+            immediate: 1,
+        });
         self.emit_branch_conditional_to(4, 2, loop_at); // bne
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // @N: measured after implementation (objprobe) — placeholder 0.
         self.output.anonymous_label_bump += 0;
         Ok(true)
@@ -127,8 +162,13 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
-            function.statements.as_slice()
+        let [Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(initializer),
+            condition: Some(condition),
+            step: Some(step),
+            body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -140,9 +180,11 @@ impl Generator {
             return Ok(false);
         }
         let bound = match condition {
-            Expression::Binary { operator: BinaryOperator::Less, left, right }
-                if matches!(left.as_ref(), Expression::Variable(name) if name == &counter.name) =>
-            {
+            Expression::Binary {
+                operator: BinaryOperator::Less,
+                left,
+                right,
+            } if matches!(left.as_ref(), Expression::Variable(name) if name == &counter.name) => {
                 match right.as_ref() {
                     Expression::IntegerLiteral(bound) if (3..=32).contains(bound) => *bound as u16,
                     _ => return Ok(false),
@@ -159,7 +201,10 @@ impl Generator {
             return Ok(false);
         }
         // The body: `A[i] = k` — a word global array indexed by the counter.
-        let [Statement::Store { target: Expression::Index { base, index }, value: Expression::IntegerLiteral(fill) }] = body.as_slice()
+        let [Statement::Store {
+            target: Expression::Index { base, index },
+            value: Expression::IntegerLiteral(fill),
+        }] = body.as_slice()
         else {
             return Ok(false);
         };
@@ -171,7 +216,10 @@ impl Generator {
         };
         if !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
             || self.locations.contains_key(array.as_str())
-            || !matches!(self.globals.get(array.as_str()), Some(Type::Int | Type::UnsignedInt))
+            || !matches!(
+                self.globals.get(array.as_str()),
+                Some(Type::Int | Type::UnsignedInt)
+            )
         {
             return Ok(false);
         }
@@ -187,13 +235,33 @@ impl Generator {
         // the offset-0 store FOLDING @lo into `stwu` (which also forms the
         // base), then the run of word stores.
         let value = self.fresh_virtual_general_preferring(0);
-        self.output.instructions.push(Instruction::AddImmediate { d: value, a: 0, immediate: *fill as i16 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: value,
+            a: 0,
+            immediate: *fill as i16,
+        });
         self.record_relocation(RelocationKind::Addr16Ha, &array);
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: value, a: 3, offset: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: value,
+                a: 3,
+                offset: 0,
+            });
         for slot in 1..bound {
-            self.output.instructions.push(Instruction::StoreWord { s: value, a: 3, offset: (slot as i16) * 4 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: value,
+                a: 3,
+                offset: (slot as i16) * 4,
+            });
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -207,7 +275,10 @@ impl Generator {
     /// then the tail loop — base re-formed at `A + 4i`, `count = n - i` into
     /// ctr, `i >= n` exits (`bgelr`), body `stw / addi base,4 / bdnz`.
     pub(crate) fn try_dynamic_fill_loop(&mut self, function: &Function) -> Compilation<bool> {
-        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+        {
             return Ok(false);
         }
         let [parameter] = function.parameters.as_slice() else {
@@ -227,8 +298,13 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
-            function.statements.as_slice()
+        let [Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(initializer),
+            condition: Some(condition),
+            step: Some(step),
+            body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -255,7 +331,10 @@ impl Generator {
         }
         // The body: `A[i] = k` — measured for any i16 constant (the value rides
         // the two `li r4` materialization sites; the structure is unchanged).
-        let [Statement::Store { target: Expression::Index { base, index }, value: Expression::IntegerLiteral(fill) }] = body.as_slice()
+        let [Statement::Store {
+            target: Expression::Index { base, index },
+            value: Expression::IntegerLiteral(fill),
+        }] = body.as_slice()
         else {
             return Ok(false);
         };
@@ -267,7 +346,10 @@ impl Generator {
         };
         if !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
             || self.locations.contains_key(array.as_str())
-            || !matches!(self.globals.get(array.as_str()), Some(Type::Int | Type::UnsignedInt))
+            || !matches!(
+                self.globals.get(array.as_str()),
+                Some(Type::Int | Type::UnsignedInt)
+            )
         {
             return Ok(false);
         }
@@ -278,7 +360,12 @@ impl Generator {
             return Ok(false);
         }
         // The parameter must sit in r3 (the measured register story).
-        if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
+        if self
+            .locations
+            .get(&parameter.name)
+            .map(|location| location.register)
+            != Some(3)
+        {
             return Ok(false);
         }
         let array = array.clone();
@@ -287,51 +374,155 @@ impl Generator {
         let body8 = self.fresh_label();
         let body1 = self.fresh_label();
         // n <= 0: nothing to do.
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 7, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 4, condition_bit: 1 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 7,
+            a: 0,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister {
+                options: 4,
+                condition_bit: 1,
+            });
         // Fewer than nine: straight to the tail loop.
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 8 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 3, immediate: -8 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 8 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 3,
+            immediate: -8,
+        });
         self.emit_branch_conditional_to(4, 1, tail); // ble
-        // blocks = (n - 8 + 7) >> 3 into ctr; base = A.
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 5, immediate: 7 });
+                                                     // blocks = (n - 8 + 7) >> 3 into ctr; base = A.
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 5,
+            immediate: 7,
+        });
         self.record_relocation(RelocationKind::Addr16Ha, &array);
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: 0, shift: 3 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: 0,
+                s: 0,
+                shift: 3,
+            });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *fill as i16 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 4,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 0,
+            immediate: *fill as i16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
         self.emit_branch_conditional_to(4, 1, tail); // ble
-        // The 8-way block: i += 8 rides the first store's latency slot.
+                                                     // The 8-way block: i += 8 rides the first store's latency slot.
         self.bind_label(body8);
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 7, a: 7, immediate: 8 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 7,
+            a: 7,
+            immediate: 8,
+        });
         for slot in 1..8i16 {
-            self.output.instructions.push(Instruction::StoreWord { s: 4, a: 6, offset: slot * 4 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 4,
+                a: 6,
+                offset: slot * 4,
+            });
         }
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 6, immediate: 32 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 6,
+            immediate: 32,
+        });
         self.emit_branch_conditional_to(16, 0, body8); // bdnz
-        // The tail loop: base = A + 4i, count = n - i.
+                                                       // The tail loop: base = A + 4i, count = n - i.
         self.bind_label(tail);
         self.record_relocation(RelocationKind::Addr16Ha, &array);
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 5, s: 7, shift: 2 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 5,
+                s: 7,
+                shift: 2,
+            });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::SubtractFrom { d: 0, a: 7, b: 3 });
-        self.output.instructions.push(Instruction::Add { d: 5, a: 4, b: 5 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: *fill as i16 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
-        self.output.instructions.push(Instruction::CompareWord { a: 7, b: 3 });
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 4, condition_bit: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFrom { d: 0, a: 7, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 5, a: 4, b: 5 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 0,
+            immediate: *fill as i16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWord { a: 7, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister {
+                options: 4,
+                condition_bit: 0,
+            });
         self.bind_label(body1);
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 5, immediate: 4 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 5,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: 4,
+        });
         self.emit_branch_conditional_to(16, 0, body1); // bdnz
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 
@@ -342,7 +533,10 @@ impl Generator {
     /// in r4,r0,r7,r6,r5,r4,r0 (measured whole @2.6/1.3.2). The tail stores the
     /// counter itself, advancing base and counter together.
     pub(crate) fn try_dynamic_iota_loop(&mut self, function: &Function) -> Compilation<bool> {
-        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+        {
             return Ok(false);
         }
         let [parameter] = function.parameters.as_slice() else {
@@ -362,8 +556,13 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
-            function.statements.as_slice()
+        let [Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(initializer),
+            condition: Some(condition),
+            step: Some(step),
+            body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -388,7 +587,10 @@ impl Generator {
             return Ok(false);
         }
         // The body: `A[i] = i`.
-        let [Statement::Store { target: Expression::Index { base, index }, value: Expression::Variable(stored) }] = body.as_slice()
+        let [Statement::Store {
+            target: Expression::Index { base, index },
+            value: Expression::Variable(stored),
+        }] = body.as_slice()
         else {
             return Ok(false);
         };
@@ -398,7 +600,10 @@ impl Generator {
         if stored != &counter.name
             || !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
             || self.locations.contains_key(array.as_str())
-            || !matches!(self.globals.get(array.as_str()), Some(Type::Int | Type::UnsignedInt))
+            || !matches!(
+                self.globals.get(array.as_str()),
+                Some(Type::Int | Type::UnsignedInt)
+            )
         {
             return Ok(false);
         }
@@ -408,7 +613,12 @@ impl Generator {
         if size <= 8 {
             return Ok(false);
         }
-        if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
+        if self
+            .locations
+            .get(&parameter.name)
+            .map(|location| location.register)
+            != Some(3)
+        {
             return Ok(false);
         }
         let array = array.clone();
@@ -416,59 +626,211 @@ impl Generator {
         let tail = self.fresh_label();
         let body8 = self.fresh_label();
         let body1 = self.fresh_label();
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 9, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 4, condition_bit: 1 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 8 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 3, immediate: -8 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 9,
+            a: 0,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister {
+                options: 4,
+                condition_bit: 1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 8 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 3,
+            immediate: -8,
+        });
         self.emit_branch_conditional_to(4, 1, tail); // ble
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 5, immediate: 7 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 5,
+            immediate: 7,
+        });
         self.record_relocation(RelocationKind::Addr16Ha, &array);
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: 0, shift: 3 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: 0,
+                s: 0,
+                shift: 3,
+            });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
-        self.output.instructions.push(Instruction::AddImmediate { d: 8, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 8,
+            a: 4,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
         self.emit_branch_conditional_to(4, 1, tail); // ble
-        // The pipelined 8-way body: values three slots ahead, rotating r4,r0,r7,r6,r5.
+                                                     // The pipelined 8-way body: values three slots ahead, rotating r4,r0,r7,r6,r5.
         self.bind_label(body8);
-        self.output.instructions.push(Instruction::StoreWord { s: 9, a: 8, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 9, immediate: 1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 9, immediate: 2 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 7, a: 9, immediate: 3 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 8, offset: 4 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 9, immediate: 4 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 9, immediate: 5 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 9, immediate: 6 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 8, offset: 8 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 9, immediate: 7 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 9, a: 9, immediate: 8 });
-        self.output.instructions.push(Instruction::StoreWord { s: 7, a: 8, offset: 12 });
-        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 8, offset: 16 });
-        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 8, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 8, offset: 24 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 8, offset: 28 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 8, a: 8, immediate: 32 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 9,
+            a: 8,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 9,
+            immediate: 1,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 9,
+            immediate: 2,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 7,
+            a: 9,
+            immediate: 3,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 8,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 9,
+            immediate: 4,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 9,
+            immediate: 5,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 9,
+            immediate: 6,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 8,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 9,
+            immediate: 7,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 9,
+            a: 9,
+            immediate: 8,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 7,
+            a: 8,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 6,
+            a: 8,
+            offset: 16,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 5,
+            a: 8,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 8,
+            offset: 24,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 8,
+            offset: 28,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 8,
+            a: 8,
+            immediate: 32,
+        });
         self.emit_branch_conditional_to(16, 0, body8); // bdnz
-        // The tail: base r4 = A + 4i; count n-i; store the counter itself.
+                                                       // The tail: base r4 = A + 4i; count n-i; store the counter itself.
         self.bind_label(tail);
         self.record_relocation(RelocationKind::Addr16Ha, &array);
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 5, s: 9, shift: 2 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 5,
+                s: 9,
+                shift: 2,
+            });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::SubtractFrom { d: 0, a: 9, b: 3 });
-        self.output.instructions.push(Instruction::Add { d: 4, a: 4, b: 5 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
-        self.output.instructions.push(Instruction::CompareWord { a: 9, b: 3 });
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 4, condition_bit: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFrom { d: 0, a: 9, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 4, a: 4, b: 5 });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWord { a: 9, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister {
+                options: 4,
+                condition_bit: 0,
+            });
         self.bind_label(body1);
-        self.output.instructions.push(Instruction::StoreWord { s: 9, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 4 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 9, a: 9, immediate: 1 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 9,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: 4,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 9,
+            a: 9,
+            immediate: 1,
+        });
         self.emit_branch_conditional_to(16, 0, body1); // bdnz
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 
@@ -481,7 +843,10 @@ impl Generator {
     /// and bound homes are VIRTUALS — both cross the call, so the allocator's
     /// callee-saved pool derives r31/r30.
     pub(crate) fn try_dynamic_call_loop(&mut self, function: &Function) -> Compilation<bool> {
-        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+        {
             return Ok(false);
         }
         let [parameter] = function.parameters.as_slice() else {
@@ -501,8 +866,13 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::For, initializer: Some(initializer), condition: Some(condition), step: Some(step), body }] =
-            function.statements.as_slice()
+        let [Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(initializer),
+            condition: Some(condition),
+            step: Some(step),
+            body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -549,7 +919,10 @@ impl Generator {
         let mut walking_array: Option<String> = None;
         for statement in body {
             match statement {
-                Statement::Expression(Expression::Call { name: callee, arguments }) => {
+                Statement::Expression(Expression::Call {
+                    name: callee,
+                    arguments,
+                }) => {
                     let passes_counter = match arguments.as_slice() {
                         [] => false,
                         [Expression::Variable(variable)] if variable == &counter.name => true,
@@ -557,21 +930,30 @@ impl Generator {
                     };
                     if self.locations.contains_key(callee.as_str())
                         || self.globals.contains_key(callee.as_str())
-                        || matches!(self.call_return_types.get(callee.as_str()), Some(Type::Float | Type::Double))
+                        || matches!(
+                            self.call_return_types.get(callee.as_str()),
+                            Some(Type::Float | Type::Double)
+                        )
                     {
                         return Ok(false);
                     }
                     call_count += 1;
                     body_steps.push(BodyStep::Call(callee.clone(), passes_counter));
                 }
-                Statement::Store { target: Expression::Index { base, index }, value: Expression::Variable(stored) } => {
+                Statement::Store {
+                    target: Expression::Index { base, index },
+                    value: Expression::Variable(stored),
+                } => {
                     let Expression::Variable(array_name) = base.as_ref() else {
                         return Ok(false);
                     };
                     if stored != &counter.name
                         || !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
                         || self.locations.contains_key(array_name.as_str())
-                        || !matches!(self.globals.get(array_name.as_str()), Some(Type::Int | Type::UnsignedInt))
+                        || !matches!(
+                            self.globals.get(array_name.as_str()),
+                            Some(Type::Int | Type::UnsignedInt)
+                        )
                         || walking_array.is_some()
                     {
                         return Ok(false);
@@ -585,28 +967,48 @@ impl Generator {
                     walking_array = Some(array_name.clone());
                     body_steps.push(BodyStep::StoreCounterToArray);
                 }
-                Statement::Store { target: Expression::Variable(global), value: Expression::Variable(stored) } => {
+                Statement::Store {
+                    target: Expression::Variable(global),
+                    value: Expression::Variable(stored),
+                } => {
                     if stored != &counter.name
                         || self.locations.contains_key(global.as_str())
-                        || !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt))
+                        || !matches!(
+                            self.globals.get(global.as_str()),
+                            Some(Type::Int | Type::UnsignedInt)
+                        )
                         || self.global_array_sizes.contains_key(global.as_str())
                     {
                         return Ok(false);
                     }
                     body_steps.push(BodyStep::StoreCounter(global.clone()));
                 }
-                Statement::If { condition: Expression::Variable(flag), then_body, else_body } => {
-                    let [Statement::Expression(Expression::Call { name: callee, arguments })] = then_body.as_slice() else {
+                Statement::If {
+                    condition: Expression::Variable(flag),
+                    then_body,
+                    else_body,
+                } => {
+                    let [Statement::Expression(Expression::Call {
+                        name: callee,
+                        arguments,
+                    })] = then_body.as_slice()
+                    else {
                         return Ok(false);
                     };
                     let bare_call_ok = |generator: &Self, name: &str| {
                         !generator.locations.contains_key(name)
                             && !generator.globals.contains_key(name)
-                            && !matches!(generator.call_return_types.get(name), Some(Type::Float | Type::Double))
+                            && !matches!(
+                                generator.call_return_types.get(name),
+                                Some(Type::Float | Type::Double)
+                            )
                     };
                     let else_callee = match else_body.as_slice() {
                         [] => None,
-                        [Statement::Expression(Expression::Call { name: else_name, arguments: else_arguments })] => {
+                        [Statement::Expression(Expression::Call {
+                            name: else_name,
+                            arguments: else_arguments,
+                        })] => {
                             if !else_arguments.is_empty() || !bare_call_ok(self, else_name) {
                                 return Ok(false);
                             }
@@ -616,14 +1018,21 @@ impl Generator {
                     };
                     if !arguments.is_empty()
                         || self.locations.contains_key(flag.as_str())
-                        || !matches!(self.globals.get(flag.as_str()), Some(Type::Int | Type::UnsignedInt))
+                        || !matches!(
+                            self.globals.get(flag.as_str()),
+                            Some(Type::Int | Type::UnsignedInt)
+                        )
                         || self.global_array_sizes.contains_key(flag.as_str())
                         || !bare_call_ok(self, callee)
                     {
                         return Ok(false);
                     }
                     call_count += 1;
-                    body_steps.push(BodyStep::GuardedCall(flag.clone(), callee.clone(), else_callee));
+                    body_steps.push(BodyStep::GuardedCall(
+                        flag.clone(),
+                        callee.clone(),
+                        else_callee,
+                    ));
                 }
                 _ => return Ok(false),
             }
@@ -634,9 +1043,18 @@ impl Generator {
         // The body's @N advance (measured): a counter-store = flat 5 (one or
         // two alike), a guarded call = flat 7, a pure call body = 0. The
         // store+guard MIX is unmeasured — defer rather than guess the counter.
-        let has_store = body_steps.iter().any(|step| matches!(step, BodyStep::StoreCounter(_) | BodyStep::StoreCounterToArray));
-        let has_guard = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(_, _, None)));
-        let has_diamond = body_steps.iter().any(|step| matches!(step, BodyStep::GuardedCall(_, _, Some(_))));
+        let has_store = body_steps.iter().any(|step| {
+            matches!(
+                step,
+                BodyStep::StoreCounter(_) | BodyStep::StoreCounterToArray
+            )
+        });
+        let has_guard = body_steps
+            .iter()
+            .any(|step| matches!(step, BodyStep::GuardedCall(_, _, None)));
+        let has_diamond = body_steps
+            .iter()
+            .any(|step| matches!(step, BodyStep::GuardedCall(_, _, Some(_))));
         if has_diamond && (has_store || has_guard || body_steps.len() > 1) {
             // Only the LONE if/else body's label count is measured.
             return Err(Diagnostic::error(
@@ -656,7 +1074,12 @@ impl Generator {
             (false, true) => self.output.anonymous_label_bump += 7,
             (false, false) => {}
         }
-        if self.locations.get(&parameter.name).map(|location| location.register) != Some(3) {
+        if self
+            .locations
+            .get(&parameter.name)
+            .map(|location| location.register)
+            != Some(3)
+        {
             return Ok(false);
         }
 
@@ -665,32 +1088,82 @@ impl Generator {
         let base_home = walking_array.as_ref().map(|_| self.fresh_virtual_general());
         let counter_home = self.fresh_virtual_general();
         let bound_home = self.fresh_virtual_general();
-        let homes: Vec<u8> = base_home.iter().copied().chain([counter_home, bound_home]).collect();
+        let homes: Vec<u8> = base_home
+            .iter()
+            .copied()
+            .chain([counter_home, bound_home])
+            .collect();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
         self.callee_saved = homes;
         self.epilogue_lr_before_gprs = true;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -plan.frame_size });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -plan.frame_size,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
         let mut save_offset = plan.frame_size - 4;
         if let (Some(base_home), Some(array)) = (base_home, walking_array.as_ref()) {
             // The base's high half rides the mflr latency gap; the @lo addi is
             // the base home's park, interleaved after its save.
             self.record_relocation(RelocationKind::Addr16Ha, array);
-            self.output.instructions.push(Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 });
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
-            self.output.instructions.push(Instruction::StoreWord { s: base_home, a: 1, offset: save_offset });
+            self.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: 4,
+                    a: 0,
+                    immediate: 0,
+                });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: plan.frame_size + 4,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: base_home,
+                a: 1,
+                offset: save_offset,
+            });
             self.record_relocation(RelocationKind::Addr16Lo, array);
-            self.output.instructions.push(Instruction::AddImmediate { d: base_home, a: 4, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: base_home,
+                a: 4,
+                immediate: 0,
+            });
             save_offset -= 4;
         } else {
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: plan.frame_size + 4,
+            });
         }
-        self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 1, offset: save_offset });
-        self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: bound_home, a: 1, offset: save_offset - 4 });
-        self.output.instructions.push(Instruction::Or { a: bound_home, s: 3, b: 3 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: counter_home,
+            a: 1,
+            offset: save_offset,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: counter_home,
+            a: 0,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: bound_home,
+            a: 1,
+            offset: save_offset - 4,
+        });
+        self.output.instructions.push(Instruction::Or {
+            a: bound_home,
+            s: 3,
+            b: 3,
+        });
         let test = self.fresh_label();
         let loop_body = self.fresh_label();
         self.emit_branch_to(test);
@@ -699,24 +1172,46 @@ impl Generator {
             match step {
                 BodyStep::Call(callee, passes_counter) => {
                     if *passes_counter {
-                        self.output.instructions.push(Instruction::Or { a: 3, s: counter_home, b: counter_home });
+                        self.output.instructions.push(Instruction::Or {
+                            a: 3,
+                            s: counter_home,
+                            b: counter_home,
+                        });
                     }
                     self.emit_call(callee, &[], None, false)?;
                 }
                 BodyStep::StoreCounter(global) => {
                     self.record_relocation(RelocationKind::EmbSda21, global);
-                    self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: 0, offset: 0 });
+                    self.output.instructions.push(Instruction::StoreWord {
+                        s: counter_home,
+                        a: 0,
+                        offset: 0,
+                    });
                 }
                 BodyStep::StoreCounterToArray => {
                     let base_home = base_home.expect("decode guaranteed the walking pointer");
-                    self.output.instructions.push(Instruction::StoreWord { s: counter_home, a: base_home, offset: 0 });
-                    self.output.instructions.push(Instruction::AddImmediate { d: base_home, a: base_home, immediate: 4 });
+                    self.output.instructions.push(Instruction::StoreWord {
+                        s: counter_home,
+                        a: base_home,
+                        offset: 0,
+                    });
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: base_home,
+                        a: base_home,
+                        immediate: 4,
+                    });
                 }
                 BodyStep::GuardedCall(flag, callee, else_callee) => {
                     let after_then = self.fresh_label();
                     self.record_relocation(RelocationKind::EmbSda21, flag);
-                    self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
-                    self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+                    self.output.instructions.push(Instruction::LoadWord {
+                        d: 0,
+                        a: 0,
+                        offset: 0,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
                     self.emit_branch_conditional_to(12, 2, after_then); // beq
                     self.emit_call(callee, &[], None, false)?;
                     if let Some(else_callee) = else_callee {
@@ -731,9 +1226,16 @@ impl Generator {
                 }
             }
         }
-        self.output.instructions.push(Instruction::AddImmediate { d: counter_home, a: counter_home, immediate: 1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: counter_home,
+            a: counter_home,
+            immediate: 1,
+        });
         self.bind_label(test);
-        self.output.instructions.push(Instruction::CompareWord { a: counter_home, b: bound_home });
+        self.output.instructions.push(Instruction::CompareWord {
+            a: counter_home,
+            b: bound_home,
+        });
         self.emit_branch_conditional_to(12, 0, loop_body); // blt
         self.emit_epilogue_and_return();
         Ok(true)

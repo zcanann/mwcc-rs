@@ -1,16 +1,19 @@
 //! Floating-point expression evaluation and multiply-add contraction.
 
-use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use crate::analysis::*;
 use crate::generator::*;
 use crate::operands::*;
+use mwcc_core::{Compilation, Diagnostic};
+use mwcc_machine_code::Instruction;
+use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 
 impl Generator {
-
     /// Evaluate a float expression into float register `destination`.
-    pub(crate) fn evaluate_float(&mut self, expression: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn evaluate_float(
+        &mut self,
+        expression: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         match expression {
             Expression::CompoundLiteral { .. } => Err(Diagnostic::error(
                 "a compound-literal argument needs the frame-temporary schedule (roadmap)",
@@ -221,10 +224,23 @@ impl Generator {
     /// op. Handles only the verified shape — exactly one float-leaf operand and one int-width
     /// GPR leaf, the float operand already in f1 with the result also into f1 — so the bias
     /// register and operand placement are byte-exact; defers (`Ok(false)`) for anything else.
-    fn try_emit_mixed_promotion(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8, double: bool) -> Compilation<bool> {
+    fn try_emit_mixed_promotion(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<bool> {
         const FLOAT_FIRST: u8 = 1; // f1
         const BIAS_REGISTER: u8 = 2; // f2: avoids the scratch f0 and the operand/result f1
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply | BinaryOperator::Divide) {
+        if !matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::Multiply
+                | BinaryOperator::Divide
+        ) {
             return Ok(false);
         }
         let left_float = self.is_float_leaf(left);
@@ -232,9 +248,16 @@ impl Generator {
         if left_float == right_float {
             return Ok(false); // both float or neither: not a mixed promotion
         }
-        let (integer_operand, float_operand) = if left_float { (right, left) } else { (left, right) };
+        let (integer_operand, float_operand) = if left_float {
+            (right, left)
+        } else {
+            (left, right)
+        };
         // A narrow (char/short) source is a separate, version-divergent idiom — defer it.
-        if self.cast_operand_width(integer_operand).map_or(false, |width| width < 32) {
+        if self
+            .cast_operand_width(integer_operand)
+            .map_or(false, |width| width < 32)
+        {
             return Ok(false);
         }
         // The integer operand must be a plain int-width GPR leaf.
@@ -258,7 +281,9 @@ impl Generator {
             (FLOAT_SCRATCH, float_register)
         };
         let operands = Operands::ordered(left_register, right_register)?;
-        self.output.instructions.push(float_combine(operator, destination, operands, double)?);
+        self.output
+            .instructions
+            .push(float_combine(operator, destination, operands, double)?);
         Ok(true)
     }
 
@@ -278,10 +303,30 @@ impl Generator {
             let multiplier = self.float_register_of_leaf(y)?;
             let addend = self.place_float_addend(right)?;
             self.output.instructions.push(match (operator, double) {
-                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
-                (BinaryOperator::Subtract, false) => Instruction::FloatMultiplySubtractSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
-                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
-                (BinaryOperator::Subtract, true) => Instruction::FloatMultiplySubtractDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle {
+                    d: destination,
+                    a: multiplicand,
+                    c: multiplier,
+                    b: addend,
+                },
+                (BinaryOperator::Subtract, false) => Instruction::FloatMultiplySubtractSingle {
+                    d: destination,
+                    a: multiplicand,
+                    c: multiplier,
+                    b: addend,
+                },
+                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble {
+                    d: destination,
+                    a: multiplicand,
+                    c: multiplier,
+                    b: addend,
+                },
+                (BinaryOperator::Subtract, true) => Instruction::FloatMultiplySubtractDouble {
+                    d: destination,
+                    a: multiplicand,
+                    c: multiplier,
+                    b: addend,
+                },
                 _ => unreachable!("caller restricts to add/subtract"),
             });
             return Ok(true);
@@ -291,10 +336,34 @@ impl Generator {
             let multiplier = self.float_register_of_leaf(y)?;
             let addend = self.place_float_addend(left)?;
             self.output.instructions.push(match (operator, double) {
-                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
-                (BinaryOperator::Subtract, false) => Instruction::FloatNegativeMultiplySubtractSingle { d: destination, a: multiplicand, c: multiplier, b: addend },
-                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
-                (BinaryOperator::Subtract, true) => Instruction::FloatNegativeMultiplySubtractDouble { d: destination, a: multiplicand, c: multiplier, b: addend },
+                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle {
+                    d: destination,
+                    a: multiplicand,
+                    c: multiplier,
+                    b: addend,
+                },
+                (BinaryOperator::Subtract, false) => {
+                    Instruction::FloatNegativeMultiplySubtractSingle {
+                        d: destination,
+                        a: multiplicand,
+                        c: multiplier,
+                        b: addend,
+                    }
+                }
+                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble {
+                    d: destination,
+                    a: multiplicand,
+                    c: multiplier,
+                    b: addend,
+                },
+                (BinaryOperator::Subtract, true) => {
+                    Instruction::FloatNegativeMultiplySubtractDouble {
+                        d: destination,
+                        a: multiplicand,
+                        c: multiplier,
+                        b: addend,
+                    }
+                }
                 _ => unreachable!("caller restricts to add/subtract"),
             });
             return Ok(true);
@@ -311,16 +380,26 @@ impl Generator {
                 Some(location) => location.class == ValueClass::Float && location.width == 64,
                 None => self.globals.get(name.as_str()) == Some(&Type::Double),
             },
-            Expression::Binary { left, right, .. } => self.is_double_value(left) || self.is_double_value(right),
+            Expression::Binary { left, right, .. } => {
+                self.is_double_value(left) || self.is_double_value(right)
+            }
             Expression::Unary { operand, .. } => self.is_double_value(operand),
-            Expression::Conditional { when_true, when_false, .. } => self.is_double_value(when_true) || self.is_double_value(when_false),
+            Expression::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => self.is_double_value(when_true) || self.is_double_value(when_false),
             Expression::Cast { target_type, .. } => *target_type == Type::Double,
             Expression::Member { member_type, .. } => *member_type == Type::Double,
             // A `double*` deref / subscript is a double value (so its arithmetic uses fadd/fmul, not
             // the single fadds/fmuls). Without this, double-pointer math read as single.
-            Expression::Dereference { pointer } => matches!(self.pointee_of(pointer), Ok(Pointee::Double)),
+            Expression::Dereference { pointer } => {
+                matches!(self.pointee_of(pointer), Ok(Pointee::Double))
+            }
             Expression::Index { base, .. } => matches!(self.pointee_of(base), Ok(Pointee::Double)),
-            Expression::Call { name, .. } => self.call_return_types.get(name) == Some(&Type::Double),
+            Expression::Call { name, .. } => {
+                self.call_return_types.get(name) == Some(&Type::Double)
+            }
             _ => false,
         }
     }
@@ -334,7 +413,9 @@ impl Generator {
         }
         if is_complex(expression) {
             if !fits_single_scratch(expression, true) {
-                return Err(Diagnostic::error("fused multiply-add addend needs the full register allocator (roadmap M1)"));
+                return Err(Diagnostic::error(
+                    "fused multiply-add addend needs the full register allocator (roadmap M1)",
+                ));
             }
             self.evaluate_float(expression, FLOAT_SCRATCH)?;
             Ok(FLOAT_SCRATCH)
@@ -352,7 +433,10 @@ impl Generator {
             return member_type == Type::Float;
         }
         if let Some(pointer) = as_dereference(operand) {
-            return matches!(self.pointee_of(pointer), Ok(Pointee::Float | Pointee::Double));
+            return matches!(
+                self.pointee_of(pointer),
+                Ok(Pointee::Float | Pointee::Double)
+            );
         }
         if let Expression::Variable(name) = operand {
             if !self.locations.contains_key(name) {
@@ -366,7 +450,14 @@ impl Generator {
     /// or `*float_pointer`). A single located operand loads into the scratch (its
     /// leaf partner stays home), two load left into the destination and right into
     /// the scratch, and a located-with-constant loads the constant first.
-    fn place_float_located_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8, double: bool) -> Compilation<Operands> {
+    fn place_float_located_operands(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<Operands> {
         if self.is_float_located(left) && self.is_float_located(right) {
             // The left load goes to a fresh virtual the allocator places (it
             // coalesces onto a free FPR, or the result register when that is free);
@@ -384,7 +475,9 @@ impl Generator {
                 // operands depending on the constant-folded inner (a scheduler
                 // concern, Phase E), so defer rather than emit a non-matching order.
                 if destination == FLOAT_SCRATCH {
-                    return Err(Diagnostic::error("float load with constant needs a non-scratch destination (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "float load with constant needs a non-scratch destination (roadmap)",
+                    ));
                 }
                 // A commutative op leads with the constant (into the dest), then the memory operand
                 // (scratch): `lfs/lfd f1,const; lfs/lfd f0,(p); op f1,f1,f0`. A non-commutative op
@@ -407,7 +500,9 @@ impl Generator {
         if self.is_float_located(right) {
             if let Expression::FloatLiteral(value) = left {
                 if destination == FLOAT_SCRATCH {
-                    return Err(Diagnostic::error("float load with constant needs a non-scratch destination (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "float load with constant needs a non-scratch destination (roadmap)",
+                    ));
                 }
                 self.load_float_literal(destination, *value, double);
                 self.emit_located_operand(right, FLOAT_SCRATCH)?;
@@ -420,7 +515,14 @@ impl Generator {
         unreachable!("caller checked one side is a float load")
     }
 
-    pub(crate) fn place_float_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8, double: bool) -> Compilation<Operands> {
+    pub(crate) fn place_float_operands(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<Operands> {
         // A float operand loaded from memory (a member or `*float_pointer`) loads
         // into a float register; the general base register is untouched, so it can
         // even land straight in the float destination.
@@ -446,7 +548,10 @@ impl Generator {
             }
         }
         match (is_complex(left), is_complex(right)) {
-            (false, false) => Operands::ordered(self.float_register_of_leaf(left)?, self.float_register_of_leaf(right)?),
+            (false, false) => Operands::ordered(
+                self.float_register_of_leaf(left)?,
+                self.float_register_of_leaf(right)?,
+            ),
             (true, false) => {
                 self.evaluate_float(left, FLOAT_SCRATCH)?;
                 Operands::reversed(FLOAT_SCRATCH, self.float_register_of_leaf(right)?)

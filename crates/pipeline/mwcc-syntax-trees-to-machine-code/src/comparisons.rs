@@ -1,14 +1,13 @@
 //! Branchless comparison idioms.
 
-use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{BinaryOperator, Expression};
 use crate::analysis::*;
 use crate::expressions::load_base_name;
 use crate::generator::*;
+use mwcc_core::{Compilation, Diagnostic};
+use mwcc_machine_code::Instruction;
+use mwcc_syntax_trees::{BinaryOperator, Expression};
 
 impl Generator {
-
     /// Emit a comparison as mwcc's branchless idiom. Currently handles `==` (and
     /// `== 0`) and signed `< 0`; the richer signed less/greater idioms are not
     /// implemented yet.
@@ -18,7 +17,12 @@ impl Generator {
     /// A sub-expression evaluates into the destination — unless that *is* the scratch
     /// (a store, d=r0), where the scratch op would clobber it, which defers.
     fn sign_idiom_source(&mut self, value: &Expression, destination: u8) -> Compilation<u8> {
-        if let Some(register) = self.leaf_info(value).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
+        if let Some(register) = self
+            .leaf_info(value)
+            .ok()
+            .filter(|&(_, width, _)| width == 32)
+            .map(|(register, _, _)| register)
+        {
             return Ok(register);
         }
         // A signed byte load is brought into the scratch and sign-extended into the destination
@@ -36,7 +40,13 @@ impl Generator {
         }
     }
 
-    pub(crate) fn emit_comparison(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_comparison(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         // A comparison whose operands are floating-point materializes a boolean
         // from cr0 rather than using the integer branchless idioms below.
         if self.is_float_leaf(left) || self.is_float_leaf(right) {
@@ -47,8 +57,10 @@ impl Generator {
         // evaluating the operand. (Floats are excluded above: `NaN == NaN` is
         // false, so that fold would be wrong.)
         if same_operand(left, right) {
-            let value = i64::from(matches!(operator,
-                BinaryOperator::Equal | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual));
+            let value = i64::from(matches!(
+                operator,
+                BinaryOperator::Equal | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
+            ));
             self.load_integer_constant(destination, value);
             return Ok(());
         }
@@ -60,11 +72,12 @@ impl Generator {
         // keys their idiom off the left operand's declared type, so they take its signedness
         // alone. (The `x OP 0` idioms test the left's sign; there the literal 0 is signed, so
         // the relational form equals the left's signedness too.)
-        let signed_comparison = if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-            self.signedness_of(left)?
-        } else {
-            self.signedness_of(left)? && self.signedness_of(right)?
-        };
+        let signed_comparison =
+            if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                self.signedness_of(left)?
+            } else {
+                self.signedness_of(left)? && self.signedness_of(right)?
+            };
         // Unsigned comparisons against literal ZERO collapse to `== 0` / `!= 0` — since an
         // unsigned value is always >= 0, `u > 0` (and `0 < u`) is `u != 0`, and `u <= 0` (and
         // `0 >= u`) is `u == 0`. mwcc emits the cheaper equality idiom for these. (It keeps
@@ -72,16 +85,43 @@ impl Generator {
         // comparisons are unaffected — `int a > 0` is not `a != 0`.)
         if !signed_comparison {
             let folded = match operator {
-                BinaryOperator::Greater if is_zero_literal(right) => Some((BinaryOperator::NotEqual, left)),
-                BinaryOperator::LessEqual if is_zero_literal(right) => Some((BinaryOperator::Equal, left)),
-                BinaryOperator::Less if is_zero_literal(left) => Some((BinaryOperator::NotEqual, right)),
-                BinaryOperator::GreaterEqual if is_zero_literal(left) => Some((BinaryOperator::Equal, right)),
+                BinaryOperator::Greater if is_zero_literal(right) => {
+                    Some((BinaryOperator::NotEqual, left))
+                }
+                BinaryOperator::LessEqual if is_zero_literal(right) => {
+                    Some((BinaryOperator::Equal, left))
+                }
+                BinaryOperator::Less if is_zero_literal(left) => {
+                    Some((BinaryOperator::NotEqual, right))
+                }
+                BinaryOperator::GreaterEqual if is_zero_literal(left) => {
+                    Some((BinaryOperator::Equal, right))
+                }
                 _ => None,
             };
             if let Some((equality_operator, operand)) = folded {
                 let zero = Expression::IntegerLiteral(0);
                 return self.emit_comparison(equality_operator, operand, &zero, d);
             }
+        }
+        // A comparison is already canonical 0/1. Testing it `!= 0` is an
+        // identity and must be folded before choosing a build-specific value
+        // idiom; otherwise the legacy selector booleanizes the inner result a
+        // second time (`(a < b) != 0`).
+        if operator == BinaryOperator::NotEqual && is_zero_literal(right) {
+            if let Expression::Binary {
+                operator: inner_operator,
+                left: inner_left,
+                right: inner_right,
+            } = left
+            {
+                if is_comparison(*inner_operator) {
+                    return self.emit_comparison(*inner_operator, inner_left, inner_right, d);
+                }
+            }
+        }
+        if self.try_emit_legacy_integer_comparison(operator, left, right, d, signed_comparison)? {
+            return Ok(());
         }
         match operator {
             BinaryOperator::Equal => {
@@ -90,7 +130,12 @@ impl Generator {
                     // `(comparison) == 0` is the NEGATED comparison — `(a < b) == 0` is `a >= b`
                     // (one idiom), not "compute `a < b` to 0/1, then test that against 0". mwcc
                     // folds the double-test; `!(a < b)` already did, so match it here too.
-                    if let Expression::Binary { operator: inner_operator, left: inner_left, right: inner_right } = value {
+                    if let Expression::Binary {
+                        operator: inner_operator,
+                        left: inner_left,
+                        right: inner_right,
+                    } = value
+                    {
                         if let Some(flipped) = flip_comparison(*inner_operator) {
                             return self.emit_comparison(flipped, inner_left, inner_right, d);
                         }
@@ -101,8 +146,18 @@ impl Generator {
                         if mask.is_power_of_two() {
                             let register = self.general_register_of_leaf(variable)?;
                             let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
-                            self.output.instructions.push(Instruction::RotateAndMask { a: GENERAL_SCRATCH, s: register, shift, begin: 31, end: 31 });
-                            self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
+                            self.output.instructions.push(Instruction::RotateAndMask {
+                                a: GENERAL_SCRATCH,
+                                s: register,
+                                shift,
+                                begin: 31,
+                                end: 31,
+                            });
+                            self.output.instructions.push(Instruction::XorImmediate {
+                                a: d,
+                                s: GENERAL_SCRATCH,
+                                immediate: 1,
+                            });
                             return Ok(());
                         }
                     }
@@ -118,7 +173,21 @@ impl Generator {
                     } else {
                         self.place_operand_or_scratch(value, d)?
                     };
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
+                    let source = if self.behavior.negate_before_zero_equality {
+                        self.output.instructions.push(Instruction::Negate {
+                            d: GENERAL_SCRATCH,
+                            a: source,
+                        });
+                        GENERAL_SCRATCH
+                    } else {
+                        source
+                    };
+                    self.output
+                        .instructions
+                        .push(Instruction::CountLeadingZeros {
+                            a: GENERAL_SCRATCH,
+                            s: source,
+                        });
                 } else if let Some(constant) = as_small_integer(right) {
                     // a == c : (c - a) leading zeros. A signed byte load comes into the scratch and
                     // is sign-extended in place (`lbz r0; extsb r0,r0`); a narrow leaf operand is
@@ -140,33 +209,59 @@ impl Generator {
                             _ => self.general_register_of_leaf(left)?,
                         }
                     };
-                    self.output.instructions.push(Instruction::SubtractFromImmediate { d: GENERAL_SCRATCH, a: value, immediate: constant });
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
+                    self.output
+                        .instructions
+                        .push(Instruction::SubtractFromImmediate {
+                            d: GENERAL_SCRATCH,
+                            a: value,
+                            immediate: constant,
+                        });
+                    self.output
+                        .instructions
+                        .push(Instruction::CountLeadingZeros {
+                            a: GENERAL_SCRATCH,
+                            s: GENERAL_SCRATCH,
+                        });
                 } else {
                     // a == b : leading zeros of (a - b). Narrow operands are
                     // extended first — the left in place, the right into the
                     // scratch (mwcc's placement for the equality idiom).
                     let (left_register, right_register) = self.place_compare_leaves(left, right)?;
-                    self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: left_register, b: right_register });
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
+                    self.output.instructions.push(Instruction::SubtractFrom {
+                        d: GENERAL_SCRATCH,
+                        a: left_register,
+                        b: right_register,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::CountLeadingZeros {
+                            a: GENERAL_SCRATCH,
+                            s: GENERAL_SCRATCH,
+                        });
                 }
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 5 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: GENERAL_SCRATCH,
+                        shift: 5,
+                    });
                 Ok(())
             }
             // x != 0 : sign bit of (-x | x)
             BinaryOperator::NotEqual if is_zero_literal(right) => {
-                // `(comparison) != 0` is just the comparison — `(a < b) != 0` is `a < b`.
-                if let Expression::Binary { operator: inner_operator, left: inner_left, right: inner_right } = left {
-                    if is_comparison(*inner_operator) {
-                        return self.emit_comparison(*inner_operator, inner_left, inner_right, d);
-                    }
-                }
                 // `(x & (1<<k)) != 0`: extract bit k to the low bit with one rlwinm.
                 if let Some((variable, mask)) = as_masked_leaf(left) {
                     if mask.is_power_of_two() {
                         let register = self.general_register_of_leaf(variable)?;
                         let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
-                        self.output.instructions.push(Instruction::RotateAndMask { a: d, s: register, shift, begin: 31, end: 31 });
+                        self.output.instructions.push(Instruction::RotateAndMask {
+                            a: d,
+                            s: register,
+                            shift,
+                            begin: 31,
+                            end: 31,
+                        });
                         return Ok(());
                     }
                 }
@@ -181,26 +276,66 @@ impl Generator {
                 } else {
                     self.sign_idiom_source(left, d)?
                 };
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: source });
-                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: source });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::Negate {
+                    d: GENERAL_SCRATCH,
+                    a: source,
+                });
+                self.output.instructions.push(Instruction::Or {
+                    a: GENERAL_SCRATCH,
+                    s: GENERAL_SCRATCH,
+                    b: source,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // `x != C` (nonzero constant): sign bit of ((C - x) | (x - C)), both
             // halves built with immediates (`subfic` and `addi`).
             BinaryOperator::NotEqual
-                if leaf_name(left).is_some() && !self.is_narrow_leaf(left)
-                    && constant_value(right).is_some_and(|constant| constant != 0 && i16::try_from(constant).is_ok() && i16::try_from(-constant).is_ok()) =>
+                if leaf_name(left).is_some()
+                    && !self.is_narrow_leaf(left)
+                    && constant_value(right).is_some_and(|constant| {
+                        constant != 0
+                            && i16::try_from(constant).is_ok()
+                            && i16::try_from(-constant).is_ok()
+                    }) =>
             {
                 let constant = constant_value(right).unwrap() as i16;
                 let x = self.general_register_of_leaf(left)?;
-                let Some(temp) = (3u8..=12).find(|register| *register != x && !self.reserved.contains(register)) else {
+                let Some(temp) =
+                    (3u8..=12).find(|register| *register != x && !self.reserved.contains(register))
+                else {
                     return Err(Diagnostic::error("out of registers for the != idiom"));
                 };
-                self.output.instructions.push(Instruction::SubtractFromImmediate { d: temp, a: x, immediate: constant });
-                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: x, immediate: -constant });
-                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: temp, b: GENERAL_SCRATCH });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                self.output
+                    .instructions
+                    .push(Instruction::SubtractFromImmediate {
+                        d: temp,
+                        a: x,
+                        immediate: constant,
+                    });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: x,
+                    immediate: -constant,
+                });
+                self.output.instructions.push(Instruction::Or {
+                    a: GENERAL_SCRATCH,
+                    s: temp,
+                    b: GENERAL_SCRATCH,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // signed x < 0 : the sign bit. A signed-char load is brought into the scratch and
@@ -215,15 +350,34 @@ impl Generator {
                 } else {
                     self.place_operand_or_scratch(left, d)?
                 };
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift: 31 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: source,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // signed x > 0 : sign bit of (-x & ~x)
             BinaryOperator::Greater if is_zero_literal(right) && signed_comparison => {
                 let source = self.sign_idiom_source(left, d)?;
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: source });
-                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: source });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::Negate {
+                    d: GENERAL_SCRATCH,
+                    a: source,
+                });
+                self.output.instructions.push(Instruction::AndComplement {
+                    a: GENERAL_SCRATCH,
+                    s: GENERAL_SCRATCH,
+                    b: source,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // signed x >= 0 : !(x < 0). A signed-char load comes into the scratch, extended in
@@ -236,8 +390,18 @@ impl Generator {
                 } else {
                     self.place_operand_or_scratch(left, d)?
                 };
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: source, shift: 31 });
-                self.output.instructions.push(Instruction::XorImmediate { a: d, s: GENERAL_SCRATCH, immediate: 1 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: source,
+                        shift: 31,
+                    });
+                self.output.instructions.push(Instruction::XorImmediate {
+                    a: d,
+                    s: GENERAL_SCRATCH,
+                    immediate: 1,
+                });
                 Ok(())
             }
             // signed x <= 0 : `cntlzw(x)` is 0 (x<0) or 32 (x==0) but 1..31 (x>0), so
@@ -247,10 +411,28 @@ impl Generator {
             // rlwnm r0,r3,r0`) — putting the `1` in the destination would let the cntlzw
             // clobber it for a store (d=r0). A non-leaf keeps the original scratch path.
             BinaryOperator::LessEqual if is_zero_literal(right) && signed_comparison => {
-                if let Some(register) = self.leaf_info(left).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: register });
+                if let Some(register) = self
+                    .leaf_info(left)
+                    .ok()
+                    .filter(|&(_, width, _)| width == 32)
+                    .map(|(register, _, _)| register)
+                {
+                    self.output
+                        .instructions
+                        .push(Instruction::CountLeadingZeros {
+                            a: GENERAL_SCRATCH,
+                            s: register,
+                        });
                     self.load_integer_constant(register, 1);
-                    self.output.instructions.push(Instruction::RotateAndMaskVariable { a: d, s: register, b: GENERAL_SCRATCH, begin: 31, end: 31 });
+                    self.output
+                        .instructions
+                        .push(Instruction::RotateAndMaskVariable {
+                            a: d,
+                            s: register,
+                            b: GENERAL_SCRATCH,
+                            begin: 31,
+                            end: 31,
+                        });
                     return Ok(());
                 }
                 // A signed-char load keeps the value in the scratch and sign-extends in place,
@@ -260,19 +442,50 @@ impl Generator {
                     self.evaluate_general(left, GENERAL_SCRATCH)?;
                     self.load_integer_constant(d, 1);
                     self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
-                    self.output.instructions.push(Instruction::RotateAndMaskVariable { a: d, s: d, b: GENERAL_SCRATCH, begin: 31, end: 31 });
+                    self.output
+                        .instructions
+                        .push(Instruction::CountLeadingZeros {
+                            a: GENERAL_SCRATCH,
+                            s: GENERAL_SCRATCH,
+                        });
+                    self.output
+                        .instructions
+                        .push(Instruction::RotateAndMaskVariable {
+                            a: d,
+                            s: d,
+                            b: GENERAL_SCRATCH,
+                            begin: 31,
+                            end: 31,
+                        });
                     return Ok(());
                 }
                 let source = self.place_operand_or_scratch(left, d)?;
                 if source == d {
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
+                    self.output
+                        .instructions
+                        .push(Instruction::CountLeadingZeros {
+                            a: GENERAL_SCRATCH,
+                            s: source,
+                        });
                     self.load_integer_constant(d, 1);
                 } else {
                     self.load_integer_constant(d, 1);
-                    self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: source });
+                    self.output
+                        .instructions
+                        .push(Instruction::CountLeadingZeros {
+                            a: GENERAL_SCRATCH,
+                            s: source,
+                        });
                 }
-                self.output.instructions.push(Instruction::RotateAndMaskVariable { a: d, s: d, b: GENERAL_SCRATCH, begin: 31, end: 31 });
+                self.output
+                    .instructions
+                    .push(Instruction::RotateAndMaskVariable {
+                        a: d,
+                        s: d,
+                        b: GENERAL_SCRATCH,
+                        begin: 31,
+                        end: 31,
+                    });
                 Ok(())
             }
             // general signed branchless comparisons. Both leaves (any operator), or
@@ -287,9 +500,11 @@ impl Generator {
             // operand once), then the same sign-bit idiom with a fresh temp. `x` is
             // a leaf or a full-word load (e.g. `*p > C`, `s->a > C`).
             BinaryOperator::Greater
-                if signed_comparison && !self.is_narrow_leaf(left)
+                if signed_comparison
+                    && !self.is_narrow_leaf(left)
                     && (leaf_name(left).is_some() || self.is_simple_word_load(left))
-                    && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
+                    && constant_value(right)
+                        .is_some_and(|constant| i16::try_from(constant).is_ok()) =>
             {
                 let x = if leaf_name(left).is_some() {
                     self.general_register_of_leaf(left)?
@@ -304,29 +519,80 @@ impl Generator {
                 self.load_integer_constant(GENERAL_SCRATCH, constant);
                 let scratch = GENERAL_SCRATCH;
                 let temp = self.fresh_virtual_general();
-                self.output.instructions.push(Instruction::Xor { a: scratch, s: x, b: scratch });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
-                self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: x });
-                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                self.output.instructions.push(Instruction::Xor {
+                    a: scratch,
+                    s: x,
+                    b: scratch,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: temp,
+                        s: scratch,
+                        shift: 1,
+                    });
+                self.output.instructions.push(Instruction::And {
+                    a: scratch,
+                    s: scratch,
+                    b: x,
+                });
+                self.output.instructions.push(Instruction::SubtractFrom {
+                    d: scratch,
+                    a: scratch,
+                    b: temp,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: scratch,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // signed `(load) < C` : the load is the low operand (read once) → r0;
             // the constant is the high operand (read twice) → a fresh register.
             BinaryOperator::Less
-                if signed_comparison && self.is_simple_word_load(left) && !self.is_narrow_leaf(right)
-                    && constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok()) =>
+                if signed_comparison
+                    && self.is_simple_word_load(left)
+                    && !self.is_narrow_leaf(right)
+                    && constant_value(right)
+                        .is_some_and(|constant| i16::try_from(constant).is_ok()) =>
             {
                 self.evaluate_general(left, GENERAL_SCRATCH)?;
                 let load = GENERAL_SCRATCH;
                 let constant_register = self.fresh_virtual_general();
                 self.load_integer_constant(constant_register, constant_value(right).unwrap());
                 let scratch = GENERAL_SCRATCH;
-                self.output.instructions.push(Instruction::Xor { a: scratch, s: constant_register, b: load });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
-                self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: constant_register });
-                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                self.output.instructions.push(Instruction::Xor {
+                    a: scratch,
+                    s: constant_register,
+                    b: load,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: d,
+                        s: scratch,
+                        shift: 1,
+                    });
+                self.output.instructions.push(Instruction::And {
+                    a: scratch,
+                    s: scratch,
+                    b: constant_register,
+                });
+                self.output.instructions.push(Instruction::SubtractFrom {
+                    d: scratch,
+                    a: scratch,
+                    b: d,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: scratch,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // `a[i] != a[j]` / `*p != *q` (two full-word loads): the left operand
@@ -339,12 +605,16 @@ impl Generator {
             // avoids both bases: it colors r4 for a shared base, r5 for distinct
             // bases, matching `lwz r4/r5; lwz r0; subf …`.
             BinaryOperator::NotEqual
-                if self.is_simple_word_load(left) && self.is_simple_word_load(right)
+                if self.is_simple_word_load(left)
+                    && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
                     && load_base_name(right).is_some() =>
             {
-                let avoid: Vec<u8> = [&*left, &*right].iter()
-                    .filter_map(|operand| load_base_name(operand).and_then(|name| self.lookup_general(name)))
+                let avoid: Vec<u8> = [&*left, &*right]
+                    .iter()
+                    .filter_map(|operand| {
+                        load_base_name(operand).and_then(|name| self.lookup_general(name))
+                    })
                     .collect();
                 let left_register = self.fresh_virtual_general_avoiding(avoid);
                 self.evaluate_general(left, left_register)?;
@@ -352,10 +622,28 @@ impl Generator {
                 let right_register = GENERAL_SCRATCH;
                 let scratch = GENERAL_SCRATCH;
                 let temp = self.fresh_virtual_general();
-                self.output.instructions.push(Instruction::SubtractFrom { d: temp, a: left_register, b: right_register });
-                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: right_register, b: left_register });
-                self.output.instructions.push(Instruction::Or { a: scratch, s: temp, b: scratch });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                self.output.instructions.push(Instruction::SubtractFrom {
+                    d: temp,
+                    a: left_register,
+                    b: right_register,
+                });
+                self.output.instructions.push(Instruction::SubtractFrom {
+                    d: scratch,
+                    a: right_register,
+                    b: left_register,
+                });
+                self.output.instructions.push(Instruction::Or {
+                    a: scratch,
+                    s: temp,
+                    b: scratch,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: scratch,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // `a[i] < a[j]` / `a[i] > a[j]` (two same-base full-word loads): the
@@ -376,7 +664,9 @@ impl Generator {
             // would collide with the scratch and mwcc declines to reuse the dead
             // base anyway, so `<` defers there.
             BinaryOperator::Less | BinaryOperator::Greater
-                if signed_comparison && self.is_simple_word_load(left) && self.is_simple_word_load(right)
+                if signed_comparison
+                    && self.is_simple_word_load(left)
+                    && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
                     && load_base_name(right).is_some()
                     && (matches!(operator, BinaryOperator::Greater) || d != GENERAL_SCRATCH) =>
@@ -390,42 +680,90 @@ impl Generator {
                     // only avoids the LEFT operand's base (r4 same-base, or the
                     // right base it coalesces onto for distinct bases).
                     self.evaluate_general(left, scratch)?;
-                    let right_register = self.fresh_virtual_general_avoiding(left_base.into_iter().collect());
+                    let right_register =
+                        self.fresh_virtual_general_avoiding(left_base.into_iter().collect());
                     self.evaluate_general(right, right_register)?;
-                    self.output.instructions.push(Instruction::Xor { a: scratch, s: right_register, b: scratch });
-                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: scratch, shift: 1 });
-                    self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: right_register });
-                    self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: d });
+                    self.output.instructions.push(Instruction::Xor {
+                        a: scratch,
+                        s: right_register,
+                        b: scratch,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftRightAlgebraicImmediate {
+                            a: d,
+                            s: scratch,
+                            shift: 1,
+                        });
+                    self.output.instructions.push(Instruction::And {
+                        a: scratch,
+                        s: scratch,
+                        b: right_register,
+                    });
+                    self.output.instructions.push(Instruction::SubtractFrom {
+                        d: scratch,
+                        a: scratch,
+                        b: d,
+                    });
                 } else {
                     // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)). a is read twice
                     // and loaded first, so it must stay off BOTH bases (its own is
                     // live during the load, the other until the second load) — r4
                     // same-base, r5 distinct.
-                    let left_register = self.fresh_virtual_general_avoiding([left_base, right_base].into_iter().flatten().collect());
+                    let left_register = self.fresh_virtual_general_avoiding(
+                        [left_base, right_base].into_iter().flatten().collect(),
+                    );
                     self.evaluate_general(left, left_register)?;
                     self.evaluate_general(right, scratch)?;
                     let temp = self.fresh_virtual_general();
-                    self.output.instructions.push(Instruction::Xor { a: scratch, s: left_register, b: scratch });
-                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
-                    self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: left_register });
-                    self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
+                    self.output.instructions.push(Instruction::Xor {
+                        a: scratch,
+                        s: left_register,
+                        b: scratch,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftRightAlgebraicImmediate {
+                            a: temp,
+                            s: scratch,
+                            shift: 1,
+                        });
+                    self.output.instructions.push(Instruction::And {
+                        a: scratch,
+                        s: scratch,
+                        b: left_register,
+                    });
+                    self.output.instructions.push(Instruction::SubtractFrom {
+                        d: scratch,
+                        a: scratch,
+                        b: temp,
+                    });
                 }
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: scratch,
+                        shift: 31,
+                    });
                 Ok(())
             }
             BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::NotEqual
-                if signed_comparison && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
-                    && (
-                        (leaf_name(left).is_some() && leaf_name(right).is_some())
+                if signed_comparison
+                    && !self.is_narrow_leaf(left)
+                    && !self.is_narrow_leaf(right)
+                    && ((leaf_name(left).is_some() && leaf_name(right).is_some())
                         || (matches!(operator, BinaryOperator::Greater)
-                            && leaf_name(left).is_none() && leaf_name(right).is_some())
+                            && leaf_name(left).is_none()
+                            && leaf_name(right).is_some())
                         || (matches!(operator, BinaryOperator::Less)
-                            && leaf_name(right).is_none() && leaf_name(left).is_some())
+                            && leaf_name(right).is_none()
+                            && leaf_name(left).is_some())
                         || (matches!(operator, BinaryOperator::NotEqual)
-                            && leaf_name(left).is_none() != leaf_name(right).is_none())
-                    ) =>
+                            && leaf_name(left).is_none() != leaf_name(right).is_none())) =>
             {
-                let (left_register, right_register) = self.place_compare_operands(operator, left, right, d)?;
+                let (left_register, right_register) =
+                    self.place_compare_operands(operator, left, right, d)?;
                 let scratch = GENERAL_SCRATCH;
                 match operator {
                     // a < b : sign bit of (((a^b)>>1) - ((a^b)&b)). Like `>`, the
@@ -435,11 +773,35 @@ impl Generator {
                     // the scratch when d *is* the scratch (a value/store, d=r0).
                     BinaryOperator::Less => {
                         let temp = self.fresh_virtual_general();
-                        self.output.instructions.push(Instruction::Xor { a: scratch, s: right_register, b: left_register });
-                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
-                        self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: right_register });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
-                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                        self.output.instructions.push(Instruction::Xor {
+                            a: scratch,
+                            s: right_register,
+                            b: left_register,
+                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightAlgebraicImmediate {
+                                a: temp,
+                                s: scratch,
+                                shift: 1,
+                            });
+                        self.output.instructions.push(Instruction::And {
+                            a: scratch,
+                            s: scratch,
+                            b: right_register,
+                        });
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: scratch,
+                            a: scratch,
+                            b: temp,
+                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightLogicalImmediate {
+                                a: d,
+                                s: scratch,
+                                shift: 31,
+                            });
                     }
                     // a > b : sign bit of (((a^b)>>1) - ((a^b)&a)). The intermediate
                     // `(a^b)>>1` goes to a fresh virtual the allocator places at the
@@ -448,19 +810,61 @@ impl Generator {
                     // operand is a load and rB is not free.
                     BinaryOperator::Greater => {
                         let temp = self.fresh_virtual_general();
-                        self.output.instructions.push(Instruction::Xor { a: scratch, s: left_register, b: right_register });
-                        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: temp, s: scratch, shift: 1 });
-                        self.output.instructions.push(Instruction::And { a: scratch, s: scratch, b: left_register });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: scratch, b: temp });
-                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                        self.output.instructions.push(Instruction::Xor {
+                            a: scratch,
+                            s: left_register,
+                            b: right_register,
+                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightAlgebraicImmediate {
+                                a: temp,
+                                s: scratch,
+                                shift: 1,
+                            });
+                        self.output.instructions.push(Instruction::And {
+                            a: scratch,
+                            s: scratch,
+                            b: left_register,
+                        });
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: scratch,
+                            a: scratch,
+                            b: temp,
+                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightLogicalImmediate {
+                                a: d,
+                                s: scratch,
+                                shift: 31,
+                            });
                     }
                     // a != b : sign bit of ((b - a) | (a - b)), with a second temp.
                     _ => {
                         let temp = self.fresh_virtual_general();
-                        self.output.instructions.push(Instruction::SubtractFrom { d: temp, a: left_register, b: right_register });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: right_register, b: left_register });
-                        self.output.instructions.push(Instruction::Or { a: scratch, s: temp, b: scratch });
-                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: scratch, shift: 31 });
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: temp,
+                            a: left_register,
+                            b: right_register,
+                        });
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: scratch,
+                            a: right_register,
+                            b: left_register,
+                        });
+                        self.output.instructions.push(Instruction::Or {
+                            a: scratch,
+                            s: temp,
+                            b: scratch,
+                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightLogicalImmediate {
+                                a: d,
+                                s: scratch,
+                                shift: 31,
+                            });
                     }
                 }
                 Ok(())
@@ -469,10 +873,13 @@ impl Generator {
             // is the low side (read once) → r0; `x < C` is the high side (read twice)
             // → a fresh register the allocator places at the lowest free GPR.
             BinaryOperator::Less | BinaryOperator::Greater
-                if !signed_comparison && leaf_name(left).is_some()
-                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
+                if !signed_comparison
+                    && leaf_name(left).is_some()
+                    && !self.is_narrow_leaf(left)
+                    && !self.is_narrow_leaf(right)
                     && (leaf_name(right).is_some()
-                        || constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok())) =>
+                        || constant_value(right)
+                            .is_some_and(|constant| i16::try_from(constant).is_ok())) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = match constant_value(right) {
@@ -484,18 +891,48 @@ impl Generator {
                     _ => self.compare_right_operand(right)?,
                 };
                 // a < b uses b as the high side; a > b is b < a.
-                let high = if matches!(operator, BinaryOperator::Less) { right_register } else { left_register };
-                let low = if matches!(operator, BinaryOperator::Less) { left_register } else { right_register };
-                self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: high, b: low });
-                self.output.instructions.push(Instruction::CountLeadingZeros { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH });
-                self.output.instructions.push(Instruction::ShiftLeftWord { a: GENERAL_SCRATCH, s: high, b: GENERAL_SCRATCH });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                let high = if matches!(operator, BinaryOperator::Less) {
+                    right_register
+                } else {
+                    left_register
+                };
+                let low = if matches!(operator, BinaryOperator::Less) {
+                    left_register
+                } else {
+                    right_register
+                };
+                self.output.instructions.push(Instruction::Xor {
+                    a: GENERAL_SCRATCH,
+                    s: high,
+                    b: low,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::CountLeadingZeros {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                    });
+                self.output.instructions.push(Instruction::ShiftLeftWord {
+                    a: GENERAL_SCRATCH,
+                    s: high,
+                    b: GENERAL_SCRATCH,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // unsigned a <= b / a >= b : orc-based, dest + scratch.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if !signed_comparison && leaf_name(left).is_some() && leaf_name(right).is_some()
-                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right) =>
+                if !signed_comparison
+                    && leaf_name(left).is_some()
+                    && leaf_name(right).is_some()
+                    && !self.is_narrow_leaf(left)
+                    && !self.is_narrow_leaf(right) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = self.general_register_of_leaf(right)?;
@@ -504,11 +941,35 @@ impl Generator {
                     BinaryOperator::LessEqual => (left_register, right_register),
                     _ => (right_register, left_register),
                 };
-                self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: low, b: high });
-                self.output.instructions.push(Instruction::OrComplement { a: d, s: high, b: low });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 1 });
-                self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: d });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::SubtractFrom {
+                    d: GENERAL_SCRATCH,
+                    a: low,
+                    b: high,
+                });
+                self.output.instructions.push(Instruction::OrComplement {
+                    a: d,
+                    s: high,
+                    b: low,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                        shift: 1,
+                    });
+                self.output.instructions.push(Instruction::SubtractFrom {
+                    d: GENERAL_SCRATCH,
+                    a: GENERAL_SCRATCH,
+                    b: d,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
                 Ok(())
             }
             // `a[i] <= a[j]` / `s->x >= s->y` (two same-base full-word loads): the
@@ -518,18 +979,31 @@ impl Generator {
             // `lwz r0; lwz r5; srawi r4,high,31; srwi d,low,31; subfc r0,low,high;
             // adde d,r4,d`. Different bases / value context defer.
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if signed_comparison && self.is_simple_word_load(left) && self.is_simple_word_load(right)
+                if signed_comparison
+                    && self.is_simple_word_load(left)
+                    && self.is_simple_word_load(right)
                     && load_base_name(left).is_some()
                     && load_base_name(left) == load_base_name(right)
                     && d != GENERAL_SCRATCH =>
             {
                 let base = load_base_name(left).and_then(|name| self.lookup_general(name));
-                let mut free = (3u8..=12).filter(|r| *r != GENERAL_SCRATCH && *r != d && Some(*r) != base && !self.reserved.contains(r));
+                let mut free = (3u8..=12).filter(|r| {
+                    *r != GENERAL_SCRATCH
+                        && *r != d
+                        && Some(*r) != base
+                        && !self.reserved.contains(r)
+                });
                 let (Some(sign_high_reg), Some(operand_reg)) = (free.next(), free.next()) else {
-                    return Err(Diagnostic::error("out of registers for the two-load <=/>= idiom"));
+                    return Err(Diagnostic::error(
+                        "out of registers for the two-load <=/>= idiom",
+                    ));
                 };
                 let scratch = GENERAL_SCRATCH;
-                let (high, low) = if matches!(operator, BinaryOperator::LessEqual) { (right, left) } else { (left, right) };
+                let (high, low) = if matches!(operator, BinaryOperator::LessEqual) {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
                 // The high operand loads first; for `<=` it lands in the scratch,
                 // for `>=` in the free register (and the low operand vice versa).
                 let (high_reg, low_reg) = if matches!(operator, BinaryOperator::LessEqual) {
@@ -541,34 +1015,71 @@ impl Generator {
                     self.evaluate_general(low, scratch)?;
                     (operand_reg, scratch)
                 };
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: sign_high_reg, s: high_reg, shift: 31 });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: low_reg, shift: 31 });
-                self.output.instructions.push(Instruction::SubtractFromCarrying { d: scratch, a: low_reg, b: high_reg });
-                self.output.instructions.push(Instruction::AddExtended { d, a: sign_high_reg, b: d });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: sign_high_reg,
+                        s: high_reg,
+                        shift: 31,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: d,
+                        s: low_reg,
+                        shift: 31,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::SubtractFromCarrying {
+                        d: scratch,
+                        a: low_reg,
+                        b: high_reg,
+                    });
+                self.output.instructions.push(Instruction::AddExtended {
+                    d,
+                    a: sign_high_reg,
+                    b: d,
+                });
                 Ok(())
             }
             // signed a <= b / a >= b : carry-based, with two temporaries. A
             // constant right operand materializes into r0 (read twice before being
             // overwritten by the subfc).
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
-                if signed_comparison && leaf_name(left).is_some()
-                    && !self.is_narrow_leaf(left) && !self.is_narrow_leaf(right)
-                    && (leaf_name(right).is_some() || constant_value(right).is_some_and(|constant| i16::try_from(constant).is_ok())) =>
+                if signed_comparison
+                    && leaf_name(left).is_some()
+                    && !self.is_narrow_leaf(left)
+                    && !self.is_narrow_leaf(right)
+                    && (leaf_name(right).is_some()
+                        || constant_value(right)
+                            .is_some_and(|constant| i16::try_from(constant).is_ok())) =>
             {
                 let left_register = self.general_register_of_leaf(left)?;
                 let right_register = self.compare_right_operand(right)?;
-                let mut free = (3u8..=12).filter(|r| ![left_register, right_register, GENERAL_SCRATCH].contains(r));
+                let mut free = (3u8..=12)
+                    .filter(|r| ![left_register, right_register, GENERAL_SCRATCH].contains(r));
                 let (Some(lower), Some(higher)) = (free.next(), free.next()) else {
                     return Err(Diagnostic::error("out of registers for comparison"));
                 };
                 // For a<=b: high = sign(b), low = sign(a), carry from (b - a).
                 // For a>=b the operands swap.
                 let (sign_high, sign_low, subtrahend, minuend) = match operator {
-                    BinaryOperator::LessEqual => (right_register, left_register, left_register, right_register),
+                    BinaryOperator::LessEqual => {
+                        (right_register, left_register, left_register, right_register)
+                    }
                     _ => (left_register, right_register, right_register, left_register),
                 };
-                let sign_of_high = Instruction::ShiftRightAlgebraicImmediate { a: higher, s: sign_high, shift: 31 };
-                let sign_of_low = Instruction::ShiftRightLogicalImmediate { a: lower, s: sign_low, shift: 31 };
+                let sign_of_high = Instruction::ShiftRightAlgebraicImmediate {
+                    a: higher,
+                    s: sign_high,
+                    shift: 31,
+                };
+                let sign_of_low = Instruction::ShiftRightLogicalImmediate {
+                    a: lower,
+                    s: sign_low,
+                    shift: 31,
+                };
                 // With a materialized constant, mwcc shifts the ready variable
                 // operand (the left leaf) before the constant's.
                 if constant_value(right).is_some() && sign_low == left_register {
@@ -578,11 +1089,23 @@ impl Generator {
                     self.output.instructions.push(sign_of_high);
                     self.output.instructions.push(sign_of_low);
                 }
-                self.output.instructions.push(Instruction::SubtractFromCarrying { d: GENERAL_SCRATCH, a: subtrahend, b: minuend });
-                self.output.instructions.push(Instruction::AddExtended { d, a: higher, b: lower });
+                self.output
+                    .instructions
+                    .push(Instruction::SubtractFromCarrying {
+                        d: GENERAL_SCRATCH,
+                        a: subtrahend,
+                        b: minuend,
+                    });
+                self.output.instructions.push(Instruction::AddExtended {
+                    d,
+                    a: higher,
+                    b: lower,
+                });
                 Ok(())
             }
-            _ => Err(Diagnostic::error("this comparison needs the branchless compare idioms (roadmap)")),
+            _ => Err(Diagnostic::error(
+                "this comparison needs the branchless compare idioms (roadmap)",
+            )),
         }
     }
 
@@ -591,7 +1114,13 @@ impl Generator {
     /// into a GPR with `mfcr` and rotates the relevant bit (lt=0, gt=1, eq=2) down
     /// to the low bit. `<=`/`>=` first fold equality into the eq bit with `cror`;
     /// `!=` extracts eq and flips it with `xori`.
-    pub(crate) fn emit_float_comparison(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_float_comparison(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         const LT: u8 = 0;
         const GT: u8 = 1;
         const EQ: u8 = 2;
@@ -604,31 +1133,82 @@ impl Generator {
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
             // `==`/`!=` are commutative; mwcc canonicalizes a literal operand to
             // the front (it loaded the constant first), so `x == 0.0` is `fcmpu 0,x`.
-            let (first, second) = if matches!(right, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)) { (b, a) } else { (a, b) };
-            self.output.instructions.push(Instruction::FloatCompareUnordered { a: first, b: second });
+            let (first, second) = if matches!(
+                right,
+                Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+            ) {
+                (b, a)
+            } else {
+                (a, b)
+            };
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareUnordered {
+                    a: first,
+                    b: second,
+                });
         } else {
-            self.output.instructions.push(Instruction::FloatCompareOrdered { a, b });
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareOrdered { a, b });
         }
         // `<=`/`>=` fold equality into the eq bit so one extract covers both relations.
         match operator {
-            BinaryOperator::LessEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: LT, b: EQ }),
-            BinaryOperator::GreaterEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: GT, b: EQ }),
+            BinaryOperator::LessEqual => {
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterOr {
+                        d: EQ,
+                        a: LT,
+                        b: EQ,
+                    })
+            }
+            BinaryOperator::GreaterEqual => {
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterOr {
+                        d: EQ,
+                        a: GT,
+                        b: EQ,
+                    })
+            }
             _ => {}
         }
-        self.output.instructions.push(Instruction::MoveFromConditionRegister { d: scratch });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromConditionRegister { d: scratch });
         let bit = match operator {
             BinaryOperator::Less => LT,
             BinaryOperator::Greater => GT,
-            BinaryOperator::Equal | BinaryOperator::NotEqual | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual => EQ,
+            BinaryOperator::Equal
+            | BinaryOperator::NotEqual
+            | BinaryOperator::LessEqual
+            | BinaryOperator::GreaterEqual => EQ,
             _ => return Err(Diagnostic::error("unsupported floating-point comparison")),
         };
         // Rotate the bit (at position `bit` from the MSB) into bit 31 and mask it.
         let shift = bit + 1;
         if matches!(operator, BinaryOperator::NotEqual) {
-            self.output.instructions.push(Instruction::RotateAndMask { a: scratch, s: scratch, shift, begin: 31, end: 31 });
-            self.output.instructions.push(Instruction::XorImmediate { a: destination, s: scratch, immediate: 1 });
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: scratch,
+                s: scratch,
+                shift,
+                begin: 31,
+                end: 31,
+            });
+            self.output.instructions.push(Instruction::XorImmediate {
+                a: destination,
+                s: scratch,
+                immediate: 1,
+            });
         } else {
-            self.output.instructions.push(Instruction::RotateAndMask { a: destination, s: scratch, shift, begin: 31, end: 31 });
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: destination,
+                s: scratch,
+                shift,
+                begin: 31,
+                end: 31,
+            });
         }
         Ok(())
     }
@@ -637,17 +1217,29 @@ impl Generator {
     /// `fcmpo`/`fcmpu` (and the `cror` that folds equality into the eq bit for
     /// `<=`/`>=`) and return the branch `(options, bit)` that skips the guarded body
     /// when the relation is false — the same bit mapping the integer compare uses.
-    pub(crate) fn emit_float_condition(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression) -> Compilation<(u8, u8)> {
+    pub(crate) fn emit_float_condition(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<(u8, u8)> {
         const LT: u8 = 0;
         const GT: u8 = 1;
         const EQ: u8 = 2;
         const FLOAT_FIRST: u8 = 1; // f1
         let double = self.is_double_value(left) || self.is_double_value(right);
         let eq = matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual);
-        let left_literal = matches!(left, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_));
-        let right_literal = matches!(right, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_));
+        let left_literal = matches!(
+            left,
+            Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+        );
+        let right_literal = matches!(
+            right,
+            Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+        );
         let left_load = self.is_float_operand(left) && !self.is_float_leaf(left) && !left_literal;
-        let right_load = self.is_float_operand(right) && !self.is_float_leaf(right) && !right_literal;
+        let right_load =
+            self.is_float_operand(right) && !self.is_float_leaf(right) && !right_literal;
         let (a, b) = if eq && (left_load || right_load) {
             // `==`/`!=` against a loaded value (member/global) uses a *swapped* register
             // assignment versus the ordered form: the constant in f1 (loaded first), the
@@ -700,20 +1292,52 @@ impl Generator {
             (a, b)
         };
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-            let (first, second) = if matches!(right, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)) { (b, a) } else { (a, b) };
-            self.output.instructions.push(Instruction::FloatCompareUnordered { a: first, b: second });
+            let (first, second) = if matches!(
+                right,
+                Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+            ) {
+                (b, a)
+            } else {
+                (a, b)
+            };
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareUnordered {
+                    a: first,
+                    b: second,
+                });
         } else {
-            self.output.instructions.push(Instruction::FloatCompareOrdered { a, b });
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareOrdered { a, b });
         }
         match operator {
-            BinaryOperator::LessEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: LT, b: EQ }),
-            BinaryOperator::GreaterEqual => self.output.instructions.push(Instruction::ConditionRegisterOr { d: EQ, a: GT, b: EQ }),
+            BinaryOperator::LessEqual => {
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterOr {
+                        d: EQ,
+                        a: LT,
+                        b: EQ,
+                    })
+            }
+            BinaryOperator::GreaterEqual => {
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterOr {
+                        d: EQ,
+                        a: GT,
+                        b: EQ,
+                    })
+            }
             _ => {}
         }
         Ok(match operator {
             BinaryOperator::Less => (4, LT),
             BinaryOperator::Greater => (4, GT),
-            BinaryOperator::LessEqual | BinaryOperator::GreaterEqual | BinaryOperator::Equal => (4, EQ),
+            BinaryOperator::LessEqual | BinaryOperator::GreaterEqual | BinaryOperator::Equal => {
+                (4, EQ)
+            }
             BinaryOperator::NotEqual => (12, EQ),
             _ => return Err(Diagnostic::error("unsupported floating-point condition")),
         })
@@ -722,7 +1346,12 @@ impl Generator {
     /// Load a float or (promoted) integer literal into `dest` at the comparison's
     /// precision — `lfs`/`lfd` from the pool, the same promotion mwcc applies to a
     /// written `a > 0`.
-    fn load_float_literal_into(&mut self, dest: u8, operand: &Expression, double: bool) -> Compilation<()> {
+    fn load_float_literal_into(
+        &mut self,
+        dest: u8,
+        operand: &Expression,
+        double: bool,
+    ) -> Compilation<()> {
         match operand {
             Expression::FloatLiteral(value) => {
                 if double {
@@ -747,14 +1376,23 @@ impl Generator {
     /// Whether f1 currently holds a float argument (a float parameter lives there),
     /// so it can't double as the compare scratch without the FP register allocator.
     fn f1_holds_float_argument(&self) -> bool {
-        self.locations.values().any(|location| location.class == ValueClass::Float && location.register == 1)
+        self.locations
+            .values()
+            .any(|location| location.class == ValueClass::Float && location.register == 1)
     }
 
     /// Place a floating-point comparison operand: a leaf stays in its register; a
     /// float literal is loaded from the constant pool (`lfs`/`lfd`) into the float
     /// scratch, matching mwcc's `x > 0.0` form.
-    fn place_float_compare_operand(&mut self, operand: &Expression, double: bool) -> Compilation<u8> {
-        if matches!(operand, Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)) {
+    fn place_float_compare_operand(
+        &mut self,
+        operand: &Expression,
+        double: bool,
+    ) -> Compilation<u8> {
+        if matches!(
+            operand,
+            Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+        ) {
             self.load_float_literal_into(FLOAT_SCRATCH, operand, double)?;
             return Ok(FLOAT_SCRATCH);
         }
@@ -834,7 +1472,11 @@ impl Generator {
     /// register and the right into the scratch; when only one is narrow it goes to
     /// the scratch and the wide operand stays in its home register. Build-aware via
     /// each leaf's signedness; transparent (home registers) for the all-int case.
-    pub(crate) fn place_compare_leaves(&mut self, left: &Expression, right: &Expression) -> Compilation<(u8, u8)> {
+    pub(crate) fn place_compare_leaves(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<(u8, u8)> {
         // Two single-instruction full-word loads: mwcc loads the left operand into
         // a fresh register (the allocator colors it at the lowest free GPR) and the
         // right into the scratch, in source order — `lwz r4,…; lwz r0,…`. The
@@ -896,11 +1538,20 @@ impl Generator {
         }
     }
 
-    fn place_compare_operands(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<(u8, u8)> {
+    fn place_compare_operands(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<(u8, u8)> {
         let left_leaf = leaf_name(left).is_some();
         let right_leaf = leaf_name(right).is_some();
         if left_leaf && right_leaf {
-            return Ok((self.general_register_of_leaf(left)?, self.general_register_of_leaf(right)?));
+            return Ok((
+                self.general_register_of_leaf(left)?,
+                self.general_register_of_leaf(right)?,
+            ));
         }
         if matches!(operator, BinaryOperator::NotEqual) {
             // The non-leaf operand goes into the scratch; the leaf keeps its home.
@@ -929,7 +1580,9 @@ impl Generator {
                 Ok((left_register, right_register))
             }
             // Two non-leaf operands are not handled yet.
-            _ => Err(Diagnostic::error("this comparison operand shape needs the full register allocator (roadmap)")),
+            _ => Err(Diagnostic::error(
+                "this comparison operand shape needs the full register allocator (roadmap)",
+            )),
         }
     }
 }

@@ -21,7 +21,12 @@ impl Generator {
     ///   `<cond>; b<!c> else; <then>; blr; else: <else>; blr`. Local branch labels do not
     ///   advance `@N` (like the void two-store diamond).
     pub(crate) fn try_leaf_ifelse_diamond(&mut self, function: &Function) -> Compilation<bool> {
-        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
+        else {
             return Ok(false);
         };
         if function_makes_call(function)
@@ -30,7 +35,10 @@ impl Generator {
             || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
             || then_body.is_empty()
             || else_body.is_empty()
-            || !then_body.iter().chain(else_body).all(|statement| matches!(statement, Statement::Store { .. }))
+            || !then_body
+                .iter()
+                .chain(else_body)
+                .all(|statement| matches!(statement, Statement::Store { .. }))
         {
             return Ok(false);
         }
@@ -40,19 +48,37 @@ impl Generator {
         // TWO-EXIT form: the return value is ALREADY in r3 (`return <cond var>`) and the
         // store arms (materializing through r0) leave it intact — so each arm stores then
         // returns directly, no shared join.
-        if already_in_result && then_body.iter().chain(else_body).all(|statement| matches!(statement,
-            Statement::Store { value: Expression::IntegerLiteral(_), .. }
-            | Statement::Store { value: Expression::Variable(_), .. }))
+        if already_in_result
+            && then_body.iter().chain(else_body).all(|statement| {
+                matches!(
+                    statement,
+                    Statement::Store {
+                        value: Expression::IntegerLiteral(_),
+                        ..
+                    } | Statement::Store {
+                        value: Expression::Variable(_),
+                        ..
+                    }
+                )
+            })
         {
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             let branch_to_else = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
             for statement in then_body {
                 self.emit_statement(statement)?;
             }
             self.emit_epilogue_and_return();
             let else_label = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_to_else]
+            {
                 *target = else_label;
             }
             for statement in else_body {
@@ -74,14 +100,24 @@ impl Generator {
             self.output.anonymous_label_bump = 2;
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             let branch_to_else = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
             for statement in then_body {
                 self.emit_statement(statement)?;
             }
             let branch_to_join = self.output.instructions.len();
-            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
             let else_label = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_to_else] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_to_else]
+            {
                 *target = else_label;
             }
             for statement in else_body {
@@ -91,7 +127,11 @@ impl Generator {
             if let Instruction::Branch { target } = &mut self.output.instructions[branch_to_join] {
                 *target = join_label;
             }
-            self.evaluate_tail(return_expression.expect("materialized_join implies Some"), function.return_type, result)?;
+            self.evaluate_tail(
+                return_expression.expect("materialized_join implies Some"),
+                function.return_type,
+                result,
+            )?;
             self.emit_epilogue_and_return();
             return Ok(true);
         }

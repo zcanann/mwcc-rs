@@ -9,7 +9,10 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::AsmOperand;
 
 /// Read exactly `N` GPR operands.
-pub(super) fn gprs<const N: usize>(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u8; N]> {
+pub(super) fn gprs<const N: usize>(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+) -> Compilation<[u8; N]> {
     expect_operand_count(mnemonic, operands, N)?;
     let mut registers = [0u8; N];
     for (slot, operand) in registers.iter_mut().zip(operands) {
@@ -24,7 +27,10 @@ pub(super) fn rrr(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u8; 3
 }
 
 /// Read exactly `N` FPR operands positionally.
-pub(super) fn fprs<const N: usize>(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<[u8; N]> {
+pub(super) fn fprs<const N: usize>(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+) -> Compilation<[u8; N]> {
     expect_operand_count(mnemonic, operands, N)?;
     let mut registers = [0u8; N];
     for (slot, operand) in registers.iter_mut().zip(operands) {
@@ -47,33 +53,48 @@ pub(super) fn take_cr_field(operands: &[AsmOperand]) -> (u8, &[AsmOperand]) {
 /// spelling. It is present only in the four-operand form (`cmp{i,li} crf, L, rA, imm`
 /// — three operands after the condition field, the first an immediate); the
 /// three-operand form omits it. When present, L must be 0 (a 32-bit compare).
-pub(super) fn strip_length_bit<'a>(mnemonic: &str, (crf, operands): (u8, &'a [AsmOperand])) -> Compilation<(u8, &'a [AsmOperand])> {
+pub(super) fn strip_length_bit<'a>(
+    mnemonic: &str,
+    (crf, operands): (u8, &'a [AsmOperand]),
+) -> Compilation<(u8, &'a [AsmOperand])> {
     match operands {
         [AsmOperand::Immediate(0), _, _] => Ok((crf, &operands[1..])),
-        [AsmOperand::Immediate(_), _, _] => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' with a 64-bit length bit is not supported yet (roadmap)"))),
+        [AsmOperand::Immediate(_), _, _] => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' with a 64-bit length bit is not supported yet (roadmap)"
+        ))),
         _ => Ok((crf, operands)),
     }
 }
 
 /// Require the condition field to be `cr0` (for instructions whose non-cr0 form
 /// is not modeled yet); returns the remaining operands.
-pub(super) fn require_cr0<'a>(mnemonic: &str, operands: &'a [AsmOperand]) -> Compilation<&'a [AsmOperand]> {
+pub(super) fn require_cr0<'a>(
+    mnemonic: &str,
+    operands: &'a [AsmOperand],
+) -> Compilation<&'a [AsmOperand]> {
     let (field, rest) = take_cr_field(operands);
     if field != 0 {
-        return Err(Diagnostic::error(format!("inline-asm '{mnemonic}' on cr{field} (non-cr0) is not supported yet (roadmap)")));
+        return Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' on cr{field} (non-cr0) is not supported yet (roadmap)"
+        )));
     }
     Ok(rest)
 }
 
 /// Read a `rlwinm`-family `(rA, rS, SH, MB, ME)` operand list.
-pub(super) fn rotate5(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u8, u8, u8)> {
+pub(super) fn rotate5(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+) -> Compilation<(u8, u8, u8, u8, u8)> {
     expect_operand_count(mnemonic, operands, 5)?;
     let a = gpr(mnemonic, &operands[0])?;
     let s = gpr(mnemonic, &operands[1])?;
     let field = |operand: &AsmOperand, what: &str| -> Compilation<u8> {
         match operand {
             AsmOperand::Immediate(value) if (0..=31).contains(value) => Ok(*value as u8),
-            _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' {what} must be 0..=31"))),
+            _ => Err(Diagnostic::error(format!(
+                "inline-asm '{mnemonic}' {what} must be 0..=31"
+            ))),
         }
     };
     let shift = field(&operands[2], "shift")?;
@@ -84,13 +105,18 @@ pub(super) fn rotate5(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u
 
 /// Read `(GPR, GPR, imm, imm)` (`op dst, src, N, B`) — the two immediates of an
 /// `extlwi`/`extrwi` rotate spelling, each 0..=31.
-pub(super) fn rr_two_immediates(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u8, u8)> {
+pub(super) fn rr_two_immediates(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+) -> Compilation<(u8, u8, u8, u8)> {
     expect_operand_count(mnemonic, operands, 4)?;
     let a = gpr(mnemonic, &operands[0])?;
     let s = gpr(mnemonic, &operands[1])?;
     let field = |operand: &AsmOperand| match operand {
         AsmOperand::Immediate(value) if (0..=31).contains(value) => Ok(*value as u8),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected an immediate in 0..=31"))),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected an immediate in 0..=31"
+        ))),
     };
     Ok((a, s, field(&operands[2])?, field(&operands[3])?))
 }
@@ -103,7 +129,11 @@ pub(super) fn rr_shift(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(
     let s = gpr(mnemonic, &operands[1])?;
     let shift = match &operands[2] {
         AsmOperand::Immediate(value) if (0..=31).contains(value) => *value as u8,
-        _ => return Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a shift amount in 0..=31"))),
+        _ => {
+            return Err(Diagnostic::error(format!(
+                "inline-asm '{mnemonic}' expected a shift amount in 0..=31"
+            )))
+        }
     };
     Ok((a, s, shift))
 }
@@ -153,14 +183,18 @@ pub(super) fn gpr_immediate(mnemonic: &str, operands: &[AsmOperand]) -> Compilat
 fn fpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
     match operand {
         AsmOperand::Fpr(index) => Ok(*index),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a floating-point register operand"))),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected a floating-point register operand"
+        ))),
     }
 }
 
 fn memory(mnemonic: &str, operand: &AsmOperand) -> Compilation<(i16, u8)> {
     match operand {
         AsmOperand::Memory { displacement, base } => Ok((*displacement, *base)),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a `<disp>(<reg>)` memory operand"))),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected a `<disp>(<reg>)` memory operand"
+        ))),
     }
 }
 
@@ -170,15 +204,23 @@ pub(super) fn immediate16u(mnemonic: &str, operand: &AsmOperand) -> Compilation<
         // pattern (`ori r0, r0, 0x8000` and `-0x8000` both name the same halfword).
         AsmOperand::Immediate(value) => u16::try_from(*value)
             .or_else(|_| i16::try_from(*value).map(|signed| signed as u16))
-            .map_err(|_| Diagnostic::error(format!("inline-asm '{mnemonic}' immediate {value} does not fit in 16 bits"))),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected an immediate operand"))),
+            .map_err(|_| {
+                Diagnostic::error(format!(
+                    "inline-asm '{mnemonic}' immediate {value} does not fit in 16 bits"
+                ))
+            }),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected an immediate operand"
+        ))),
     }
 }
 
 pub(super) fn gpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
     match operand {
         AsmOperand::Gpr(index) => Ok(*index),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a general-purpose register operand"))),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected a general-purpose register operand"
+        ))),
     }
 }
 
@@ -192,7 +234,10 @@ pub(super) fn signed_immediate_or_symbol(mnemonic: &str, operand: &AsmOperand) -
 }
 
 /// An unsigned 16-bit immediate, or 0 for a `sym@suffix` operand.
-pub(super) fn unsigned_immediate_or_symbol(mnemonic: &str, operand: &AsmOperand) -> Compilation<u16> {
+pub(super) fn unsigned_immediate_or_symbol(
+    mnemonic: &str,
+    operand: &AsmOperand,
+) -> Compilation<u16> {
     match operand {
         AsmOperand::Symbol { .. } => Ok(0),
         _ => immediate16u(mnemonic, operand),
@@ -204,13 +249,23 @@ fn immediate16(mnemonic: &str, operand: &AsmOperand) -> Compilation<i16> {
         // A 16-bit immediate field: accept either the signed range or the unsigned
         // bit pattern (`lis r3, 0x8000` is written as 32768 but the field is 0x8000),
         // taking the low 16 bits either way.
-        AsmOperand::Immediate(value) if (-0x8000..=0xffff).contains(value) => Ok(*value as u16 as i16),
-        AsmOperand::Immediate(value) => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' immediate {value} does not fit in 16 bits"))),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected an immediate operand"))),
+        AsmOperand::Immediate(value) if (-0x8000..=0xffff).contains(value) => {
+            Ok(*value as u16 as i16)
+        }
+        AsmOperand::Immediate(value) => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' immediate {value} does not fit in 16 bits"
+        ))),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected an immediate operand"
+        ))),
     }
 }
 
-pub(super) fn expect_operand_count(mnemonic: &str, operands: &[AsmOperand], expected: usize) -> Compilation<()> {
+pub(super) fn expect_operand_count(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+    expected: usize,
+) -> Compilation<()> {
     if operands.len() != expected {
         return Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected {expected} operand(s), found {}",
@@ -228,25 +283,58 @@ pub(super) fn expect_operand_count(mnemonic: &str, operands: &[AsmOperand], expe
 pub(super) fn special_register(mnemonic: &str, operand: &AsmOperand) -> Compilation<u16> {
     let named = |name: &str| -> Option<u16> {
         Some(match name {
-            "GQR0" => 912, "GQR1" => 913, "GQR2" => 914, "GQR3" => 915,
-            "GQR4" => 916, "GQR5" => 917, "GQR6" => 918, "GQR7" => 919,
-            "HID0" => 1008, "HID1" => 1009, "HID2" => 920,
-            "L2CR" => 1017, "WPAR" => 921, "DMAU" => 922, "DMAL" => 923,
-            "MMCR0" => 952, "MMCR1" => 956, "PMC1" => 953, "PMC2" => 954,
-            "PMC3" => 957, "PMC4" => 958, "DEC" => 22, "SDR1" => 25,
-            "SPRG0" => 272, "SPRG1" => 273, "SPRG2" => 274, "SPRG3" => 275,
-            "SRR0" => 26, "SRR1" => 27, "TBL" => 268, "TBU" => 269,
-            "DABR" => 1013, "IABR" => 1010, "PVR" => 287,
+            "GQR0" => 912,
+            "GQR1" => 913,
+            "GQR2" => 914,
+            "GQR3" => 915,
+            "GQR4" => 916,
+            "GQR5" => 917,
+            "GQR6" => 918,
+            "GQR7" => 919,
+            "HID0" => 1008,
+            "HID1" => 1009,
+            "HID2" => 920,
+            "L2CR" => 1017,
+            "WPAR" => 921,
+            "DMAU" => 922,
+            "DMAL" => 923,
+            "MMCR0" => 952,
+            "MMCR1" => 956,
+            "PMC1" => 953,
+            "PMC2" => 954,
+            "PMC3" => 957,
+            "PMC4" => 958,
+            "DEC" => 22,
+            "SDR1" => 25,
+            "SPRG0" => 272,
+            "SPRG1" => 273,
+            "SPRG2" => 274,
+            "SPRG3" => 275,
+            "SRR0" => 26,
+            "SRR1" => 27,
+            "TBL" => 268,
+            "TBU" => 269,
+            "DABR" => 1013,
+            "IABR" => 1010,
+            "PVR" => 287,
             _ => return None,
         })
     };
     match operand {
         AsmOperand::Immediate(value) if (0..=1023).contains(value) => Ok(*value as u16),
-        AsmOperand::Label(name) => named(name)
-            .ok_or_else(|| Diagnostic::error(format!("inline-asm '{mnemonic}' unknown special register '{name}'"))),
-        AsmOperand::Symbol { name, .. } => named(name)
-            .ok_or_else(|| Diagnostic::error(format!("inline-asm '{mnemonic}' unknown special register '{name}'"))),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected an SPR number or name"))),
+        AsmOperand::Label(name) => named(name).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "inline-asm '{mnemonic}' unknown special register '{name}'"
+            ))
+        }),
+        AsmOperand::Symbol { name, .. } => named(name).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "inline-asm '{mnemonic}' unknown special register '{name}'"
+            ))
+        }),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected an SPR number or name"
+        ))),
     }
 }
 
@@ -256,6 +344,8 @@ pub(super) fn gpr_or_zero(mnemonic: &str, operand: &AsmOperand) -> Compilation<u
     match operand {
         AsmOperand::Gpr(index) => Ok(*index),
         AsmOperand::Immediate(0) => Ok(0),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a register or 0 base"))),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected a register or 0 base"
+        ))),
     }
 }

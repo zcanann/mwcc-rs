@@ -52,7 +52,7 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
 
     let mut calls: Vec<usize> = Vec::new();
     for (index, instruction) in instructions.iter().enumerate() {
-        if matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToCountRegisterAndLink) {
+        if matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink) {
             calls.push(index);
         }
         let operands = register_operands(instruction);

@@ -4,11 +4,16 @@
 use super::*;
 
 impl Generator {
-
     /// Emit a short-circuit `&&`/`||` in tail position as mwcc does: each operand
     /// is tested (a leaf against zero, a comparison directly) with an early
     /// conditional return. Each operand may be a leaf or a comparison.
-    pub(crate) fn emit_short_circuit(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
+    pub(crate) fn emit_short_circuit(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        result: u8,
+    ) -> Compilation<()> {
         // If evaluating the RIGHT operand reads the RESULT register — as a value or through a load
         // base (`a && a`; `p && p[0]` where p is in `result`) — the accumulator (`li result,…`)
         // clobbers a value the right operand still needs, and the scratch-register fallback (r0)
@@ -34,7 +39,10 @@ impl Generator {
                         | BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr
                 )
         );
-        if !names_in_result.is_empty() && !right_is_comparison && crate::analysis::reads_register(right, &names_in_result) {
+        if !names_in_result.is_empty()
+            && !right_is_comparison
+            && crate::analysis::reads_register(right, &names_in_result)
+        {
             return Err(mwcc_core::Diagnostic::error("a short-circuit whose right operand reuses the result register is not modeled yet (roadmap)"));
         }
         if self.registers_used_by(right).contains(&result) {
@@ -44,23 +52,46 @@ impl Generator {
             BinaryOperator::LogicalAnd => {
                 // test left; result 0; return 0 if left false; test right; return 0 if right false; result 1.
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
-                self.output.instructions.push(Instruction::load_immediate(result, 0));
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: left_skip, condition_bit: left_bit });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(result, 0));
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options: left_skip,
+                        condition_bit: left_bit,
+                    });
                 let (right_skip, right_bit) = self.emit_condition_test(right)?;
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: right_skip, condition_bit: right_bit });
-                self.output.instructions.push(Instruction::load_immediate(result, 1));
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options: right_skip,
+                        condition_bit: right_bit,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(result, 1));
             }
             BinaryOperator::LogicalOr => {
                 // test left; result 0; if left true skip to result 1; test right; return 0 if right false; result 1.
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
-                self.output.instructions.push(Instruction::load_immediate(result, 0));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(result, 0));
                 // the branch taken when left is TRUE is the negation of the skip-when-false branch.
                 let set_one = self.fresh_label();
                 self.emit_branch_conditional_to(left_skip ^ 8, left_bit, set_one);
                 let (right_skip, right_bit) = self.emit_condition_test(right)?;
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: right_skip, condition_bit: right_bit });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options: right_skip,
+                        condition_bit: right_bit,
+                    });
                 self.bind_label(set_one);
-                self.output.instructions.push(Instruction::load_immediate(result, 1));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(result, 1));
             }
             _ => unreachable!("caller restricts to logical and/or"),
         }
@@ -70,7 +101,13 @@ impl Generator {
     /// Short-circuit `&&`/`||` whose result is built in the scratch register and
     /// copied to the destination at a common exit — used when the destination
     /// register is still needed by the right operand.
-    pub(crate) fn emit_short_circuit_via_scratch(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, result: u8) -> Compilation<()> {
+    pub(crate) fn emit_short_circuit_via_scratch(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        result: u8,
+    ) -> Compilation<()> {
         let scratch = GENERAL_SCRATCH;
         // `(a == c1) || (a == c2)` for CONSECUTIVE constants is, as a VALUE, mwcc's unsigned
         // range check `(unsigned)(a - min) <= 1` — a branchless idiom (`addi; subfic; orc;
@@ -80,11 +117,20 @@ impl Generator {
         // different path, so both are unaffected.
         if matches!(operator, BinaryOperator::LogicalOr) {
             let as_equality_constant = |expression: &Expression| -> Option<(String, i64)> {
-                if let Expression::Binary { operator: BinaryOperator::Equal, left, right } = expression {
-                    if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), constant_value(right)) {
+                if let Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left,
+                    right,
+                } = expression
+                {
+                    if let (Expression::Variable(name), Some(constant)) =
+                        (left.as_ref(), constant_value(right))
+                    {
                         return Some((name.clone(), constant));
                     }
-                    if let (Some(constant), Expression::Variable(name)) = (constant_value(left), right.as_ref()) {
+                    if let (Some(constant), Expression::Variable(name)) =
+                        (constant_value(left), right.as_ref())
+                    {
                         return Some((name.clone(), constant));
                     }
                 }
@@ -101,30 +147,42 @@ impl Generator {
         match operator {
             BinaryOperator::LogicalAnd => {
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
-                self.output.instructions.push(Instruction::load_immediate(scratch, 0));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(scratch, 0));
                 let exit = self.fresh_label();
                 self.emit_branch_conditional_to(left_skip, left_bit, exit);
                 let (right_skip, right_bit) = self.emit_condition_test(right)?;
                 self.emit_branch_conditional_to(right_skip, right_bit, exit);
-                self.output.instructions.push(Instruction::load_immediate(scratch, 1));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(scratch, 1));
                 self.bind_label(exit);
                 if result != scratch {
-                    self.output.instructions.push(Instruction::move_register(result, scratch));
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(result, scratch));
                 }
             }
             BinaryOperator::LogicalOr => {
                 let (left_skip, left_bit) = self.emit_condition_test(left)?;
-                self.output.instructions.push(Instruction::load_immediate(scratch, 0));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(scratch, 0));
                 let set_one = self.fresh_label();
                 self.emit_branch_conditional_to(left_skip ^ 8, left_bit, set_one);
                 let (right_skip, right_bit) = self.emit_condition_test(right)?;
                 let exit = self.fresh_label();
                 self.emit_branch_conditional_to(right_skip, right_bit, exit);
                 self.bind_label(set_one);
-                self.output.instructions.push(Instruction::load_immediate(scratch, 1));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(scratch, 1));
                 self.bind_label(exit);
                 if result != scratch {
-                    self.output.instructions.push(Instruction::move_register(result, scratch));
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(result, scratch));
                 }
             }
             _ => unreachable!("caller restricts to logical and/or"),
@@ -142,12 +200,20 @@ impl Generator {
     /// `value`. A leaf value keeps the mask in r0; a non-zero constant is
     /// materialized in r0, so the mask instead flows through a free register and
     /// the destination. The condition must be a plain (truthy) leaf.
-    pub(crate) fn try_emit_branchless_mask(&mut self, condition: &Expression, value: &Expression, complement: bool, destination: u8) -> Compilation<bool> {
+    pub(crate) fn try_emit_branchless_mask(
+        &mut self,
+        condition: &Expression,
+        value: &Expression,
+        complement: bool,
+        destination: u8,
+    ) -> Compilation<bool> {
         // The condition is a leaf in its register, or — in a tail context with a
         // leaf value that does not occupy the destination — a full-word load brought
         // into the destination first (`*q ? x : 0` is `lwz r3; neg; or; srawi; and`).
         let value_leaf = leaf_name(value).and_then(|name| self.lookup_general(name));
-        let condition_register = if let Some(register) = leaf_name(condition).and_then(|name| self.lookup_general(name)) {
+        let condition_register = if let Some(register) =
+            leaf_name(condition).and_then(|name| self.lookup_general(name))
+        {
             register
         } else if destination != GENERAL_SCRATCH
             && self.is_word_load(condition)
@@ -161,37 +227,90 @@ impl Generator {
         };
         let combine = |destination: u8, source: u8, mask: u8| {
             if complement {
-                Instruction::AndComplement { a: destination, s: source, b: mask }
+                Instruction::AndComplement {
+                    a: destination,
+                    s: source,
+                    b: mask,
+                }
             } else {
-                Instruction::And { a: destination, s: source, b: mask }
+                Instruction::And {
+                    a: destination,
+                    s: source,
+                    b: mask,
+                }
             }
         };
         if let Some(value_register) = leaf_name(value).and_then(|name| self.lookup_general(name)) {
             // Leaf value: the mask lives in r0.
-            self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
-            self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
-            self.output.instructions.push(combine(destination, value_register, GENERAL_SCRATCH));
+            self.output.instructions.push(Instruction::Negate {
+                d: GENERAL_SCRATCH,
+                a: condition_register,
+            });
+            self.output.instructions.push(Instruction::Or {
+                a: GENERAL_SCRATCH,
+                s: GENERAL_SCRATCH,
+                b: condition_register,
+            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: GENERAL_SCRATCH,
+                    shift: 31,
+                });
+            self.output
+                .instructions
+                .push(combine(destination, value_register, GENERAL_SCRATCH));
             return Ok(true);
         }
         if let Some(constant) = constant_value(value) {
             // `cond ? -1 : 0` is exactly the all-ones-when-true mask — no `and`.
             if constant == -1 && !complement {
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: condition_register });
-                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: condition_register });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::Negate {
+                    d: GENERAL_SCRATCH,
+                    a: condition_register,
+                });
+                self.output.instructions.push(Instruction::Or {
+                    a: GENERAL_SCRATCH,
+                    s: GENERAL_SCRATCH,
+                    b: condition_register,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: destination,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
                 return Ok(true);
             }
             // Constant value: it occupies r0, so the mask computes through a free
             // register (`neg`) and the destination (`or`/`srawi`).
-            let Some(temp) = (3u8..=12).find(|r| *r != condition_register && !self.reserved.contains(r)) else {
+            let Some(temp) =
+                (3u8..=12).find(|r| *r != condition_register && !self.reserved.contains(r))
+            else {
                 return Ok(false);
             };
-            self.output.instructions.push(Instruction::Negate { d: temp, a: condition_register });
+            self.output.instructions.push(Instruction::Negate {
+                d: temp,
+                a: condition_register,
+            });
             self.load_integer_constant(GENERAL_SCRATCH, constant);
-            self.output.instructions.push(Instruction::Or { a: destination, s: temp, b: condition_register });
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: destination, shift: 31 });
-            self.output.instructions.push(combine(destination, GENERAL_SCRATCH, destination));
+            self.output.instructions.push(Instruction::Or {
+                a: destination,
+                s: temp,
+                b: condition_register,
+            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: destination,
+                    s: destination,
+                    shift: 31,
+                });
+            self.output
+                .instructions
+                .push(combine(destination, GENERAL_SCRATCH, destination));
             return Ok(true);
         }
         // A single-op computed value (`a+1`, `a*2`, `a&m`) is evaluated into r0, exactly
@@ -202,11 +321,26 @@ impl Generator {
         // temporaries beyond the scratch and defers.
         if self.is_single_op_register_value(value) {
             let temp = self.fresh_virtual_general();
-            self.output.instructions.push(Instruction::Negate { d: temp, a: condition_register });
+            self.output.instructions.push(Instruction::Negate {
+                d: temp,
+                a: condition_register,
+            });
             self.evaluate_general(value, GENERAL_SCRATCH)?;
-            self.output.instructions.push(Instruction::Or { a: destination, s: temp, b: condition_register });
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: destination, s: destination, shift: 31 });
-            self.output.instructions.push(combine(destination, GENERAL_SCRATCH, destination));
+            self.output.instructions.push(Instruction::Or {
+                a: destination,
+                s: temp,
+                b: condition_register,
+            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: destination,
+                    s: destination,
+                    shift: 31,
+                });
+            self.output
+                .instructions
+                .push(combine(destination, GENERAL_SCRATCH, destination));
             return Ok(true);
         }
         Ok(false)
@@ -221,12 +355,27 @@ impl Generator {
     /// `<0` conditions and `neg; andc; srawi` for the `>0` conditions; which arm
     /// keeps x and whether the condition is the negated (`>=`/`<=`) sense pick
     /// `and` vs `andc`.
-    pub(crate) fn try_emit_sign_clamp(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
-        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+    pub(crate) fn try_emit_sign_clamp(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = condition
+        else {
+            return Ok(false);
+        };
         if !is_zero_literal(right) {
             return Ok(false);
         }
-        let Some(x_name) = leaf_name(left) else { return Ok(false) };
+        let Some(x_name) = leaf_name(left) else {
+            return Ok(false);
+        };
         let x_is_true = is_zero_literal(when_false) && leaf_name(when_true) == Some(x_name);
         let x_is_false = is_zero_literal(when_true) && leaf_name(when_false) == Some(x_name);
         if !(x_is_true || x_is_false) || !self.signedness_of(left)? {
@@ -235,7 +384,13 @@ impl Generator {
         // `< 0` uses a `srawi` sign mask; `> 0` uses a `neg; andc; srawi` mask.
         // (`>= 0` / `<= 0` use different sequences — `srwi; addi` / `neg; orc;
         // srawi` — so they defer here rather than reuse these via and<->andc.)
-        if !matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::LessEqual) {
+        if !matches!(
+            operator,
+            BinaryOperator::Less
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual
+                | BinaryOperator::LessEqual
+        ) {
             return Ok(false);
         }
         let use_andc = x_is_false;
@@ -245,33 +400,85 @@ impl Generator {
         match operator {
             // x < 0: the sign bit broadcast.
             BinaryOperator::Less => {
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: x, shift: 31 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: x,
+                        shift: 31,
+                    });
             }
             // x > 0: `(-x) & ~x` has the sign bit set iff x > 0.
             BinaryOperator::Greater => {
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
-                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: x });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::Negate {
+                    d: GENERAL_SCRATCH,
+                    a: x,
+                });
+                self.output.instructions.push(Instruction::AndComplement {
+                    a: GENERAL_SCRATCH,
+                    s: GENERAL_SCRATCH,
+                    b: x,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
             }
             // x >= 0: `(x >>> 31) - 1` (0/1 then minus one) — needs a free register.
             BinaryOperator::GreaterEqual => {
-                let Some(free) = (3u8..=12).find(|r| *r != x && *r != destination && !self.reserved.contains(r)) else {
+                let Some(free) =
+                    (3u8..=12).find(|r| *r != x && *r != destination && !self.reserved.contains(r))
+                else {
                     return Ok(false);
                 };
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: free, s: x, shift: 31 });
-                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: free, immediate: -1 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: free,
+                        s: x,
+                        shift: 31,
+                    });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: free,
+                    immediate: -1,
+                });
             }
             // x <= 0: `(x | ~(-x))` has the sign bit set iff x <= 0.
             _ => {
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
-                self.output.instructions.push(Instruction::OrComplement { a: GENERAL_SCRATCH, s: x, b: GENERAL_SCRATCH });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::Negate {
+                    d: GENERAL_SCRATCH,
+                    a: x,
+                });
+                self.output.instructions.push(Instruction::OrComplement {
+                    a: GENERAL_SCRATCH,
+                    s: x,
+                    b: GENERAL_SCRATCH,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
             }
         }
         self.output.instructions.push(if use_andc {
-            Instruction::AndComplement { a: destination, s: x, b: GENERAL_SCRATCH }
+            Instruction::AndComplement {
+                a: destination,
+                s: x,
+                b: GENERAL_SCRATCH,
+            }
         } else {
-            Instruction::And { a: destination, s: x, b: GENERAL_SCRATCH }
+            Instruction::And {
+                a: destination,
+                s: x,
+                b: GENERAL_SCRATCH,
+            }
         });
         // This clamp-to-zero SELECT is a ternary: advance mwcc's anonymous-`@N` counter by 3,
         // like the other ternary forms. The value is integer (signedness checked above), so no
@@ -292,17 +499,38 @@ impl Generator {
     ///          clamp, where a is also the value — its register carries the 0/1 flag)
     /// then `and`/`andc r3,b,r0`. Restricted to an in-register destination (the return/assign
     /// context these were measured in); a store (scratch destination) defers.
-    pub(crate) fn try_emit_masked_select(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
+    pub(crate) fn try_emit_masked_select(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
         if destination == GENERAL_SCRATCH {
             return Ok(false);
         }
-        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = condition
+        else {
+            return Ok(false);
+        };
         if !is_zero_literal(right)
-            || !matches!(operator, BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::GreaterEqual | BinaryOperator::LessEqual)
+            || !matches!(
+                operator,
+                BinaryOperator::Less
+                    | BinaryOperator::Greater
+                    | BinaryOperator::GreaterEqual
+                    | BinaryOperator::LessEqual
+            )
         {
             return Ok(false);
         }
-        let Some(a_name) = leaf_name(left) else { return Ok(false) };
+        let Some(a_name) = leaf_name(left) else {
+            return Ok(false);
+        };
         if !self.signedness_of(left)? {
             return Ok(false);
         }
@@ -316,44 +544,104 @@ impl Generator {
         } else {
             return Ok(false);
         };
-        let Some(b_name) = leaf_name(value) else { return Ok(false) };
+        let Some(b_name) = leaf_name(value) else {
+            return Ok(false);
+        };
         if b_name == a_name {
             return Ok(false);
         }
-        let Some(b) = self.lookup_general(b_name) else { return Ok(false) };
+        let Some(b) = self.lookup_general(b_name) else {
+            return Ok(false);
+        };
         let x = self.general_register_of_leaf(left)?;
         // The sign mask of `a`, all-ones exactly when the relation holds.
         match operator {
             BinaryOperator::Less => {
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: x, shift: 31 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: x,
+                        shift: 31,
+                    });
             }
             BinaryOperator::Greater => {
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
-                self.output.instructions.push(Instruction::AndComplement { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: x });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::Negate {
+                    d: GENERAL_SCRATCH,
+                    a: x,
+                });
+                self.output.instructions.push(Instruction::AndComplement {
+                    a: GENERAL_SCRATCH,
+                    s: GENERAL_SCRATCH,
+                    b: x,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
             }
             BinaryOperator::LessEqual => {
-                self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: x });
-                self.output.instructions.push(Instruction::OrComplement { a: GENERAL_SCRATCH, s: x, b: GENERAL_SCRATCH });
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 31 });
+                self.output.instructions.push(Instruction::Negate {
+                    d: GENERAL_SCRATCH,
+                    a: x,
+                });
+                self.output.instructions.push(Instruction::OrComplement {
+                    a: GENERAL_SCRATCH,
+                    s: x,
+                    b: GENERAL_SCRATCH,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                        shift: 31,
+                    });
             }
             _ => {
                 // GreaterEqual: `a` is dead after the compare, so its register carries the 0/1 flag.
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: x, s: x, shift: 31 });
-                self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: x, immediate: -1 });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: x,
+                        s: x,
+                        shift: 31,
+                    });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: x,
+                    immediate: -1,
+                });
             }
         }
         self.output.instructions.push(if use_andc {
-            Instruction::AndComplement { a: destination, s: b, b: GENERAL_SCRATCH }
+            Instruction::AndComplement {
+                a: destination,
+                s: b,
+                b: GENERAL_SCRATCH,
+            }
         } else {
-            Instruction::And { a: destination, s: b, b: GENERAL_SCRATCH }
+            Instruction::And {
+                a: destination,
+                s: b,
+                b: GENERAL_SCRATCH,
+            }
         });
         // A ternary select: advance mwcc's anonymous-`@N` counter by 3, like its siblings.
         self.output.anonymous_label_bump += 3;
         Ok(true)
     }
 
-    pub(crate) fn try_emit_consecutive_constants(&mut self, condition: &Expression, when_true: &Expression, when_false: &Expression, destination: u8) -> Compilation<bool> {
+    pub(crate) fn try_emit_consecutive_constants(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
         // The truth value comes from a leaf in its register, or — in a tail context
         // — a full-word memory load brought into the destination (`*q ? 1 : 2` is
         // `lwz r3,…; neg r0,r3; or; srawi r3; addi`). A load is taken only after the
@@ -374,7 +662,11 @@ impl Generator {
                 if is_comparison(*operator) {
                     if let Ok(minimum) = i16::try_from(c2) {
                         self.evaluate_general(condition, destination)?;
-                        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: minimum });
+                        self.output.instructions.push(Instruction::AddImmediate {
+                            d: destination,
+                            a: destination,
+                            immediate: minimum,
+                        });
                         return Ok(true);
                     }
                 }
@@ -385,7 +677,9 @@ impl Generator {
         // `lwz r3,…; neg r0,r3; or; srawi r3; addi`). A load is taken only after the
         // arms are confirmed (so a non-matching shape emits nothing).
         let leaf_register = leaf_name(condition).and_then(|name| self.lookup_general(name));
-        let loadable = leaf_register.is_none() && destination != GENERAL_SCRATCH && self.is_word_load(condition);
+        let loadable = leaf_register.is_none()
+            && destination != GENERAL_SCRATCH
+            && self.is_word_load(condition);
         if leaf_register.is_none() && !loadable {
             return Ok(false);
         }
@@ -404,27 +698,56 @@ impl Generator {
         } else {
             destination
         };
-        self.output.instructions.push(Instruction::Negate { d: GENERAL_SCRATCH, a: cond_register });
-        self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: cond_register });
+        self.output.instructions.push(Instruction::Negate {
+            d: GENERAL_SCRATCH,
+            a: cond_register,
+        });
+        self.output.instructions.push(Instruction::Or {
+            a: GENERAL_SCRATCH,
+            s: GENERAL_SCRATCH,
+            b: cond_register,
+        });
         if c1 < c2 {
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: mask_register, s: GENERAL_SCRATCH, shift: 31 });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: mask_register,
+                    s: GENERAL_SCRATCH,
+                    shift: 31,
+                });
         } else {
-            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: mask_register, s: GENERAL_SCRATCH, shift: 31 });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: mask_register,
+                    s: GENERAL_SCRATCH,
+                    shift: 31,
+                });
         }
-        self.output.instructions.push(Instruction::AddImmediate { d: destination, a: mask_register, immediate: c2 as i16 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: destination,
+            a: mask_register,
+            immediate: c2 as i16,
+        });
         Ok(true)
     }
 
     /// Place a select arm into the result: a constant is materialized with `li`
     /// (or `lis`/`ori`); a leaf variable is moved unless it already sits there.
-    pub(crate) fn place_select_value(&mut self, value: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn place_select_value(
+        &mut self,
+        value: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         if let Some(constant) = constant_value(value) {
             self.load_integer_constant(destination, constant);
             return Ok(());
         }
         let register = self.general_register_of_leaf(value)?;
         if register != destination {
-            self.output.instructions.push(Instruction::move_register(destination, register));
+            self.output
+                .instructions
+                .push(Instruction::move_register(destination, register));
         }
         Ok(())
     }
@@ -446,17 +769,31 @@ impl Generator {
         result: u8,
     ) -> Compilation<bool> {
         let operator = match condition {
-            Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), .. } => *operator,
+            Expression::Binary {
+                operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr),
+                ..
+            } => *operator,
             _ => return Ok(false),
         };
         // Flatten the same-operator chain into its terms; a nested different logical operator
         // (mixed `a && b || c`) is left for the general path.
-        fn collect<'e>(condition: &'e Expression, operator: BinaryOperator, terms: &mut Vec<&'e Expression>) -> bool {
+        fn collect<'e>(
+            condition: &'e Expression,
+            operator: BinaryOperator,
+            terms: &mut Vec<&'e Expression>,
+        ) -> bool {
             match condition {
-                Expression::Binary { operator: inner, left, right } if *inner == operator => {
+                Expression::Binary {
+                    operator: inner,
+                    left,
+                    right,
+                } if *inner == operator => {
                     collect(left, operator, terms) && collect(right, operator, terms)
                 }
-                Expression::Binary { operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr, .. } => false,
+                Expression::Binary {
+                    operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
+                    ..
+                } => false,
                 _ => {
                     terms.push(condition);
                     true
@@ -467,7 +804,9 @@ impl Generator {
         if !collect(condition, operator, &mut terms) {
             return Ok(false);
         }
-        let is_simple = |expression: &Expression| leaf_name(expression).is_some() || constant_value(expression).is_some();
+        let is_simple = |expression: &Expression| {
+            leaf_name(expression).is_some() || constant_value(expression).is_some()
+        };
         if !is_simple(when_true) || !is_simple(when_false) {
             return Ok(false);
         }
@@ -477,7 +816,8 @@ impl Generator {
         // (`cmpwi; bnelr`); for OR every early term is a conditional return (any true term
         // returns the taken value in the result), the last term branches to the fall block,
         // and the last-true path falls through to a trailing `blr`.
-        let taken_in_result = leaf_name(when_true).and_then(|name| self.lookup_general(name)) == Some(result);
+        let taken_in_result =
+            leaf_name(when_true).and_then(|name| self.lookup_general(name)) == Some(result);
         let use_conditional_return = taken_in_result;
         // The FALL-THROUGH value already in the result folds an OR's last term into a
         // conditional return (`if (s < 1 || s > 6) return -1; return s;` — the false side
@@ -495,33 +835,68 @@ impl Generator {
             if operator == BinaryOperator::LogicalAnd {
                 if use_conditional_return && index == last {
                     // The all-true path returns the taken value already in the result.
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: options ^ 8,
+                            condition_bit,
+                        });
                 } else {
                     // Any false term fails the AND -> fall-through return.
-                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options,
+                            condition_bit,
+                            target: 0,
+                        });
                     to_fall.push(branch_index);
                 }
             } else if index == last {
                 if fall_folded {
                     // The last term's FALSE side returns the fall-through value directly.
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options,
+                            condition_bit,
+                        });
                 } else {
                     // OR: the last term false branches to the fall block; true falls through.
-                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options,
+                            condition_bit,
+                            target: 0,
+                        });
                     to_fall.push(branch_index);
                 }
             } else if use_conditional_return {
                 // OR taken-in-result: an early true term returns the taken value in the result.
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options: options ^ 8,
+                        condition_bit,
+                    });
             } else {
                 // OR: an early true term jumps to the taken block.
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: options ^ 8, condition_bit, target: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options: options ^ 8,
+                        condition_bit,
+                        target: 0,
+                    });
                 to_taken.push(branch_index);
             }
         }
         // OR taken-in-result: the last-true path falls through here, returning the taken value.
         if use_conditional_return && operator == BinaryOperator::LogicalOr {
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
         }
         // The taken (guard) block sits right after the short-circuit (the all-true / last-true
         // path falls into it); the fall-through return follows it. With the conditional-return
@@ -529,7 +904,9 @@ impl Generator {
         if !use_conditional_return {
             let taken_block = self.output.instructions.len();
             self.place_select_value(when_true, result)?;
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             for branch_index in to_taken {
                 self.patch_forward(branch_index, taken_block);
             }
@@ -539,12 +916,13 @@ impl Generator {
         if !fall_folded {
             let fall_block = self.output.instructions.len();
             self.place_select_value(when_false, result)?;
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             for branch_index in to_fall {
                 self.patch_forward(branch_index, fall_block);
             }
         }
         Ok(true)
     }
-
 }

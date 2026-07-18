@@ -11,34 +11,50 @@ use mwcc_versions::{Behavior, CompilerConfig};
 use std::collections::{HashMap, HashSet};
 
 mod analysis;
+mod arithmetic;
 mod asm;
-mod generator;
-mod operands;
 mod body;
 mod captures;
-mod expressions;
-mod arithmetic;
-mod division;
+mod casts;
 mod comparisons;
 mod control_flow;
+mod copy_convention;
 mod dag_emitter;
-mod narrow;
-mod casts;
-mod placement;
-mod floats;
+mod division;
+mod expressions;
 mod float;
-mod value_tracking;
+mod floats;
+mod frame;
+mod generator;
+mod inline_summaries;
+mod legacy_comparisons;
+mod narrow;
+mod operands;
+mod placement;
 mod switch;
 mod symbol_order;
-mod frame;
+mod value_tracking;
 
 use generator::Generator;
+pub use inline_summaries::InlineSummaries;
 
 /// Lower a parsed function to machine code for the given compiler configuration.
 /// `call_return_types` maps callable names (prototypes and definitions) to their
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
-pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_return_types: &HashMap<String, mwcc_syntax_trees::Type>, call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>, skipped_inline_names: &std::collections::HashSet<String>, weak_materialized_names: &std::collections::HashSet<String>, prototyped_names: &std::collections::HashSet<String>, variadic_definitions: &std::collections::HashSet<String>, fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>, config: CompilerConfig) -> Compilation<MachineFunction> {
+pub fn lower_function(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+    call_return_types: &HashMap<String, mwcc_syntax_trees::Type>,
+    call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>,
+    skipped_inline_names: &std::collections::HashSet<String>,
+    weak_materialized_names: &std::collections::HashSet<String>,
+    prototyped_names: &std::collections::HashSet<String>,
+    variadic_definitions: &std::collections::HashSet<String>,
+    fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>,
+    inline_summaries: &InlineSummaries,
+    config: CompilerConfig,
+) -> Compilation<MachineFunction> {
     // An inline-`asm` function is emitted verbatim — no register allocation,
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {
@@ -59,11 +75,18 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // (`name$K` LOCAL objects — the writer numbers them off the function's
     // @N sequence). Register each in the operand maps and record its datum;
     // the automatic-local machinery never sees it.
-    let static_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = function.locals.iter().filter(|local| local.is_static).cloned().collect();
+    let static_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = function
+        .locals
+        .iter()
+        .filter(|local| local.is_static)
+        .cloned()
+        .collect();
     let mut static_local_data: Vec<(String, Option<Vec<u8>>, u32, u32, bool)> = Vec::new();
     for local in &static_locals {
         if globals.iter().any(|global| global.name == local.name) {
-            return Err(Diagnostic::error("a static local shadowing a global is not supported yet (roadmap)"));
+            return Err(Diagnostic::error(
+                "a static local shadowing a global is not supported yet (roadmap)",
+            ));
         }
         // A struct-typed static (`static __mem_pool protopool;`) carries its
         // own byte size; scalars derive from the type width.
@@ -75,19 +98,22 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         // The byte image: a brace-list array, or a scalar literal folded here.
         let bytes = match (&local.data_bytes, &local.initializer) {
             (Some(bytes), _) => Some(bytes.clone()),
-            (None, Some(mwcc_syntax_trees::Expression::IntegerLiteral(value))) => {
-                (*value != 0).then(|| match local.declared_type {
+            (None, Some(mwcc_syntax_trees::Expression::IntegerLiteral(value))) => (*value != 0)
+                .then(|| match local.declared_type {
                     mwcc_syntax_trees::Type::Double => (*value as f64).to_be_bytes().to_vec(),
                     mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
                     _ => (*value as i32).to_be_bytes().to_vec(),
+                }),
+            (None, Some(mwcc_syntax_trees::Expression::FloatLiteral(value))) => {
+                Some(match local.declared_type {
+                    mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
+                    _ => value.to_be_bytes().to_vec(),
                 })
             }
-            (None, Some(mwcc_syntax_trees::Expression::FloatLiteral(value))) => Some(match local.declared_type {
-                mwcc_syntax_trees::Type::Float => (*value as f32).to_be_bytes().to_vec(),
-                _ => value.to_be_bytes().to_vec(),
-            }),
             (None, Some(_)) => {
-                return Err(Diagnostic::error("a non-constant static local initializer is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a non-constant static local initializer is not supported yet (roadmap)",
+                ));
             }
             (None, None) => None,
         };
@@ -95,7 +121,11 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
             mwcc_syntax_trees::Type::Struct { align, .. } => (align as u32).max(4),
             // A char static records its natural alignment 1 (measured: mp4
             // alloc's init$130 comment record).
-            mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::UnsignedChar if local.array_length.is_none() => 1,
+            mwcc_syntax_trees::Type::Char | mwcc_syntax_trees::Type::UnsignedChar
+                if local.array_length.is_none() =>
+            {
+                1
+            }
             _ => element.max(4),
         };
         static_local_data.push((local.name.clone(), bytes, size, alignment, local.is_const));
@@ -106,7 +136,12 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         function
     } else {
         stripped = mwcc_syntax_trees::Function {
-            locals: function.locals.iter().filter(|local| !local.is_static).cloned().collect(),
+            locals: function
+                .locals
+                .iter()
+                .filter(|local| !local.is_static)
+                .cloned()
+                .collect(),
             ..function.clone()
         };
         &stripped
@@ -133,7 +168,9 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
                 // Static locals address like globals (const scalars stay
                 // visible too: their `name$K` datum is always materialized,
                 // never value-folded — measured).
-                static_locals.iter().map(|local| (local.name.clone(), local.declared_type)),
+                static_locals
+                    .iter()
+                    .map(|local| (local.name.clone(), local.declared_type)),
             )
             .collect(),
         // Subscriptable array globals (non-const) with their total byte size, so a
@@ -149,21 +186,23 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
                     (local.name.clone(), element * length as u32)
                 })
             })
-            .chain(globals
-            .iter()
-            .filter(|global| !global.is_const || global.array_length.is_some())
-            .filter_map(|global| {
-                global.array_length.map(|length| {
-                    // A struct array's element size is its laid-out struct size, not the
-                    // word-default scalar width — so `struct S arr[N]` measures N*sizeof,
-                    // picking the right address mode (SDA21 vs ADDR16) by true total size.
-                    let element_size = match global.declared_type {
-                        mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
-                        other => other.width() as u32 / 8,
-                    };
-                    (global.name.clone(), element_size * length as u32)
-                })
-            }))
+            .chain(
+                globals
+                    .iter()
+                    .filter(|global| !global.is_const || global.array_length.is_some())
+                    .filter_map(|global| {
+                        global.array_length.map(|length| {
+                            // A struct array's element size is its laid-out struct size, not the
+                            // word-default scalar width — so `struct S arr[N]` measures N*sizeof,
+                            // picking the right address mode (SDA21 vs ADDR16) by true total size.
+                            let element_size = match global.declared_type {
+                                mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
+                                other => other.width() as u32 / 8,
+                            };
+                            (global.name.clone(), element_size * length as u32)
+                        })
+                    }),
+            )
             .collect(),
         reserved: HashSet::new(),
         frame_size: 0,
@@ -183,36 +222,54 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         non_leaf: false,
         callee_saved_float: 0,
         next_virtual: 0,
-        register_avoid: HashMap::new(), register_prefer: HashMap::new(),
+        register_avoid: HashMap::new(),
+        register_prefer: HashMap::new(),
         stored_globals: HashMap::new(),
         const_address_bases: HashSet::new(),
         emitted_variable_index_store: false,
         prematerialized_float_constants: Vec::new(),
         frame_slots: HashMap::new(),
         written_slots: HashSet::new(),
+        frame_feeding_local_pressure: None,
         reuse_scratch_constant: false,
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
         callee_saved: Vec::new(),
+        legacy_callee_saved_frame_layout:
+            generator::LegacyCalleeSavedFrameLayout::InferFromValueOrigin,
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
         narrow_truncation_context: false,
         known_locals: std::collections::HashSet::new(),
         call_return_types: call_return_types.clone(),
-        fixed_address_arrays: fixed_address_arrays.iter().map(|(name, (address, element))| (name.clone(), (*address as u32, *element))).collect(),
-        frame_row_bytes: function.locals.iter().filter_map(|local| local.row_bytes.map(|row| (local.name.clone(), row))).collect(),
+        fixed_address_arrays: fixed_address_arrays
+            .iter()
+            .map(|(name, (address, element))| (name.clone(), (*address as u32, *element)))
+            .collect(),
+        frame_row_bytes: function
+            .locals
+            .iter()
+            .filter_map(|local| local.row_bytes.map(|row| (local.name.clone(), row)))
+            .collect(),
         descending_allocation_top: None,
         skipped_inline_names: skipped_inline_names.clone(),
         prototyped_names: prototyped_names.clone(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
+        inline_summaries: inline_summaries.clone(),
     };
     generator.assign_parameters(function)?;
     generator.evaluate_body(function)?;
     // Resolve label-addressed branch targets now that emission is complete (and
     // before any stream-shortening pass could shift instruction indices).
-    if generator.labels.resolve(&mut generator.output.instructions).is_err() {
-        return Err(mwcc_core::Diagnostic::error("internal: a branch label was used but never bound"));
+    if generator
+        .labels
+        .resolve(&mut generator.output.instructions)
+        .is_err()
+    {
+        return Err(mwcc_core::Diagnostic::error(
+            "internal: a branch label was used but never bound",
+        ));
     }
     // Peephole: a conditional forward branch whose target is the function's TERMINAL
     // `blr` is byte-identical to `b<cc>lr` — mwcc always emits the branch-to-link form
@@ -230,9 +287,20 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         // A capture template may pin its own measured order (atof, pikmin
         // s_ldexp) — only derive from the AST when it didn't.
         if generator.output.symbol_order.is_empty() {
-            generator.output.symbol_order = symbol_order::referenced_names(function);
+            generator.output.symbol_order = symbol_order::referenced_names(
+                function,
+                &generator.call_return_types,
+                generator.behavior.symbol_traversal_style,
+            );
         }
     }
+    generator.output.referenced_function_symbols = generator
+        .output
+        .symbol_order
+        .iter()
+        .filter(|name| generator.call_return_types.contains_key(name.as_str()))
+        .cloned()
+        .collect();
     // A call target with no prototype/definition (absent from `call_return_types`) was
     // IMPLICITLY declared — K&R first-use. mwcc creates its symbol at the call site inside
     // the body, so the writer emits it AFTER the function symbol (a prototyped external,
@@ -242,13 +310,18 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         use mwcc_machine_code::{RelocationKind, RelocationTarget};
         let mut seen = HashSet::new();
         for relocation in &generator.output.relocations {
-            if let (RelocationKind::Rel24, RelocationTarget::External(name)) = (&relocation.kind, &relocation.target) {
+            if let (RelocationKind::Rel24, RelocationTarget::External(name)) =
+                (&relocation.kind, &relocation.target)
+            {
                 // Implicit means NO PROTOTYPE at the call — a unit-DEFINED but
                 // unprototyped callee is still implicit (mwcc creates its
                 // symbol at the call site; measured: AC file_io's fclose ->
                 // fflush keeps plain [fclose, fflush] order, no hoist).
                 if !prototyped_names.contains(name.as_str()) && seen.insert(name.clone()) {
-                    generator.output.implicit_external_callees.push(name.clone());
+                    generator
+                        .output
+                        .implicit_external_callees
+                        .push(name.clone());
                 }
             }
         }
@@ -276,6 +349,14 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // Symmetrically, delay the prologue's saved-LR store past the first call's ready
     // argument materializations (mwcc fills the mflr->store latency gap).
     schedule_link_register_save(&mut generator);
+    // Build 163 shares the selected body schedule, but wraps GPR survivors in a
+    // larger linkage-first frame. Normalize only the verified allocator shape;
+    // convention-aware owners already emitted their final frame and are skipped.
+    generator.normalize_linkage_first_callee_saved_frame();
+    generator.normalize_linkage_first_plain_nonleaf_frame();
+    generator.normalize_linkage_first_indirect_call_schedule();
+    generator.normalize_linkage_first_conversion_frame();
+    generator.normalize_scratch_copy_convention();
 
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag
@@ -283,7 +364,10 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
     // The `extab`/`extabindex` unwind tables are emitted only with C++ exceptions
     // on (the default); `-Cpp_exceptions off` suppresses them (the frame itself is
     // unchanged). `frame` drives those sections, so leave it `None` when off.
-    if generator.frame_size != 0 && config.flags.cpp_exceptions {
+    if generator.frame_size != 0
+        && config.flags.cpp_exceptions
+        && (generator.non_leaf || generator.behavior.emit_leaf_frame_unwind)
+    {
         // The extab FPU flag is keyed on *single-precision* float usage: a non-leaf
         // that uses a single-precision load/store/arith sets it, and so does any
         // leaf-with-frame that does single-precision arithmetic (an `int`->`float`
@@ -291,12 +375,21 @@ pub fn lower_function(function: &Function, globals: &[GlobalDeclaration], call_r
         // `fcmpo` against a double constant — leaves it clear (`if (d > 0.0)` carries
         // no flag, `if (f > 0.0f)` does). Counting *any* FP here over-set it for
         // double-only non-leaves such as a double comparison against a constant.
-        let touches_fpu = generator.output.instructions.iter().any(|instruction| instruction.is_single_precision_floating_point());
-        let single_arithmetic = generator.output.instructions.iter().any(|instruction| instruction.is_single_precision_arithmetic());
+        let touches_fpu = generator
+            .output
+            .instructions
+            .iter()
+            .any(|instruction| instruction.is_single_precision_floating_point());
+        let single_arithmetic = generator
+            .output
+            .instructions
+            .iter()
+            .any(|instruction| instruction.is_single_precision_arithmetic());
         generator.output.frame = Some(FrameInfo {
             saved_gpr_count: generator.callee_saved.len() as u8,
             saved_fpr_count: generator.callee_saved_float,
-            uses_fpu: (generator.non_leaf && touches_fpu) || single_arithmetic,
+            uses_fpu: generator.behavior.mark_single_precision_extab
+                && ((generator.non_leaf && touches_fpu) || single_arithmetic),
         });
     }
     Ok(generator.output)
@@ -344,7 +437,9 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
             &generator.constraints,
         ),
     }
-        .map_err(|error| mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}")))?;
+    .map_err(|error| {
+        mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}"))
+    })?;
     mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
     // FRAME-METADATA CONSISTENCY: every callee-saved register the allocation used
     // must correspond to a save slot the arm declared (generator.callee_saved, one
@@ -422,9 +517,17 @@ fn collapse_forward_branch_to_terminal_blr(instructions: &mut [Instruction]) {
         return;
     }
     for index in 0..last {
-        if let Instruction::BranchConditionalForward { options, condition_bit, target } = instructions[index] {
+        if let Instruction::BranchConditionalForward {
+            options,
+            condition_bit,
+            target,
+        } = instructions[index]
+        {
             if target == last {
-                instructions[index] = Instruction::BranchConditionalToLinkRegister { options, condition_bit };
+                instructions[index] = Instruction::BranchConditionalToLinkRegister {
+                    options,
+                    condition_bit,
+                };
             }
         }
     }

@@ -1,19 +1,22 @@
 //! Narrow-integer width extension, fused narrow shifts, and return truncation.
 
+use crate::analysis::*;
+use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
-use crate::analysis::*;
-use crate::generator::*;
 
 impl Generator {
-
     /// The natural width of a value loaded by dereferencing `pointer` — through a
     /// leaf pointer variable or a pointer-typed struct member (`*p->cq`).
     pub(crate) fn dereferenced_width(&self, pointer: &Expression) -> Option<u8> {
         // `*(T*)p` — a pointer cast: the dereferenced width is the cast's target pointee width, so a
         // narrow cast-deref return loads at its natural width (`*(short*)p` -> lha) without re-extending.
-        if let Expression::Cast { target_type: Type::Pointer(pointee), .. } = pointer {
+        if let Expression::Cast {
+            target_type: Type::Pointer(pointee),
+            ..
+        } = pointer
+        {
             return Some(pointee.element().width());
         }
         if let Some((_, _, Type::Pointer(pointee))) = as_member(pointer) {
@@ -42,7 +45,12 @@ impl Generator {
         // `*(p + i)`: the dereferenced width is the pointer operand's pointee width (the
         // integer offset does not change the element type). `+` commutes, and this resolves a
         // global pointer operand (via the global-pointer arm above) as well as a local one.
-        if let Expression::Binary { operator: BinaryOperator::Add, left, right } = pointer {
+        if let Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } = pointer
+        {
             if let Some(width) = self.dereferenced_width(left) {
                 return Some(width);
             }
@@ -50,7 +58,9 @@ impl Generator {
                 return Some(width);
             }
         }
-        self.pointee_of(pointer).ok().map(|pointee| pointee.element().width())
+        self.pointee_of(pointer)
+            .ok()
+            .map(|pointee| pointee.element().width())
     }
 
     /// Whether the expression reads any narrow variable. A narrow return whose
@@ -59,18 +69,30 @@ impl Generator {
     pub(crate) fn contains_narrow_leaf(&self, expression: &Expression) -> bool {
         match expression {
             Expression::Variable(_) => self.is_narrow_leaf(expression),
-            Expression::Binary { left, right, .. } => self.contains_narrow_leaf(left) || self.contains_narrow_leaf(right),
+            Expression::Binary { left, right, .. } => {
+                self.contains_narrow_leaf(left) || self.contains_narrow_leaf(right)
+            }
             Expression::Unary { operand, .. } => self.contains_narrow_leaf(operand),
-            Expression::Conditional { condition, when_true, when_false } => {
-                self.contains_narrow_leaf(condition) || self.contains_narrow_leaf(when_true) || self.contains_narrow_leaf(when_false)
+            Expression::Conditional {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                self.contains_narrow_leaf(condition)
+                    || self.contains_narrow_leaf(when_true)
+                    || self.contains_narrow_leaf(when_false)
             }
             Expression::Cast { operand, .. } => self.contains_narrow_leaf(operand),
             // A narrow memory load (member or dereference of a sub-word type) is
             // also a narrow operand for this purpose — computing with it into the
             // scratch then truncating is the same unmodeled optimization.
             Expression::Member { member_type, .. } => member_type.width() < 32,
-            Expression::Dereference { pointer } => self.dereferenced_width(pointer).is_some_and(|width| width < 32),
-            Expression::Index { base, .. } => self.dereferenced_width(base).is_some_and(|width| width < 32),
+            Expression::Dereference { pointer } => self
+                .dereferenced_width(pointer)
+                .is_some_and(|width| width < 32),
+            Expression::Index { base, .. } => self
+                .dereferenced_width(base)
+                .is_some_and(|width| width < 32),
             _ => false,
         }
     }
@@ -81,7 +103,12 @@ impl Generator {
     /// (`addi r0,r3,1; extsb r3,r0`). The optimization that elides operand
     /// extension when the result is truncated is not modeled, so a computation
     /// reading a narrow operand is deferred rather than mis-extended.
-    pub(crate) fn evaluate_narrow_return(&mut self, expression: &Expression, return_type: Type, result: u8) -> Compilation<()> {
+    pub(crate) fn evaluate_narrow_return(
+        &mut self,
+        expression: &Expression,
+        return_type: Type,
+        result: u8,
+    ) -> Compilation<()> {
         let width = return_type.width();
         let signed = self.signed_of(return_type);
 
@@ -102,7 +129,9 @@ impl Generator {
         if let Expression::Variable(_) = expression {
             let (register, variable_width, _) = self.leaf_info(expression)?;
             if register != result {
-                return Err(Diagnostic::error("narrow return of a non-result variable (roadmap M1)"));
+                return Err(Diagnostic::error(
+                    "narrow return of a non-result variable (roadmap M1)",
+                ));
             }
             // A wider variable is truncated; one already this narrow needs nothing.
             if variable_width > width {
@@ -130,7 +159,12 @@ impl Generator {
         // reads through place_operand (honoring the raw flag); a two-variable narrow
         // op still extends both operands and is left to the full optimization. The
         // operator restriction keeps the raw read off div/mod/shift-right.
-        if let Expression::Binary { operator, left, right } = expression {
+        if let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = expression
+        {
             // BitAnd and ShiftLeft are excluded: mwcc folds their constant into a single
             // `rlwinm`/`clrlwi` that also performs the return-width truncation, so the
             // separate trailing widen this path emits would be redundant. The remaining
@@ -161,7 +195,9 @@ impl Generator {
             return Err(Diagnostic::error("narrow return of a narrow-operand expression needs the truncation-context optimization (roadmap)"));
         }
         if needs_scratch(expression) {
-            return Err(Diagnostic::error("narrow return of a scratch-needing expression (roadmap M1)"));
+            return Err(Diagnostic::error(
+                "narrow return of a scratch-needing expression (roadmap M1)",
+            ));
         }
         self.evaluate_general(expression, GENERAL_SCRATCH)?;
         self.emit_widen(result, GENERAL_SCRATCH, width, signed);
@@ -172,11 +208,37 @@ impl Generator {
     /// sign- or zero-extending narrow values to 32 bits.
     pub(crate) fn emit_widen(&mut self, destination: u8, source: u8, width: u8, signed: bool) {
         match (width, signed) {
-            (8, true) => self.output.instructions.push(Instruction::ExtendSignByte { a: destination, s: source }),
-            (16, true) => self.output.instructions.push(Instruction::ExtendSignHalfword { a: destination, s: source }),
-            (8, false) => self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear: 24 }),
-            (16, false) => self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear: 16 }),
-            _ if source != destination => self.output.instructions.push(Instruction::move_register(destination, source)),
+            (8, true) => self.output.instructions.push(Instruction::ExtendSignByte {
+                a: destination,
+                s: source,
+            }),
+            (16, true) => self
+                .output
+                .instructions
+                .push(Instruction::ExtendSignHalfword {
+                    a: destination,
+                    s: source,
+                }),
+            (8, false) => self
+                .output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: destination,
+                    s: source,
+                    clear: 24,
+                }),
+            (16, false) => self
+                .output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: destination,
+                    s: source,
+                    clear: 16,
+                }),
+            _ if source != destination => self
+                .output
+                .instructions
+                .push(Instruction::move_register(destination, source)),
             _ => {}
         }
     }
@@ -184,12 +246,32 @@ impl Generator {
     /// Like emit_widen but with the record form (`extsh.`/`extsb.`/`clrlwi.`), so the
     /// extension also sets cr0 — mwcc's one-instruction test of a narrow value against
     /// zero (`if (s < 0)` -> `extsh. r0,rS; bge`).
-    pub(crate) fn emit_widen_record(&mut self, destination: u8, source: u8, width: u8, signed: bool) {
+    pub(crate) fn emit_widen_record(
+        &mut self,
+        destination: u8,
+        source: u8,
+        width: u8,
+        signed: bool,
+    ) {
         let instruction = match (width, signed) {
-            (8, true) => Instruction::ExtendSignByteRecord { a: destination, s: source },
-            (16, true) => Instruction::ExtendSignHalfwordRecord { a: destination, s: source },
-            (8, false) => Instruction::ClearLeftImmediateRecord { a: destination, s: source, clear: 24 },
-            _ => Instruction::ClearLeftImmediateRecord { a: destination, s: source, clear: 16 },
+            (8, true) => Instruction::ExtendSignByteRecord {
+                a: destination,
+                s: source,
+            },
+            (16, true) => Instruction::ExtendSignHalfwordRecord {
+                a: destination,
+                s: source,
+            },
+            (8, false) => Instruction::ClearLeftImmediateRecord {
+                a: destination,
+                s: source,
+                clear: 24,
+            },
+            _ => Instruction::ClearLeftImmediateRecord {
+                a: destination,
+                s: source,
+                clear: 16,
+            },
         };
         self.output.instructions.push(instruction);
     }
@@ -199,7 +281,14 @@ impl Generator {
     /// big-endian bit `32-width`. `<< n` rotates left n and keeps the shifted
     /// window; `>> n` rotates by `32-n`. Returns false when the shift would push
     /// significant bits out of the single-rlwinm range (deferred, not modeled).
-    pub(crate) fn emit_narrow_unsigned_shift(&mut self, destination: u8, source: u8, width: u8, left: bool, amount: u8) -> bool {
+    pub(crate) fn emit_narrow_unsigned_shift(
+        &mut self,
+        destination: u8,
+        source: u8,
+        width: u8,
+        left: bool,
+        amount: u8,
+    ) -> bool {
         let start = 32 - width as u32; // first significant big-endian bit: uchar=24, ushort=16
         let n = amount as u32;
         let (shift, begin, end) = if left {

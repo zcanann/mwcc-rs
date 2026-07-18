@@ -25,7 +25,11 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
                 UnaryOperator::LogicalNot => (value == 0) as i64,
             }
         }
-        Expression::Binary { operator, left, right } => {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
             let left = fold_constant_expression(left)?;
             let right = fold_constant_expression(right)?;
             match operator {
@@ -51,14 +55,21 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
                 LogicalOr => (left != 0 || right != 0) as i64,
             }
         }
-        Expression::Conditional { condition, when_true, when_false } => {
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
             if fold_constant_expression(condition)? != 0 {
                 fold_constant_expression(when_true)?
             } else {
                 fold_constant_expression(when_false)?
             }
         }
-        Expression::Cast { target_type, operand } => {
+        Expression::Cast {
+            target_type,
+            operand,
+        } => {
             let value = fold_constant_expression(operand)?;
             match target_type {
                 // A pointer cast keeps the (integer) address value; a non-integer
@@ -70,7 +81,11 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
                 integer => truncate_to_integer(value, *integer),
             }
         }
-        _ => return Err(Diagnostic::error("a non-constant global initializer is not supported yet (roadmap)")),
+        _ => {
+            return Err(Diagnostic::error(
+                "a non-constant global initializer is not supported yet (roadmap)",
+            ))
+        }
     })
 }
 
@@ -84,8 +99,15 @@ pub(crate) fn fold_constant_float(expression: &Expression) -> Compilation<f64> {
     Ok(match expression {
         Expression::FloatLiteral(value) => *value,
         Expression::IntegerLiteral(value) => *value as f64,
-        Expression::Unary { operator: UnaryOperator::Negate, operand } => -fold_constant_float(operand)?,
-        Expression::Binary { operator, left, right } => {
+        Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } => -fold_constant_float(operand)?,
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
             let left = fold_constant_float(left)?;
             let right = fold_constant_float(right)?;
             match operator {
@@ -96,10 +118,18 @@ pub(crate) fn fold_constant_float(expression: &Expression) -> Compilation<f64> {
                 // SET (melee math.c's `float_nan = 0.0 / 0.0` images FFC00000).
                 Divide if left == 0.0 && right == 0.0 => f64::from_bits(0xFFF8_0000_0000_0000),
                 Divide => left / right,
-                _ => return Err(Diagnostic::error("unsupported operator in a float constant initializer (roadmap)")),
+                _ => {
+                    return Err(Diagnostic::error(
+                        "unsupported operator in a float constant initializer (roadmap)",
+                    ))
+                }
             }
         }
-        _ => return Err(Diagnostic::error("a non-constant float global initializer is not supported yet (roadmap)")),
+        _ => {
+            return Err(Diagnostic::error(
+                "a non-constant float global initializer is not supported yet (roadmap)",
+            ))
+        }
     })
 }
 
@@ -173,7 +203,10 @@ impl Parser {
         if *self.peek() == Token::Equals {
             self.advance();
             let value = self.expression()?;
-            return Ok(Expression::Assign { target: Box::new(condition), value: Box::new(value) });
+            return Ok(Expression::Assign {
+                target: Box::new(condition),
+                value: Box::new(value),
+            });
         }
         Ok(condition)
     }
@@ -199,7 +232,10 @@ impl Parser {
         if *self.peek() == Token::Equals {
             self.advance();
             let value = self.expression()?;
-            return Ok(Expression::Assign { target: Box::new(first), value: Box::new(value) });
+            return Ok(Expression::Assign {
+                target: Box::new(first),
+                value: Box::new(value),
+            });
         }
         self.binary_expression_from(first, 1)
     }
@@ -212,20 +248,36 @@ impl Parser {
     }
 
     /// The climb continued from an already-parsed left operand.
-    pub(crate) fn binary_expression_from(&mut self, mut left: Expression, minimum: u8) -> Compilation<Expression> {
+    pub(crate) fn binary_expression_from(
+        &mut self,
+        mut left: Expression,
+        minimum: u8,
+    ) -> Compilation<Expression> {
         while let Some(operator) = self.peek_binary_operator() {
             if operator.precedence() < minimum {
                 break;
             }
             self.advance();
             let right = self.binary_expression(operator.precedence() + 1)?;
-            left = Expression::Binary { operator, left: Box::new(left), right: Box::new(right) };
+            left = Expression::Binary {
+                operator,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
             // Fold ANY constant operation on two integer literals to its value (`li r3,N`) — mwcc
             // folds all constant subexpressions. Arithmetic/bitwise/shift already lowered to the
             // constant; this also covers division/modulo (else a runtime divide) and the comparison
             // and logical operators (else a runtime compare). Enables `sizeof(a)/sizeof(b)`, `5>3`, etc.
-            if let Expression::Binary { left: lhs, right: rhs, .. } = &left {
-                if matches!((lhs.as_ref(), rhs.as_ref()), (Expression::IntegerLiteral(_), Expression::IntegerLiteral(_))) {
+            if let Expression::Binary {
+                left: lhs,
+                right: rhs,
+                ..
+            } = &left
+            {
+                if matches!(
+                    (lhs.as_ref(), rhs.as_ref()),
+                    (Expression::IntegerLiteral(_), Expression::IntegerLiteral(_))
+                ) {
                     if let Ok(value) = fold_constant_expression(&left) {
                         left = Expression::IntegerLiteral(value);
                     }
@@ -269,13 +321,17 @@ impl Parser {
             if let Expression::AddressOf { operand } = pointer {
                 return Ok(*operand);
             }
-            return Ok(Expression::Dereference { pointer: Box::new(pointer) });
+            return Ok(Expression::Dereference {
+                pointer: Box::new(pointer),
+            });
         }
         // prefix address-of: `&lvalue`
         if *self.peek() == Token::Ampersand {
             self.advance();
             let operand = self.factor()?;
-            return Ok(Expression::AddressOf { operand: Box::new(operand) });
+            return Ok(Expression::AddressOf {
+                operand: Box::new(operand),
+            });
         }
         // Unary plus is a no-op: it performs only the integer promotions a read already does, so
         // `+a` is exactly `a` — parse and discard it (mwcc emits identical code). `++` is a distinct
@@ -294,7 +350,10 @@ impl Parser {
         if let Some(operator) = unary {
             self.advance();
             let operand = self.factor()?;
-            let unary_expression = Expression::Unary { operator, operand: Box::new(operand) };
+            let unary_expression = Expression::Unary {
+                operator,
+                operand: Box::new(operand),
+            };
             // Fold a unary operator on an integer literal (`-5`, `~0xff`, `!0`) to its value, as mwcc
             // does — e.g. `!0` is `li r3,1`, not a runtime `cntlzw` sequence.
             if let Expression::Unary { operand, .. } = &unary_expression {
@@ -362,7 +421,8 @@ impl Parser {
                 self.expect(Token::ParenClose)?;
                 let bytes = match target_type {
                     mwcc_syntax_trees::Type::Struct { size, .. } => size as u32,
-                    mwcc_syntax_trees::Type::Pointer(_) | mwcc_syntax_trees::Type::StructPointer { .. } => 4,
+                    mwcc_syntax_trees::Type::Pointer(_)
+                    | mwcc_syntax_trees::Type::StructPointer { .. } => 4,
                     other => other.width() as u32 / 8,
                 };
                 return Ok(Expression::IntegerLiteral(bytes as i64));
@@ -394,32 +454,55 @@ impl Parser {
                     .variable_array_bytes
                     .get(name)
                     .copied()
-                    .or_else(|| self.variable_types.get(name).map(|variable_type| size_of(*variable_type)))
+                    .or_else(|| {
+                        self.variable_types
+                            .get(name)
+                            .map(|variable_type| size_of(*variable_type))
+                    })
                     .or_else(|| self.global_sizes.get(name).map(|&(total, _)| total)),
                 Expression::Member { member_type, .. } => Some(size_of(*member_type)),
                 // An array member decayed to its address — the side channel holds
                 // the array's TOTAL byte size (`sizeof(f.char_set)` = 32, not 4).
-                Expression::MemberAddress { .. } => self.last_member_array_bytes.map(|bytes| bytes as u32),
+                Expression::MemberAddress { .. } => {
+                    self.last_member_array_bytes.map(|bytes| bytes as u32)
+                }
                 Expression::Cast { target_type, .. } => Some(size_of(*target_type)),
                 // `*p` / `a[i]`: the size of the pointed-to element. For an ARRAY base the element
                 // type is in variable_types (local) or global_sizes (file-scope); for a POINTER base
                 // it is the pointee.
-                Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => match pointer.as_ref() {
-                    Expression::Variable(name) if self.variable_array_bytes.contains_key(name) => self.variable_types.get(name).map(|element_type| size_of(*element_type)),
-                    Expression::Variable(name) if self.variable_types.contains_key(name) => match self.variable_types.get(name) {
-                        Some(Type::Pointer(pointee)) => Some(size_of(pointee.element())),
-                        Some(Type::StructPointer { element_size }) => Some(*element_size as u32),
+                Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => {
+                    match pointer.as_ref() {
+                        Expression::Variable(name)
+                            if self.variable_array_bytes.contains_key(name) =>
+                        {
+                            self.variable_types
+                                .get(name)
+                                .map(|element_type| size_of(*element_type))
+                        }
+                        Expression::Variable(name) if self.variable_types.contains_key(name) => {
+                            match self.variable_types.get(name) {
+                                Some(Type::Pointer(pointee)) => Some(size_of(pointee.element())),
+                                Some(Type::StructPointer { element_size }) => {
+                                    Some(*element_size as u32)
+                                }
+                                _ => None,
+                            }
+                        }
+                        Expression::Variable(name) => self
+                            .global_sizes
+                            .get(name)
+                            .and_then(|&(_, array_element)| array_element),
                         _ => None,
-                    },
-                    Expression::Variable(name) => self.global_sizes.get(name).and_then(|&(_, array_element)| array_element),
-                    _ => None,
-                },
+                    }
+                }
                 _ => None,
             };
             if let Some(bytes) = bytes {
                 return Ok(Expression::IntegerLiteral(bytes as i64));
             }
-            return Err(Diagnostic::error(format!("sizeof of this expression is not supported yet (roadmap): {operand:?}")));
+            return Err(Diagnostic::error(format!(
+                "sizeof of this expression is not supported yet (roadmap): {operand:?}"
+            )));
         }
 
         // A `(struct S *)x` cast carries the struct tag (stashed by `parse_type` in
@@ -453,9 +536,12 @@ impl Parser {
                 match self.inline_bodies.get(&name) {
                     Some((parameters, body))
                         if parameters.len() == arguments.len()
-                            && arguments
-                                .iter()
-                                .all(|argument| matches!(argument, Expression::Variable(_) | Expression::IntegerLiteral(_))) =>
+                            && arguments.iter().all(|argument| {
+                                matches!(
+                                    argument,
+                                    Expression::Variable(_) | Expression::IntegerLiteral(_)
+                                )
+                            }) =>
                     {
                         let map: std::collections::HashMap<&str, &Expression> = parameters
                             .iter()
@@ -471,7 +557,8 @@ impl Parser {
             // desugar so a following `.member` resolves via the const-address path (byte-exact).
             // `expression_struct_tag` carries the pointee's tag for the postfix member resolver.
             Token::Identifier(name) if self.fixed_address_globals.contains_key(&name) => {
-                let (address, cast_target, tag) = self.fixed_address_globals.get(&name).cloned().unwrap();
+                let (address, cast_target, tag) =
+                    self.fixed_address_globals.get(&name).cloned().unwrap();
                 self.expression_struct_tag = tag;
                 Expression::Dereference {
                     pointer: Box::new(Expression::Cast {
@@ -491,7 +578,9 @@ impl Parser {
                 if self.peek_is_type() {
                     let mut target_type = self.parse_type()?;
                     // A function-pointer cast `(RET (*)(params))` targets a pointer.
-                    if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                    if *self.peek() == Token::ParenOpen
+                        && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                    {
                         self.advance(); // `(`
                         self.advance(); // `*`
                         self.expect(Token::ParenClose)?;
@@ -501,32 +590,48 @@ impl Parser {
                             match self.advance() {
                                 Token::ParenOpen => depth += 1,
                                 Token::ParenClose => depth -= 1,
-                                Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer cast")),
+                                Token::EndOfFile => {
+                                    return Err(Diagnostic::error(
+                                        "unterminated function-pointer cast",
+                                    ))
+                                }
                                 _ => {}
                             }
                         }
-                        target_type = mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Int);
+                        target_type =
+                            mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Int);
                     }
                     // Extra stars past parse_type's one (`(wchar_t**)` — printf's
                     // %ls arm): a pointer-to-pointer cast is a word pointer.
                     while self.eat_keyword(Token::Star) {
-                        target_type = mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Pointer);
+                        target_type =
+                            mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Pointer);
                     }
                     self.expect(Token::ParenClose)?;
                     // A COMPOUND LITERAL `(GXColor){ 0, 0, 0xE2, 0x58 }` — a brace
                     // list after a struct-typed cast: serialize the constant image at
                     // parse time (the layout lives here). A relocated element defers.
                     if *self.peek() == Token::BraceOpen {
-                        if let (mwcc_syntax_trees::Type::Struct { .. }, Some(tag)) = (target_type, self.last_struct_tag.clone()) {
+                        if let (mwcc_syntax_trees::Type::Struct { .. }, Some(tag)) =
+                            (target_type, self.last_struct_tag.clone())
+                        {
                             let mut relocations = Vec::new();
-                            let bytes = self.parse_one_struct_relocated(&tag, 0, &mut relocations)?;
+                            let bytes =
+                                self.parse_one_struct_relocated(&tag, 0, &mut relocations)?;
                             if !relocations.is_empty() {
-                                return Err(Diagnostic::error("a relocated compound literal is not supported yet (roadmap)"));
+                                return Err(Diagnostic::error(
+                                    "a relocated compound literal is not supported yet (roadmap)",
+                                ));
                             }
                             self.last_struct_tag = None;
-                            return Ok(Expression::CompoundLiteral { struct_tag: tag, bytes });
+                            return Ok(Expression::CompoundLiteral {
+                                struct_tag: tag,
+                                bytes,
+                            });
                         }
-                        return Err(Diagnostic::error("a non-struct compound literal is not supported yet (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "a non-struct compound literal is not supported yet (roadmap)",
+                        ));
                     }
                     // Capture the cast's struct tag before parsing the operand (which may
                     // itself run `parse_type` and overwrite `last_struct_tag`).
@@ -534,7 +639,10 @@ impl Parser {
                         cast_struct_tag = self.last_struct_tag.take();
                     }
                     let operand = self.factor()?;
-                    Expression::Cast { target_type, operand: Box::new(operand) }
+                    Expression::Cast {
+                        target_type,
+                        operand: Box::new(operand),
+                    }
                 } else {
                     // A parenthesized expression may be a comma operator `(a, b, …)`:
                     // each left operand is evaluated for side effects, the last yields
@@ -544,13 +652,20 @@ impl Parser {
                     while *self.peek() == Token::Comma {
                         self.advance();
                         let right = self.expression()?;
-                        inner = Expression::Comma { left: Box::new(inner), right: Box::new(right) };
+                        inner = Expression::Comma {
+                            left: Box::new(inner),
+                            right: Box::new(right),
+                        };
                     }
                     self.expect(Token::ParenClose)?;
                     inner
                 }
             }
-            other => return Err(Diagnostic::error(format!("expected an expression, found {other}"))),
+            other => {
+                return Err(Diagnostic::error(format!(
+                    "expected an expression, found {other}"
+                )))
+            }
         };
         // postfix subscript `base[index]` and member access `base->field` /
         // `base.field`, left-associative. The struct tag is threaded through the
@@ -560,7 +675,9 @@ impl Parser {
             // `((struct S *)x)->field`: the tag came from the cast's target type — from
             // this factor's own cast, or (via the parens) the inner factor's recorded
             // `expression_struct_tag`.
-            Expression::Cast { .. } => cast_struct_tag.take().or_else(|| self.expression_struct_tag.take()),
+            Expression::Cast { .. } => cast_struct_tag
+                .take()
+                .or_else(|| self.expression_struct_tag.take()),
             // `(*p).field` and `(*(struct S *)x).field`: dereference-then-member is the
             // same access as the arrow form `p->field`, so it carries the pointee's tag —
             // taken from a struct/union-pointer variable, or from the cast recorded in
@@ -572,7 +689,9 @@ impl Parser {
             // `(chain->member)->field` / `(a[i])->field`: the parenthesized base is a
             // completed member/index chain — its final tag was recorded when the inner
             // factor finished (alloc.c's block_->client_size_ chains).
-            Expression::Member { .. } | Expression::Index { .. } => self.expression_struct_tag.take(),
+            Expression::Member { .. } | Expression::Index { .. } => {
+                self.expression_struct_tag.take()
+            }
             // `get()->field`: a call to a function that RETURNS a struct pointer carries the
             // pointee's tag (recorded from the `struct S *get(...)` declaration).
             Expression::Call { name, .. } => self.function_return_structs.get(name).cloned(),
@@ -587,7 +706,9 @@ impl Parser {
                 // produce a bare Variable; the postfix call binds by name exactly
                 // like the unparenthesized spelling (strikers wscanf).
                 Token::ParenOpen if matches!(&expression, Expression::Variable(_)) => {
-                    let Expression::Variable(name) = &expression else { unreachable!() };
+                    let Expression::Variable(name) = &expression else {
+                        unreachable!()
+                    };
                     let name = name.clone();
                     self.advance(); // `(`
                     let mut arguments = Vec::new();
@@ -608,8 +729,12 @@ impl Parser {
                     if matches!(&expression, Expression::Dereference { pointer }
                         if matches!(pointer.as_ref(), Expression::Variable(_))) =>
                 {
-                    let Expression::Dereference { pointer } = &expression else { unreachable!() };
-                    let Expression::Variable(name) = pointer.as_ref() else { unreachable!() };
+                    let Expression::Dereference { pointer } = &expression else {
+                        unreachable!()
+                    };
+                    let Expression::Variable(name) = pointer.as_ref() else {
+                        unreachable!()
+                    };
                     let name = name.clone();
                     self.advance(); // `(`
                     let mut arguments = Vec::new();
@@ -633,8 +758,12 @@ impl Parser {
                 // whose callee address is the inner pointer value `*pp` (executor's
                 // `(**ctors)()` C++ ctor/dtor runner).
                 Token::ParenOpen
-                    if matches!(&expression, Expression::Member { .. } | Expression::Index { .. } | Expression::Cast { .. })
-                        || matches!(&expression, Expression::Dereference { pointer }
+                    if matches!(
+                        &expression,
+                        Expression::Member { .. }
+                            | Expression::Index { .. }
+                            | Expression::Cast { .. }
+                    ) || matches!(&expression, Expression::Dereference { pointer }
                             if matches!(pointer.as_ref(), Expression::Member { .. } | Expression::Index { .. } | Expression::Cast { .. } | Expression::Dereference { .. })) =>
                 {
                     let target = match expression {
@@ -675,13 +804,19 @@ impl Parser {
                             self.advance(); // `[`
                             let column = self.expression()?;
                             self.expect(Token::BracketClose)?;
-                            let (Expression::IntegerLiteral(row), Expression::IntegerLiteral(column)) = (&row, &column) else {
+                            let (
+                                Expression::IntegerLiteral(row),
+                                Expression::IntegerLiteral(column),
+                            ) = (&row, &column)
+                            else {
                                 return Err(Diagnostic::error("a variable subscript on an array-typedef parameter is not supported yet (roadmap)"));
                             };
                             let element_bytes = element.width() as i64 / 8;
                             let offset = row * stride as i64 + column * element_bytes;
                             if offset < 0 || offset > u16::MAX as i64 {
-                                return Err(Diagnostic::error("an array-typedef subscript offset is out of range"));
+                                return Err(Diagnostic::error(
+                                    "an array-typedef subscript offset is out of range",
+                                ));
                             }
                             expression = Expression::Member {
                                 base: Box::new(expression),
@@ -695,7 +830,10 @@ impl Parser {
                     self.advance();
                     let index = self.expression()?;
                     self.expect(Token::BracketClose)?;
-                    expression = Expression::Index { base: Box::new(expression), index: Box::new(index) };
+                    expression = Expression::Index {
+                        base: Box::new(expression),
+                        index: Box::new(index),
+                    };
                     // Indexing a struct pointer/array yields a struct element of the
                     // same tag (so `a[i].field` resolves); a non-struct base already
                     // carries no tag, so this leaves it `None`.
@@ -703,22 +841,29 @@ impl Parser {
                 Token::Arrow | Token::Dot => {
                     self.advance();
                     let field = self.parse_identifier()?;
-                    let tag = struct_tag
-                        .take()
-                        .ok_or_else(|| Diagnostic::error(format!("member '{field}' on a non-struct-pointer base")))?;
-                    let layout = self.structs.get(&tag).ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
+                    let tag = struct_tag.take().ok_or_else(|| {
+                        Diagnostic::error(format!("member '{field}' on a non-struct-pointer base"))
+                    })?;
+                    let layout = self.structs.get(&tag).ok_or_else(|| {
+                        Diagnostic::error(format!("struct '{tag}' is not declared"))
+                    })?;
                     let struct_size = layout.size;
-                    let member = layout
-                        .fields
-                        .get(&field)
-                        .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' has no member '{field}'")))?;
+                    let member = layout.fields.get(&field).ok_or_else(|| {
+                        Diagnostic::error(format!("struct '{tag}' has no member '{field}'"))
+                    })?;
                     let bit_field = member.bit_field;
                     let signed = member.member_type.is_signed();
-                    let (offset, member_type, next_tag, array_element, array_bytes) =
-                        (member.offset, member.member_type, member.struct_tag.clone(), member.array_element, member.array_bytes);
+                    let (offset, member_type, next_tag, array_element, array_bytes) = (
+                        member.offset,
+                        member.member_type,
+                        member.struct_tag.clone(),
+                        member.array_element,
+                        member.array_bytes,
+                    );
                     // `a[i].field`: the index scales by the struct size — recorded so
                     // codegen can emit `a + i*size + offset`.
-                    let index_stride = matches!(expression, Expression::Index { .. }).then_some(struct_size);
+                    let index_stride =
+                        matches!(expression, Expression::Index { .. }).then_some(struct_size);
                     // `(*p).field` is exactly `p->field`: the member's base is the pointer
                     // itself, so unwrap one dereference level here (the index_stride check
                     // above already saw the original shape). Without this the base would be
@@ -731,7 +876,12 @@ impl Parser {
                         // `p->state.eof` is ONE access at offset(state)+offset(eof)
                         // — a struct VALUE member is storage, not a pointer, so no
                         // intermediate load exists.
-                        Expression::Member { base, offset: outer_offset, member_type: Type::Struct { .. }, index_stride: outer_stride } => {
+                        Expression::Member {
+                            base,
+                            offset: outer_offset,
+                            member_type: Type::Struct { .. },
+                            index_stride: outer_stride,
+                        } => {
                             base_offset = outer_offset;
                             base_stride = outer_stride;
                             *base
@@ -756,10 +906,20 @@ impl Parser {
                             1 => (Type::UnsignedShort, 16),
                             _ => (Type::UnsignedInt, 32),
                         };
-                        let shift = load_bits - (bit_offset as u32 - byte_start as u32 * 8) - width as u32;
-                        let load = Expression::Member { base: Box::new(expression), offset: offset + byte_start, member_type: load_type, index_stride };
+                        let shift =
+                            load_bits - (bit_offset as u32 - byte_start as u32 * 8) - width as u32;
+                        let load = Expression::Member {
+                            base: Box::new(expression),
+                            offset: offset + byte_start,
+                            member_type: load_type,
+                            index_stride,
+                        };
                         let value = if shift > 0 {
-                            Expression::Binary { operator: mwcc_syntax_trees::BinaryOperator::ShiftRight, left: Box::new(load), right: Box::new(Expression::IntegerLiteral(shift as i64)) }
+                            Expression::Binary {
+                                operator: mwcc_syntax_trees::BinaryOperator::ShiftRight,
+                                left: Box::new(load),
+                                right: Box::new(Expression::IntegerLiteral(shift as i64)),
+                            }
                         } else {
                             load
                         };
@@ -767,7 +927,11 @@ impl Parser {
                             value
                         } else {
                             let mask = (1i64 << width) - 1;
-                            Expression::Binary { operator: mwcc_syntax_trees::BinaryOperator::BitAnd, left: Box::new(value), right: Box::new(Expression::IntegerLiteral(mask)) }
+                            Expression::Binary {
+                                operator: mwcc_syntax_trees::BinaryOperator::BitAnd,
+                                left: Box::new(value),
+                                right: Box::new(Expression::IntegerLiteral(mask)),
+                            }
                         };
                         struct_tag = None;
                         continue;
@@ -776,9 +940,18 @@ impl Parser {
                         // An array member decays to the address of its first element.
                         Some(element) => {
                             self.last_member_array_bytes = array_bytes;
-                            Expression::MemberAddress { base: Box::new(expression), offset, element }
+                            Expression::MemberAddress {
+                                base: Box::new(expression),
+                                offset,
+                                element,
+                            }
                         }
-                        None => Expression::Member { base: Box::new(expression), offset, member_type, index_stride },
+                        None => Expression::Member {
+                            base: Box::new(expression),
+                            offset,
+                            member_type,
+                            index_stride,
+                        },
                     };
                     struct_tag = next_tag;
                 }
@@ -800,7 +973,10 @@ impl Parser {
         };
         if let Some(operator) = postfix_step {
             self.advance();
-            return Ok(Expression::PostStep { target: Box::new(expression), operator });
+            return Ok(Expression::PostStep {
+                target: Box::new(expression),
+                operator,
+            });
         }
         Ok(expression)
     }
@@ -818,16 +994,22 @@ fn increment_assignment(target: Expression, operator: BinaryOperator) -> Express
     }
 }
 
-
 /// Clone `expression` with every `Variable(name)` in `map` replaced by its
 /// argument — the single-return inline substitution.
-pub(crate) fn substitute_variables(expression: &Expression, map: &std::collections::HashMap<&str, &Expression>) -> Expression {
+pub(crate) fn substitute_variables(
+    expression: &Expression,
+    map: &std::collections::HashMap<&str, &Expression>,
+) -> Expression {
     match expression {
         Expression::Variable(name) => match map.get(name.as_str()) {
             Some(&replacement) => replacement.clone(),
             None => expression.clone(),
         },
-        Expression::Binary { operator, left, right } => Expression::Binary {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => Expression::Binary {
             operator: *operator,
             left: Box::new(substitute_variables(left, map)),
             right: Box::new(substitute_variables(right, map)),
@@ -836,7 +1018,10 @@ pub(crate) fn substitute_variables(expression: &Expression, map: &std::collectio
             operator: *operator,
             operand: Box::new(substitute_variables(operand, map)),
         },
-        Expression::Cast { target_type, operand } => Expression::Cast {
+        Expression::Cast {
+            target_type,
+            operand,
+        } => Expression::Cast {
             target_type: *target_type,
             operand: Box::new(substitute_variables(operand, map)),
         },
@@ -850,25 +1035,41 @@ pub(crate) fn substitute_variables(expression: &Expression, map: &std::collectio
             base: Box::new(substitute_variables(base, map)),
             index: Box::new(substitute_variables(index, map)),
         },
-        Expression::Member { base, offset, member_type, index_stride } => Expression::Member {
+        Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride,
+        } => Expression::Member {
             base: Box::new(substitute_variables(base, map)),
             offset: *offset,
             member_type: *member_type,
             index_stride: *index_stride,
         },
-        Expression::MemberAddress { base, offset, element } => Expression::MemberAddress {
+        Expression::MemberAddress {
+            base,
+            offset,
+            element,
+        } => Expression::MemberAddress {
             base: Box::new(substitute_variables(base, map)),
             offset: *offset,
             element: *element,
         },
-        Expression::Conditional { condition, when_true, when_false } => Expression::Conditional {
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => Expression::Conditional {
             condition: Box::new(substitute_variables(condition, map)),
             when_true: Box::new(substitute_variables(when_true, map)),
             when_false: Box::new(substitute_variables(when_false, map)),
         },
         Expression::Call { name, arguments } => Expression::Call {
             name: name.clone(),
-            arguments: arguments.iter().map(|argument| substitute_variables(argument, map)).collect(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_variables(argument, map))
+                .collect(),
         },
         Expression::Assign { target, value } => Expression::Assign {
             target: Box::new(substitute_variables(target, map)),

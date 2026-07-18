@@ -205,6 +205,7 @@ for idx, mn, ops in instrs:
     elif mn=="stbu": push(f"StoreByteWithUpdate {{ s: {R(ops[0])}, a: {ops[1].split('(')[1].rstrip(')')[1:]}, offset: {ops[1].split('(')[0]} }}")
     elif mn=="beqlr": push("BranchConditionalToLinkRegister { options: 12, condition_bit: 2 }")
     elif mn=="bctrl": push("BranchToCountRegisterAndLink")
+    elif mn=="blrl": push("BranchToLinkRegisterAndLink")
     elif mn=="bctr": push("BranchToCountRegister")
     elif mn=="mtctr": push(f"MoveToCountRegister {{ s: {R(ops[0])} }}")
     elif mn=="fmul": push(f"FloatMultiplyDouble {{ d: {ops[0][1:]}, a: {ops[1][1:]}, c: {ops[2][1:]} }}")
@@ -284,6 +285,10 @@ for idx, mn, ops in instrs:
     elif mn=="stbx": push(f"StoreByteIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="sthx": push(f"StoreHalfwordIndexed {{ s: {R(ops[0])}, a: {R(ops[1])}, b: {R(ops[2])} }}")
     elif mn=="ori": push(f"OrImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")
+    # objdump aliases `ori r0,r0,0` to `nop`; preserve the actual instruction
+    # word because mwcc deliberately leaves these zero-insert slots in large
+    # inlined fixed-register programs.
+    elif mn=="nop": push("OrImmediate { a: 0, s: 0, immediate: 0 }")
     elif mn=="xori": push(f"XorImmediate {{ a: {R(ops[0])}, s: {R(ops[1])}, immediate: {ops[2]} }}")
     elif mn=="mr.": push(f"OrRecord {{ a: {R(ops[0])}, s: {R(ops[1])}, b: {R(ops[1])} }}")
     elif mn=="neg.": push(f"NegateRecord {{ d: {R(ops[0])}, a: {R(ops[1])} }}")

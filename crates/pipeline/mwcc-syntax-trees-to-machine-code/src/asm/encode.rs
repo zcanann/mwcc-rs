@@ -13,7 +13,11 @@ use std::collections::HashMap;
 /// Assemble one asm line into an instruction, or `None` for a directive that
 /// emits nothing (`nofralloc`). Branch mnemonics resolve their target label
 /// through `labels` (label name -> instruction index).
-pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>, instruction_index: usize) -> Compilation<Option<Instruction>> {
+pub(super) fn assemble_line(
+    line: &AsmInstruction,
+    labels: &HashMap<&str, usize>,
+    instruction_index: usize,
+) -> Compilation<Option<Instruction>> {
     let raw = line.mnemonic.as_str();
     // A branch static-prediction hint: `+` predicts taken, `-` predicts not taken.
     // The BO "y" bit is set only when the requested prediction DIFFERS from the
@@ -60,61 +64,238 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
         }
 
         // Three-register ALU (`op dst, srcA, srcB`), each mapped positionally.
-        "add" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::Add { d, a, b } }
-        "subf" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFrom { d, a, b } }
+        "add" => {
+            let [d, a, b] = rrr(mnemonic, operands)?;
+            Instruction::Add { d, a, b }
+        }
+        "subf" => {
+            let [d, a, b] = rrr(mnemonic, operands)?;
+            Instruction::SubtractFrom { d, a, b }
+        }
         // `sub rD, rA, rB` (rD = rA - rB) is the simplified spelling of `subf rD, rB, rA`.
-        "sub" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFrom { d, a: b, b: a } }
-        "subfc" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFromCarrying { d, a, b } }
-        "subfe" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFromExtended { d, a, b } }
-        "adde" => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::AddExtended { d, a, b } }
-        "or" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::Or { a, s, b } }
-        "and" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::And { a, s, b } }
-        "xor" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::Xor { a, s, b } }
-        "nor" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::Nor { a, s, b } }
-        "slw" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::ShiftLeftWord { a, s, b } }
-        "srw" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::ShiftRightWord { a, s, b } }
+        "sub" => {
+            let [d, a, b] = rrr(mnemonic, operands)?;
+            Instruction::SubtractFrom { d, a: b, b: a }
+        }
+        "subfc" => {
+            let [d, a, b] = rrr(mnemonic, operands)?;
+            Instruction::SubtractFromCarrying { d, a, b }
+        }
+        "subfe" => {
+            let [d, a, b] = rrr(mnemonic, operands)?;
+            Instruction::SubtractFromExtended { d, a, b }
+        }
+        "adde" => {
+            let [d, a, b] = rrr(mnemonic, operands)?;
+            Instruction::AddExtended { d, a, b }
+        }
+        "or" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::Or { a, s, b }
+        }
+        "and" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::And { a, s, b }
+        }
+        "xor" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::Xor { a, s, b }
+        }
+        "nor" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::Nor { a, s, b }
+        }
+        "slw" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::ShiftLeftWord { a, s, b }
+        }
+        "srw" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::ShiftRightWord { a, s, b }
+        }
 
         // Two-register ALU (`op dst, src`).
-        "neg" => { let [d, a] = gprs(mnemonic, operands)?; Instruction::Negate { d, a } }
-        "cntlzw" => { let [a, s] = gprs(mnemonic, operands)?; Instruction::CountLeadingZeros { a, s } }
-        "sraw" => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::ShiftRightAlgebraicWord { a, s, b } }
-        "srawi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::ShiftRightAlgebraicImmediate { a, s, shift } }
-        "addze" => { let [d, a] = gprs(mnemonic, operands)?; Instruction::AddToZeroExtended { d, a } }
+        "neg" => {
+            let [d, a] = gprs(mnemonic, operands)?;
+            Instruction::Negate { d, a }
+        }
+        "cntlzw" => {
+            let [a, s] = gprs(mnemonic, operands)?;
+            Instruction::CountLeadingZeros { a, s }
+        }
+        "sraw" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::ShiftRightAlgebraicWord { a, s, b }
+        }
+        "srawi" => {
+            let (a, s, shift) = rr_shift(mnemonic, operands)?;
+            Instruction::ShiftRightAlgebraicImmediate { a, s, shift }
+        }
+        "addze" => {
+            let [d, a] = gprs(mnemonic, operands)?;
+            Instruction::AddToZeroExtended { d, a }
+        }
 
         // Add-immediate-carrying (`addic dst, src, SIMM`); the simplified `subic`
         // spelling negates the immediate (`subic d, a, v` == `addic d, a, -v`).
-        "addic" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediateCarrying { d, a, immediate } }
-        "subic" => {
+        "addic" => {
             let (d, a, immediate) = rri(mnemonic, operands)?;
-            let immediate = immediate.checked_neg().ok_or_else(|| Diagnostic::error("inline-asm 'subic' immediate overflows on negation"))?;
             Instruction::AddImmediateCarrying { d, a, immediate }
         }
-        "addic." => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediateCarryingRecord { d, a, immediate } }
-        "subfze" => { let [d, a] = gprs(mnemonic, operands)?; Instruction::SubtractFromZeroExtended { d, a } }
-        "subfe." => { let [d, a, b] = rrr(mnemonic, operands)?; Instruction::SubtractFromExtendedRecord { d, a, b } }
-        "or." => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::OrRecord { a, s, b } }
-        "xor." => { let [a, s, b] = rrr(mnemonic, operands)?; Instruction::XorRecord { a, s, b } }
+        "subic" => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            let immediate = immediate.checked_neg().ok_or_else(|| {
+                Diagnostic::error("inline-asm 'subic' immediate overflows on negation")
+            })?;
+            Instruction::AddImmediateCarrying { d, a, immediate }
+        }
+        "addic." => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            Instruction::AddImmediateCarryingRecord { d, a, immediate }
+        }
+        "subfze" => {
+            let [d, a] = gprs(mnemonic, operands)?;
+            Instruction::SubtractFromZeroExtended { d, a }
+        }
+        "subfe." => {
+            let [d, a, b] = rrr(mnemonic, operands)?;
+            Instruction::SubtractFromExtendedRecord { d, a, b }
+        }
+        "or." => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::OrRecord { a, s, b }
+        }
+        "xor." => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::XorRecord { a, s, b }
+        }
 
         // Rotate-and-mask family. `rlwinm rA,rS,SH,MB,ME` (+ `.` record and the
         // `rlwimi` insert form); the `rotlwi`/`slwi`/`clrlwi` spellings are aliases.
-        "rlwinm" => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift, begin, end } }
-        "rlwinm." => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMaskRecord { a, s, shift, begin, end } }
-        "rlwimi" => { let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?; Instruction::RotateAndMaskInsert { a, s, shift, begin, end } }
-        "rotlwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift, begin: 0, end: 31 } }
-        "rotrwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (32 - n as u16) as u8 & 31, begin: 0, end: 31 } }
-        "slwi" => { let (a, s, shift) = rr_shift(mnemonic, operands)?; Instruction::ShiftLeftImmediate { a, s, shift } }
-        "clrlwi" => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediate { a, s, clear } }
-        "clrlwi." => { let (a, s, clear) = rr_shift(mnemonic, operands)?; Instruction::ClearLeftImmediateRecord { a, s, clear } }
+        "rlwinm" => {
+            let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?;
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift,
+                begin,
+                end,
+            }
+        }
+        "rlwinm." => {
+            let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?;
+            Instruction::RotateAndMaskRecord {
+                a,
+                s,
+                shift,
+                begin,
+                end,
+            }
+        }
+        "rlwimi" => {
+            let (a, s, shift, begin, end) = rotate5(mnemonic, operands)?;
+            Instruction::RotateAndMaskInsert {
+                a,
+                s,
+                shift,
+                begin,
+                end,
+            }
+        }
+        "rotlwi" => {
+            let (a, s, shift) = rr_shift(mnemonic, operands)?;
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift,
+                begin: 0,
+                end: 31,
+            }
+        }
+        "rotrwi" => {
+            let (a, s, n) = rr_shift(mnemonic, operands)?;
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift: (32 - n as u16) as u8 & 31,
+                begin: 0,
+                end: 31,
+            }
+        }
+        "slwi" => {
+            let (a, s, shift) = rr_shift(mnemonic, operands)?;
+            Instruction::ShiftLeftImmediate { a, s, shift }
+        }
+        "clrlwi" => {
+            let (a, s, clear) = rr_shift(mnemonic, operands)?;
+            Instruction::ClearLeftImmediate { a, s, clear }
+        }
+        "clrlwi." => {
+            let (a, s, clear) = rr_shift(mnemonic, operands)?;
+            Instruction::ClearLeftImmediateRecord { a, s, clear }
+        }
         // `nop` = `ori r0, r0, 0`.
-        "nop" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::OrImmediate { a: 0, s: 0, immediate: 0 } }
+        "nop" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::OrImmediate {
+                a: 0,
+                s: 0,
+                immediate: 0,
+            }
+        }
         // More `rlwinm` simplified spellings (all rotate-and-mask with derived fields).
-        "srwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (32 - n as u16) as u8 & 31, begin: n, end: 31 } }
-        "clrrwi" => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: 0, begin: 0, end: 31 - n } }
-        "clrrwi." => { let (a, s, n) = rr_shift(mnemonic, operands)?; Instruction::RotateAndMaskRecord { a, s, shift: 0, begin: 0, end: 31 - n } }
+        "srwi" => {
+            let (a, s, n) = rr_shift(mnemonic, operands)?;
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift: (32 - n as u16) as u8 & 31,
+                begin: n,
+                end: 31,
+            }
+        }
+        "clrrwi" => {
+            let (a, s, n) = rr_shift(mnemonic, operands)?;
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift: 0,
+                begin: 0,
+                end: 31 - n,
+            }
+        }
+        "clrrwi." => {
+            let (a, s, n) = rr_shift(mnemonic, operands)?;
+            Instruction::RotateAndMaskRecord {
+                a,
+                s,
+                shift: 0,
+                begin: 0,
+                end: 31 - n,
+            }
+        }
         // `extlwi rA,rS,n,b` = rlwinm rA,rS,b,0,n-1 (extract n bits at b, left-justify).
-        "extlwi" => { let (a, s, n, b) = rr_two_immediates(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: b, begin: 0, end: n - 1 } }
+        "extlwi" => {
+            let (a, s, n, b) = rr_two_immediates(mnemonic, operands)?;
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift: b,
+                begin: 0,
+                end: n - 1,
+            }
+        }
         // `extrwi rA,rS,n,b` = rlwinm rA,rS,b+n,32-n,31 (extract n bits at b, right-justify).
-        "extrwi" => { let (a, s, n, b) = rr_two_immediates(mnemonic, operands)?; Instruction::RotateAndMask { a, s, shift: (b as u16 + n as u16) as u8 & 31, begin: 32 - n, end: 31 } }
+        "extrwi" => {
+            let (a, s, n, b) = rr_two_immediates(mnemonic, operands)?;
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift: (b as u16 + n as u16) as u8 & 31,
+                begin: 32 - n,
+                end: 31,
+            }
+        }
 
         // Floating point (double): compare (any cr field), subtract, round-to-single,
         // move, and convert-to-integer-word (round toward zero).
@@ -127,15 +308,36 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
                 Instruction::FloatCompareUnorderedField { crf, a, b }
             }
         }
-        "fsub" => { let [d, a, b] = fprs(mnemonic, operands)?; Instruction::FloatSubtractDouble { d, a, b } }
-        "frsp" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::RoundToSingle { d, b } }
-        "fmr" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::FloatMove { d, b } }
-        "fctiwz" => { let [d, b] = fprs(mnemonic, operands)?; Instruction::ConvertToIntegerWordZero { d, b } }
+        "fsub" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::FloatSubtractDouble { d, a, b }
+        }
+        "frsp" => {
+            let [d, b] = fprs(mnemonic, operands)?;
+            Instruction::RoundToSingle { d, b }
+        }
+        "fmr" => {
+            let [d, b] = fprs(mnemonic, operands)?;
+            Instruction::FloatMove { d, b }
+        }
+        "fctiwz" => {
+            let [d, b] = fprs(mnemonic, operands)?;
+            Instruction::ConvertToIntegerWordZero { d, b }
+        }
 
         // Register + signed-immediate ALU (`op dst, src, SIMM`).
-        "addi" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediate { d, a, immediate } }
-        "addis" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::AddImmediateShifted { d, a, immediate } }
-        "subfic" => { let (d, a, immediate) = rri(mnemonic, operands)?; Instruction::SubtractFromImmediate { d, a, immediate } }
+        "addi" => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            Instruction::AddImmediate { d, a, immediate }
+        }
+        "addis" => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            Instruction::AddImmediateShifted { d, a, immediate }
+        }
+        "subfic" => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            Instruction::SubtractFromImmediate { d, a, immediate }
+        }
         // Register + unsigned-immediate logical (`op dst, src, UIMM`).
         "ori" => {
             // The immediate may be a `sym@l` relocation (assembled as 0, patched later).
@@ -145,21 +347,57 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
             let immediate = unsigned_immediate_or_symbol(mnemonic, &operands[2])?;
             Instruction::OrImmediate { a, s, immediate }
         }
-        "oris" => { let (a, s, immediate) = rri_u(mnemonic, operands)?; Instruction::OrImmediateShifted { a, s, immediate } }
+        "oris" => {
+            let (a, s, immediate) = rri_u(mnemonic, operands)?;
+            Instruction::OrImmediateShifted { a, s, immediate }
+        }
 
         // Integer loads/stores: `op rT, <disp>(rA)`.
-        "lwz" => { let (d, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::LoadWord { d, a, offset } }
-        "lbz" => { let (d, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::LoadByteZero { d, a, offset } }
-        "lhz" => { let (d, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::LoadHalfwordZero { d, a, offset } }
-        "stw" => { let (s, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::StoreWord { s, a, offset } }
-        "stwu" => { let (s, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::StoreWordWithUpdate { s, a, offset } }
-        "stb" => { let (s, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::StoreByte { s, a, offset } }
-        "sth" => { let (s, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::StoreHalfword { s, a, offset } }
+        "lwz" => {
+            let (d, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::LoadWord { d, a, offset }
+        }
+        "lbz" => {
+            let (d, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::LoadByteZero { d, a, offset }
+        }
+        "lhz" => {
+            let (d, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::LoadHalfwordZero { d, a, offset }
+        }
+        "stw" => {
+            let (s, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::StoreWord { s, a, offset }
+        }
+        "stwu" => {
+            let (s, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::StoreWordWithUpdate { s, a, offset }
+        }
+        "stb" => {
+            let (s, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::StoreByte { s, a, offset }
+        }
+        "sth" => {
+            let (s, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::StoreHalfword { s, a, offset }
+        }
         // Floating loads/stores: `op fT, <disp>(rA)`.
-        "lfd" => { let (d, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::LoadFloatDouble { d, a, offset } }
-        "lfs" => { let (d, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::LoadFloatSingle { d, a, offset } }
-        "stfd" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatDouble { s, a, offset } }
-        "stfs" => { let (s, offset, a) = fpr_mem(mnemonic, operands)?; Instruction::StoreFloatSingle { s, a, offset } }
+        "lfd" => {
+            let (d, offset, a) = fpr_mem(mnemonic, operands)?;
+            Instruction::LoadFloatDouble { d, a, offset }
+        }
+        "lfs" => {
+            let (d, offset, a) = fpr_mem(mnemonic, operands)?;
+            Instruction::LoadFloatSingle { d, a, offset }
+        }
+        "stfd" => {
+            let (s, offset, a) = fpr_mem(mnemonic, operands)?;
+            Instruction::StoreFloatDouble { s, a, offset }
+        }
+        "stfs" => {
+            let (s, offset, a) = fpr_mem(mnemonic, operands)?;
+            Instruction::StoreFloatSingle { s, a, offset }
+        }
 
         // Compares with an optional explicit condition field. `cmpwi` handles any
         // `crN`; the others model cr0 only (a non-cr0 field DEFERS). `cmpi`/`cmpli`
@@ -195,7 +433,9 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
         "cmpli" => {
             let (crf, operands) = strip_length_bit(mnemonic, take_cr_field(operands))?;
             if crf != 0 {
-                return Err(Diagnostic::error("inline-asm 'cmpli' on a non-cr0 field is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "inline-asm 'cmpli' on a non-cr0 field is not supported yet (roadmap)",
+                ));
             }
             expect_operand_count(mnemonic, operands, 2)?;
             let a = gpr(mnemonic, &operands[0])?;
@@ -207,12 +447,23 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
             // (`cmpw cr6, rA, rB` — the BfBB ptmf vtable test).
             let (crf, operands) = take_cr_field(operands);
             let [a, b] = gprs(mnemonic, operands)?;
-            if crf == 0 { Instruction::CompareWord { a, b } } else { Instruction::CompareWordField { crf, a, b } }
+            if crf == 0 {
+                Instruction::CompareWord { a, b }
+            } else {
+                Instruction::CompareWordField { crf, a, b }
+            }
         }
-        "cmplw" => { let operands = require_cr0(mnemonic, operands)?; let [a, b] = gprs(mnemonic, operands)?; Instruction::CompareLogicalWord { a, b } }
+        "cmplw" => {
+            let operands = require_cr0(mnemonic, operands)?;
+            let [a, b] = gprs(mnemonic, operands)?;
+            Instruction::CompareLogicalWord { a, b }
+        }
 
         // The count register (`bdnz` loop support).
-        "mtctr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToCountRegister { s } }
+        "mtctr" => {
+            let [s] = gprs(mnemonic, operands)?;
+            Instruction::MoveToCountRegister { s }
+        }
 
         // Special-purpose / machine-state register moves + the synchronization and
         // interrupt-return system ops — the OS-kernel inline-asm vocabulary
@@ -230,15 +481,42 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
             let s = gpr(mnemonic, &operands[1])?;
             Instruction::MoveToSpr { spr, s }
         }
-        "mftb" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromSpr { d, spr: 268 } }
-        "mftbu" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromSpr { d, spr: 269 } }
-        "mfmsr" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromMsr { d } }
-        "mtmsr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToMsr { s } }
-        "isync" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::InstructionSynchronize }
-        "sync" | "hwsync" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::Synchronize }
-        "eieio" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::EnforceInOrderIo }
-        "rfi" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::ReturnFromInterrupt }
-        "sc" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::SystemCall }
+        "mftb" => {
+            let [d] = gprs(mnemonic, operands)?;
+            Instruction::MoveFromSpr { d, spr: 268 }
+        }
+        "mftbu" => {
+            let [d] = gprs(mnemonic, operands)?;
+            Instruction::MoveFromSpr { d, spr: 269 }
+        }
+        "mfmsr" => {
+            let [d] = gprs(mnemonic, operands)?;
+            Instruction::MoveFromMsr { d }
+        }
+        "mtmsr" => {
+            let [s] = gprs(mnemonic, operands)?;
+            Instruction::MoveToMsr { s }
+        }
+        "isync" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::InstructionSynchronize
+        }
+        "sync" | "hwsync" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::Synchronize
+        }
+        "eieio" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::EnforceInOrderIo
+        }
+        "rfi" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::ReturnFromInterrupt
+        }
+        "sc" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::SystemCall
+        }
 
         // Cache-block ops (`op rA, rB`, addressing `(rA|0) + rB`). `dcbz_l` is the
         // Gekko locked-cache variant (primary opcode 4); the rest are opcode 31.
@@ -248,9 +526,14 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
             let a = gpr_or_zero(mnemonic, &operands[0])?;
             let b = gpr(mnemonic, &operands[1])?;
             let (primary, xo) = match mnemonic {
-                "dcbst" => (31, 54), "dcbf" => (31, 86), "dcbt" => (31, 278),
-                "dcbtst" => (31, 246), "dcbi" => (31, 470), "dcbz" => (31, 1014),
-                "icbi" => (31, 982), "dcbz_l" => (4, 1014),
+                "dcbst" => (31, 54),
+                "dcbf" => (31, 86),
+                "dcbt" => (31, 278),
+                "dcbtst" => (31, 246),
+                "dcbi" => (31, 470),
+                "dcbz" => (31, 1014),
+                "icbi" => (31, 982),
+                "dcbz_l" => (4, 1014),
                 _ => unreachable!(),
             };
             Instruction::CacheOp { primary, xo, a, b }
@@ -258,27 +541,53 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
 
         // The link register, condition register, and FPSCR moves + the multi-word
         // load/store — the setjmp/longjmp register-save vocabulary (Gecko_setjmp.c).
-        "mflr" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromLinkRegister { d } }
-        "mtlr" => { let [s] = gprs(mnemonic, operands)?; Instruction::MoveToLinkRegister { s } }
-        "mfcr" => { let [d] = gprs(mnemonic, operands)?; Instruction::MoveFromConditionRegister { d } }
-        "mffs" => { let [d] = fprs(mnemonic, operands)?; Instruction::MoveFromFpscr { d } }
+        "mflr" => {
+            let [d] = gprs(mnemonic, operands)?;
+            Instruction::MoveFromLinkRegister { d }
+        }
+        "mtlr" => {
+            let [s] = gprs(mnemonic, operands)?;
+            Instruction::MoveToLinkRegister { s }
+        }
+        "mfcr" => {
+            let [d] = gprs(mnemonic, operands)?;
+            Instruction::MoveFromConditionRegister { d }
+        }
+        "mffs" => {
+            let [d] = fprs(mnemonic, operands)?;
+            Instruction::MoveFromFpscr { d }
+        }
         // `mtcrf CRM, rS` / `mtfsf FM, frB` — an 8-bit field mask then the source.
         "mtcrf" => {
             expect_operand_count(mnemonic, operands, 2)?;
             let mask = immediate16u(mnemonic, &operands[0])?;
-            let mask = u8::try_from(mask).map_err(|_| Diagnostic::error(format!("{mnemonic} field mask {mask} does not fit in 8 bits")))?;
+            let mask = u8::try_from(mask).map_err(|_| {
+                Diagnostic::error(format!(
+                    "{mnemonic} field mask {mask} does not fit in 8 bits"
+                ))
+            })?;
             let [s] = gprs(mnemonic, &operands[1..])?;
             Instruction::MoveToConditionRegisterFields { mask, s }
         }
         "mtfsf" => {
             expect_operand_count(mnemonic, operands, 2)?;
             let mask = immediate16u(mnemonic, &operands[0])?;
-            let mask = u8::try_from(mask).map_err(|_| Diagnostic::error(format!("{mnemonic} field mask {mask} does not fit in 8 bits")))?;
+            let mask = u8::try_from(mask).map_err(|_| {
+                Diagnostic::error(format!(
+                    "{mnemonic} field mask {mask} does not fit in 8 bits"
+                ))
+            })?;
             let [b] = fprs(mnemonic, &operands[1..])?;
             Instruction::MoveToFpscrFields { mask, b }
         }
-        "stmw" => { let (s, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::StoreMultipleWord { s, a, offset } }
-        "lmw" => { let (d, offset, a) = gpr_mem(mnemonic, operands)?; Instruction::LoadMultipleWord { d, a, offset } }
+        "stmw" => {
+            let (s, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::StoreMultipleWord { s, a, offset }
+        }
+        "lmw" => {
+            let (d, offset, a) = gpr_mem(mnemonic, operands)?;
+            Instruction::LoadMultipleWord { d, a, offset }
+        }
 
         // Conditional branch-to-link (a conditional return, `bgtlr` etc.); an
         // optional leading `crN` selects the field. Written directly by mwcc's asm
@@ -292,25 +601,42 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
             let (base_options, base_bit) = conditional_branch_fields(base);
             let (crf, operands) = take_cr_field(operands);
             expect_operand_count(mnemonic, operands, 0)?;
-            Instruction::BranchConditionalToLinkRegister { options: base_options, condition_bit: crf * 4 + base_bit }
+            Instruction::BranchConditionalToLinkRegister {
+                options: base_options,
+                condition_bit: crf * 4 + base_bit,
+            }
         }
         // Indexed word load (`lwzx rD, rA, rB` — the ptmf vtable dispatch).
-        "lwzx" => { let [d, a, b] = gprs(mnemonic, operands)?; Instruction::LoadWordIndexed { d, a, b } }
+        "lwzx" => {
+            let [d, a, b] = gprs(mnemonic, operands)?;
+            Instruction::LoadWordIndexed { d, a, b }
+        }
         // Branch to the count register (`mtctr r12; bctr` — the ptmf tail dispatch).
-        "bctr" => { expect_operand_count(mnemonic, operands, 0)?; Instruction::BranchToCountRegister }
+        "bctr" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::BranchToCountRegister
+        }
         // Unconditional branch to a label, or a tail branch to an external symbol.
         "b" => {
             expect_operand_count(mnemonic, operands, 1)?;
             match &operands[0] {
                 // A local label resolves to its instruction index.
                 AsmOperand::Label(name) if labels.contains_key(name.as_str()) => {
-                    Instruction::Branch { target: labels[name.as_str()] }
+                    Instruction::Branch {
+                        target: labels[name.as_str()],
+                    }
                 }
                 // A name with no local label is a tail branch to an external
                 // function (`b func`): an offset-0 placeholder (`48 00 00 00`)
                 // patched by the `R_PPC_REL24` relocation recorded in `mod.rs`.
-                AsmOperand::Label(_) => Instruction::Branch { target: instruction_index },
-                _ => return Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a label operand"))),
+                AsmOperand::Label(_) => Instruction::Branch {
+                    target: instruction_index,
+                },
+                _ => {
+                    return Err(Diagnostic::error(format!(
+                        "inline-asm '{mnemonic}' expected a label operand"
+                    )))
+                }
             }
         }
         // Conditional branches; an optional leading `crN` selects the condition
@@ -322,10 +648,18 @@ pub(super) fn assemble_line(line: &AsmInstruction, labels: &HashMap<&str, usize>
             let target = label_target(mnemonic, operands, labels)?;
             let forward = target >= instruction_index;
             let options = base_options | hint_bit(hint, forward);
-            Instruction::BranchConditionalForward { options, condition_bit, target }
+            Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target,
+            }
         }
 
-        other => return Err(Diagnostic::error(format!("inline-asm mnemonic '{other}' is not supported yet (roadmap)"))),
+        other => {
+            return Err(Diagnostic::error(format!(
+                "inline-asm mnemonic '{other}' is not supported yet (roadmap)"
+            )))
+        }
     };
     Ok(Some(instruction))
 }
@@ -365,13 +699,18 @@ fn conditional_branch_fields(mnemonic: &str) -> (u8, u8) {
 }
 
 /// Resolve a branch's single label operand to its instruction index.
-fn label_target(mnemonic: &str, operands: &[AsmOperand], labels: &HashMap<&str, usize>) -> Compilation<usize> {
+fn label_target(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+    labels: &HashMap<&str, usize>,
+) -> Compilation<usize> {
     expect_operand_count(mnemonic, operands, 1)?;
     match &operands[0] {
-        AsmOperand::Label(name) => labels
-            .get(name.as_str())
-            .copied()
-            .ok_or_else(|| Diagnostic::error(format!("inline-asm branch to undefined label '{name}'"))),
-        _ => Err(Diagnostic::error(format!("inline-asm '{mnemonic}' expected a label operand"))),
+        AsmOperand::Label(name) => labels.get(name.as_str()).copied().ok_or_else(|| {
+            Diagnostic::error(format!("inline-asm branch to undefined label '{name}'"))
+        }),
+        _ => Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' expected a label operand"
+        ))),
     }
 }

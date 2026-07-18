@@ -7,13 +7,15 @@
 //! y * 2; return z;` like `return (a + b) * 2;`. We reproduce that by inlining
 //! locals into the return expression and handing it to the normal codegen.
 
-use std::collections::HashMap;
+use crate::analysis::{
+    constant_value, expression_reads_memory, expression_reads_name, function_makes_call,
+};
+use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type};
 use mwcc_target::Eabi;
-use crate::analysis::{constant_value, expression_reads_memory, expression_reads_name, function_makes_call};
-use crate::generator::*;
+use std::collections::HashMap;
 
 impl Generator {
     /// Compile the body by inlining value-tracked locals, when the body is in the
@@ -33,7 +35,10 @@ impl Generator {
         // Only take over the cases the straight-line path does not: a reassigned
         // local, or more than one local. A single never-reassigned local keeps the
         // existing handling (which computes it once in a register).
-        let has_assignment = function.statements.iter().any(|statement| matches!(statement, Statement::Assign { .. }));
+        let has_assignment = function
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::Assign { .. }));
         // A single never-reassigned local normally stays with the straight-line path —
         // EXCEPT one whose initializer is a conditional (a branchless idiom like abs):
         // the straight-line path computes it into a register and then mis-reads it in a
@@ -41,7 +46,10 @@ impl Generator {
         // the idiom into the use, matching the direct `(x<0?-x:x) + 1` form.
         let single_conditional_local = function.locals.len() == 1
             && matches!(
-                function.locals.first().and_then(|local| local.initializer.as_ref()),
+                function
+                    .locals
+                    .first()
+                    .and_then(|local| local.initializer.as_ref()),
                 Some(Expression::Conditional { .. })
             );
         // A single local that is a pure alias of another variable (`T* q = p;`) must
@@ -55,9 +63,15 @@ impl Generator {
         // path, which defers the not-already-extended narrow returns.
         let single_alias_local = function.locals.len() == 1
             && function.return_type != Type::Void
-            && function.locals.first().is_some_and(|local| local.declared_type.width() >= 32)
+            && function
+                .locals
+                .first()
+                .is_some_and(|local| local.declared_type.width() >= 32)
             && matches!(
-                function.locals.first().and_then(|local| local.initializer.as_ref()),
+                function
+                    .locals
+                    .first()
+                    .and_then(|local| local.initializer.as_ref()),
                 Some(Expression::Variable(_))
             );
         // A single local initialized to a CONSTANT must inline too: the straight-line
@@ -67,16 +81,25 @@ impl Generator {
         // matching the direct-literal form. A narrow const local is excluded (its width
         // coercion is handled by the narrow-local guards below).
         let single_constant_local = function.locals.len() == 1
-            && function.locals.first().is_some_and(|local| local.declared_type.width() >= 32)
+            && function
+                .locals
+                .first()
+                .is_some_and(|local| local.declared_type.width() >= 32)
             && matches!(
-                function.locals.first().and_then(|local| local.initializer.as_ref()),
+                function
+                    .locals
+                    .first()
+                    .and_then(|local| local.initializer.as_ref()),
                 Some(Expression::IntegerLiteral(_))
             );
         // A single local read by a store (not just an assignment) still belongs here: the
         // statement loop below defers stores honestly. Declining would drop it to the normal
         // path, which cannot read a value-tracked local and emits garbage (it reads an
         // unallocated register) — a silent miscompile for `int x = a+1; gi = x; return x;`.
-        let has_store = function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }));
+        let has_store = function
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::Store { .. }));
         // A single local initialized from a MEMORY read (`int t = arr[i]; return t + 1;` — an
         // array element, dereference, or member) inlines into its use, matching the direct
         // `arr[i] + 1` lowering, but ONLY in a store-free leaf body: a store could alias the
@@ -85,16 +108,23 @@ impl Generator {
         // twice-read load.
         let single_memory_local = function.locals.len() == 1
             && !has_store
-            && function.locals.first().is_some_and(|local| local.declared_type.width() >= 32)
-            && function.locals.first().and_then(|local| local.initializer.as_ref()).is_some_and(|initializer| {
-                let register_names: std::collections::HashSet<&str> = function
-                    .parameters
-                    .iter()
-                    .map(|parameter| parameter.name.as_str())
-                    .chain(function.locals.iter().map(|local| local.name.as_str()))
-                    .collect();
-                expression_reads_memory(initializer, &register_names)
-            });
+            && function
+                .locals
+                .first()
+                .is_some_and(|local| local.declared_type.width() >= 32)
+            && function
+                .locals
+                .first()
+                .and_then(|local| local.initializer.as_ref())
+                .is_some_and(|initializer| {
+                    let register_names: std::collections::HashSet<&str> = function
+                        .parameters
+                        .iter()
+                        .map(|parameter| parameter.name.as_str())
+                        .chain(function.locals.iter().map(|local| local.name.as_str()))
+                        .collect();
+                    expression_reads_memory(initializer, &register_names)
+                });
         // A function with no locals but a reassigned PARAMETER (`int f(int a){ a += 5; return a; }`)
         // is value-tracked too: the param's register is mutated in place and the inlined value
         // feeds the return. Only `has_assignment` distinguishes this from a plain no-locals body
@@ -160,15 +190,25 @@ impl Generator {
         // miscompile for negative values). A sign-INSENSITIVE use (`x | y`, `+`, `==`) is byte-exact
         // either way, so only defer when a reinterpreting local feeds a sign-sensitive op.
         for local in &function.locals {
-            let Some(initializer) = &local.initializer else { continue };
-            let Ok(initializer_signed) = self.signedness_of(initializer) else { continue };
+            let Some(initializer) = &local.initializer else {
+                continue;
+            };
+            let Ok(initializer_signed) = self.signedness_of(initializer) else {
+                continue;
+            };
             if initializer_signed == self.signed_of(local.declared_type) {
                 continue;
             }
-            let name: std::collections::HashSet<&str> = std::iter::once(local.name.as_str()).collect();
-            let feeds_sign_sensitive_op = function.return_expression.as_ref().is_some_and(|ret| used_in_sign_sensitive_op(ret, &name))
+            let name: std::collections::HashSet<&str> =
+                std::iter::once(local.name.as_str()).collect();
+            let feeds_sign_sensitive_op = function
+                .return_expression
+                .as_ref()
+                .is_some_and(|ret| used_in_sign_sensitive_op(ret, &name))
                 || function.statements.iter().any(|statement| match statement {
-                    Statement::Store { value, .. } | Statement::Assign { value, .. } => used_in_sign_sensitive_op(value, &name),
+                    Statement::Store { value, .. } | Statement::Assign { value, .. } => {
+                        used_in_sign_sensitive_op(value, &name)
+                    }
                     _ => false,
                 });
             if feeds_sign_sensitive_op {
@@ -194,19 +234,28 @@ impl Generator {
                 })
                 .chain(function.locals.iter().map(|local| local.name.as_str()))
                 .collect();
-            let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
+            let reads_written = |expression: &Expression| {
+                written
+                    .iter()
+                    .any(|name| expression_reads_name(expression, name))
+            };
             // A guard value must be a constant or a plain variable (the fold / temp-fold
             // forms below); a guard reading an assigned name or a local joins through r0
             // (not modeled), and calls or a void function defer as before.
             let supportable = function.return_type != Type::Void
                 && !function_makes_call(function)
-                && function
+                && function.guards.iter().all(|guard| {
+                    constant_value(&guard.value).is_some()
+                        || matches!(&guard.value, Expression::Variable(_))
+                })
+                && !function
                     .guards
                     .iter()
-                    .all(|guard| constant_value(&guard.value).is_some() || matches!(&guard.value, Expression::Variable(_)))
-                && !function.guards.iter().any(|guard| reads_written(&guard.condition) || reads_written(&guard.value));
+                    .any(|guard| reads_written(&guard.condition) || reads_written(&guard.value));
             if !supportable {
-                return Err(Diagnostic::error("value tracking combined with guards is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "value tracking combined with guards is not supported yet (roadmap)",
+                ));
             }
         }
         if function.return_type == Type::Void {
@@ -214,7 +263,11 @@ impl Generator {
             // effect — every local is dead (assigned but never stored, passed, or
             // returned), so mwcc dead-code-eliminates the whole body and emits just the
             // return. A store/call would be observable and is handled (or deferred) below.
-            if function.statements.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+            if function
+                .statements
+                .iter()
+                .all(|statement| matches!(statement, Statement::Assign { .. }))
+            {
                 self.emit_epilogue_and_return();
                 return Ok(true);
             }
@@ -228,14 +281,19 @@ impl Generator {
             if !function_makes_call(function) && function.guards.is_empty() {
                 if let [local] = function.locals.as_slice() {
                     let stores_the_local = function.statements.len() >= 2
-                        && function.statements.iter().all(|statement| matches!(statement,
+                        && function.statements.iter().all(|statement| {
+                            matches!(statement,
                             Statement::Store { target, value: Expression::Variable(name) }
-                                if *name == local.name && self.is_scratch_safe_store_target(target)));
+                                if *name == local.name && self.is_scratch_safe_store_target(target))
+                        });
                     let single_op_initializer = local
                         .initializer
                         .as_ref()
                         .is_some_and(|initializer| self.is_single_op_register_value(initializer));
-                    if stores_the_local && single_op_initializer && local.declared_type.width() == 32 {
+                    if stores_the_local
+                        && single_op_initializer
+                        && local.declared_type.width() == 32
+                    {
                         let initializer = local.initializer.as_ref().unwrap();
                         self.evaluate_general(initializer, GENERAL_SCRATCH)?;
                         self.locations.insert(
@@ -257,7 +315,9 @@ impl Generator {
                     }
                 }
             }
-            return Err(Diagnostic::error("value tracking for a void function is not supported yet (roadmap)"));
+            return Err(Diagnostic::error(
+                "value tracking for a void function is not supported yet (roadmap)",
+            ));
         }
 
         // Build each local's current value, in order: a declaration initializes it,
@@ -282,7 +342,11 @@ impl Generator {
                     let value = substitute(value, &values);
                     values.insert(name.clone(), value);
                 }
-                _ => return Err(Diagnostic::error("value tracking with stores or calls is not supported yet (roadmap)")),
+                _ => {
+                    return Err(Diagnostic::error(
+                        "value tracking with stores or calls is not supported yet (roadmap)",
+                    ))
+                }
             }
         }
 
@@ -293,7 +357,9 @@ impl Generator {
                 self.emit_epilogue_and_return();
                 return Ok(true);
             }
-            return Err(Diagnostic::error("a non-void function needs a return value"));
+            return Err(Diagnostic::error(
+                "a non-void function needs a return value",
+            ));
         };
         guard_no_duplication(return_expression, &values)?;
         let inlined = substitute(return_expression, &values);
@@ -311,7 +377,9 @@ impl Generator {
         // (A single constant STEP like `t = t + 5` also reassociates in mwcc, but our
         // direct codegen matches only for `+`, not `-` — `(a+b)-5` reassociates in mwcc
         // yet lowers in place here — so the whole additive chain stays deferred.)
-        let all_values_constant = values.values().all(|value| matches!(value, Expression::IntegerLiteral(_)));
+        let all_values_constant = values
+            .values()
+            .all(|value| matches!(value, Expression::IntegerLiteral(_)));
         if has_additive_chain(&inlined) && !all_values_constant {
             return Err(Diagnostic::error("a value-tracked local folded into a multi-term sum needs the register allocator to match mwcc's in-place mutation (roadmap)"));
         }
@@ -342,7 +410,10 @@ impl Generator {
                     && location.class == ValueClass::General
                     && expression_reads_name(&inlined, name)
             });
-            let all_constant = function.guards.iter().all(|guard| constant_value(&guard.value).is_some());
+            let all_constant = function
+                .guards
+                .iter()
+                .all(|guard| constant_value(&guard.value).is_some());
             let distinct_parameter_reads = function
                 .parameters
                 .iter()
@@ -377,14 +448,27 @@ impl Generator {
                 let guard = &function.guards[0];
                 let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
                 self.evaluate_tail(&inlined, function.return_type, result)?;
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options,
+                        condition_bit,
+                    });
                 let Expression::Variable(name) = &guard.value else {
-                    return Err(Diagnostic::error("a computed guard value is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a computed guard value is not supported yet (roadmap)",
+                    ));
                 };
                 let Some(register) = self.lookup_general(name) else {
-                    return Err(Diagnostic::error("a non-general guard value is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a non-general guard value is not supported yet (roadmap)",
+                    ));
                 };
-                self.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
+                self.output.instructions.push(Instruction::Or {
+                    a: result,
+                    s: register,
+                    b: register,
+                });
                 self.emit_epilogue_and_return();
             } else if function.guards.len() == 1
                 && matches!(function.return_type, Type::Int | Type::UnsignedInt)
@@ -395,24 +479,57 @@ impl Generator {
                 let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
                 self.evaluate_general(&inlined, GENERAL_SCRATCH)?;
                 if let Some(constant) = constant_value(&guard.value) {
-                    let immediate = i16::try_from(constant)
-                        .map_err(|_| Diagnostic::error("a guard constant outside the li range is not supported yet (roadmap)"))?;
-                    self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate });
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                    let immediate = i16::try_from(constant).map_err(|_| {
+                        Diagnostic::error(
+                            "a guard constant outside the li range is not supported yet (roadmap)",
+                        )
+                    })?;
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: result,
+                        a: 0,
+                        immediate,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: options ^ 8,
+                            condition_bit,
+                        });
                 } else {
                     let Expression::Variable(name) = &guard.value else {
-                        return Err(Diagnostic::error("a computed guard value is not supported yet (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "a computed guard value is not supported yet (roadmap)",
+                        ));
                     };
                     let Some(register) = self.lookup_general(name) else {
-                        return Err(Diagnostic::error("a non-general guard value is not supported yet (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "a non-general guard value is not supported yet (roadmap)",
+                        ));
                     };
-                    self.output.instructions.push(Instruction::Or { a: result, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
-                    self.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
+                    self.output.instructions.push(Instruction::Or {
+                        a: result,
+                        s: GENERAL_SCRATCH,
+                        b: GENERAL_SCRATCH,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options,
+                            condition_bit,
+                        });
+                    self.output.instructions.push(Instruction::Or {
+                        a: result,
+                        s: register,
+                        b: register,
+                    });
                     self.emit_epilogue_and_return();
                     return Ok(true);
                 }
-                self.output.instructions.push(Instruction::Or { a: result, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::Or {
+                    a: result,
+                    s: GENERAL_SCRATCH,
+                    b: GENERAL_SCRATCH,
+                });
                 self.emit_epilogue_and_return();
             } else if function.guards.len() == 1
                 && guard_value_in_result_register
@@ -426,10 +543,14 @@ impl Generator {
                 //   `cmpwi; addi r0,b,1; ble skip; mr r0,a; skip: mr r3,r0; blr`.
                 let guard = &function.guards[0];
                 let Expression::Variable(name) = &guard.value else {
-                    return Err(Diagnostic::error("a computed guard value is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a computed guard value is not supported yet (roadmap)",
+                    ));
                 };
                 let Some(value_register) = self.lookup_general(name) else {
-                    return Err(Diagnostic::error("a non-general guard value is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a non-general guard value is not supported yet (roadmap)",
+                    ));
                 };
                 // emit_condition_test returns the branch-if-FALSE options (the forward-if convention),
                 // which is exactly what skips the guard-value load when the guard does not hold. A
@@ -447,14 +568,30 @@ impl Generator {
                     condition
                 };
                 let branch_index = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options,
+                        condition_bit,
+                        target: 0,
+                    });
                 // Guard TRUE (fall-through): overwrite the tail with the guard value.
-                self.output.instructions.push(Instruction::Or { a: GENERAL_SCRATCH, s: value_register, b: value_register });
+                self.output.instructions.push(Instruction::Or {
+                    a: GENERAL_SCRATCH,
+                    s: value_register,
+                    b: value_register,
+                });
                 let merge = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                if let Instruction::BranchConditionalForward { target, .. } =
+                    &mut self.output.instructions[branch_index]
+                {
                     *target = merge;
                 }
-                self.output.instructions.push(Instruction::Or { a: result, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::Or {
+                    a: result,
+                    s: GENERAL_SCRATCH,
+                    b: GENERAL_SCRATCH,
+                });
                 self.emit_epilogue_and_return();
             } else {
                 return Err(Diagnostic::error(
@@ -501,15 +638,25 @@ impl Generator {
         let [local] = function.locals.as_slice() else {
             return Ok(false);
         };
-        if &local.name != returned || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+        if &local.name != returned || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+        {
             return Ok(false);
         }
         // Every parameter must be a plain 32-bit integer, so parameter index k is the
         // GPR r3+k — a float/double or narrow parameter would break that liveness.
-        if function.parameters.iter().any(|parameter| !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)) {
+        if function
+            .parameters
+            .iter()
+            .any(|parameter| !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt))
+        {
             return Ok(false);
         }
-        let parameter_name = |index: usize| function.parameters.get(index).map(|parameter| parameter.name.as_str());
+        let parameter_name = |index: usize| {
+            function
+                .parameters
+                .get(index)
+                .map(|parameter| parameter.name.as_str())
+        };
         let step_operator = |operator: &BinaryOperator| match operator {
             BinaryOperator::Add => Some(AccumulatorOp::Add),
             BinaryOperator::Subtract => Some(AccumulatorOp::Subtract),
@@ -522,7 +669,12 @@ impl Generator {
         // in a later STEP instead reassociates the chain (`t=t+5` -> `a+(b+5)`), which
         // the substitution path owns, so the step loop below admits register operands only.
         let result = Eabi::general_result().number;
-        let Some(Expression::Binary { operator: init_operator, left: init_left, right: init_right }) = local.initializer.as_ref() else {
+        let Some(Expression::Binary {
+            operator: init_operator,
+            left: init_left,
+            right: init_right,
+        }) = local.initializer.as_ref()
+        else {
             return Ok(false);
         };
         let (init_left, init_right) = (init_left.as_ref(), init_right.as_ref());
@@ -532,18 +684,26 @@ impl Generator {
         if Some(init_left_name.as_str()) != parameter_name(0) {
             return Ok(false);
         }
-        let (Some(init_operator), Some(left_register)) = (step_operator(init_operator), self.lookup_general(init_left_name)) else {
+        let (Some(init_operator), Some(left_register)) = (
+            step_operator(init_operator),
+            self.lookup_general(init_left_name),
+        ) else {
             return Ok(false);
         };
         // `first_step_parameter` is the parameter index the step chain starts at: a
         // register init consumes p0,p1 (steps start at p2); a constant init consumes
         // only p0 (steps start at p1).
         let (init_instruction, first_step_parameter) = match init_right {
-            Expression::Variable(init_right_name) if Some(init_right_name.as_str()) == parameter_name(1) => {
+            Expression::Variable(init_right_name)
+                if Some(init_right_name.as_str()) == parameter_name(1) =>
+            {
                 let Some(right_register) = self.lookup_general(init_right_name) else {
                     return Ok(false);
                 };
-                (accumulate(init_operator, result, left_register, right_register), 2)
+                (
+                    accumulate(init_operator, result, left_register, right_register),
+                    2,
+                )
             }
             _ => {
                 let Some(constant) = constant_value(init_right) else {
@@ -551,7 +711,9 @@ impl Generator {
                 };
                 // Out of the signed-16-bit immediate range mwcc materializes the constant
                 // (`addis`/`lis`), a form left to defer.
-                let Some(instruction) = accumulate_immediate(init_operator, result, left_register, constant) else {
+                let Some(instruction) =
+                    accumulate_immediate(init_operator, result, left_register, constant)
+                else {
                     return Ok(false);
                 };
                 (instruction, 1)
@@ -566,13 +728,22 @@ impl Generator {
             if name != returned {
                 return Ok(false);
             }
-            let Expression::Binary { operator, left, right } = value else {
+            let Expression::Binary {
+                operator,
+                left,
+                right,
+            } = value
+            else {
                 return Ok(false);
             };
-            let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) else {
+            let (Expression::Variable(left_name), Expression::Variable(right_name)) =
+                (left.as_ref(), right.as_ref())
+            else {
                 return Ok(false);
             };
-            if left_name != returned || Some(right_name.as_str()) != parameter_name(first_step_parameter + index) {
+            if left_name != returned
+                || Some(right_name.as_str()) != parameter_name(first_step_parameter + index)
+            {
                 return Ok(false);
             }
             let Some(operator) = step_operator(operator) else {
@@ -587,7 +758,9 @@ impl Generator {
         // Emit: the accumulator lives in the result register for the whole chain.
         self.output.instructions.push(init_instruction);
         for (operator, register) in steps {
-            self.output.instructions.push(accumulate(operator, result, result, register));
+            self.output
+                .instructions
+                .push(accumulate(operator, result, result, register));
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -608,9 +781,21 @@ enum AccumulatorOp {
 /// right, left` because `subf` computes `b - a` (the subtrahend fills the `a` field).
 fn accumulate(operator: AccumulatorOp, dst: u8, left: u8, right: u8) -> Instruction {
     match operator {
-        AccumulatorOp::Add => Instruction::Add { d: dst, a: left, b: right },
-        AccumulatorOp::Subtract => Instruction::SubtractFrom { d: dst, a: right, b: left },
-        AccumulatorOp::Multiply => Instruction::MultiplyLow { d: dst, a: left, b: right },
+        AccumulatorOp::Add => Instruction::Add {
+            d: dst,
+            a: left,
+            b: right,
+        },
+        AccumulatorOp::Subtract => Instruction::SubtractFrom {
+            d: dst,
+            a: right,
+            b: left,
+        },
+        AccumulatorOp::Multiply => Instruction::MultiplyLow {
+            d: dst,
+            a: left,
+            b: right,
+        },
     }
 }
 
@@ -619,11 +804,28 @@ fn accumulate(operator: AccumulatorOp, dst: u8, left: u8, right: u8) -> Instruct
 /// (subtraction is `+ (-c)`), and `mulli dst,left,c` for `*`. Returns `None` when the
 /// constant does not fit the signed 16-bit immediate field — mwcc materializes it
 /// with `addis`/`lis` there, a form left to defer.
-fn accumulate_immediate(operator: AccumulatorOp, dst: u8, left: u8, constant: i64) -> Option<Instruction> {
+fn accumulate_immediate(
+    operator: AccumulatorOp,
+    dst: u8,
+    left: u8,
+    constant: i64,
+) -> Option<Instruction> {
     Some(match operator {
-        AccumulatorOp::Add => Instruction::AddImmediate { d: dst, a: left, immediate: i16::try_from(constant).ok()? },
-        AccumulatorOp::Subtract => Instruction::AddImmediate { d: dst, a: left, immediate: i16::try_from(constant.checked_neg()?).ok()? },
-        AccumulatorOp::Multiply => Instruction::MultiplyImmediate { d: dst, a: left, immediate: i16::try_from(constant).ok()? },
+        AccumulatorOp::Add => Instruction::AddImmediate {
+            d: dst,
+            a: left,
+            immediate: i16::try_from(constant).ok()?,
+        },
+        AccumulatorOp::Subtract => Instruction::AddImmediate {
+            d: dst,
+            a: left,
+            immediate: i16::try_from(constant.checked_neg()?).ok()?,
+        },
+        AccumulatorOp::Multiply => Instruction::MultiplyImmediate {
+            d: dst,
+            a: left,
+            immediate: i16::try_from(constant).ok()?,
+        },
     })
 }
 
@@ -632,40 +834,80 @@ fn accumulate_immediate(operator: AccumulatorOp, dst: u8, left: u8, constant: i6
 /// Whether `expression` uses any of `names` as an operand of a SIGN-SENSITIVE operation — a right
 /// shift, a divide/modulo, or a relational comparison — where the operand's signedness selects the
 /// instruction (`srwi`/`srawi`, `divwu`/`divw`, `cmplw`/`cmpw`).
-fn used_in_sign_sensitive_op(expression: &Expression, names: &std::collections::HashSet<&str>) -> bool {
+fn used_in_sign_sensitive_op(
+    expression: &Expression,
+    names: &std::collections::HashSet<&str>,
+) -> bool {
     match expression {
         Expression::CompoundLiteral { .. } => false,
         Expression::CallThrough { .. } => true, // conservative: an indirect call blocks folds
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative: block folds through a postfix step
-        Expression::Binary { operator, left, right } => {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
             let sign_sensitive = matches!(
                 operator,
-                BinaryOperator::ShiftRight | BinaryOperator::Divide | BinaryOperator::Modulo
-                    | BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual
+                BinaryOperator::ShiftRight
+                    | BinaryOperator::Divide
+                    | BinaryOperator::Modulo
+                    | BinaryOperator::Less
+                    | BinaryOperator::Greater
+                    | BinaryOperator::LessEqual
+                    | BinaryOperator::GreaterEqual
             );
-            (sign_sensitive && (crate::analysis::reads_register(left, names) || crate::analysis::reads_register(right, names)))
+            (sign_sensitive
+                && (crate::analysis::reads_register(left, names)
+                    || crate::analysis::reads_register(right, names)))
                 || used_in_sign_sensitive_op(left, names)
                 || used_in_sign_sensitive_op(right, names)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } | Expression::AddressOf { operand } => used_in_sign_sensitive_op(operand, names),
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::AddressOf { operand } => used_in_sign_sensitive_op(operand, names),
         Expression::Dereference { pointer } => used_in_sign_sensitive_op(pointer, names),
-        Expression::Conditional { condition, when_true, when_false } => {
-            used_in_sign_sensitive_op(condition, names) || used_in_sign_sensitive_op(when_true, names) || used_in_sign_sensitive_op(when_false, names)
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            used_in_sign_sensitive_op(condition, names)
+                || used_in_sign_sensitive_op(when_true, names)
+                || used_in_sign_sensitive_op(when_false, names)
         }
-        Expression::Index { base, index } => used_in_sign_sensitive_op(base, names) || used_in_sign_sensitive_op(index, names),
-        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => used_in_sign_sensitive_op(base, names),
-        Expression::Call { arguments, .. } => arguments.iter().any(|argument| used_in_sign_sensitive_op(argument, names)),
-        Expression::Assign { target, value } => used_in_sign_sensitive_op(target, names) || used_in_sign_sensitive_op(value, names),
-        Expression::Comma { left, right } => used_in_sign_sensitive_op(left, names) || used_in_sign_sensitive_op(right, names),
-        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+        Expression::Index { base, index } => {
+            used_in_sign_sensitive_op(base, names) || used_in_sign_sensitive_op(index, names)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            used_in_sign_sensitive_op(base, names)
+        }
+        Expression::Call { arguments, .. } => arguments
+            .iter()
+            .any(|argument| used_in_sign_sensitive_op(argument, names)),
+        Expression::Assign { target, value } => {
+            used_in_sign_sensitive_op(target, names) || used_in_sign_sensitive_op(value, names)
+        }
+        Expression::Comma { left, right } => {
+            used_in_sign_sensitive_op(left, names) || used_in_sign_sensitive_op(right, names)
+        }
+        Expression::Variable(_)
+        | Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => false,
     }
 }
 
-pub(crate) fn guard_no_duplication(expression: &Expression, values: &HashMap<String, Expression>) -> Compilation<()> {
+pub(crate) fn guard_no_duplication(
+    expression: &Expression,
+    values: &HashMap<String, Expression>,
+) -> Compilation<()> {
     for (name, value) in values {
         if !is_leaf_value(value) && count_references(name, expression) > 1 {
-            return Err(Diagnostic::error("value tracking would duplicate a computation (needs CSE, roadmap)"));
+            return Err(Diagnostic::error(
+                "value tracking would duplicate a computation (needs CSE, roadmap)",
+            ));
         }
     }
     Ok(())
@@ -678,35 +920,67 @@ pub(crate) fn guard_no_duplication(expression: &Expression, values: &HashMap<Str
 /// forms disagree.
 fn has_additive_chain(expression: &Expression) -> bool {
     fn additive(expression: &Expression) -> bool {
-        matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, .. })
+        matches!(
+            expression,
+            Expression::Binary {
+                operator: BinaryOperator::Add | BinaryOperator::Subtract,
+                ..
+            }
+        )
     }
     match expression {
         Expression::CompoundLiteral { .. } => false,
         Expression::CallThrough { .. } => true, // conservative
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative
-        Expression::Binary { operator, left, right } => {
-            (matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) && (additive(left) || additive(right)))
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            (matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
+                && (additive(left) || additive(right)))
                 || has_additive_chain(left)
                 || has_additive_chain(right)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } | Expression::AddressOf { operand } => has_additive_chain(operand),
-        Expression::Conditional { condition, when_true, when_false } => {
-            has_additive_chain(condition) || has_additive_chain(when_true) || has_additive_chain(when_false)
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::AddressOf { operand } => has_additive_chain(operand),
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            has_additive_chain(condition)
+                || has_additive_chain(when_true)
+                || has_additive_chain(when_false)
         }
         Expression::Dereference { pointer } => has_additive_chain(pointer),
         Expression::Index { base, index } => has_additive_chain(base) || has_additive_chain(index),
-        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => has_additive_chain(base),
-        Expression::Assign { target, value } => has_additive_chain(target) || has_additive_chain(value),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            has_additive_chain(base)
+        }
+        Expression::Assign { target, value } => {
+            has_additive_chain(target) || has_additive_chain(value)
+        }
         Expression::Comma { left, right } => has_additive_chain(left) || has_additive_chain(right),
         Expression::Call { arguments, .. } => arguments.iter().any(has_additive_chain),
-        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+        Expression::Variable(_)
+        | Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => false,
     }
 }
 
 /// Whether an expression is a leaf (free to duplicate): a variable or literal.
 fn is_leaf_value(expression: &Expression) -> bool {
-    matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_))
+    matches!(
+        expression,
+        Expression::Variable(_)
+            | Expression::IntegerLiteral(_)
+            | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_)
+    )
 }
 
 /// Count references to the variable `name` within `expression`.
@@ -714,32 +988,58 @@ fn count_references(name: &str, expression: &Expression) -> usize {
     match expression {
         Expression::CompoundLiteral { .. } => 0,
         Expression::CallThrough { target, arguments } => {
-            count_references(name, target) + arguments.iter().map(|argument| count_references(name, argument)).sum::<usize>()
+            count_references(name, target)
+                + arguments
+                    .iter()
+                    .map(|argument| count_references(name, argument))
+                    .sum::<usize>()
         }
         Expression::AggregateLiteral(_) => 0,
         Expression::PostStep { target, .. } => 2 * count_references(name, target),
         Expression::Variable(variable) => usize::from(variable == name),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => 0,
-        Expression::Binary { left, right, .. } => count_references(name, left) + count_references(name, right),
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => 0,
+        Expression::Binary { left, right, .. } => {
+            count_references(name, left) + count_references(name, right)
+        }
         Expression::Unary { operand, .. } => count_references(name, operand),
-        Expression::Conditional { condition, when_true, when_false } => {
-            count_references(name, condition) + count_references(name, when_true) + count_references(name, when_false)
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            count_references(name, condition)
+                + count_references(name, when_true)
+                + count_references(name, when_false)
         }
         Expression::Cast { operand, .. } => count_references(name, operand),
         Expression::Dereference { pointer } => count_references(name, pointer),
-        Expression::Index { base, index } => count_references(name, base) + count_references(name, index),
+        Expression::Index { base, index } => {
+            count_references(name, base) + count_references(name, index)
+        }
         Expression::Member { base, .. } => count_references(name, base),
         Expression::MemberAddress { base, .. } => count_references(name, base),
         Expression::AddressOf { operand } => count_references(name, operand),
-        Expression::Assign { target, value } => count_references(name, target) + count_references(name, value),
-        Expression::Comma { left, right } => count_references(name, left) + count_references(name, right),
-        Expression::Call { arguments, .. } => arguments.iter().map(|argument| count_references(name, argument)).sum(),
+        Expression::Assign { target, value } => {
+            count_references(name, target) + count_references(name, value)
+        }
+        Expression::Comma { left, right } => {
+            count_references(name, left) + count_references(name, right)
+        }
+        Expression::Call { arguments, .. } => arguments
+            .iter()
+            .map(|argument| count_references(name, argument))
+            .sum(),
     }
 }
 
 /// Replace every value-tracked local in `expression` with its current value,
 /// recursively. Names not in `values` (parameters, globals) are left untouched.
-pub(crate) fn substitute(expression: &Expression, values: &HashMap<String, Expression>) -> Expression {
+pub(crate) fn substitute(
+    expression: &Expression,
+    values: &HashMap<String, Expression>,
+) -> Expression {
     match expression {
         Expression::CompoundLiteral { .. } => expression.clone(),
         // Never substitute through an indirect call (its target is a live load).
@@ -747,43 +1047,75 @@ pub(crate) fn substitute(expression: &Expression, values: &HashMap<String, Expre
         other @ Expression::AggregateLiteral(_) => other.clone(),
         // A postfix step mutates its target — never substitute through it.
         Expression::PostStep { .. } => expression.clone(),
-        Expression::Variable(name) => values.get(name).cloned().unwrap_or_else(|| expression.clone()),
-        Expression::Binary { operator, left, right } => Expression::Binary {
+        Expression::Variable(name) => values
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| expression.clone()),
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => Expression::Binary {
             operator: *operator,
             left: Box::new(substitute(left, values)),
             right: Box::new(substitute(right, values)),
         },
-        Expression::Unary { operator, operand } => {
-            Expression::Unary { operator: *operator, operand: Box::new(substitute(operand, values)) }
-        }
-        Expression::Conditional { condition, when_true, when_false } => Expression::Conditional {
+        Expression::Unary { operator, operand } => Expression::Unary {
+            operator: *operator,
+            operand: Box::new(substitute(operand, values)),
+        },
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => Expression::Conditional {
             condition: Box::new(substitute(condition, values)),
             when_true: Box::new(substitute(when_true, values)),
             when_false: Box::new(substitute(when_false, values)),
         },
-        Expression::Cast { target_type, operand } => {
-            Expression::Cast { target_type: *target_type, operand: Box::new(substitute(operand, values)) }
-        }
-        Expression::Dereference { pointer } => Expression::Dereference { pointer: Box::new(substitute(pointer, values)) },
-        Expression::AddressOf { operand } => Expression::AddressOf { operand: Box::new(substitute(operand, values)) },
+        Expression::Cast {
+            target_type,
+            operand,
+        } => Expression::Cast {
+            target_type: *target_type,
+            operand: Box::new(substitute(operand, values)),
+        },
+        Expression::Dereference { pointer } => Expression::Dereference {
+            pointer: Box::new(substitute(pointer, values)),
+        },
+        Expression::AddressOf { operand } => Expression::AddressOf {
+            operand: Box::new(substitute(operand, values)),
+        },
         Expression::Index { base, index } => Expression::Index {
             base: Box::new(substitute(base, values)),
             index: Box::new(substitute(index, values)),
         },
-        Expression::Member { base, offset, member_type, index_stride } => Expression::Member {
+        Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride,
+        } => Expression::Member {
             base: Box::new(substitute(base, values)),
             offset: *offset,
             member_type: *member_type,
             index_stride: *index_stride,
         },
-        Expression::MemberAddress { base, offset, element } => Expression::MemberAddress {
+        Expression::MemberAddress {
+            base,
+            offset,
+            element,
+        } => Expression::MemberAddress {
             base: Box::new(substitute(base, values)),
             offset: *offset,
             element: *element,
         },
         Expression::Call { name, arguments } => Expression::Call {
             name: name.clone(),
-            arguments: arguments.iter().map(|argument| substitute(argument, values)).collect(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute(argument, values))
+                .collect(),
         },
         Expression::Assign { target, value } => Expression::Assign {
             target: Box::new(substitute(target, values)),
@@ -793,6 +1125,8 @@ pub(crate) fn substitute(expression: &Expression, values: &HashMap<String, Expre
             left: Box::new(substitute(left, values)),
             right: Box::new(substitute(right, values)),
         },
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => expression.clone(),
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => expression.clone(),
     }
 }

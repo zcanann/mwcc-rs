@@ -12,7 +12,10 @@ const MEM_MEMCHR_MEL_AST_HASH: u64 = 0x5c5e7366a0760f34;
 impl Generator {
     pub(super) fn try_mem_memchr_mel(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "memchr"
-            || !matches!(function.return_type, Type::Pointer(_) | Type::StructPointer { .. })
+            || !matches!(
+                function.return_type,
+                Type::Pointer(_) | Type::StructPointer { .. }
+            )
             || function.parameters.len() != 3
             || !self.frame_slots.is_empty()
         {
@@ -31,23 +34,61 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [4, 7] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 4, s: 4, clear: 24 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 5, immediate: 1 });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: 4,
+                s: 4,
+                clear: 24,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: -1,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: 1,
+        });
         self.emit_branch_to(labels[&7]); // b
         self.bind_label(labels[&4]);
-        self.output.instructions.push(Instruction::LoadByteZeroWithUpdate { d: 0, a: 3, offset: 1 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: 4 });
-        self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: 12, condition_bit: 2 });
+        self.output
+            .instructions
+            .push(Instruction::LoadByteZeroWithUpdate {
+                d: 0,
+                a: 3,
+                offset: 1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: 4 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister {
+                options: 12,
+                condition_bit: 2,
+            });
         self.bind_label(labels[&7]);
-        self.output.instructions.push(Instruction::AddImmediateCarryingRecord { d: 5, a: 5, immediate: -1 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateCarryingRecord {
+                d: 5,
+                a: 5,
+                immediate: -1,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&4]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

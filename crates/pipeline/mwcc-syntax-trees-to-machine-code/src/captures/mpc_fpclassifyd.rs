@@ -36,50 +36,119 @@ impl Generator {
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [11, 16, 18, 20, 25, 27, 29, 30] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::load_immediate_shifted(0, 32752));
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::RotateAndMask { a: 3, s: 4, shift: 0, begin: 1, end: 11 });
-        self.output.instructions.push(Instruction::CompareWord { a: 3, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(0, 32752));
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 4,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: 3,
+            s: 4,
+            shift: 0,
+            begin: 1,
+            end: 11,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWord { a: 3, b: 0 });
         self.emit_branch_conditional_to(12, 2, labels[&11]); // beq
         self.emit_branch_conditional_to(4, 0, labels[&29]); // bge
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, labels[&20]); // beq
         self.emit_branch_to(labels[&29]); // b
         self.bind_label(labels[&11]);
-        self.output.instructions.push(Instruction::ClearLeftImmediateRecord { a: 0, s: 4, clear: 12 });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediateRecord {
+                a: 0,
+                s: 4,
+                clear: 12,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&16]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, labels[&18]); // beq
         self.bind_label(labels[&16]);
-        self.output.instructions.push(Instruction::load_immediate(3, 1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 1));
         self.emit_branch_to(labels[&30]); // b
         self.bind_label(labels[&18]);
-        self.output.instructions.push(Instruction::load_immediate(3, 2));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 2));
         self.emit_branch_to(labels[&30]); // b
         self.bind_label(labels[&20]);
-        self.output.instructions.push(Instruction::ClearLeftImmediateRecord { a: 0, s: 4, clear: 12 });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediateRecord {
+                a: 0,
+                s: 4,
+                clear: 12,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&25]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, labels[&27]); // beq
         self.bind_label(labels[&25]);
-        self.output.instructions.push(Instruction::load_immediate(3, 5));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 5));
         self.emit_branch_to(labels[&30]); // b
         self.bind_label(labels[&27]);
-        self.output.instructions.push(Instruction::load_immediate(3, 3));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 3));
         self.emit_branch_to(labels[&30]); // b
         self.bind_label(labels[&29]);
-        self.output.instructions.push(Instruction::load_immediate(3, 4));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 4));
         self.bind_label(labels[&30]);
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

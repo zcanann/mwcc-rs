@@ -36,44 +36,110 @@ impl Generator {
             }
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [20, 25] {
             labels.insert(target, self.fresh_label());
         }
         self.load_float_constant(0, f32::from_bits(0x00000000));
-        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
         self.emit_branch_conditional_to(4, 1, labels[&20]); // ble
-        self.output.instructions.push(Instruction::FloatReciprocalSqrtEstimate { d: 2, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatReciprocalSqrtEstimate { d: 2, b: 1 });
         self.load_float_constant(4, f32::from_bits(0x3f000000));
         self.load_float_constant(3, f32::from_bits(0x40400000));
-        self.output.instructions.push(Instruction::RoundToSingle { d: 2, b: 2 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 0, a: 2, c: 2 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 2, a: 4, c: 2 });
-        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractSingle { d: 0, a: 1, c: 0, b: 3 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 2, a: 2, c: 0 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 0, a: 2, c: 2 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 2, a: 4, c: 2 });
-        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractSingle { d: 0, a: 1, c: 0, b: 3 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 2, a: 2, c: 0 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 0, a: 2, c: 2 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 2, a: 4, c: 2 });
-        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractSingle { d: 0, a: 1, c: 0, b: 3 });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 1, a: 2, c: 0 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::RoundToSingle { d: 2, b: 2 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 0, a: 2, c: 2 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 2, a: 4, c: 2 });
+        self.output
+            .instructions
+            .push(Instruction::FloatNegativeMultiplySubtractSingle {
+                d: 0,
+                a: 1,
+                c: 0,
+                b: 3,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 2, a: 2, c: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 0, a: 2, c: 2 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 2, a: 4, c: 2 });
+        self.output
+            .instructions
+            .push(Instruction::FloatNegativeMultiplySubtractSingle {
+                d: 0,
+                a: 1,
+                c: 0,
+                b: 3,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 2, a: 2, c: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 0, a: 2, c: 2 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 2, a: 4, c: 2 });
+        self.output
+            .instructions
+            .push(Instruction::FloatNegativeMultiplySubtractSingle {
+                d: 0,
+                a: 1,
+                c: 0,
+                b: 3,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 1, a: 2, c: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(labels[&20]);
-        self.output.instructions.push(Instruction::FloatCompareUnordered { a: 1, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatCompareUnordered { a: 1, b: 0 });
         self.emit_branch_conditional_to(12, 2, labels[&25]); // beq
         self.record_relocation(RelocationKind::Addr16Ha, "__float_nan");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
         self.record_relocation(RelocationKind::Addr16Lo, "__float_nan");
-        self.output.instructions.push(Instruction::LoadFloatSingle { d: 1, a: 3, offset: 0 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadFloatSingle {
+            d: 1,
+            a: 3,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(labels[&25]);
         self.record_relocation(RelocationKind::Addr16Ha, "__float_huge");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
         self.record_relocation(RelocationKind::Addr16Lo, "__float_huge");
-        self.output.instructions.push(Instruction::LoadFloatSingle { d: 1, a: 3, offset: 0 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadFloatSingle {
+            d: 1,
+            a: 3,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

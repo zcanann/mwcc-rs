@@ -32,7 +32,7 @@ sjis="$FFCC/build/tools/sjiswrap.exe"
 compiler="$FFCC/build/compilers/GC/$version/mwcceppc.exe"
 objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
 here="$(cd "$(dirname "$0")/.." && pwd)"
-ours="$here/target/release/mwcc"
+ours="${MWCC_BIN:-$here/target/release/mwcc}"
 
 project="$(cd "$project" && pwd)"
 dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"

@@ -36,18 +36,39 @@ impl Generator {
         };
         // -- emit (the capture, verbatim) --
         self.output.symbol_order = ["__CARDBlock"].into_iter().map(String::from).collect();
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::MultiplyImmediate { d: 0, a: 3, immediate: 272 });
+        self.output
+            .instructions
+            .push(Instruction::MultiplyImmediate {
+                d: 0,
+                a: 3,
+                immediate: 272,
+            });
         self.record_relocation(RelocationKind::Addr16Ha, "__CARDBlock");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
         self.record_relocation(RelocationKind::Addr16Lo, "__CARDBlock");
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
-        self.output.instructions.push(Instruction::Add { d: 3, a: 3, b: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 3, offset: 184 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 3, a: 3, b: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 3,
+            offset: 184,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

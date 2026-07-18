@@ -42,108 +42,381 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [7, 9, 32, 48, 60, 65, 76, 81, 82] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
         self.record_relocation(RelocationKind::Addr16Ha, "fix_pool_sizes");
-        self.output.instructions.push(Instruction::load_immediate_shifted(6, 0));
-        self.output.instructions.push(Instruction::load_immediate(7, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(6, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(7, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.record_relocation(RelocationKind::Addr16Lo, "fix_pool_sizes");
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 6, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 6,
+            immediate: 0,
+        });
         self.emit_branch_to(labels[&9]); // b
         self.bind_label(labels[&7]);
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 6, immediate: 4 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 7, a: 7, immediate: 1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 6,
+            immediate: 4,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 7,
+            a: 7,
+            immediate: 1,
+        });
         self.bind_label(labels[&9]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 5, b: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 6,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 5, b: 0 });
         self.emit_branch_conditional_to(12, 1, labels[&7]); // bgt
-        self.output.instructions.push(Instruction::AddImmediate { d: 8, a: 4, immediate: -4 });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 5, s: 7, shift: 3 });
-        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 4, offset: -4 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 5, immediate: 4 });
-        self.output.instructions.push(Instruction::Add { d: 5, a: 3, b: 5 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 12 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 8,
+            a: 4,
+            immediate: -4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 5,
+                s: 7,
+                shift: 3,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 4,
+            a: 4,
+            offset: -4,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 5, a: 3, b: 5 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&48]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 5, offset: 4 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 6, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 5,
+            offset: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 6, b: 4 });
         self.emit_branch_conditional_to(12, 2, labels[&48]); // beq
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 5,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: 4 });
         self.emit_branch_conditional_to(4, 2, labels[&32]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 5,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 0,
+        });
         self.emit_branch_to(labels[&48]); // b
         self.bind_label(labels[&32]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 6, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 5, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 6, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 5, offset: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 6,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 5,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 6,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 5,
+            offset: 4,
+        });
         self.bind_label(labels[&48]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 12 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 8, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 8, a: 4, offset: 12 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 16 });
-        self.output.instructions.push(Instruction::AddImmediateCarryingRecord { d: 0, a: 6, immediate: -1 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 4, offset: 16 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 8,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 8,
+            a: 4,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateCarryingRecord {
+                d: 0,
+                a: 6,
+                immediate: -1,
+            });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 4,
+            offset: 16,
+        });
         self.emit_branch_conditional_to(4, 2, labels[&82]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 5, offset: 4 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 5,
+            offset: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: 4 });
         self.emit_branch_conditional_to(4, 2, labels[&60]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 4,
+        });
         self.bind_label(labels[&60]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 5,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: 4 });
         self.emit_branch_conditional_to(4, 2, labels[&65]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 0,
+        });
         self.bind_label(labels[&65]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 6, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 5, offset: 4 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 6,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 4,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 5,
+            offset: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: 4 });
         self.emit_branch_conditional_to(4, 2, labels[&76]); // bne
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 4 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 4,
+        });
         self.bind_label(labels[&76]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 5,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: 4 });
         self.emit_branch_conditional_to(4, 2, labels[&81]); // bne
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 0 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 0,
+        });
         self.bind_label(labels[&81]);
         self.record_relocation(RelocationKind::Rel24, "deallocate_from_var_pools");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "deallocate_from_var_pools".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "deallocate_from_var_pools".to_string(),
+        });
         self.bind_label(labels[&82]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

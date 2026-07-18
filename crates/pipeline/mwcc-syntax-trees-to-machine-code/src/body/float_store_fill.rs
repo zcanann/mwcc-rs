@@ -16,7 +16,10 @@ impl Generator {
     /// once into f0 and reuses it. The integer constant-store-fill excludes float globals
     /// (is_scratch_safe_store_target), so this is the float sibling. A MIXED run (some repeated,
     /// some distinct) or an absolute-addressing target defers.
-    pub(crate) fn try_float_constant_store_fill(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_float_constant_store_fill(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if function_makes_call(function)
             || function.return_type != Type::Void
             || !function.guards.is_empty()
@@ -38,7 +41,11 @@ impl Generator {
         );
         let mut values = Vec::new();
         for statement in statements {
-            let Statement::Store { target: Expression::Variable(name), value: Expression::FloatLiteral(value) } = statement else {
+            let Statement::Store {
+                target: Expression::Variable(name),
+                value: Expression::FloatLiteral(value),
+            } = statement
+            else {
                 return Ok(false);
             };
             let matches_type = match self.globals.get(name.as_str()) {
@@ -107,7 +114,13 @@ impl Generator {
         // The first statement fixes the base pointer name and the run's width (float vs double).
         let (base_name, run_is_double) = match statements.first() {
             Some(Statement::Store {
-                target: Expression::Member { base, member_type, index_stride: None, .. },
+                target:
+                    Expression::Member {
+                        base,
+                        member_type,
+                        index_stride: None,
+                        ..
+                    },
                 value: Expression::FloatLiteral(_),
             }) => match (base.as_ref(), member_type) {
                 (Expression::Variable(name), Type::Double) => (name.clone(), true),
@@ -120,9 +133,16 @@ impl Generator {
         let mut offsets = Vec::new();
         for statement in statements {
             let Statement::Store {
-                target: Expression::Member { base, offset, member_type, index_stride: None },
+                target:
+                    Expression::Member {
+                        base,
+                        offset,
+                        member_type,
+                        index_stride: None,
+                    },
                 value: Expression::FloatLiteral(value),
-            } = statement else {
+            } = statement
+            else {
                 return Ok(false);
             };
             match base.as_ref() {
@@ -149,9 +169,17 @@ impl Generator {
         let distinct: std::collections::HashSet<u64> = keys.iter().copied().collect();
         let emit_store = |generator: &mut Self, register: u8, offset: u16| {
             let instruction = if run_is_double {
-                Instruction::StoreFloatDouble { s: register, a: base_register, offset: offset as i16 }
+                Instruction::StoreFloatDouble {
+                    s: register,
+                    a: base_register,
+                    offset: offset as i16,
+                }
             } else {
-                Instruction::StoreFloatSingle { s: register, a: base_register, offset: offset as i16 }
+                Instruction::StoreFloatSingle {
+                    s: register,
+                    a: base_register,
+                    offset: offset as i16,
+                }
             };
             generator.output.instructions.push(instruction);
         };
@@ -258,20 +286,35 @@ impl Generator {
         let mut parsed: Vec<(String, u16, Pointee, Materialize)> = Vec::new();
         for statement in statements {
             let Statement::Store {
-                target: Expression::Member { base, offset, member_type, index_stride: None },
+                target:
+                    Expression::Member {
+                        base,
+                        offset,
+                        member_type,
+                        index_stride: None,
+                    },
                 value,
-            } = statement else {
+            } = statement
+            else {
                 return Ok(false);
             };
-            let Expression::Variable(name) = base.as_ref() else { return Ok(false); };
-            let Some(pointee) = pointee_of_type(*member_type) else { return Ok(false); };
+            let Expression::Variable(name) = base.as_ref() else {
+                return Ok(false);
+            };
+            let Some(pointee) = pointee_of_type(*member_type) else {
+                return Ok(false);
+            };
             let materialize = match pointee {
                 Pointee::Float | Pointee::Double => {
-                    let Expression::FloatLiteral(literal) = value else { return Ok(false); };
+                    let Expression::FloatLiteral(literal) = value else {
+                        return Ok(false);
+                    };
                     Materialize::Float(*literal, matches!(pointee, Pointee::Double))
                 }
                 _ => {
-                    let Expression::IntegerLiteral(literal) = value else { return Ok(false); };
+                    let Expression::IntegerLiteral(literal) = value else {
+                        return Ok(false);
+                    };
                     // Only a single-`li` integer (fits a signed 16-bit immediate). A wider value
                     // materializes with `lis;addi`, and mwcc slots the float load into that gap
                     // (`lis r4; lfs f0; addi r0,r4; …`) — a scheduler interleave, left to defer.
@@ -287,7 +330,10 @@ impl Generator {
         if parsed[0].0 != parsed[1].0 {
             return Ok(false);
         }
-        let float_members = parsed.iter().filter(|(_, _, _, m)| matches!(m, Materialize::Float(..))).count();
+        let float_members = parsed
+            .iter()
+            .filter(|(_, _, _, m)| matches!(m, Materialize::Float(..)))
+            .count();
         if float_members != 1 {
             return Ok(false);
         }
@@ -297,8 +343,12 @@ impl Generator {
         // Materialize both values (source order), then both stores (source order).
         for (_, _, _, materialize) in &parsed {
             match materialize {
-                Materialize::Float(literal, double) => self.load_float_literal(FLOAT_SCRATCH, *literal, *double),
-                Materialize::Integer(literal) => self.load_integer_constant(GENERAL_SCRATCH, *literal),
+                Materialize::Float(literal, double) => {
+                    self.load_float_literal(FLOAT_SCRATCH, *literal, *double)
+                }
+                Materialize::Integer(literal) => {
+                    self.load_integer_constant(GENERAL_SCRATCH, *literal)
+                }
             }
         }
         for (_, offset, pointee, materialize) in &parsed {
@@ -306,7 +356,12 @@ impl Generator {
                 Materialize::Float(..) => FLOAT_SCRATCH,
                 Materialize::Integer(_) => GENERAL_SCRATCH,
             };
-            self.output.instructions.push(displacement_store(*pointee, register, base, *offset as i16)?);
+            self.output.instructions.push(displacement_store(
+                *pointee,
+                register,
+                base,
+                *offset as i16,
+            )?);
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -316,9 +371,17 @@ impl Generator {
     /// sets `base` to that effective address (the `@l` relocation rides the displacement field).
     fn push_float_store_update(&mut self, s: u8, base: u8, double: bool) {
         self.output.instructions.push(if double {
-            Instruction::StoreFloatDoubleWithUpdate { s, a: base, offset: 0 }
+            Instruction::StoreFloatDoubleWithUpdate {
+                s,
+                a: base,
+                offset: 0,
+            }
         } else {
-            Instruction::StoreFloatSingleWithUpdate { s, a: base, offset: 0 }
+            Instruction::StoreFloatSingleWithUpdate {
+                s,
+                a: base,
+                offset: 0,
+            }
         });
     }
 
@@ -367,12 +430,10 @@ impl Generator {
             Some(Statement::Store {
                 target: Expression::Index { base, index },
                 value: Expression::FloatLiteral(_),
-            }) if matches!(index.as_ref(), Expression::IntegerLiteral(0)) => {
-                match base.as_ref() {
-                    Expression::Variable(name) => name.clone(),
-                    _ => return Ok(false),
-                }
-            }
+            }) if matches!(index.as_ref(), Expression::IntegerLiteral(0)) => match base.as_ref() {
+                Expression::Variable(name) => name.clone(),
+                _ => return Ok(false),
+            },
             _ => return Ok(false),
         };
         let Some(&total_size) = self.global_array_sizes.get(array_name.as_str()) else {
@@ -380,7 +441,8 @@ impl Generator {
         };
         // A SMALL (SDA) array (≤8 bytes = exactly two `float`s) uses the SDA base
         // setup, handled below; anything larger takes the ADDR16 shared-base path.
-        let small = self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
+        let small =
+            self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
         let double = match self.globals.get(array_name.as_str()) {
             Some(Type::Double) => true,
             Some(Type::Float) => false,
@@ -393,14 +455,16 @@ impl Generator {
             let Statement::Store {
                 target: Expression::Index { base, index },
                 value: Expression::FloatLiteral(value),
-            } = statement else {
+            } = statement
+            else {
                 return Ok(false);
             };
             match base.as_ref() {
                 Expression::Variable(name) if *name == array_name => {}
                 _ => return Ok(false),
             }
-            if !matches!(index.as_ref(), Expression::IntegerLiteral(i) if *i == expected_index as i64) {
+            if !matches!(index.as_ref(), Expression::IntegerLiteral(i) if *i == expected_index as i64)
+            {
                 return Ok(false);
             }
             values.push(*value);
@@ -428,22 +492,40 @@ impl Generator {
             if all_same {
                 self.load_float_literal(FLOAT_SCRATCH, values[0], double);
                 self.record_relocation(RelocationKind::EmbSda21, &array_name);
-                self.output.instructions.push(Instruction::AddImmediate { d: base, a: 0, immediate: 0 });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: base,
+                    a: 0,
+                    immediate: 0,
+                });
                 fold_store(self, FLOAT_SCRATCH);
                 for i in 1..count {
-                    self.push_float_store_at(FLOAT_SCRATCH, base, (i as i64 * element_size) as i16, double);
+                    self.push_float_store_at(
+                        FLOAT_SCRATCH,
+                        base,
+                        (i as i64 * element_size) as i16,
+                        double,
+                    );
                 }
             } else {
                 let fpr = |i: usize| (count - 1 - i) as u8;
                 self.load_float_literal(fpr(0), values[0], double);
                 self.record_relocation(RelocationKind::EmbSda21, &array_name);
-                self.output.instructions.push(Instruction::AddImmediate { d: base, a: 0, immediate: 0 });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: base,
+                    a: 0,
+                    immediate: 0,
+                });
                 for i in 1..count {
                     self.load_float_literal(fpr(i), values[i], double);
                 }
                 fold_store(self, fpr(0));
                 for i in 1..count {
-                    self.push_float_store_at(fpr(i), base, (i as i64 * element_size) as i16, double);
+                    self.push_float_store_at(
+                        fpr(i),
+                        base,
+                        (i as i64 * element_size) as i16,
+                        double,
+                    );
                 }
             }
             self.emit_epilogue_and_return();
@@ -455,7 +537,12 @@ impl Generator {
             self.record_relocation(RelocationKind::Addr16Lo, &array_name);
             self.push_float_store_update(FLOAT_SCRATCH, base, double);
             for i in 1..count {
-                self.push_float_store_at(FLOAT_SCRATCH, base, (i as i64 * element_size) as i16, double);
+                self.push_float_store_at(
+                    FLOAT_SCRATCH,
+                    base,
+                    (i as i64 * element_size) as i16,
+                    double,
+                );
             }
         } else {
             let fpr = |i: usize| (count - 1 - i) as u8;

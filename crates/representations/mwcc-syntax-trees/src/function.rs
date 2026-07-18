@@ -89,21 +89,32 @@ impl ArmBody {
 pub enum Statement {
     /// `*pointer = value;` or `base[index] = value;` — a store to memory. The
     /// target is a `Dereference` or `Index` expression.
-    Store { target: Expression, value: Expression },
+    Store {
+        target: Expression,
+        value: Expression,
+    },
     /// `local = value;` — reassignment of a local variable (value-tracked, not a
     /// memory store).
     Assign { name: String, value: Expression },
     /// A bare expression evaluated for its side effects, e.g. `g();`.
     Expression(Expression),
     /// `if (condition) { then_body } [else { else_body }]` — a conditional block.
-    If { condition: Expression, then_body: Vec<Statement>, else_body: Vec<Statement> },
+    If {
+        condition: Expression,
+        then_body: Vec<Statement>,
+        else_body: Vec<Statement>,
+    },
     /// `return [value];` — an early return from within the body (as opposed to the
     /// function's trailing `return_expression`). `None` for `return;` in a void
     /// function.
     Return(Option<Expression>),
     /// `switch (scrutinee) { case V: return E; ... default: return D; }` — a
     /// terminal multi-way return (each arm and the default return a value).
-    Switch { scrutinee: Expression, arms: Vec<SwitchArm>, default: Option<ArmBody> },
+    Switch {
+        scrutinee: Expression,
+        arms: Vec<SwitchArm>,
+        default: Option<ArmBody>,
+    },
     /// `break;` — exit the innermost enclosing loop or switch. (A switch ARM's
     /// own terminating `break` is represented by `SwitchArm.falls_through`,
     /// not a trailing `Break`; this variant is a break in a NESTED position,
@@ -162,6 +173,11 @@ pub struct GlobalDeclaration {
     /// Declared array length `[N]`; `Some` for an array (an empty `[]` infers it
     /// from the initializer), `None` for a scalar.
     pub array_length: Option<u16>,
+    /// Whether at least one written array dimension was unsized (`[]`) and the
+    /// final length was inferred from the initializer. This source-level fact is
+    /// generation-sensitive even after `array_length` has been resolved: the
+    /// legacy compiler keeps such objects out of the small-data sections.
+    pub array_length_inferred: bool,
     /// The constant initializer's element values, in order (a scalar is one
     /// element, an aggregate `{a, b, ...}` is several). `Some` with any non-zero
     /// value places the global in `.sdata` (initialized data); `None` or all-zero
@@ -337,7 +353,10 @@ pub enum AsmOperand {
     ConditionRegister(u8),
     /// A relocated symbol reference `symbol@suffix`, e.g. `__constants@h` in
     /// `lis r4, __constants@h`. The immediate field is filled by the linker.
-    Symbol { name: String, suffix: AsmRelocSuffix },
+    Symbol {
+        name: String,
+        suffix: AsmRelocSuffix,
+    },
 }
 
 /// The `@`-suffix on an inline-`asm` symbol operand, selecting which 16-bit part of

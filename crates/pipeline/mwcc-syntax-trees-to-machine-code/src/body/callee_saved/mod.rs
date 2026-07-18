@@ -2,18 +2,39 @@
 //!
 //! Split by family (fire 547); behavior-identical.
 
-mod conditional;
 mod combine;
+mod computed_between_calls;
+mod conditional;
+mod context_callback_handler;
+mod critical_globals;
+mod fixed_read;
+mod fixed_rmw;
+mod fixed_rmw_inline_tail;
+mod fixed_rmw_leaf;
+mod fixed_rmw_recognize;
+mod frame_convention;
+mod global_swap;
+mod guarded_initialization;
+mod indirect_call_schedule;
+mod queue_initialization;
+mod queue_interrupt;
+mod queue_post;
+mod queue_service;
+mod queue_transactions;
+
+pub(crate) use queue_service::{summarize_queue_service, QueueServiceSummary};
+pub(crate) use queue_transactions::{summarize_queue_pop, QueuePopSummary};
 
 #[allow(unused_imports)]
 use super::*;
 
 impl Generator {
     /// The FLOAT callee-saved survivor (fire 406, C1): `return g(x) OP x;`
-    /// with a double parameter surviving one external call. Measured:
-    /// stwu -16; mflr; stw r0,20; stfd f31,8; fmr f31,f1; bl; lwz r0,20
-    /// (the LR reload FIRST); the op; lfd f31,8; mtlr; addi; blr. The
-    /// fmr copy leaves f1 holding x for the call itself.
+    /// with a double parameter surviving one external call. The fmr copy leaves
+    /// f1 holding x for the call itself. Build 163 uses a 24-byte linkage-first
+    /// frame and completes the floating operation before tearing it down; 2.4.x
+    /// uses a 16-byte predecrement frame and hoists the LR reload ahead of
+    /// add/sub (multiply remains ahead of the reload for latency).
     pub(crate) fn try_float_callee_saved(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty()
             || !function.statements.is_empty()
@@ -30,7 +51,12 @@ impl Generator {
             return Ok(false);
         }
         let x = x_param.name.as_str();
-        let Some(Expression::Binary { operator, left, right }) = &function.return_expression else {
+        let Some(Expression::Binary {
+            operator,
+            left,
+            right,
+        }) = &function.return_expression
+        else {
             return Ok(false);
         };
         // Call OP x, or x OP call. The emitted op reads (f31 = x) and
@@ -67,27 +93,99 @@ impl Generator {
         };
         // -- emit --
         self.non_leaf = true;
-        self.frame_size = 16;
         self.callee_saved_float = 1;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 31, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::FloatMove { d: 31, b: 1 });
-        self.record_relocation(RelocationKind::Rel24, callee);
-        self.output.instructions.push(Instruction::BranchAndLink { target: callee.to_string() });
-        // The MULTIPLY schedules ahead of the LR reload (its latency
-        // starts early — measured); add/sub follow the reload.
-        if matches!(op, Op::Mul) {
-            self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 31, c: 1 });
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+        let linkage_first = self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        let (saved_float_offset, link_load_offset) = if linkage_first {
+            self.frame_size = 24;
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -24,
+                });
+            (16, 28)
         } else {
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+            self.frame_size = 16;
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            });
+            (8, 20)
+        };
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 31,
+                a: 1,
+                offset: saved_float_offset,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 31, b: 1 });
+        self.record_relocation(RelocationKind::Rel24, callee);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: callee.to_string(),
+        });
+        // Build 163 finishes every floating operation before the epilogue.
+        // In 2.4.x, MULTIPLY alone schedules ahead of the LR reload so its
+        // latency starts early; add/sub follow the reload.
+        if linkage_first || matches!(op, Op::Mul) {
             match op {
-                Op::Add => self
+                Op::Add => {
+                    self.output
+                        .instructions
+                        .push(Instruction::FloatAddDouble { d: 1, a: 31, b: 1 })
+                }
+                Op::SubCallMinusX => self
                     .output
                     .instructions
-                    .push(Instruction::FloatAddDouble { d: 1, a: 31, b: 1 }),
+                    .push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 31 }),
+                Op::SubXMinusCall => self
+                    .output
+                    .instructions
+                    .push(Instruction::FloatSubtractDouble { d: 1, a: 31, b: 1 }),
+                Op::Mul => self
+                    .output
+                    .instructions
+                    .push(Instruction::FloatMultiplyDouble { d: 1, a: 31, c: 1 }),
+            }
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: link_load_offset,
+            });
+        } else {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: link_load_offset,
+            });
+            match op {
+                Op::Add => {
+                    self.output
+                        .instructions
+                        .push(Instruction::FloatAddDouble { d: 1, a: 31, b: 1 })
+                }
                 Op::SubCallMinusX => self
                     .output
                     .instructions
@@ -99,10 +197,33 @@ impl Generator {
                 Op::Mul => unreachable!(),
             }
         }
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 31, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 31,
+            a: 1,
+            offset: saved_float_offset,
+        });
+        if linkage_first {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 24,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            });
+        }
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 
@@ -122,10 +243,18 @@ impl Generator {
         // paths). A trailing store sink (`foo(); gi = a;`) saves the live value, runs the
         // calls, then stores it from the callee-saved register; mwcc orders that epilogue's
         // LR reload before the GPR reload (epilogue_lr_first), unlike the return sink.
-        if function.statements.iter().any(|statement| !matches!(statement, Statement::Expression(_) | Statement::Store { .. })) {
+        if function.statements.iter().any(|statement| {
+            !matches!(
+                statement,
+                Statement::Expression(_) | Statement::Store { .. }
+            )
+        }) {
             return Ok(false);
         }
-        let has_store = function.statements.iter().any(|statement| matches!(statement, Statement::Store { .. }));
+        let has_store = function
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::Store { .. }));
         if matches!(function.return_type, Type::Float | Type::Double) {
             return Ok(false);
         }
@@ -140,7 +269,9 @@ impl Generator {
         // register (mwcc skips the move until a call clobbers it), which needs
         // value-location tracking not modeled here.
         let passed_to_call = function.statements.iter().any(|statement| match statement {
-            Statement::Expression(expression) => live.iter().any(|name| expression_reads_name(expression, name)),
+            Statement::Expression(expression) => live
+                .iter()
+                .any(|name| expression_reads_name(expression, name)),
             _ => false,
         });
         if passed_to_call {
@@ -149,7 +280,11 @@ impl Generator {
         // (parameter index, name, incoming register) for each promoted value.
         let mut promoted: Vec<(usize, String, u8)> = Vec::new();
         for name in &live {
-            let Some(index) = function.parameters.iter().position(|parameter| &parameter.name == name) else {
+            let Some(index) = function
+                .parameters
+                .iter()
+                .position(|parameter| &parameter.name == name)
+            else {
                 return Ok(false);
             };
             let (class, incoming) = match self.locations.get(name) {
@@ -192,7 +327,12 @@ impl Generator {
         // statements than saved values" and defer rather than emit the wrong restore order.
         if has_store
             && count == 2
-            && function.statements.iter().filter(|statement| matches!(statement, Statement::Store { .. })).count() < count
+            && function
+                .statements
+                .iter()
+                .filter(|statement| matches!(statement, Statement::Store { .. }))
+                .count()
+                < count
         {
             return Ok(false);
         }
@@ -205,7 +345,10 @@ impl Generator {
         if has_store
             && matches!(function.statements.last(), Some(Statement::Store { .. }))
             && function.return_type != Type::Void
-            && function.return_expression.as_ref().is_some_and(|expression| constant_value(expression).is_some())
+            && function
+                .return_expression
+                .as_ref()
+                .is_some_and(|expression| constant_value(expression).is_some())
         {
             return Ok(false);
         }
@@ -238,7 +381,11 @@ impl Generator {
         // restricted to single-op above.)
         if !has_store
             && promoted.iter().any(|(_, name, _)| {
-                function.return_expression.as_ref().and_then(|expression| name_nesting_depth(expression, name)).is_some_and(|depth| depth >= 2)
+                function
+                    .return_expression
+                    .as_ref()
+                    .and_then(|expression| name_nesting_depth(expression, name))
+                    .is_some_and(|depth| depth >= 2)
             })
         {
             return Ok(false);
@@ -256,11 +403,18 @@ impl Generator {
         // afterward (`foo(); gi=a; return a;`). An EARLIER store whose sink is the return (`*p=a; g();
         // return a;`) takes the ordinary return epilogue (GPRs, then LR), where the hoist pass places
         // the LR reload right after the last call. So key on the LAST statement, not merely has_store.
-        self.epilogue_lr_first = matches!(function.statements.last(), Some(Statement::Store { .. }));
+        self.epilogue_lr_first =
+            matches!(function.statements.last(), Some(Statement::Store { .. }));
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        let incoming_ordered: Vec<u8> = promoted.iter().rev().map(|(_, _, incoming)| *incoming).collect();
-        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+        let incoming_ordered: Vec<u8> = promoted
+            .iter()
+            .rev()
+            .map(|(_, _, incoming)| *incoming)
+            .collect();
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&incoming_ordered));
         for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
             if let Some(location) = self.locations.get_mut(name) {
                 location.register = homes[rank];
@@ -287,8 +441,14 @@ impl Generator {
     /// runs the call, then stores the result through r31 (`stw r3,0(r31)`); the store-sink
     /// epilogue reloads LR before r31. Restricted to a general (int/pointer/narrow) pointee,
     /// a general-returning call, and arguments that do not reference the saved pointer.
-    pub(crate) fn try_store_call_through_pointer(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+    pub(crate) fn try_store_call_through_pointer(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
         // Void, or a non-void function returning a CONSTANT — materialized in r3 after the
@@ -297,35 +457,59 @@ impl Generator {
         // epilogue; `return x` reads a call-clobbered parameter) defers.
         let returns_constant = function.return_type != Type::Void
             && matches!(function.return_type, Type::Int | Type::UnsignedInt)
-            && function.return_expression.as_ref().map_or(false, |expression| constant_value(expression).is_some());
+            && function
+                .return_expression
+                .as_ref()
+                .map_or(false, |expression| constant_value(expression).is_some());
         if function.return_type != Type::Void && !returns_constant {
             return Ok(false);
         }
         let [Statement::Store { target, value }] = function.statements.as_slice() else {
             return Ok(false);
         };
-        let Expression::Call { name, arguments } = value else { return Ok(false) };
+        let Expression::Call { name, arguments } = value else {
+            return Ok(false);
+        };
         // A store target through a pointer PARAMETER: `*p`, `p[const]`, or `p->m` — each
         // resolves to (the pointer variable, a byte offset, the stored width's pointee).
         let (pointer_name, byte_offset, pointee): (&str, i64, Pointee) = match target {
             Expression::Dereference { pointer } => {
-                let Expression::Variable(name) = pointer.as_ref() else { return Ok(false) };
+                let Expression::Variable(name) = pointer.as_ref() else {
+                    return Ok(false);
+                };
                 (name, 0, self.pointee_of(pointer)?)
             }
             Expression::Index { base, index } => {
-                let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
-                let Some(constant) = constant_value(index) else { return Ok(false) };
+                let Expression::Variable(name) = base.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(constant) = constant_value(index) else {
+                    return Ok(false);
+                };
                 let pointee = self.pointee_of(base)?;
                 (name, constant * pointee.size() as i64, pointee)
             }
-            Expression::Member { base, offset, member_type, index_stride: None } => {
-                let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
-                let Some(pointee) = pointee_of_type(*member_type) else { return Ok(false) };
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                index_stride: None,
+            } => {
+                let Expression::Variable(name) = base.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(pointee) = pointee_of_type(*member_type) else {
+                    return Ok(false);
+                };
                 (name, *offset as i64, pointee)
             }
             _ => return Ok(false),
         };
-        if !function.parameters.iter().any(|parameter| parameter.name == pointer_name) {
+        if !function
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == pointer_name)
+        {
             return Ok(false);
         }
         let (class, incoming) = match self.locations.get(pointer_name) {
@@ -343,18 +527,25 @@ impl Generator {
         let matched = match pointee {
             Pointee::Float => self.call_return_types.get(name) == Some(&Type::Float),
             Pointee::Double => self.call_return_types.get(name) == Some(&Type::Double),
-            _ => !matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)),
+            _ => !matches!(
+                self.call_return_types.get(name),
+                Some(Type::Float | Type::Double)
+            ),
         };
         if !matched {
             return Ok(false);
         }
         // The call must NOT pass the saved pointer as an argument (that keeps it in an
         // argument register across the call — a different shape).
-        if arguments.iter().any(|argument| expression_reads_name(argument, pointer_name)) {
+        if arguments
+            .iter()
+            .any(|argument| expression_reads_name(argument, pointer_name))
+        {
             return Ok(false);
         }
-        let offset = i16::try_from(byte_offset)
-            .map_err(|_| Diagnostic::error("store-through-saved-pointer offset out of range (roadmap)"))?;
+        let offset = i16::try_from(byte_offset).map_err(|_| {
+            Diagnostic::error("store-through-saved-pointer offset out of range (roadmap)")
+        })?;
 
         // Callee-saved frame: r31 holds the pointer across the call; the store-sink epilogue
         // reloads LR before r31.
@@ -367,22 +558,57 @@ impl Generator {
         self.callee_saved = vec![saved];
         self.epilogue_lr_first = true;
         // The interleaved save+move prologue, from the FRAME BUILDER.
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue_interleaved(&[incoming]));
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue_interleaved(&[incoming]));
         if let Some(location) = self.locations.get_mut(pointer_name) {
             location.register = saved;
         }
+        let argument_copy_sources: Vec<u8> = arguments
+            .iter()
+            .filter_map(|argument| match argument {
+                Expression::Variable(argument_name) => self
+                    .locations
+                    .get(argument_name)
+                    .map(|location| location.register),
+                _ => None,
+            })
+            .collect();
+        let argument_start = self.output.instructions.len();
         // A float-returning call leaves its result in f1 (stfs/stfd); an int call in r3.
-        let result = if float_store {
+        let mut result = if float_store {
             self.emit_call(name, arguments, None, true)?;
             mwcc_target::Eabi::float_result().number
         } else {
             self.emit_call(name, arguments, None, false)?;
             mwcc_target::Eabi::general_result().number
         };
-        self.output.instructions.push(displacement_store(pointee, result, saved, offset)?);
+        // When saving the pointer removes an entry argument from the call, the
+        // remaining leaf arguments compact toward r3. Build 163 materializes
+        // those collision-resolving copies with `addi d,s,0`.
+        self.normalize_legacy_materialization_copies(argument_start, &argument_copy_sources);
+        // Build 163 explicitly converts a word call result to signed plain char
+        // through r0 before the byte store. Later schedules recognize the byte
+        // store itself as sufficient truncation and omit this redundant extend.
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && pointee == Pointee::Char
+            && self.signed_of(Type::Char)
+        {
+            self.output
+                .instructions
+                .push(Instruction::ExtendSignByte { a: 0, s: result });
+            result = 0;
+        }
+        self.output
+            .instructions
+            .push(displacement_store(pointee, result, saved, offset)?);
         // A non-void function materializes its constant return value in r3 after the store.
         if let Some(return_expression) = function.return_expression.as_ref() {
-            self.evaluate_tail(return_expression, function.return_type, mwcc_target::Eabi::general_result().number)?;
+            self.evaluate_tail(
+                return_expression,
+                function.return_type,
+                mwcc_target::Eabi::general_result().number,
+            )?;
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -401,7 +627,10 @@ impl Generator {
     /// tests it, branches to the shared epilogue when the guard fires, and calls
     /// through — `stwu; mflr; stw r0; lwz r12,gf; cmplwi r12,0; beq EPILOGUE; mtctr;
     /// bctrl; EPILOGUE: lwz r0; mtlr; addi; blr`. Zero-argument, void, single call.
-    pub(crate) fn try_guarded_global_pointer_call(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_guarded_global_pointer_call(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if function.return_type != Type::Void
             || !function.guards.is_empty()
             || function.locals.len() != 1
@@ -416,10 +645,16 @@ impl Generator {
         let Some(Expression::Variable(global)) = &local.initializer else {
             return Ok(false);
         };
-        if !self.globals.contains_key(global.as_str()) || self.global_array_sizes.contains_key(global.as_str()) {
+        if !self.globals.contains_key(global.as_str())
+            || self.global_array_sizes.contains_key(global.as_str())
+        {
             return Ok(false);
         }
-        let [Statement::If { condition, then_body, else_body }, Statement::Expression(Expression::Call { name, arguments })] =
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }, Statement::Expression(Expression::Call { name, arguments })] =
             function.statements.as_slice()
         else {
             return Ok(false);
@@ -439,7 +674,8 @@ impl Generator {
             };
             let expected = mwcc_target::Eabi::FIRST_GENERAL_ARGUMENT + position as u8;
             match self.locations.get(argument_name) {
-                Some(location) if location.class == ValueClass::General && location.register == expected => {}
+                Some(location)
+                    if location.class == ValueClass::General && location.register == expected => {}
                 _ => return Ok(false),
             }
         }
@@ -455,25 +691,47 @@ impl Generator {
         // The pointer local is UNSIGNED (cmplwi) and lives in r12 for the test.
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: 12, signed: false, width: 32, pointee: None, stride: None },
+            Location {
+                class: ValueClass::General,
+                register: 12,
+                signed: false,
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
         );
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         // The guard branches ON TRUE straight to the shared epilogue (the bare-void fold).
         // The branch label and the staged pointer load advance the anonymous-`@N` counter.
         self.output.anonymous_label_bump = 3;
         let epilogue_branch = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: options ^ 8, condition_bit, target: 0 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
-        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: options ^ 8,
+                condition_bit,
+                target: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegisterAndLink);
         let epilogue_label = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[epilogue_branch] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[epilogue_branch]
+        {
             *target = epilogue_label;
         }
         self.emit_epilogue_and_return();
         Ok(true)
     }
 
-    pub(crate) fn try_callee_saved_memory_local(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_callee_saved_memory_local(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if !function.guards.is_empty()
             || function.locals.len() != 1
             || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
@@ -495,7 +753,9 @@ impl Generator {
         let paired_parameter: Option<&str> = match function.return_expression.as_ref() {
             Some(Expression::Variable(returned)) if returned == &local.name => None,
             Some(Expression::Binary { left, right, .. }) => {
-                let (Expression::Variable(first), Expression::Variable(second)) = (left.as_ref(), right.as_ref()) else {
+                let (Expression::Variable(first), Expression::Variable(second)) =
+                    (left.as_ref(), right.as_ref())
+                else {
                     return Ok(false);
                 };
                 let other = if first == &local.name {
@@ -505,7 +765,11 @@ impl Generator {
                 } else {
                     return Ok(false);
                 };
-                if !function.parameters.iter().any(|parameter| &parameter.name == other) {
+                if !function
+                    .parameters
+                    .iter()
+                    .any(|parameter| &parameter.name == other)
+                {
                     return Ok(false);
                 }
                 Some(other.as_str())
@@ -519,14 +783,26 @@ impl Generator {
         // compare carries the `mr r31,r0` in its latency slot.
         let mut guard_chain: Vec<(&Expression, i16)> = Vec::new();
         let mut rest = function.statements.as_slice();
-        while let Some((Statement::If { condition, then_body, else_body }, tail)) = rest.split_first() {
-            if !else_body.is_empty() || !matches!(then_body.as_slice(), [Statement::Return(Some(_))]) {
+        while let Some((
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            },
+            tail,
+        )) = rest.split_first()
+        {
+            if !else_body.is_empty()
+                || !matches!(then_body.as_slice(), [Statement::Return(Some(_))])
+            {
                 break;
             }
             let [Statement::Return(Some(value))] = then_body.as_slice() else {
                 break;
             };
-            let Some(constant) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
+            let Some(constant) =
+                constant_value(value).and_then(|constant| i16::try_from(constant).ok())
+            else {
                 return Ok(false);
             };
             guard_chain.push((condition, constant));
@@ -538,15 +814,23 @@ impl Generator {
         // scaled index survives in its own register for the store's reuse of the
         // address. Verified without return-guards; the mixed chain defers.
         let (conditional_store, calls) = match rest.split_first() {
-            Some((Statement::If { condition, then_body, else_body }, tail))
-                if guard_chain.is_empty()
-                    && else_body.is_empty()
-                    && matches!(then_body.as_slice(), [Statement::Store { .. }]) =>
+            Some((
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                },
+                tail,
+            )) if guard_chain.is_empty()
+                && else_body.is_empty()
+                && matches!(then_body.as_slice(), [Statement::Store { .. }]) =>
             {
                 let [Statement::Store { target, value }] = then_body.as_slice() else {
                     return Ok(false);
                 };
-                let Some(constant) = constant_value(value).and_then(|constant| i16::try_from(constant).ok()) else {
+                let Some(constant) =
+                    constant_value(value).and_then(|constant| i16::try_from(constant).ok())
+                else {
                     return Ok(false);
                 };
                 (Some((condition, target, constant)), tail)
@@ -572,11 +856,15 @@ impl Generator {
         // word-sized global array.
         enum MemoryLoad<'e> {
             Scalar,
-            Array { name: &'e str, index: &'e Expression },
+            Array {
+                name: &'e str,
+                index: &'e Expression,
+            },
         }
         let load = match initializer {
             Expression::Variable(name)
-                if self.globals.contains_key(name.as_str()) && !self.global_array_sizes.contains_key(name.as_str()) =>
+                if self.globals.contains_key(name.as_str())
+                    && !self.global_array_sizes.contains_key(name.as_str()) =>
             {
                 if pointee_of_type(self.globals[name.as_str()]) != Some(Pointee::Int)
                     && pointee_of_type(self.globals[name.as_str()]) != Some(Pointee::UnsignedInt)
@@ -586,14 +874,21 @@ impl Generator {
                 MemoryLoad::Scalar
             }
             Expression::Index { base, index } => {
-                let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
-                if !self.global_array_sizes.contains_key(name.as_str()) || constant_value(index).is_some() {
+                let Expression::Variable(name) = base.as_ref() else {
+                    return Ok(false);
+                };
+                if !self.global_array_sizes.contains_key(name.as_str())
+                    || constant_value(index).is_some()
+                {
                     return Ok(false);
                 }
                 if !matches!(index.as_ref(), Expression::Variable(_)) {
                     return Ok(false);
                 }
-                if !matches!(pointee_of_type(self.globals[name.as_str()]), Some(Pointee::Int | Pointee::UnsignedInt)) {
+                if !matches!(
+                    pointee_of_type(self.globals[name.as_str()]),
+                    Some(Pointee::Int | Pointee::UnsignedInt)
+                ) {
                     return Ok(false);
                 }
                 MemoryLoad::Array { name, index }
@@ -602,7 +897,9 @@ impl Generator {
         };
 
         // The PAIRED form is verified for the guard-free scalar load only.
-        if paired_parameter.is_some() && (guard.is_some() || matches!(load, MemoryLoad::Array { .. })) {
+        if paired_parameter.is_some()
+            && (guard.is_some() || matches!(load, MemoryLoad::Array { .. }))
+        {
             return Ok(false);
         }
         // A multi-guard chain over the ARRAY form is unverified — defer.
@@ -618,7 +915,11 @@ impl Generator {
             if paired_parameter.is_some() {
                 return Ok(false);
             }
-            let MemoryLoad::Array { name: load_name, index: load_index } = load else {
+            let MemoryLoad::Array {
+                name: load_name,
+                index: load_index,
+            } = load
+            else {
                 return Ok(false);
             };
             let Expression::Index { base, index } = store_target else {
@@ -642,8 +943,16 @@ impl Generator {
             self.non_leaf = true;
             self.frame_size = 16;
             self.callee_saved = vec![31];
-            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
             let signed = !matches!(local.declared_type, Type::UnsignedInt);
             // The scaled index lands past the (reserved) base-high register so both
             // survive for the store: `lis r4; slwi r5,i,2; stw r0,20; addi r3,r4;
@@ -652,17 +961,46 @@ impl Generator {
             let high = self.fresh_virtual_general();
             let scaled = self.fresh_virtual_general();
             self.emit_address_high(high, load_name);
-            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: scaled, s: index_register, shift: 2 });
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: index_register,
+                    shift: 2,
+                });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            });
             self.record_relocation(RelocationKind::Addr16Lo, load_name);
-            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: index_register,
+                a: high,
+                immediate: 0,
+            });
             let saved = self.fresh_virtual_general();
             self.callee_saved = vec![saved];
-            self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::LoadWordIndexed { d: saved, a: index_register, b: scaled });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: saved,
+                a: 1,
+                offset: 12,
+            });
+            self.output.instructions.push(Instruction::LoadWordIndexed {
+                d: saved,
+                a: index_register,
+                b: scaled,
+            });
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+                Location {
+                    class: ValueClass::General,
+                    register: saved,
+                    signed,
+                    width: 32,
+                    pointee: None,
+                    stride: None,
+                },
             );
             // The conditional store skips on the condition's FALSE side, the value
             // materializes into r0, and the base/scaled pair is reused. (@N: measured
@@ -670,30 +1008,80 @@ impl Generator {
             self.output.anonymous_label_bump = 3;
             let (options, condition_bit) = self.emit_condition_test(store_condition)?;
             let skip_branch = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-            self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: 0, immediate: store_constant });
-            self.output.instructions.push(Instruction::StoreWordIndexed { s: GENERAL_SCRATCH, a: index_register, b: scaled });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: 0,
+                immediate: store_constant,
+            });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordIndexed {
+                    s: GENERAL_SCRATCH,
+                    a: index_register,
+                    b: scaled,
+                });
             let skip_label = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_branch] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[skip_branch]
+            {
                 *target = skip_label;
             }
             for statement in calls {
                 self.emit_statement(statement)?;
             }
             let result = mwcc_target::Eabi::general_result().number;
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-            self.output.instructions.push(Instruction::Or { a: result, s: saved, b: saved });
-            self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            });
+            self.output.instructions.push(Instruction::Or {
+                a: result,
+                s: saved,
+                b: saved,
+            });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: saved,
+                a: 1,
+                offset: 12,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            });
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             return Ok(true);
         }
         self.non_leaf = true;
         self.frame_size = 16;
-        self.callee_saved = if paired_parameter.is_some() { vec![31, 30] } else { vec![31] };
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.callee_saved = if paired_parameter.is_some() {
+            vec![31, 30]
+        } else {
+            vec![31]
+        };
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         // Phase D: the callee-saved home is a VIRTUAL in every form — its range
         // crosses the calls, so the allocator assigns it from the callee-saved pool
@@ -710,17 +1098,40 @@ impl Generator {
             // The parameter's callee-saved home is the SECOND virtual: created after
             // `saved`, both widen to entry, so the scan assigns saved->r31, pair->r30.
             let pair = self.fresh_virtual_general();
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-            self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::StoreWord { s: pair, a: 1, offset: 8 });
-            self.output.instructions.push(Instruction::Or { a: pair, s: incoming, b: incoming });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: saved,
+                a: 1,
+                offset: 12,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: pair,
+                a: 1,
+                offset: 8,
+            });
+            self.output.instructions.push(Instruction::Or {
+                a: pair,
+                s: incoming,
+                b: incoming,
+            });
             if let Some(location) = self.locations.get_mut(parameter) {
                 location.register = pair;
             }
             self.evaluate_general(initializer, saved)?;
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+                Location {
+                    class: ValueClass::General,
+                    register: saved,
+                    signed,
+                    width: 32,
+                    pointee: None,
+                    stride: None,
+                },
             );
             for statement in calls {
                 self.emit_statement(statement)?;
@@ -728,19 +1139,51 @@ impl Generator {
             // The epilogue computes the return expression in the slot after the LR
             // reload: `lwz r0,20; add r3,r31,r30; lwz r31,12; lwz r30,8; mtlr; addi; blr`.
             let result = mwcc_target::Eabi::general_result().number;
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-            self.evaluate_tail(function.return_expression.as_ref().expect("checked above"), function.return_type, result)?;
-            self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::LoadWord { d: pair, a: 1, offset: 8 });
-            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            });
+            self.evaluate_tail(
+                function.return_expression.as_ref().expect("checked above"),
+                function.return_type,
+                result,
+            )?;
+            self.output.instructions.push(Instruction::LoadWord {
+                d: saved,
+                a: 1,
+                offset: 12,
+            });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: pair,
+                a: 1,
+                offset: 8,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            });
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             return Ok(true);
         }
         match load {
             MemoryLoad::Scalar => {
-                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-                self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 20,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: saved,
+                    a: 1,
+                    offset: 12,
+                });
                 if guard.is_some() {
                     // With a guard the load STAGES through r0: the compare reads r0 and
                     // the `mr r31,r0` fills its latency slot — `lwz r0,gi; cmpwi r0,0;
@@ -748,7 +1191,14 @@ impl Generator {
                     self.evaluate_general(initializer, GENERAL_SCRATCH)?;
                     self.locations.insert(
                         local.name.clone(),
-                        Location { class: ValueClass::General, register: GENERAL_SCRATCH, signed, width: 32, pointee: None, stride: None },
+                        Location {
+                            class: ValueClass::General,
+                            register: GENERAL_SCRATCH,
+                            signed,
+                            width: 32,
+                            pointee: None,
+                            stride: None,
+                        },
                     );
                 } else {
                     self.evaluate_general(initializer, saved)?;
@@ -758,12 +1208,34 @@ impl Generator {
                 let index_register = self.general_register_of_leaf(index)?;
                 let high = self.fresh_virtual_general();
                 self.emit_address_high(high, name);
-                self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-                self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift: 2 });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 20,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: index_register,
+                        shift: 2,
+                    });
                 self.record_relocation(RelocationKind::Addr16Lo, name);
-                self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
-                self.output.instructions.push(Instruction::StoreWord { s: saved, a: 1, offset: 12 });
-                self.output.instructions.push(Instruction::LoadWordIndexed { d: saved, a: index_register, b: GENERAL_SCRATCH });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: index_register,
+                    a: high,
+                    immediate: 0,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: saved,
+                    a: 1,
+                    offset: 12,
+                });
+                self.output.instructions.push(Instruction::LoadWordIndexed {
+                    d: saved,
+                    a: index_register,
+                    b: GENERAL_SCRATCH,
+                });
             }
         }
         let result = mwcc_target::Eabi::general_result().number;
@@ -776,38 +1248,78 @@ impl Generator {
             // The labels advance mwcc's anonymous-`@N` counter: one per guard's
             // fall-through label plus the shared epilogue; the staged scalar load adds
             // one more (measured against the real extab/extabindex `@N` numbering).
-            self.output.anonymous_label_bump =
-                2 * guard_chain.len() as u32 + if matches!(load, MemoryLoad::Scalar) { 1 } else { 0 };
+            self.output.anonymous_label_bump = 2 * guard_chain.len() as u32
+                + if matches!(load, MemoryLoad::Scalar) {
+                    1
+                } else {
+                    0
+                };
             if matches!(load, MemoryLoad::Array { .. }) {
                 self.locations.insert(
                     local.name.clone(),
-                    Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+                    Location {
+                        class: ValueClass::General,
+                        register: saved,
+                        signed,
+                        width: 32,
+                        pointee: None,
+                        stride: None,
+                    },
                 );
             }
             let mut epilogue_branches = Vec::new();
             for (position, (condition, early_constant)) in guard_chain.iter().enumerate() {
                 let (options, condition_bit) = self.emit_condition_test(condition)?;
                 if position == 0 && matches!(load, MemoryLoad::Scalar) {
-                    self.output.instructions.push(Instruction::Or { a: saved, s: GENERAL_SCRATCH, b: GENERAL_SCRATCH });
+                    self.output.instructions.push(Instruction::Or {
+                        a: saved,
+                        s: GENERAL_SCRATCH,
+                        b: GENERAL_SCRATCH,
+                    });
                 }
                 let skip_branch = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-                self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: *early_constant });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options,
+                        condition_bit,
+                        target: 0,
+                    });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: result,
+                    a: 0,
+                    immediate: *early_constant,
+                });
                 epilogue_branches.push(self.output.instructions.len());
-                self.output.instructions.push(Instruction::Branch { target: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::Branch { target: 0 });
                 let fall_through = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_branch] {
+                if let Instruction::BranchConditionalForward { target, .. } =
+                    &mut self.output.instructions[skip_branch]
+                {
                     *target = fall_through;
                 }
             }
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+                Location {
+                    class: ValueClass::General,
+                    register: saved,
+                    signed,
+                    width: 32,
+                    pointee: None,
+                    stride: None,
+                },
             );
             for statement in calls {
                 self.emit_statement(statement)?;
             }
-            self.output.instructions.push(Instruction::Or { a: result, s: saved, b: saved });
+            self.output.instructions.push(Instruction::Or {
+                a: result,
+                s: saved,
+                b: saved,
+            });
             let epilogue_label = self.output.instructions.len();
             for branch in epilogue_branches {
                 if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
@@ -816,16 +1328,39 @@ impl Generator {
             }
             // With the result already placed on both paths, the epilogue is plain:
             // `lwz r0,20; lwz r31,12; mtlr; addi; blr`.
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-            self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
-            self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: saved,
+                a: 1,
+                offset: 12,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            });
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             return Ok(true);
         }
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+            Location {
+                class: ValueClass::General,
+                register: saved,
+                signed,
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
         );
         for statement in calls {
             self.emit_statement(statement)?;
@@ -833,12 +1368,32 @@ impl Generator {
         // The epilogue interleaves the result move between the LR and callee-saved
         // reloads. `saved` is the virtual for the guard-free scalar (apply() rewrites
         // the restore's field with the value's home) and the literal r31 otherwise.
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::Or { a: result, s: saved, b: saved });
-        self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::Or {
+            a: result,
+            s: saved,
+            b: saved,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: saved,
+            a: 1,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 
@@ -846,28 +1401,49 @@ impl Generator {
     /// integer-returning, zero-argument call and `p` is a General-class pointer variable —
     /// yielding (pointer name, byte offset, stored pointee, call name). Shared by the
     /// two-output-pointer store sink.
-    pub(crate) fn decode_pointer_call_store(&self, statement: &Statement) -> Option<(String, i16, Pointee, String)> {
-        let Statement::Store { target, value } = statement else { return None };
-        let Expression::Call { name, arguments } = value else { return None };
+    pub(crate) fn decode_pointer_call_store(
+        &self,
+        statement: &Statement,
+    ) -> Option<(String, i16, Pointee, String)> {
+        let Statement::Store { target, value } = statement else {
+            return None;
+        };
+        let Expression::Call { name, arguments } = value else {
+            return None;
+        };
         if !arguments.is_empty() {
             return None;
         }
-        if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)) {
+        if matches!(
+            self.call_return_types.get(name),
+            Some(Type::Float | Type::Double)
+        ) {
             return None;
         }
         let (pointer_name, byte_offset, pointee): (&str, i64, Pointee) = match target {
             Expression::Dereference { pointer } => {
-                let Expression::Variable(name) = pointer.as_ref() else { return None };
+                let Expression::Variable(name) = pointer.as_ref() else {
+                    return None;
+                };
                 (name, 0, self.pointee_of(pointer).ok()?)
             }
             Expression::Index { base, index } => {
-                let Expression::Variable(name) = base.as_ref() else { return None };
+                let Expression::Variable(name) = base.as_ref() else {
+                    return None;
+                };
                 let constant = constant_value(index)?;
                 let pointee = self.pointee_of(base).ok()?;
                 (name, constant * pointee.size() as i64, pointee)
             }
-            Expression::Member { base, offset, member_type, index_stride: None } => {
-                let Expression::Variable(name) = base.as_ref() else { return None };
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                index_stride: None,
+            } => {
+                let Expression::Variable(name) = base.as_ref() else {
+                    return None;
+                };
                 let pointee = pointee_of_type(*member_type)?;
                 (name, *offset as i64, pointee)
             }
@@ -887,7 +1463,10 @@ impl Generator {
     /// result, then reloads LR before all the saved GPRs. The single-pointer case is
     /// `try_store_call_through_pointer`.
     pub(crate) fn try_stores_through_pointers(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
         if function.return_type != Type::Void || function.return_expression.is_some() {
@@ -907,11 +1486,17 @@ impl Generator {
         }
         let mut incoming = Vec::with_capacity(count);
         for (pointer_name, _, _, _) in &decoded {
-            if !function.parameters.iter().any(|parameter| &parameter.name == pointer_name) {
+            if !function
+                .parameters
+                .iter()
+                .any(|parameter| &parameter.name == pointer_name)
+            {
                 return Ok(false);
             }
             match self.locations.get(pointer_name) {
-                Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                Some(location) if location.class == ValueClass::General => {
+                    incoming.push(location.register)
+                }
                 _ => return Ok(false),
             }
         }
@@ -944,7 +1529,9 @@ impl Generator {
         self.callee_saved = callee_saved;
         self.epilogue_lr_before_gprs = true;
         let incoming_ordered: Vec<u8> = order.iter().map(|&index| incoming[index]).collect();
-        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&incoming_ordered));
         for (index, (pointer_name, _, _, _)) in decoded.iter().enumerate() {
             if let Some(location) = self.locations.get_mut(pointer_name) {
                 location.register = saved_reg[index];
@@ -955,7 +1542,12 @@ impl Generator {
         let result = mwcc_target::Eabi::general_result().number;
         for (index, (_, offset, pointee, call)) in decoded.iter().enumerate() {
             self.emit_call(call, &[], None, false)?;
-            self.output.instructions.push(displacement_store(*pointee, result, saved_reg[index], *offset)?);
+            self.output.instructions.push(displacement_store(
+                *pointee,
+                result,
+                saved_reg[index],
+                *offset,
+            )?);
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -970,7 +1562,10 @@ impl Generator {
     /// callee-saved homes (declaration order), and the epilogue is the
     /// `epilogue_lr_first` register-death schedule (one save: `lwz r0; lwz r31`;
     /// two saves: `lwz r31; lwz r0; lwz r30`).
-    pub(crate) fn try_callee_saved_global_round_trip(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_callee_saved_global_round_trip(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if function.return_type != Type::Void
             || function.return_expression.is_some()
             || !function.guards.is_empty()
@@ -995,7 +1590,12 @@ impl Generator {
                 || local.row_bytes.is_some()
                 || !matches!(
                     local.declared_type,
-                    Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+                    Type::Int
+                        | Type::UnsignedInt
+                        | Type::Char
+                        | Type::UnsignedChar
+                        | Type::Short
+                        | Type::UnsignedShort
                 )
             {
                 return Ok(false);
@@ -1005,21 +1605,29 @@ impl Generator {
                 // promotion around the crossing is unmeasured).
                 Some(Expression::Variable(source_global))
                     if !self.locations.contains_key(source_global)
-                        && self.globals.get(source_global.as_str()) == Some(&local.declared_type) =>
+                        && self.globals.get(source_global.as_str())
+                            == Some(&local.declared_type) =>
                 {
                     sources.push(Source::Global(source_global.clone()));
                 }
-                Some(Expression::Call { name: producer, arguments })
-                    if arguments.is_empty()
-                        && matches!(local.declared_type, Type::Int | Type::UnsignedInt)
-                        && !matches!(self.call_return_types.get(producer.as_str()), Some(Type::Float | Type::Double | Type::Void)) =>
+                Some(Expression::Call {
+                    name: producer,
+                    arguments,
+                }) if arguments.is_empty()
+                    && matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+                    && !matches!(
+                        self.call_return_types.get(producer.as_str()),
+                        Some(Type::Float | Type::Double | Type::Void)
+                    ) =>
                 {
                     sources.push(Source::Call(producer.clone()));
                 }
                 _ => return Ok(false),
             }
         }
-        let has_call_source = sources.iter().any(|source| matches!(source, Source::Call(_)));
+        let has_call_source = sources
+            .iter()
+            .any(|source| matches!(source, Source::Call(_)));
         if has_call_source && function.locals.len() > 1 {
             return Ok(false);
         }
@@ -1027,7 +1635,10 @@ impl Generator {
         // no-argument, global-source round trip: lbz/lha/lhz into the home (the
         // signed char's extsb is DROPPED — the narrowing store re-truncates),
         // stb/sth back out. Pairs and arguments with narrow types defer.
-        let narrow = function.locals.iter().any(|local| !matches!(local.declared_type, Type::Int | Type::UnsignedInt));
+        let narrow = function
+            .locals
+            .iter()
+            .any(|local| !matches!(local.declared_type, Type::Int | Type::UnsignedInt));
         if narrow && function.locals.len() > 1 {
             return Ok(false);
         }
@@ -1038,22 +1649,33 @@ impl Generator {
         let call_count = function
             .statements
             .iter()
-            .take_while(|statement| matches!(statement, Statement::Expression(Expression::Call { .. })))
+            .take_while(|statement| {
+                matches!(statement, Statement::Expression(Expression::Call { .. }))
+            })
             .count();
         if call_count == 0 || call_count > 3 {
             return Ok(false);
         }
         let mut crossing_calls = Vec::with_capacity(call_count);
         for statement in &function.statements[..call_count] {
-            let Statement::Expression(Expression::Call { name, arguments }) = statement else { unreachable!() };
-            if matches!(self.call_return_types.get(name.as_str()), Some(Type::Float | Type::Double)) {
+            let Statement::Expression(Expression::Call { name, arguments }) = statement else {
+                unreachable!()
+            };
+            if matches!(
+                self.call_return_types.get(name.as_str()),
+                Some(Type::Float | Type::Double)
+            ) {
                 return Ok(false);
             }
             crossing_calls.push((name.clone(), arguments));
         }
         // Arguments are measured only for the SINGLE-call shapes; a multi-call
         // run requires every call bare.
-        if call_count > 1 && crossing_calls.iter().any(|(_, arguments)| !arguments.is_empty()) {
+        if call_count > 1
+            && crossing_calls
+                .iter()
+                .any(|(_, arguments)| !arguments.is_empty())
+        {
             return Ok(false);
         }
         let arguments = crossing_calls[0].1;
@@ -1063,7 +1685,10 @@ impl Generator {
         }
         let mut target_globals = Vec::with_capacity(store_statements.len());
         for (local, statement) in function.locals.iter().zip(store_statements) {
-            let Statement::Store { target: Expression::Variable(target_global), value: Expression::Variable(stored) } = statement
+            let Statement::Store {
+                target: Expression::Variable(target_global),
+                value: Expression::Variable(stored),
+            } = statement
             else {
                 return Ok(false);
             };
@@ -1098,14 +1723,21 @@ impl Generator {
         let mut decoded_arguments = Vec::with_capacity(arguments.len());
         for argument in arguments {
             match argument {
-                Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                Expression::IntegerLiteral(value)
+                    if (i16::MIN as i64..=i16::MAX as i64).contains(value) =>
+                {
                     decoded_arguments.push(Argument::Constant(*value as i16));
                 }
-                Expression::Variable(name) if name == &local.name => decoded_arguments.push(Argument::Local),
+                Expression::Variable(name) if name == &local.name => {
+                    decoded_arguments.push(Argument::Local)
+                }
                 _ => return Ok(false),
             }
         }
-        let constant_count = decoded_arguments.iter().filter(|argument| matches!(argument, Argument::Constant(_))).count();
+        let constant_count = decoded_arguments
+            .iter()
+            .filter(|argument| matches!(argument, Argument::Constant(_)))
+            .count();
         let local_count = decoded_arguments.len() - constant_count;
         if constant_count > 3 || local_count > 1 {
             return Ok(false);
@@ -1123,7 +1755,9 @@ impl Generator {
             .position(|argument| matches!(argument, Argument::Local))
             .map(|position| 3 + position as u8);
 
-        let homes: Vec<u8> = (0..function.locals.len()).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u8> = (0..function.locals.len())
+            .map(|_| self.fresh_virtual_general())
+            .collect();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
@@ -1135,16 +1769,40 @@ impl Generator {
             // The measured prologue interleave: `stwu; mflr; li r3 [; li r4];
             // stw r0; [li r5;] stw r31` — the argument materializations fill the
             // mflr and LR-store latency slots.
-            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -plan.frame_size });
-            self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -plan.frame_size,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
             for &(register, value) in constants.iter().take(2) {
-                self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: register,
+                    a: 0,
+                    immediate: value,
+                });
             }
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: plan.frame_size + 4 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: plan.frame_size + 4,
+            });
             for &(register, value) in constants.iter().skip(2) {
-                self.output.instructions.push(Instruction::AddImmediate { d: register, a: 0, immediate: value });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: register,
+                    a: 0,
+                    immediate: value,
+                });
             }
-            self.output.instructions.push(Instruction::StoreWord { s: homes[0], a: 1, offset: plan.frame_size - 4 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: homes[0],
+                a: 1,
+                offset: plan.frame_size - 4,
+            });
         }
         for (source, &home) in sources.iter().zip(&homes) {
             match source {
@@ -1161,12 +1819,20 @@ impl Generator {
                     // The producing call, its result parked into the home.
                     self.emit_call(producer, &[], None, false)?;
                     let result = mwcc_target::Eabi::general_result().number;
-                    self.output.instructions.push(Instruction::Or { a: home, s: result, b: result });
+                    self.output.instructions.push(Instruction::Or {
+                        a: home,
+                        s: result,
+                        b: result,
+                    });
                 }
             }
         }
         if let Some(register) = local_argument_register {
-            self.output.instructions.push(Instruction::Or { a: register, s: homes[0], b: homes[0] });
+            self.output.instructions.push(Instruction::Or {
+                a: register,
+                s: homes[0],
+                b: homes[0],
+            });
             // Passing the local burns one extra internal label in mwcc (measured:
             // the extab/extabindex hidden symbols shift @5/@6 -> @6/@7).
             self.output.anonymous_label_bump += 1;
@@ -1174,7 +1840,9 @@ impl Generator {
         for (name, _) in &crossing_calls {
             self.emit_call(name, &[], None, false)?;
         }
-        for ((target_global, &home), local) in target_globals.iter().zip(&homes).zip(&function.locals) {
+        for ((target_global, &home), local) in
+            target_globals.iter().zip(&homes).zip(&function.locals)
+        {
             let pointee = match local.declared_type {
                 Type::Char => Pointee::Char,
                 Type::UnsignedChar => Pointee::UnsignedChar,
@@ -1188,5 +1856,4 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
-
 }

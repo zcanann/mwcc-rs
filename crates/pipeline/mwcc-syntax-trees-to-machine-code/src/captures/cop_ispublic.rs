@@ -35,22 +35,54 @@ impl Generator {
             }
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [5] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::LoadByteZero { d: 0, a: 3, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 255 });
+        self.output.instructions.push(Instruction::LoadByteZero {
+            d: 0,
+            a: 3,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 0,
+                immediate: 255,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&5]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, -4));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, -4));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(labels[&5]);
-        self.output.instructions.push(Instruction::LoadByteZero { d: 3, a: 3, offset: 52 });
-        self.output.instructions.push(Instruction::load_immediate(0, -10));
-        self.output.instructions.push(Instruction::RotateAndMask { a: 3, s: 3, shift: 30, begin: 31, end: 31 });
-        self.output.instructions.push(Instruction::Negate { d: 3, a: 3 });
-        self.output.instructions.push(Instruction::AndComplement { a: 3, s: 0, b: 3 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadByteZero {
+            d: 3,
+            a: 3,
+            offset: 52,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, -10));
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: 3,
+            s: 3,
+            shift: 30,
+            begin: 31,
+            end: 31,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Negate { d: 3, a: 3 });
+        self.output
+            .instructions
+            .push(Instruction::AndComplement { a: 3, s: 0, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

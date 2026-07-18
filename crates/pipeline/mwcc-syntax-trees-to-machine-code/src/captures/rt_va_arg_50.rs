@@ -43,66 +43,181 @@ impl Generator {
             }
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [17, 24, 25, 35, 45, 48] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::LoadByteZero { d: 7, a: 3, offset: 0 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 4, immediate: 3 });
-        self.output.instructions.push(Instruction::move_register(6, 3));
-        self.output.instructions.push(Instruction::load_immediate(0, 8));
-        self.output.instructions.push(Instruction::load_immediate(8, 4));
-        self.output.instructions.push(Instruction::ExtendSignByte { a: 7, s: 7 });
-        self.output.instructions.push(Instruction::load_immediate(9, 1));
-        self.output.instructions.push(Instruction::load_immediate(5, 0));
-        self.output.instructions.push(Instruction::load_immediate(10, 0));
-        self.output.instructions.push(Instruction::load_immediate(11, 4));
+        self.output.instructions.push(Instruction::LoadByteZero {
+            d: 7,
+            a: 3,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 4, immediate: 3 });
+        self.output
+            .instructions
+            .push(Instruction::move_register(6, 3));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 8));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(8, 4));
+        self.output
+            .instructions
+            .push(Instruction::ExtendSignByte { a: 7, s: 7 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(9, 1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(5, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(10, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(11, 4));
         self.emit_branch_conditional_to(4, 2, labels[&17]); // bne
-        self.output.instructions.push(Instruction::LoadByteZero { d: 7, a: 3, offset: 1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 3, immediate: 1 });
-        self.output.instructions.push(Instruction::load_immediate(8, 8));
-        self.output.instructions.push(Instruction::load_immediate(10, 32));
-        self.output.instructions.push(Instruction::ExtendSignByte { a: 7, s: 7 });
-        self.output.instructions.push(Instruction::load_immediate(11, 8));
+        self.output.instructions.push(Instruction::LoadByteZero {
+            d: 7,
+            a: 3,
+            offset: 1,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 3,
+            immediate: 1,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(8, 8));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(10, 32));
+        self.output
+            .instructions
+            .push(Instruction::ExtendSignByte { a: 7, s: 7 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(11, 8));
         self.bind_label(labels[&17]);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 4, immediate: 2 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 4, immediate: 2 });
         self.emit_branch_conditional_to(4, 2, labels[&25]); // bne
-        self.output.instructions.push(Instruction::ClearLeftImmediateRecord { a: 0, s: 7, clear: 31 });
-        self.output.instructions.push(Instruction::load_immediate(8, 8));
-        self.output.instructions.push(Instruction::load_immediate(0, 7));
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediateRecord {
+                a: 0,
+                s: 7,
+                clear: 31,
+            });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(8, 8));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 7));
         self.emit_branch_conditional_to(12, 2, labels[&24]); // beq
-        self.output.instructions.push(Instruction::load_immediate(5, 1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(5, 1));
         self.bind_label(labels[&24]);
-        self.output.instructions.push(Instruction::load_immediate(9, 2));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(9, 2));
         self.bind_label(labels[&25]);
-        self.output.instructions.push(Instruction::CompareWord { a: 7, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWord { a: 7, b: 0 });
         self.emit_branch_conditional_to(4, 0, labels[&35]); // bge
-        self.output.instructions.push(Instruction::Add { d: 7, a: 7, b: 5 });
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 3, offset: 8 });
-        self.output.instructions.push(Instruction::MultiplyLow { d: 3, a: 7, b: 11 });
-        self.output.instructions.push(Instruction::Add { d: 0, a: 7, b: 9 });
-        self.output.instructions.push(Instruction::StoreByte { s: 0, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::Add { d: 6, a: 10, b: 3 });
-        self.output.instructions.push(Instruction::Add { d: 6, a: 5, b: 6 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 7, a: 7, b: 5 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 3,
+            offset: 8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MultiplyLow { d: 3, a: 7, b: 11 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 0, a: 7, b: 9 });
+        self.output.instructions.push(Instruction::StoreByte {
+            s: 0,
+            a: 6,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 6, a: 10, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 6, a: 5, b: 6 });
         self.emit_branch_to(labels[&45]); // b
         self.bind_label(labels[&35]);
-        self.output.instructions.push(Instruction::load_immediate(5, 8));
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 8, immediate: -1 });
-        self.output.instructions.push(Instruction::StoreByte { s: 5, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::Nor { a: 6, s: 0, b: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 3, offset: 4 });
-        self.output.instructions.push(Instruction::Add { d: 5, a: 8, b: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 5, immediate: -1 });
-        self.output.instructions.push(Instruction::And { a: 6, s: 6, b: 0 });
-        self.output.instructions.push(Instruction::Add { d: 0, a: 6, b: 8 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 4 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(5, 8));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 8,
+            immediate: -1,
+        });
+        self.output.instructions.push(Instruction::StoreByte {
+            s: 5,
+            a: 6,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Nor { a: 6, s: 0, b: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 5, a: 8, b: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 5,
+            immediate: -1,
+        });
+        self.output
+            .instructions
+            .push(Instruction::And { a: 6, s: 6, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 0, a: 6, b: 8 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: 4,
+        });
         self.bind_label(labels[&45]);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 4, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 4, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&48]); // bne
-        self.output.instructions.push(Instruction::LoadWord { d: 6, a: 6, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 6,
+            a: 6,
+            offset: 0,
+        });
         self.bind_label(labels[&48]);
-        self.output.instructions.push(Instruction::move_register(3, 6));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::move_register(3, 6));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

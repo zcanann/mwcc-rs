@@ -34,65 +34,175 @@ impl Generator {
         self.frame_size = 16;
         self.non_leaf = true;
         self.callee_saved = vec![31];
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [13, 20, 33] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::load_immediate(3, 1));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 1));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 12,
+        });
         self.record_relocation(RelocationKind::Rel24, "raise");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "raise".to_string() });
-        self.output.instructions.push(Instruction::load_immediate(0, 1));
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "raise".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.record_relocation(RelocationKind::EmbSda21, "__aborting");
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 0,
+            offset: 0,
+        });
         self.record_relocation(RelocationKind::Rel24, "__begin_critical_region");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__begin_critical_region".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__begin_critical_region".to_string(),
+        });
         self.record_relocation(RelocationKind::Addr16Ha, "__atexit_funcs");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
         self.record_relocation(RelocationKind::Addr16Lo, "__atexit_funcs");
-        self.output.instructions.push(Instruction::AddImmediate { d: 31, a: 3, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 31,
+            a: 3,
+            immediate: 0,
+        });
         self.emit_branch_to(labels[&20]); // b
         self.bind_label(labels[&13]);
         self.record_relocation(RelocationKind::EmbSda21, "__atexit_curr_func");
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -1 });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: 3, shift: 2 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 0,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: -1,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 3,
+                shift: 2,
+            });
         self.record_relocation(RelocationKind::EmbSda21, "__atexit_curr_func");
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWordIndexed { d: 12, a: 31, b: 0 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
-        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::LoadWordIndexed { d: 12, a: 31, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegisterAndLink);
         self.bind_label(labels[&20]);
         self.record_relocation(RelocationKind::EmbSda21, "__atexit_curr_func");
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(12, 1, labels[&13]); // bgt
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.record_relocation(RelocationKind::Rel24, "__end_critical_region");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__end_critical_region".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__end_critical_region".to_string(),
+        });
         self.record_relocation(RelocationKind::Rel24, "__kill_critical_regions");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__kill_critical_regions".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__kill_critical_regions".to_string(),
+        });
         self.record_relocation(RelocationKind::EmbSda21, "__console_exit");
-        self.output.instructions.push(Instruction::LoadWord { d: 12, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 12, immediate: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 12,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(12, 2, labels[&33]); // beq
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
-        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegisterAndLink);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
         self.record_relocation(RelocationKind::EmbSda21, "__console_exit");
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 0,
+            offset: 0,
+        });
         self.bind_label(labels[&33]);
         self.record_relocation(RelocationKind::Rel24, "_ExitProcess");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "_ExitProcess".to_string() });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "_ExitProcess".to_string(),
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

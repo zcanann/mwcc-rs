@@ -1,17 +1,22 @@
 //! Integer division and modulo.
 
+use crate::analysis::*;
+use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::Expression;
-use crate::analysis::*;
-use crate::generator::*;
+use mwcc_versions::SignedPowerOfTwoDivisionStyle;
 
 impl Generator {
-
     /// Emit a division, choosing signed/unsigned and handling power-of-two
     /// constant divisors; non-power-of-two constants (magic-number lowering) and
     /// signed division by powers of two beyond 2 are deferred.
-    pub(crate) fn emit_divide(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_divide(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
         let d = destination;
 
@@ -19,6 +24,48 @@ impl Generator {
         // `1 << 3` or `2 + 2` — selects the shift/magic lowering.
         if let Some(divisor) = constant_value(right) {
             if divisor >= 2 && (divisor as u64).is_power_of_two() {
+                if self.behavior.signed_power_of_two_division_style
+                    == SignedPowerOfTwoDivisionStyle::CarryCorrectedQuotient
+                {
+                    // C promotes char/short to signed int when int represents the
+                    // full source range. Build 163 preserves that type-level
+                    // promotion, while 2.4.x range-optimizes unsigned narrow
+                    // division into a logical shift.
+                    let source = if let Ok((register, width, narrow_signed)) = self.leaf_info(left)
+                    {
+                        if signed || width < 32 {
+                            Some(if width < 32 {
+                                self.emit_widen(GENERAL_SCRATCH, register, width, narrow_signed);
+                                GENERAL_SCRATCH
+                            } else {
+                                register
+                            })
+                        } else {
+                            None
+                        }
+                    } else if signed {
+                        // A loaded or computed signed dividend naturally evaluates
+                        // into r0; the quotient can then overwrite the destination.
+                        self.evaluate_general(left, GENERAL_SCRATCH)?;
+                        Some(GENERAL_SCRATCH)
+                    } else {
+                        None
+                    };
+                    if let Some(source) = source {
+                        let shift = divisor.trailing_zeros() as u8;
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightAlgebraicImmediate {
+                                a: d,
+                                s: source,
+                                shift,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::AddToZeroExtended { d, a: d });
+                        return Ok(());
+                    }
+                }
                 if !signed {
                     let shift = divisor.trailing_zeros() as u8;
                     // Unsigned `/2^k` is a logical right shift; a narrow operand
@@ -28,13 +75,21 @@ impl Generator {
                             if self.emit_narrow_unsigned_shift(d, register, width, false, shift) {
                                 return Ok(());
                             }
-                            return Err(Diagnostic::error("narrow unsigned divide out of the single-rlwinm range (roadmap)"));
+                            return Err(Diagnostic::error(
+                                "narrow unsigned divide out of the single-rlwinm range (roadmap)",
+                            ));
                         }
                     }
                     // A leaf shifts in place; a sub-expression operand goes through
                     // the scratch (`addi r0,x,7; srwi d,r0,3`), as mwcc routes it.
                     let source = self.place_operand_or_scratch(left, GENERAL_SCRATCH)?;
-                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: d, s: source, shift });
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftRightLogicalImmediate {
+                            a: d,
+                            s: source,
+                            shift,
+                        });
                     return Ok(());
                 }
                 if divisor == 2 {
@@ -43,7 +98,12 @@ impl Generator {
                     // live elsewhere — a leaf stays in its home register (`srwi r0,r3,31;
                     // add r0,r0,r3; srawi d,r0,1`). Evaluating it into the result and reading
                     // that would clobber it when the result is the scratch r0 (a store).
-                    let source = if let Some(register) = self.leaf_info(left).ok().filter(|&(_, width, _)| width == 32).map(|(register, _, _)| register) {
+                    let source = if let Some(register) = self
+                        .leaf_info(left)
+                        .ok()
+                        .filter(|&(_, width, _)| width == 32)
+                        .map(|(register, _, _)| register)
+                    {
                         // A full-width leaf already sits sign-extended in its home register.
                         register
                     } else if d != GENERAL_SCRATCH {
@@ -54,17 +114,44 @@ impl Generator {
                     } else {
                         return Err(Diagnostic::error("signed /2 of a narrow or non-leaf result needs a second register (roadmap)"));
                     };
-                    self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: source, shift: 31 });
-                    self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: source });
-                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: d, s: GENERAL_SCRATCH, shift: 1 });
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftRightLogicalImmediate {
+                            a: GENERAL_SCRATCH,
+                            s: source,
+                            shift: 31,
+                        });
+                    self.output.instructions.push(Instruction::Add {
+                        d: GENERAL_SCRATCH,
+                        a: GENERAL_SCRATCH,
+                        b: source,
+                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftRightAlgebraicImmediate {
+                            a: d,
+                            s: GENERAL_SCRATCH,
+                            shift: 1,
+                        });
                     return Ok(());
                 }
                 // signed /2^k (k>=2): arithmetic shift, then `addze` adds the carry
                 // the shift sets for a negative dividend (round toward zero).
                 let shift = divisor.trailing_zeros() as u8;
                 let source = self.place_operand_or_scratch(left, GENERAL_SCRATCH)?;
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: source, shift });
-                self.output.instructions.push(Instruction::AddToZeroExtended { d, a: GENERAL_SCRATCH });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: source,
+                        shift,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::AddToZeroExtended {
+                        d,
+                        a: GENERAL_SCRATCH,
+                    });
                 return Ok(());
             }
             // Division by a non-power-of-two constant: the magic-number multiply
@@ -77,29 +164,44 @@ impl Generator {
                     return self.emit_unsigned_magic_divide(left, divisor as u32, d);
                 }
             }
-            return Err(Diagnostic::error("division by this constant needs magic-number lowering (roadmap)"));
+            return Err(Diagnostic::error(
+                "division by this constant needs magic-number lowering (roadmap)",
+            ));
         }
 
         // register divide: dividend (leaf stays, sub-expr -> scratch via the
         // allocator's virtual temporaries), then divisor.
         let dividend = self.place_operand_or_scratch(left, d)?;
-        let divisor = if let Some(register) = leaf_name(right).and_then(|name| self.lookup_general(name)) {
-            register
-        } else {
-            // a sub-expression divisor needs the scratch, which the dividend may occupy.
-            if dividend == GENERAL_SCRATCH {
-                return Err(Diagnostic::error("divisor and dividend both need scratch (roadmap M1)"));
-            }
-            if !fits_single_scratch(right, true) {
-                return Err(Diagnostic::error("divisor needs the full register allocator (roadmap M1)"));
-            }
-            self.evaluate_general(right, GENERAL_SCRATCH)?;
-            GENERAL_SCRATCH
-        };
+        let divisor =
+            if let Some(register) = leaf_name(right).and_then(|name| self.lookup_general(name)) {
+                register
+            } else {
+                // a sub-expression divisor needs the scratch, which the dividend may occupy.
+                if dividend == GENERAL_SCRATCH {
+                    return Err(Diagnostic::error(
+                        "divisor and dividend both need scratch (roadmap M1)",
+                    ));
+                }
+                if !fits_single_scratch(right, true) {
+                    return Err(Diagnostic::error(
+                        "divisor needs the full register allocator (roadmap M1)",
+                    ));
+                }
+                self.evaluate_general(right, GENERAL_SCRATCH)?;
+                GENERAL_SCRATCH
+            };
         self.output.instructions.push(if signed {
-            Instruction::DivideWord { d, a: dividend, b: divisor }
+            Instruction::DivideWord {
+                d,
+                a: dividend,
+                b: divisor,
+            }
         } else {
-            Instruction::DivideWordUnsigned { d, a: dividend, b: divisor }
+            Instruction::DivideWordUnsigned {
+                d,
+                a: dividend,
+                b: divisor,
+            }
         });
         Ok(())
     }
@@ -112,24 +214,46 @@ impl Generator {
     /// (the dividend must stay live); otherwise `mulhw` targets the result and the
     /// sign temporary uses r0. Restricted to the shapes where the dividend is a
     /// leaf and a scratch register is free, deferring otherwise.
-    fn emit_signed_magic_divide(&mut self, dividend: &Expression, divisor: i32, destination: u8) -> Compilation<()> {
+    fn emit_signed_magic_divide(
+        &mut self,
+        dividend: &Expression,
+        divisor: i32,
+        destination: u8,
+    ) -> Compilation<()> {
         let (magic, shift) = signed_magic(divisor);
-        let Some(dividend_register) = leaf_name(dividend).and_then(|name| self.lookup_general(name)) else {
-            return Err(Diagnostic::error("magic-number division needs a leaf dividend (roadmap)"));
+        let Some(dividend_register) =
+            leaf_name(dividend).and_then(|name| self.lookup_general(name))
+        else {
+            return Err(Diagnostic::error(
+                "magic-number division needs a leaf dividend (roadmap)",
+            ));
         };
         // The lowest free general register holds the materialized magic's high
         // half. The destination counts as free here — its incoming value is dead
         // and the divide writes its result there only at the very end — but the
         // dividend is live through the multiply, so it is excluded.
-        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r)) else {
-            return Err(Diagnostic::error("out of registers for magic-number division"));
+        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
+        else {
+            return Err(Diagnostic::error(
+                "out of registers for magic-number division",
+            ));
         };
         // Materialize the 32-bit magic with lis + addi (the addi's low half is
         // sign-extended, so the high half is adjusted to compensate).
         let low = magic as i16;
         let high = (magic.wrapping_sub(low as i32) >> 16) as i16;
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: temp, a: 0, immediate: high });
-        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: temp, immediate: low });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: temp,
+                a: 0,
+                immediate: high,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: temp,
+            immediate: low,
+        });
 
         let correction = magic < 0;
         let (quotient, sign_temp) = if correction || shift > 0 {
@@ -138,24 +262,56 @@ impl Generator {
             // sign bit. mwcc reuses the dividend register, not the result register —
             // which matters when the result *is* r0 (a store): `srwi r3,r0,31; add
             // r0,r0,r3`, not `srwi r0,r0,31` (that would clobber the quotient).
-            self.output.instructions.push(Instruction::MultiplyHighWord { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: dividend_register });
+            self.output
+                .instructions
+                .push(Instruction::MultiplyHighWord {
+                    d: GENERAL_SCRATCH,
+                    a: GENERAL_SCRATCH,
+                    b: dividend_register,
+                });
             if correction {
-                self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: dividend_register });
+                self.output.instructions.push(Instruction::Add {
+                    d: GENERAL_SCRATCH,
+                    a: GENERAL_SCRATCH,
+                    b: dividend_register,
+                });
             }
             if shift > 0 {
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                        shift,
+                    });
             }
             (GENERAL_SCRATCH, dividend_register)
         } else {
             // No correction or shift: the quotient lands in the (now-free) dividend
             // register and the sign in r0 — `mulhw r3,r0,r3; srwi r0,r3,31; add d,r3,r0`.
             // Targeting the result register would clobber the scratch when it is r0 (a store).
-            self.output.instructions.push(Instruction::MultiplyHighWord { d: dividend_register, a: GENERAL_SCRATCH, b: dividend_register });
+            self.output
+                .instructions
+                .push(Instruction::MultiplyHighWord {
+                    d: dividend_register,
+                    a: GENERAL_SCRATCH,
+                    b: dividend_register,
+                });
             (dividend_register, GENERAL_SCRATCH)
         };
         // Round toward zero: add the quotient's sign bit.
-        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: sign_temp, s: quotient, shift: 31 });
-        self.output.instructions.push(Instruction::Add { d: destination, a: quotient, b: sign_temp });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: sign_temp,
+                s: quotient,
+                shift: 31,
+            });
+        self.output.instructions.push(Instruction::Add {
+            d: destination,
+            a: quotient,
+            b: sign_temp,
+        });
         Ok(())
     }
 
@@ -164,30 +320,90 @@ impl Generator {
     /// "add" form), mwcc emits the saturating-add sequence
     /// `q=mulhwu; t=(n-q)>>1; q=t+q; result=q>>(s-1)`, keeping the multiply result
     /// in the magic's home register and the dividend live in its own.
-    fn emit_unsigned_magic_divide(&mut self, dividend: &Expression, divisor: u32, destination: u8) -> Compilation<()> {
+    fn emit_unsigned_magic_divide(
+        &mut self,
+        dividend: &Expression,
+        divisor: u32,
+        destination: u8,
+    ) -> Compilation<()> {
         let (magic, add, shift) = unsigned_magic(divisor);
-        let Some(dividend_register) = leaf_name(dividend).and_then(|name| self.lookup_general(name)) else {
-            return Err(Diagnostic::error("magic-number division needs a leaf dividend (roadmap)"));
+        let Some(dividend_register) =
+            leaf_name(dividend).and_then(|name| self.lookup_general(name))
+        else {
+            return Err(Diagnostic::error(
+                "magic-number division needs a leaf dividend (roadmap)",
+            ));
         };
-        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r)) else {
-            return Err(Diagnostic::error("out of registers for magic-number division"));
+        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
+        else {
+            return Err(Diagnostic::error(
+                "out of registers for magic-number division",
+            ));
         };
         let low = magic as i16;
         let high = ((magic as i32).wrapping_sub(low as i32) >> 16) as i16;
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: temp, a: 0, immediate: high });
-        self.output.instructions.push(Instruction::AddImmediate { d: GENERAL_SCRATCH, a: temp, immediate: low });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: temp,
+                a: 0,
+                immediate: high,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: temp,
+            immediate: low,
+        });
 
         if !add {
             // result = MULHWU(M, n) >> s.
-            self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: dividend_register });
-            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: GENERAL_SCRATCH, shift });
+            self.output
+                .instructions
+                .push(Instruction::MultiplyHighWordUnsigned {
+                    d: GENERAL_SCRATCH,
+                    a: GENERAL_SCRATCH,
+                    b: dividend_register,
+                });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: destination,
+                    s: GENERAL_SCRATCH,
+                    shift,
+                });
         } else {
             // q = MULHWU(M, n); result = ((n - q) >> 1 + q) >> (s - 1).
-            self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: temp, a: GENERAL_SCRATCH, b: dividend_register });
-            self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: temp, b: dividend_register });
-            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: 1 });
-            self.output.instructions.push(Instruction::Add { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: temp });
-            self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: destination, s: GENERAL_SCRATCH, shift: shift - 1 });
+            self.output
+                .instructions
+                .push(Instruction::MultiplyHighWordUnsigned {
+                    d: temp,
+                    a: GENERAL_SCRATCH,
+                    b: dividend_register,
+                });
+            self.output.instructions.push(Instruction::SubtractFrom {
+                d: GENERAL_SCRATCH,
+                a: temp,
+                b: dividend_register,
+            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: GENERAL_SCRATCH,
+                    shift: 1,
+                });
+            self.output.instructions.push(Instruction::Add {
+                d: GENERAL_SCRATCH,
+                a: GENERAL_SCRATCH,
+                b: temp,
+            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: destination,
+                    s: GENERAL_SCRATCH,
+                    shift: shift - 1,
+                });
         }
         Ok(())
     }
@@ -196,19 +412,42 @@ impl Generator {
     /// (the dividend staying live in its own register), then `n - q*d` via
     /// `mulli`/`subf`. The quotient sequence mirrors the divide but always lands
     /// in r0, using the magic's home register for the rounding temporary.
-    fn emit_magic_modulo(&mut self, dividend: &Expression, divisor: i64, signed: bool, destination: u8) -> Compilation<()> {
-        let Some(dividend_register) = leaf_name(dividend).and_then(|name| self.lookup_general(name)) else {
-            return Err(Diagnostic::error("magic-number modulo needs a leaf dividend (roadmap)"));
+    fn emit_magic_modulo(
+        &mut self,
+        dividend: &Expression,
+        divisor: i64,
+        signed: bool,
+        destination: u8,
+    ) -> Compilation<()> {
+        let Some(dividend_register) =
+            leaf_name(dividend).and_then(|name| self.lookup_general(name))
+        else {
+            return Err(Diagnostic::error(
+                "magic-number modulo needs a leaf dividend (roadmap)",
+            ));
         };
-        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r)) else {
-            return Err(Diagnostic::error("out of registers for magic-number modulo"));
+        let Some(temp) = (3u8..=12).find(|r| *r != dividend_register && !self.reserved.contains(r))
+        else {
+            return Err(Diagnostic::error(
+                "out of registers for magic-number modulo",
+            ));
         };
         let scratch = GENERAL_SCRATCH;
         let materialize = |this: &mut Self, magic: i32| {
             let low = magic as i16;
             let high = (magic.wrapping_sub(low as i32) >> 16) as i16;
-            this.output.instructions.push(Instruction::AddImmediateShifted { d: temp, a: 0, immediate: high });
-            this.output.instructions.push(Instruction::AddImmediate { d: scratch, a: temp, immediate: low });
+            this.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: temp,
+                    a: 0,
+                    immediate: high,
+                });
+            this.output.instructions.push(Instruction::AddImmediate {
+                d: scratch,
+                a: temp,
+                immediate: low,
+            });
         };
 
         // The rounded quotient ends up in r0.
@@ -217,42 +456,137 @@ impl Generator {
             materialize(self, magic);
             let correction = magic < 0;
             if correction || shift > 0 {
-                self.output.instructions.push(Instruction::MultiplyHighWord { d: scratch, a: scratch, b: dividend_register });
+                self.output
+                    .instructions
+                    .push(Instruction::MultiplyHighWord {
+                        d: scratch,
+                        a: scratch,
+                        b: dividend_register,
+                    });
                 if correction {
-                    self.output.instructions.push(Instruction::Add { d: scratch, a: scratch, b: dividend_register });
+                    self.output.instructions.push(Instruction::Add {
+                        d: scratch,
+                        a: scratch,
+                        b: dividend_register,
+                    });
                 }
                 if shift > 0 {
-                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: scratch, s: scratch, shift });
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftRightAlgebraicImmediate {
+                            a: scratch,
+                            s: scratch,
+                            shift,
+                        });
                 }
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: temp, s: scratch, shift: 31 });
-                self.output.instructions.push(Instruction::Add { d: scratch, a: scratch, b: temp });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: temp,
+                        s: scratch,
+                        shift: 31,
+                    });
+                self.output.instructions.push(Instruction::Add {
+                    d: scratch,
+                    a: scratch,
+                    b: temp,
+                });
             } else {
-                self.output.instructions.push(Instruction::MultiplyHighWord { d: temp, a: scratch, b: dividend_register });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: temp, shift: 31 });
-                self.output.instructions.push(Instruction::Add { d: scratch, a: temp, b: scratch });
+                self.output
+                    .instructions
+                    .push(Instruction::MultiplyHighWord {
+                        d: temp,
+                        a: scratch,
+                        b: dividend_register,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: scratch,
+                        s: temp,
+                        shift: 31,
+                    });
+                self.output.instructions.push(Instruction::Add {
+                    d: scratch,
+                    a: temp,
+                    b: scratch,
+                });
             }
         } else {
             let (magic, add, shift) = unsigned_magic(divisor as u32);
             materialize(self, magic as i32);
             if !add {
-                self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: scratch, a: scratch, b: dividend_register });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: scratch, shift });
+                self.output
+                    .instructions
+                    .push(Instruction::MultiplyHighWordUnsigned {
+                        d: scratch,
+                        a: scratch,
+                        b: dividend_register,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: scratch,
+                        s: scratch,
+                        shift,
+                    });
             } else {
-                self.output.instructions.push(Instruction::MultiplyHighWordUnsigned { d: temp, a: scratch, b: dividend_register });
-                self.output.instructions.push(Instruction::SubtractFrom { d: scratch, a: temp, b: dividend_register });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: scratch, shift: 1 });
-                self.output.instructions.push(Instruction::Add { d: scratch, a: scratch, b: temp });
-                self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: scratch, s: scratch, shift: shift - 1 });
+                self.output
+                    .instructions
+                    .push(Instruction::MultiplyHighWordUnsigned {
+                        d: temp,
+                        a: scratch,
+                        b: dividend_register,
+                    });
+                self.output.instructions.push(Instruction::SubtractFrom {
+                    d: scratch,
+                    a: temp,
+                    b: dividend_register,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: scratch,
+                        s: scratch,
+                        shift: 1,
+                    });
+                self.output.instructions.push(Instruction::Add {
+                    d: scratch,
+                    a: scratch,
+                    b: temp,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightLogicalImmediate {
+                        a: scratch,
+                        s: scratch,
+                        shift: shift - 1,
+                    });
             }
         }
         // n - q*d.
-        self.output.instructions.push(Instruction::MultiplyImmediate { d: scratch, a: scratch, immediate: divisor as i16 });
-        self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: scratch, b: dividend_register });
+        self.output
+            .instructions
+            .push(Instruction::MultiplyImmediate {
+                d: scratch,
+                a: scratch,
+                immediate: divisor as i16,
+            });
+        self.output.instructions.push(Instruction::SubtractFrom {
+            d: destination,
+            a: scratch,
+            b: dividend_register,
+        });
         Ok(())
     }
 
     /// Emit a remainder as `left - (left / right) * right` (leaf operands only for now).
-    pub(crate) fn emit_modulo(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_modulo(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         let signed = self.signedness_of(left)? && self.signedness_of(right)?;
 
         // Unsigned modulo by a power of two is a low-bit mask: a % 2^k == a & (2^k - 1).
@@ -261,7 +595,13 @@ impl Generator {
                 if divisor >= 2 && (divisor as u64).is_power_of_two() {
                     let source = self.place_operand_or_scratch(left, destination)?;
                     let clear = 32 - divisor.trailing_zeros() as u8;
-                    self.output.instructions.push(Instruction::ClearLeftImmediate { a: destination, s: source, clear });
+                    self.output
+                        .instructions
+                        .push(Instruction::ClearLeftImmediate {
+                            a: destination,
+                            s: source,
+                            clear,
+                        });
                     return Ok(());
                 }
             }
@@ -274,25 +614,120 @@ impl Generator {
                 if divisor >= 2 && (divisor as u64).is_power_of_two() {
                     let k = divisor.trailing_zeros() as u8;
                     let x = self.general_register_of_leaf(left)?;
+                    if self.behavior.signed_power_of_two_division_style
+                        == SignedPowerOfTwoDivisionStyle::CarryCorrectedQuotient
+                    {
+                        // When the result overwrites the dividend's home (the
+                        // return path), preserve it in r0. A store already targets
+                        // r0, so its parameter home remains live and needs no copy.
+                        let dividend = if destination == x {
+                            self.output.instructions.push(Instruction::AddImmediate {
+                                d: GENERAL_SCRATCH,
+                                a: x,
+                                immediate: 0,
+                            });
+                            GENERAL_SCRATCH
+                        } else {
+                            x
+                        };
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightAlgebraicImmediate {
+                                a: destination,
+                                s: dividend,
+                                shift: k,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::AddToZeroExtended {
+                                d: destination,
+                                a: destination,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftLeftImmediate {
+                                a: destination,
+                                s: destination,
+                                shift: k,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::SubtractFromCarrying {
+                                d: destination,
+                                a: destination,
+                                b: dividend,
+                            });
+                        return Ok(());
+                    }
                     if k == 1 {
                         // srwi s,x,31; clrlwi r0,x,31; xor r0,r0,s; subf d,s,r0
-                        let Some(sign) = (3u8..=12).find(|r| *r != x && *r != destination && !self.reserved.contains(r)) else {
-                            return Err(Diagnostic::error("no free register for signed %2 (roadmap)"));
+                        let Some(sign) = (3u8..=12)
+                            .find(|r| *r != x && *r != destination && !self.reserved.contains(r))
+                        else {
+                            return Err(Diagnostic::error(
+                                "no free register for signed %2 (roadmap)",
+                            ));
                         };
-                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: sign, s: x, shift: 31 });
-                        self.output.instructions.push(Instruction::ClearLeftImmediate { a: GENERAL_SCRATCH, s: x, clear: 31 });
-                        self.output.instructions.push(Instruction::Xor { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, b: sign });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: sign, b: GENERAL_SCRATCH });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightLogicalImmediate {
+                                a: sign,
+                                s: x,
+                                shift: 31,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::ClearLeftImmediate {
+                                a: GENERAL_SCRATCH,
+                                s: x,
+                                clear: 31,
+                            });
+                        self.output.instructions.push(Instruction::Xor {
+                            a: GENERAL_SCRATCH,
+                            s: GENERAL_SCRATCH,
+                            b: sign,
+                        });
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: destination,
+                            a: sign,
+                            b: GENERAL_SCRATCH,
+                        });
                     } else {
                         // slwi r0,x,32-k; srwi x,x,31; subf r0,x,r0; rotlwi r0,r0,k; add d,r0,x
                         // The sign goes in the dividend register x (free after the slwi), not
                         // the result — which would clobber r0's slwi value when the result is
                         // r0 (a store). The return case has d==x, so this is identical there.
-                        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: x, shift: 32 - k });
-                        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: x, s: x, shift: 31 });
-                        self.output.instructions.push(Instruction::SubtractFrom { d: GENERAL_SCRATCH, a: x, b: GENERAL_SCRATCH });
-                        self.output.instructions.push(Instruction::RotateAndMask { a: GENERAL_SCRATCH, s: GENERAL_SCRATCH, shift: k, begin: 0, end: 31 });
-                        self.output.instructions.push(Instruction::Add { d: destination, a: GENERAL_SCRATCH, b: x });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftLeftImmediate {
+                                a: GENERAL_SCRATCH,
+                                s: x,
+                                shift: 32 - k,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightLogicalImmediate {
+                                a: x,
+                                s: x,
+                                shift: 31,
+                            });
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: GENERAL_SCRATCH,
+                            a: x,
+                            b: GENERAL_SCRATCH,
+                        });
+                        self.output.instructions.push(Instruction::RotateAndMask {
+                            a: GENERAL_SCRATCH,
+                            s: GENERAL_SCRATCH,
+                            shift: k,
+                            begin: 0,
+                            end: 31,
+                        });
+                        self.output.instructions.push(Instruction::Add {
+                            d: destination,
+                            a: GENERAL_SCRATCH,
+                            b: x,
+                        });
                     }
                     return Ok(());
                 }
@@ -311,12 +746,28 @@ impl Generator {
         let left_register = self.general_register_of_leaf(left)?;
         let right_register = self.general_register_of_leaf(right)?;
         self.output.instructions.push(if signed {
-            Instruction::DivideWord { d: GENERAL_SCRATCH, a: left_register, b: right_register }
+            Instruction::DivideWord {
+                d: GENERAL_SCRATCH,
+                a: left_register,
+                b: right_register,
+            }
         } else {
-            Instruction::DivideWordUnsigned { d: GENERAL_SCRATCH, a: left_register, b: right_register }
+            Instruction::DivideWordUnsigned {
+                d: GENERAL_SCRATCH,
+                a: left_register,
+                b: right_register,
+            }
         });
-        self.output.instructions.push(Instruction::MultiplyLow { d: GENERAL_SCRATCH, a: GENERAL_SCRATCH, b: right_register });
-        self.output.instructions.push(Instruction::SubtractFrom { d: destination, a: GENERAL_SCRATCH, b: left_register });
+        self.output.instructions.push(Instruction::MultiplyLow {
+            d: GENERAL_SCRATCH,
+            a: GENERAL_SCRATCH,
+            b: right_register,
+        });
+        self.output.instructions.push(Instruction::SubtractFrom {
+            d: destination,
+            a: GENERAL_SCRATCH,
+            b: left_register,
+        });
         Ok(())
     }
 }
@@ -365,7 +816,9 @@ fn signed_magic(d: i32) -> (i32, u8) {
 /// precision bit the simple `mulhwu; srwi` cannot supply.
 fn unsigned_magic(d: u32) -> (u32, bool, u8) {
     let mut add = false;
-    let nc = (0u32).wrapping_sub(1).wrapping_sub((0u32).wrapping_sub(d) % d);
+    let nc = (0u32)
+        .wrapping_sub(1)
+        .wrapping_sub((0u32).wrapping_sub(d) % d);
     let mut p = 31u32;
     let mut q1 = 0x8000_0000u32 / nc;
     let mut r1 = 0x8000_0000u32 - q1 * nc;

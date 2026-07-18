@@ -2,10 +2,10 @@
 //! __HI(x) frame spill, the nested fctiwz early return, the k_cos
 //! if-form dispatch.
 
+use crate::generator::*;
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Type};
-use crate::generator::*;
 
 impl Generator {
     /// The PUNNED-BITS guard + float-DAG composition (the k_sin prefix):
@@ -14,7 +14,10 @@ impl Generator {
     /// lis-able C]; stfd f1,8(r1); lwz; [clrlwi ,1]; cmpw/cmpwi; bge +8;
     /// b EPILOGUE — extra int guards in branch form, the float tail, then
     /// the SHARED addi/blr epilogue.
-    pub(crate) fn try_punned_guard_float_return(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_punned_guard_float_return(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         use mwcc_syntax_trees::Statement;
         // The NESTED inner guard (k_sin): `if (ix < C) { if ((int)x == 0)
         // return x; }` arrives as one statement — followed by the C89 local
@@ -40,10 +43,10 @@ impl Generator {
         // returning-then becomes fall-through):
         //   If(prefix), assigns..., If{cond, then:[Return T], else:[]},
         //   If(diamond), assigns..., Return(E)
-        let if_form_start: Option<usize> = if nested && function.guards.is_empty() && function.return_expression.is_none() {
-            let statements = &function.statements;
-            (1..statements.len().saturating_sub(2))
-                .find(|&index| {
+        let if_form_start: Option<usize> =
+            if nested && function.guards.is_empty() && function.return_expression.is_none() {
+                let statements = &function.statements;
+                (1..statements.len().saturating_sub(2)).find(|&index| {
                     matches!(
                         &statements[index],
                         Statement::If { then_body, else_body, .. }
@@ -51,24 +54,27 @@ impl Generator {
                                 && else_body.is_empty()
                     ) && matches!(&statements[index + 1], Statement::If { .. })
                         && matches!(statements.last(), Some(Statement::Return(Some(_))))
-                        && statements[1..index].iter().all(|s| matches!(s, Statement::Assign { .. }))
+                        && statements[1..index]
+                            .iter()
+                            .all(|s| matches!(s, Statement::Assign { .. }))
                         && statements[index + 2..statements.len() - 1]
                             .iter()
                             .all(|s| matches!(s, Statement::Assign { .. }))
                 })
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         if nested {
             let trailing_end = if_form_start.unwrap_or(function.statements.len());
             for statement in &function.statements[1..trailing_end] {
                 let Statement::Assign { name, value } = statement else {
                     return Ok(false);
                 };
-                let declared_uninit = function
-                    .locals
-                    .iter()
-                    .any(|local| &local.name == name && local.initializer.is_none() && local.array_length.is_none());
+                let declared_uninit = function.locals.iter().any(|local| {
+                    &local.name == name
+                        && local.initializer.is_none()
+                        && local.array_length.is_none()
+                });
                 if !declared_uninit || trailing_inits.iter().any(|(seen, _)| seen == name) {
                     return Ok(false);
                 }
@@ -94,7 +100,12 @@ impl Generator {
             None => None,
             Some(start) => {
                 let statements = &function.statements;
-                let Statement::If { condition, then_body, .. } = &statements[start] else {
+                let Statement::If {
+                    condition,
+                    then_body,
+                    ..
+                } = &statements[start]
+                else {
                     unreachable!("matched above");
                 };
                 let [Statement::Return(Some(then_value))] = then_body.as_slice() else {
@@ -111,7 +122,13 @@ impl Generator {
                     };
                     else_assigns.push((name, value));
                 }
-                Some(IfForm { condition, then_value, diamond, else_assigns, else_return })
+                Some(IfForm {
+                    condition,
+                    then_value,
+                    diamond,
+                    else_assigns,
+                    else_return,
+                })
             }
         };
         let _ = &trailing_inits;
@@ -133,11 +150,18 @@ impl Generator {
         let (pun, masked) = match crate::frame::pun_word_offset_pub(ix_init, x) {
             Some(0) => (true, false),
             _ => match ix_init {
-                Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
-                    let mask31 = |side: &Expression| crate::analysis::constant_value(side) == Some(0x7fff_ffff);
+                Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left,
+                    right,
+                } => {
+                    let mask31 = |side: &Expression| {
+                        crate::analysis::constant_value(side) == Some(0x7fff_ffff)
+                    };
                     if crate::frame::pun_word_offset_pub(left, x) == Some(0) && mask31(right) {
                         (true, true)
-                    } else if crate::frame::pun_word_offset_pub(right, x) == Some(0) && mask31(left) {
+                    } else if crate::frame::pun_word_offset_pub(right, x) == Some(0) && mask31(left)
+                    {
                         (true, true)
                     } else {
                         (false, false)
@@ -155,13 +179,23 @@ impl Generator {
         // inner body must be exactly `if ((int)x == 0) return x;`.
         let mut early_return_const: Option<u64> = None;
         let outer_condition: &Expression = if nested {
-            let Some(Statement::If { condition, then_body, else_body }) = function.statements.first() else {
+            let Some(Statement::If {
+                condition,
+                then_body,
+                else_body,
+            }) = function.statements.first()
+            else {
                 return Ok(false);
             };
             if !else_body.is_empty() {
                 return Ok(false);
             }
-            let [Statement::If { condition: inner, then_body: inner_then, else_body: inner_else }] = then_body.as_slice() else {
+            let [Statement::If {
+                condition: inner,
+                then_body: inner_then,
+                else_body: inner_else,
+            }] = then_body.as_slice()
+            else {
                 return Ok(false);
             };
             if !inner_else.is_empty() {
@@ -177,7 +211,12 @@ impl Generator {
                 }
                 _ => return Ok(false),
             }
-            let Expression::Binary { operator: BinaryOperator::Equal, left, right } = inner else {
+            let Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left,
+                right,
+            } = inner
+            else {
                 return Ok(false);
             };
             let cast_of_x = matches!(left.as_ref(), Expression::Cast { operand, target_type: Type::Int }
@@ -198,7 +237,12 @@ impl Generator {
             .iter()
             .filter(|parameter| parameter.parameter_type != Type::Double)
             .count() as u8;
-        let Expression::Binary { operator: BinaryOperator::Less, left, right } = outer_condition else {
+        let Expression::Binary {
+            operator: BinaryOperator::Less,
+            left,
+            right,
+        } = outer_condition
+        else {
             return Ok(false);
         };
         if !matches!(left.as_ref(), Expression::Variable(name) if name == ix) {
@@ -239,33 +283,38 @@ impl Generator {
         // prefix must keep ix out of r3 — the SPLIT form (lwz r3 raw,
         // clrlwi r4). Measured for Less with a positive addi low half and
         // no int params.
-        let ix_dual_big: Option<(i16, i16)> = if nested && effective_dual_condition.is_some() && !ix_in_dual_condition {
-            match effective_dual_condition.expect("checked") {
-                Expression::Binary { operator: BinaryOperator::Less, left, right }
-                    if matches!(left.as_ref(), Expression::Variable(name) if name == ix) =>
-                {
-                    match right.as_ref() {
-                        Expression::IntegerLiteral(value)
-                            if u32::try_from(*value).is_ok()
-                                && (*value & 0xffff) <= 0x7fff
-                                && i16::try_from(*value).is_err() =>
-                        {
-                            Some(((*value >> 16) as i16, (*value & 0xffff) as i16))
+        let ix_dual_big: Option<(i16, i16)> =
+            if nested && effective_dual_condition.is_some() && !ix_in_dual_condition {
+                match effective_dual_condition.expect("checked") {
+                    Expression::Binary {
+                        operator: BinaryOperator::Less,
+                        left,
+                        right,
+                    } if matches!(left.as_ref(), Expression::Variable(name) if name == ix) => {
+                        match right.as_ref() {
+                            Expression::IntegerLiteral(value)
+                                if u32::try_from(*value).is_ok()
+                                    && (*value & 0xffff) <= 0x7fff
+                                    && i16::try_from(*value).is_err() =>
+                            {
+                                Some(((*value >> 16) as i16, (*value & 0xffff) as i16))
+                            }
+                            _ => None,
                         }
-                        _ => None,
                     }
+                    _ => None,
                 }
-                _ => None,
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
         // ix appears nowhere else.
         let ix_uses_elsewhere = function
             .guards
             .iter()
             .enumerate()
-            .filter(|&(index, _)| !(nested && index == 0 && (ix_in_dual_condition || ix_dual_big.is_some())))
+            .filter(|&(index, _)| {
+                !(nested && index == 0 && (ix_in_dual_condition || ix_dual_big.is_some()))
+            })
             .map(|(_, guard)| guard)
             .skip(if nested { 0 } else { 1 })
             .map(|guard| {
@@ -289,7 +338,11 @@ impl Generator {
             return Ok(false);
         }
         // Extra guards: int-param leaf conditions returning x (branch form).
-        let extra_guards = if nested { &function.guards[0..0] } else { &function.guards[1..] };
+        let extra_guards = if nested {
+            &function.guards[0..0]
+        } else {
+            &function.guards[1..]
+        };
         for guard in extra_guards {
             if !matches!(&guard.value, Expression::Variable(name) if name == x) {
                 return Ok(false);
@@ -322,11 +375,21 @@ impl Generator {
                 if ix_dual_big.is_none() {
                     return Ok(false);
                 }
-                let Statement::If { condition: inner, then_body, else_body } = form.diamond else {
+                let Statement::If {
+                    condition: inner,
+                    then_body,
+                    else_body,
+                } = form.diamond
+                else {
                     return Ok(false);
                 };
                 // `ix > BIG2` with a lis-able constant: lis r0 + cmpw + ble.
-                let Expression::Binary { operator: BinaryOperator::Greater, left, right } = inner else {
+                let Expression::Binary {
+                    operator: BinaryOperator::Greater,
+                    left,
+                    right,
+                } = inner
+                else {
                     return Ok(false);
                 };
                 if !matches!(left.as_ref(), Expression::Variable(name) if name == ix) {
@@ -339,8 +402,10 @@ impl Generator {
                     return Ok(false);
                 }
                 // The diamond arms: qx = literal / punned ix-minus-C stores.
-                let [Statement::Assign { name: qx_name, value: Expression::FloatLiteral(then_value) }] =
-                    then_body.as_slice()
+                let [Statement::Assign {
+                    name: qx_name,
+                    value: Expression::FloatLiteral(then_value),
+                }] = then_body.as_slice()
                 else {
                     return Ok(false);
                 };
@@ -353,8 +418,13 @@ impl Generator {
                 if !qx_ok {
                     return Ok(false);
                 }
-                let [Statement::Store { target: hi_target, value: hi_value }, Statement::Store { target: lo_target, value: lo_value }] =
-                    else_body.as_slice()
+                let [Statement::Store {
+                    target: hi_target,
+                    value: hi_value,
+                }, Statement::Store {
+                    target: lo_target,
+                    value: lo_value,
+                }] = else_body.as_slice()
                 else {
                     return Ok(false);
                 };
@@ -364,7 +434,11 @@ impl Generator {
                 {
                     return Ok(false);
                 }
-                let Expression::Binary { operator: BinaryOperator::Subtract, left: hi_left, right: hi_right } = hi_value
+                let Expression::Binary {
+                    operator: BinaryOperator::Subtract,
+                    left: hi_left,
+                    right: hi_right,
+                } = hi_value
                 else {
                     return Ok(false);
                 };
@@ -428,7 +502,10 @@ impl Generator {
             // stay OUT of the shared synthetic (the else tail owns them).
             if let Some(payload) = &composition {
                 if local.name == payload.qx_name
-                    || payload.else_locals.iter().any(|owned| owned.name == local.name)
+                    || payload
+                        .else_locals
+                        .iter()
+                        .any(|owned| owned.name == local.name)
                 {
                     continue;
                 }
@@ -451,7 +528,8 @@ impl Generator {
         let synthetic = Function {
             return_type: function.return_type,
             section: None,
-            asm_body: None, force_active: false,
+            asm_body: None,
+            force_active: false,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,
@@ -469,15 +547,34 @@ impl Generator {
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
         let frame_before = self.frame_size;
+        let legacy_reloading = self.behavior.punned_float_frame_convention
+            == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading;
         // The frame drives the extab/extabindex sections; the nested fctiwz
         // form needs a second conversion slot.
-        let frame_size: i16 = if nested { 32 } else { 16 };
-        self.frame_size = frame_size;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -frame_size });
-        if let Some(high) = lis_high {
-            self.output.instructions.push(Instruction::load_immediate_shifted(0, high));
+        let mut frame_size: i16 = if nested { 32 } else { 16 };
+        if legacy_reloading {
+            frame_size += 8;
         }
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.frame_size = frame_size;
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -frame_size,
+            });
+        if let Some(high) = lis_high {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(0, high));
+        }
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
         let int_params = function
             .parameters
             .iter()
@@ -485,19 +582,42 @@ impl Generator {
             .count() as u8;
         // The big-const dual SPLITS raw/masked (lwz r3; clrlwi r4,r3) so the
         // dual's lis can take r3; otherwise the mask is in-place.
-        let load_register = if lis_high.is_some() { 3 + int_params } else { 0 };
-        let target_register = if ix_dual_big.is_some() { load_register + 1 } else { load_register };
-        self.output.instructions.push(Instruction::LoadWord { d: load_register, a: 1, offset: 8 });
+        let load_register = if lis_high.is_some() {
+            3 + int_params
+        } else {
+            0
+        };
+        let target_register = if ix_dual_big.is_some() {
+            load_register + 1
+        } else {
+            load_register
+        };
+        self.output.instructions.push(Instruction::LoadWord {
+            d: load_register,
+            a: 1,
+            offset: 8,
+        });
         if masked {
-            self.output.instructions.push(Instruction::ClearLeftImmediate { a: target_register, s: load_register, clear: 1 });
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: target_register,
+                    s: load_register,
+                    clear: 1,
+                });
         }
         if lis_high.is_some() {
-            self.output.instructions.push(Instruction::CompareWord { a: target_register, b: 0 });
-        } else {
-            self.output.instructions.push(Instruction::CompareWordImmediate {
+            self.output.instructions.push(Instruction::CompareWord {
                 a: target_register,
-                immediate: small_compare.expect("checked above"),
+                b: 0,
             });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::CompareWordImmediate {
+                    a: target_register,
+                    immediate: small_compare.expect("checked above"),
+                });
         }
         let mut epilogue_branches: Vec<usize> = Vec::new();
         let mut tail_branches: Vec<usize> = Vec::new();
@@ -505,42 +625,109 @@ impl Generator {
             // bge TAIL; fctiwz f0,f1; stfd f0,16; lwz r0,20; cmpwi; bne TAIL;
             // b EPILOGUE (measured).
             tail_branches.push(self.output.instructions.len());
-            self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 });
-            self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: 0, b: 1 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: 4,
+                    condition_bit: 0,
+                    target: 0,
+                });
+            self.output
+                .instructions
+                .push(Instruction::ConvertToIntegerWordZero { d: 0, b: 1 });
             let conversion_slot: i16 = if composition.is_some() { 24 } else { 16 };
-            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: conversion_slot });
-            self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: conversion_slot + 4 });
-            self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+            self.output
+                .instructions
+                .push(Instruction::StoreFloatDouble {
+                    s: 0,
+                    a: 1,
+                    offset: conversion_slot,
+                });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: conversion_slot + 4,
+            });
+            self.output
+                .instructions
+                .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
             tail_branches.push(self.output.instructions.len());
-            self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: 4,
+                    condition_bit: 2,
+                    target: 0,
+                });
             if let Some(bits) = early_return_const {
                 self.load_double_constant(1, bits);
-                // The const-return early path consumes ONE fewer pre-pool
-                // label than return-x (measured: pool @10 vs @11).
-                self.output.anonymous_label_bump -= 1;
             }
             epilogue_branches.push(self.output.instructions.len());
-            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
             // Two folded ifs + the epilogue block; the fctiwz is an
             // int<->float conversion (its own pre-pool label).
-            self.output.anonymous_label_bump += 4;
+            // The const-return early path consumes ONE fewer pre-pool label
+            // than return-x (measured: pool @10 vs @11). Add the net count
+            // directly so debug builds cannot underflow an initially-zero bump.
+            self.output.anonymous_label_bump += if early_return_const.is_some() { 3 } else { 4 };
             self.output.has_conversion = true;
             // The inner block consumes one more number AFTER the pools.
             self.output.post_constant_label_bump += 1;
         } else {
-            // bge +8 skips the epilogue branch (Less: skip on the inverse).
+            // Build 163 reloads the spill before returning x from this prefix;
+            // its float tail receives a separate reloaded copy below.
             let skip_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: skip_index + 2 });
+            let skip_distance = if legacy_reloading { 3 } else { 2 };
+            let skip_target = if extra_guards.is_empty() {
+                tail_branches.push(skip_index);
+                0
+            } else {
+                skip_index + skip_distance
+            };
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: 4,
+                    condition_bit: 0,
+                    target: skip_target,
+                });
+            if legacy_reloading {
+                self.output.instructions.push(Instruction::LoadFloatDouble {
+                    d: 1,
+                    a: 1,
+                    offset: 8,
+                });
+            }
             epilogue_branches.push(self.output.instructions.len());
-            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
             self.output.anonymous_label_bump += 2;
         }
         for guard in extra_guards {
             let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
             let skip_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: skip_index + 2 });
+            let skip_distance = if legacy_reloading { 3 } else { 2 };
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: skip_index + skip_distance,
+                });
+            if legacy_reloading {
+                self.output.instructions.push(Instruction::LoadFloatDouble {
+                    d: 1,
+                    a: 1,
+                    offset: 8,
+                });
+            }
             epilogue_branches.push(self.output.instructions.len());
-            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
             self.output.anonymous_label_bump += 2;
         }
         // The SHARED epilogue block consumes ONE extra label ahead of the
@@ -552,12 +739,14 @@ impl Generator {
         // the chain).
         let tail_start = self.output.instructions.len();
         for branch in &tail_branches {
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[*branch] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[*branch]
+            {
                 *target = tail_start;
             }
         }
         let saved_frame_slots = std::mem::take(&mut self.frame_slots);
-        if nested {
+        if nested || legacy_reloading {
             self.float.reload_x = Some(8);
         }
         // The preserved ix resolves in the dual's condition test through a
@@ -620,9 +809,14 @@ impl Generator {
                 *target = epilogue;
             }
         }
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: frame_size });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: frame_size,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 }
-

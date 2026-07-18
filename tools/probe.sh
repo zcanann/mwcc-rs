@@ -23,7 +23,7 @@ sjis="$FFCC/build/tools/sjiswrap.exe"
 compiler="$FFCC/build/compilers/GC/$version/mwcceppc.exe"
 objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
 here="$(cd "$(dirname "$0")/.." && pwd)"
-ours_bin="$here/target/release/mwcc"
+ours_bin="${MWCC_BIN:-$here/target/release/mwcc}"
 
 flags=(-nodefaults -proc gekko -align powerpc -enum int -fp hardware \
   -O4,p -inline auto -maxerrors 1 -nosyspath -RTTI off \

@@ -37,49 +37,138 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 11, a: 1, immediate: 32 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 11,
+            a: 1,
+            immediate: 32,
+        });
         self.record_relocation(RelocationKind::Rel24, "_savegpr_26");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "_savegpr_26".to_string() });
-        self.output.instructions.push(Instruction::move_register(26, 3));
-        self.output.instructions.push(Instruction::move_register(28, 5));
-        self.output.instructions.push(Instruction::move_register(27, 6));
-        self.output.instructions.push(Instruction::move_register(29, 7));
-        self.output.instructions.push(Instruction::move_register(31, 8));
-        self.output.instructions.push(Instruction::move_register(30, 9));
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "_savegpr_26".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(26, 3));
+        self.output
+            .instructions
+            .push(Instruction::move_register(28, 5));
+        self.output
+            .instructions
+            .push(Instruction::move_register(27, 6));
+        self.output
+            .instructions
+            .push(Instruction::move_register(29, 7));
+        self.output
+            .instructions
+            .push(Instruction::move_register(31, 8));
+        self.output
+            .instructions
+            .push(Instruction::move_register(30, 9));
         self.record_relocation(RelocationKind::Rel24, "OSDisableInterrupts");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSDisableInterrupts".to_string() });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 26, offset: 28 });
-        self.output.instructions.push(Instruction::move_register(31, 3));
-        self.output.instructions.push(Instruction::move_register(4, 27));
-        self.output.instructions.push(Instruction::move_register(3, 28));
-        self.output.instructions.push(Instruction::StoreWord { s: 29, a: 26, offset: 24 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSDisableInterrupts".to_string(),
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 26,
+            offset: 28,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(31, 3));
+        self.output
+            .instructions
+            .push(Instruction::move_register(4, 27));
+        self.output
+            .instructions
+            .push(Instruction::move_register(3, 28));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 29,
+            a: 26,
+            offset: 24,
+        });
         self.record_relocation(RelocationKind::Rel24, "__OSTimeToSystemTime");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__OSTimeToSystemTime".to_string() });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 26, offset: 36 });
-        self.output.instructions.push(Instruction::move_register(7, 30));
-        self.output.instructions.push(Instruction::load_immediate(6, 0));
-        self.output.instructions.push(Instruction::load_immediate(5, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 26, offset: 32 });
-        self.output.instructions.push(Instruction::move_register(3, 26));
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__OSTimeToSystemTime".to_string(),
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 26,
+            offset: 36,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(7, 30));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(6, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(5, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 26,
+            offset: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(3, 26));
         self.record_relocation(RelocationKind::Rel24, "InsertAlarm");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "InsertAlarm".to_string() });
-        self.output.instructions.push(Instruction::move_register(3, 31));
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "InsertAlarm".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(3, 31));
         self.record_relocation(RelocationKind::Rel24, "OSRestoreInterrupts");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSRestoreInterrupts".to_string() });
-        self.output.instructions.push(Instruction::AddImmediate { d: 11, a: 1, immediate: 32 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSRestoreInterrupts".to_string(),
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 11,
+            a: 1,
+            immediate: 32,
+        });
         self.record_relocation(RelocationKind::Rel24, "_restgpr_26");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "_restgpr_26".to_string() });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "_restgpr_26".to_string(),
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

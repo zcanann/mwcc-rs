@@ -39,31 +39,99 @@ impl Generator {
         self.frame_size = 32;
         self.non_leaf = true;
         self.output.constant_number_gaps = vec![(1, 10)];
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 31, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 31, a: 1, offset: 24, w: 0, i: 0 });
-        self.output.instructions.push(Instruction::FloatMove { d: 31, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 31,
+                a: 1,
+                offset: 16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::PairedSingleQuantizedStore {
+                s: 31,
+                a: 1,
+                offset: 24,
+                w: 0,
+                i: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 31, b: 1 });
         self.load_float_constant(0, f32::from_bits(0x3f800000));
-        self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractSingle { d: 1, a: 31, c: 31, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatNegativeMultiplySubtractSingle {
+                d: 1,
+                a: 31,
+                c: 31,
+                b: 0,
+            });
         self.record_relocation(RelocationKind::Rel24, "_inv_sqrtf");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "_inv_sqrtf".to_string() });
-        self.output.instructions.push(Instruction::FloatMultiplySingle { d: 1, a: 31, c: 1 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "_inv_sqrtf".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplySingle { d: 1, a: 31, c: 1 });
         self.record_relocation(RelocationKind::Rel24, "atan__Ff");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "atan__Ff".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "atan__Ff".to_string(),
+        });
         self.load_float_constant(0, f32::from_bits(0x3fc90fdb));
-        self.output.instructions.push(Instruction::FloatSubtractSingle { d: 1, a: 0, b: 1 });
-        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 31, a: 1, offset: 24, w: 0, i: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 31, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::FloatSubtractSingle { d: 1, a: 0, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::PairedSingleQuantizedLoad {
+                d: 31,
+                a: 1,
+                offset: 24,
+                w: 0,
+                i: 0,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 31,
+            a: 1,
+            offset: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

@@ -1,9 +1,9 @@
 //! The token cursor: the `Parser` state and its primitive operations.
 
-use std::collections::HashMap;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Pointee, Type};
 use mwcc_tokens::Token;
+use std::collections::HashMap;
 
 /// One resolved struct member: its type and byte offset within the struct, plus
 /// the struct tag it points to when the member is itself a struct pointer (so
@@ -45,6 +45,10 @@ pub(crate) struct Parser {
     /// so the codegen omits the `extsb` a signed char would take. `signed char`
     /// and `unsigned char` are explicit and unaffected.
     pub(crate) char_is_signed: bool,
+    /// First suffix for a plain inline's `$localstaticN` weak objects.
+    pub(crate) plain_inline_localstatic_base: u8,
+    /// Base anonymous-label cost of a skipped static-inline definition.
+    pub(crate) skipped_static_inline_label_base: u8,
     /// Declared struct layouts, by tag name.
     pub(crate) structs: HashMap<String, StructLayout>,
     /// In-scope variables that are struct pointers, mapped to their struct tag,
@@ -144,9 +148,8 @@ pub(crate) struct Parser {
     /// UND symbol from the dropped compilation; the general codegen path does not emit
     /// them, so an object carrying one (with no capture declaring it) must DEFER.
     pub(crate) plain_inline_asm_helpers: Vec<String>,
-    /// Count of skipped `inline`/`static inline` FUNCTION DEFINITIONS: mwcc
-    /// compiles-then-drops these, advancing the file's `@N` counter by 3 each
-    /// (measured), so the writer pre-bumps the first function's numbering.
+    /// Anonymous-label cost accumulated while mwcc compiles and then drops
+    /// inline definitions; the base and body-label weights are generation-aware.
     pub(crate) skipped_inline_functions: usize,
     /// Per static-local NAME, the skipped-inline bump total at its DECLARATION
     /// point — a static numbers off the anonymous counter AS OF that position
@@ -164,6 +167,10 @@ pub(crate) struct Parser {
     pub(crate) weak_materialized: Vec<String>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
     pub(crate) weak_functions: std::collections::HashSet<String>,
+    /// Names given internal linkage by an earlier `static` function declaration.
+    /// A later definition may legally omit `static`; C keeps the prior internal
+    /// linkage (`static void f(void); void f(void) {}`).
+    pub(crate) static_functions: std::collections::HashSet<String>,
     /// A `__declspec(section "…")` seen on a function PROTOTYPE — mwcc applies it to
     /// the later definition (pikmin's `DECL_SECT(".init")` sits on the memcpy proto).
     pub(crate) section_functions: std::collections::HashMap<String, String>,
@@ -179,7 +186,8 @@ pub(crate) struct Parser {
     pub(crate) force_active: bool,
     /// Parsed single-return inline bodies: name -> (parameter names, body) —
     /// substituted at call sites with pure arguments (mwcc -inline auto).
-    pub(crate) inline_bodies: std::collections::HashMap<String, (Vec<String>, mwcc_syntax_trees::Expression)>,
+    pub(crate) inline_bodies:
+        std::collections::HashMap<String, (Vec<String>, mwcc_syntax_trees::Expression)>,
     /// `typedef`-declared struct aliases (`typedef struct _FILE {…} FILE;`) mapped
     /// to their struct tag, so `FILE *p` resolves to the right layout.
     pub(crate) struct_typedefs: HashMap<String, String>,
@@ -256,14 +264,19 @@ impl Parser {
             self.position += 1;
             Ok(())
         } else {
-            Err(Diagnostic::error(format!("expected {expected}, found {}", self.peek())))
+            Err(Diagnostic::error(format!(
+                "expected {expected}, found {}",
+                self.peek()
+            )))
         }
     }
 
     pub(crate) fn parse_identifier(&mut self) -> Compilation<String> {
         match self.advance() {
             Token::Identifier(name) => Ok(name),
-            other => Err(Diagnostic::error(format!("expected an identifier, found {other}"))),
+            other => Err(Diagnostic::error(format!(
+                "expected an identifier, found {other}"
+            ))),
         }
     }
 }

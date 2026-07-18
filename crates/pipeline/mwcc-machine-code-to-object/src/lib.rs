@@ -5,11 +5,14 @@
 //! relocations, and the Metrowerks metadata records).
 
 use mwcc_machine_code::{MachineFunction, RelocationTarget as MachineTarget};
-use mwcc_object::{DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation};
+use mwcc_object::{
+    DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput, RelocationTarget,
+    Sdata2Constant, TextRelocation,
+};
 
 /// A data-section `ADDR32` relocation (re-exported so callers can build a
 /// `DefinedGlobal`'s relocations without depending on `mwcc-object` directly).
-pub use mwcc_object::DataRelocation;
+pub use mwcc_object::{CommentFormat, DataRelocation, ObjectFormat};
 
 /// A file-scope variable *defined* in this unit (placed in a data section), in
 /// declaration order. The caller decides which globals qualify (non-`extern`,
@@ -22,6 +25,10 @@ pub struct DefinedGlobal {
     /// A `const` global is read-only: the writer routes it to `.sdata2` (≤ 8
     /// bytes) or `.rodata` (larger) rather than `.sdata`/`.sbss`.
     pub is_const: bool,
+    /// Bypass the small-data threshold for this object. The syntax lowering sets
+    /// this for generation-specific source cases (currently inferred arrays),
+    /// leaving the writer independent of C declarator syntax.
+    pub force_full_data_section: bool,
     /// A `static` global binds as a LOCAL symbol (file-scope, not exported).
     pub is_static: bool,
     /// An EXPLICITLY zero-initialized global (`int a = 0;`) rather than an
@@ -52,10 +59,21 @@ pub struct DefinedGlobal {
 /// `version` is the compiler version being reproduced, stamped into `.comment`.
 /// The functions share one `.text`, one `.sdata2` constant pool, one
 /// `.mwcats.text`, the unwind sections, and the `.sbss` data section.
-pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[DefinedGlobal], inline_asm_symbols: &[String], forward_declared_statics: &[String], source_name: &str, version: (u8, u8, u8), build: u16, small_data: bool) -> Vec<u8> {
+pub fn assemble_object(
+    functions: &[MachineFunction],
+    defined_globals: &[DefinedGlobal],
+    inline_asm_symbols: &[String],
+    forward_declared_statics: &[String],
+    source_name: &str,
+    object_format: ObjectFormat,
+    small_data: bool,
+) -> Vec<u8> {
     // The encoded text is owned here so the borrowed `FunctionObject` can point at
     // it for the lifetime of the call.
-    let texts: Vec<Vec<u8>> = functions.iter().map(|function| function.encode_text()).collect();
+    let texts: Vec<Vec<u8>> = functions
+        .iter()
+        .map(|function| function.encode_text())
+        .collect();
     let function_objects = functions
         .iter()
         .zip(&texts)
@@ -84,26 +102,49 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 .relocations
                 .iter()
                 .map(|relocation| TextRelocation {
-                    offset: relocation.instruction_index as u32 * 4 + relocation.kind.field_offset(),
+                    offset: relocation.instruction_index as u32 * 4
+                        + if relocation.kind == mwcc_machine_code::RelocationKind::EmbSda21 {
+                            u32::from(object_format.emb_sda21_offset)
+                        } else {
+                            relocation.kind.field_offset()
+                        },
                     elf_type: relocation.kind.elf_type(),
                     target: match &relocation.target {
-                        MachineTarget::External(symbol) => RelocationTarget::External(symbol.clone()),
-                        MachineTarget::ExternalWithAddend(symbol, addend) => RelocationTarget::ExternalWithAddend(symbol.clone(), *addend),
+                        MachineTarget::External(symbol) => {
+                            RelocationTarget::External(symbol.clone())
+                        }
+                        MachineTarget::ExternalWithAddend(symbol, addend) => {
+                            RelocationTarget::ExternalWithAddend(symbol.clone(), *addend)
+                        }
                         MachineTarget::Constant(index) => RelocationTarget::Constant(*index),
-                        MachineTarget::ConstantWithAddend(index, addend) => RelocationTarget::ConstantWithAddend(*index, *addend),
+                        MachineTarget::ConstantWithAddend(index, addend) => {
+                            RelocationTarget::ConstantWithAddend(*index, *addend)
+                        }
                         MachineTarget::JumpTable => RelocationTarget::JumpTable,
-                        MachineTarget::JumpTableAt(table_index) => RelocationTarget::JumpTableAt(*table_index),
+                        MachineTarget::JumpTableAt(table_index) => {
+                            RelocationTarget::JumpTableAt(*table_index)
+                        }
                         MachineTarget::AnonymousRodata => RelocationTarget::AnonymousRodata,
-                        MachineTarget::AnonymousRodataAt(blob_index) => RelocationTarget::AnonymousRodataAt(*blob_index),
+                        MachineTarget::AnonymousRodataAt(blob_index) => {
+                            RelocationTarget::AnonymousRodataAt(*blob_index)
+                        }
                     },
                 })
                 .collect(),
             constants: function
                 .constants
                 .iter()
-                .map(|constant| Sdata2Constant { bits: constant.bits, byte_width: constant.byte_width, static_slot: constant.static_slot, image: constant.image, force_new: constant.force_new })
+                .map(|constant| Sdata2Constant {
+                    bits: constant.bits,
+                    byte_width: constant.byte_width,
+                    static_slot: constant.static_slot,
+                    image: constant.image,
+                    force_new: constant.force_new,
+                })
                 .collect(),
-            frame: function.frame.map(|frame| FrameLayout { extab_header: frame.extab_header() }),
+            frame: function.frame.map(|frame| FrameLayout {
+                extab_header: frame.extab_header(),
+            }),
             // The anonymous-`@N` counter is bumped by one for an int<->float
             // conversion and by three for a float conditional branch before this
             // function's constants are numbered.
@@ -111,6 +152,7 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 + (if function.has_float_branch { 3 } else { 0 })
                 + function.anonymous_label_bump,
             post_constant_bump: function.post_constant_label_bump,
+            post_function_anonymous_bump: function.post_function_anonymous_bump,
             constant_number_gaps: function.constant_number_gaps.clone(),
             phantom_externals: function.phantom_externals.clone(),
             // The unit's string resolver set these: the function's NEW-string count and the `@N`
@@ -123,7 +165,10 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
             jump_tables: function
                 .jump_tables
                 .iter()
-                .map(|table| JumpTable { entries: table.entries.clone(), anonymous_offset: table.anonymous_offset })
+                .map(|table| JumpTable {
+                    entries: table.entries.clone(),
+                    anonymous_offset: table.anonymous_offset,
+                })
                 .collect(),
             anonymous_rodata: function
                 .anonymous_rodata
@@ -132,12 +177,42 @@ pub fn assemble_object(functions: &[MachineFunction], defined_globals: &[Defined
                 .collect(),
             local_undefined_callees: function.local_undefined_callees.clone(),
             symbol_order: function.symbol_order.clone(),
+            referenced_function_symbols: function.referenced_function_symbols.clone(),
             implicit_external_callees: function.implicit_external_callees.clone(),
         })
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject { name: &global.name, size: global.size, alignment: global.alignment, initial_bytes: global.initial_bytes.clone(), is_const: global.is_const, is_static: global.is_static, is_explicit_zero: global.is_explicit_zero, relocations: global.relocations.clone(), non_static_functions_before: global.non_static_functions_before, functions_before: global.functions_before, is_weak: global.is_weak, static_local_owner: global.static_local_owner, anonymous_adjust: global.anonymous_adjust, section: global.section.as_deref() })
+        .map(|global| DataObject {
+            name: &global.name,
+            size: global.size,
+            alignment: global.alignment,
+            initial_bytes: global.initial_bytes.clone(),
+            is_const: global.is_const,
+            force_full_data_section: global.force_full_data_section,
+            is_static: global.is_static,
+            is_explicit_zero: global.is_explicit_zero,
+            relocations: global.relocations.clone(),
+            non_static_functions_before: global.non_static_functions_before,
+            functions_before: global.functions_before,
+            is_weak: global.is_weak,
+            static_local_owner: global.static_local_owner,
+            anonymous_adjust: global.anonymous_adjust,
+            section: global.section.as_deref(),
+        })
         .collect();
-    mwcc_object::write_object(&ObjectInput { source_name, version, build, functions: function_objects, data_objects, small_data, inline_asm_symbols, forward_declared_statics })
+    let local_symbol_order = functions
+        .iter()
+        .find(|function| !function.local_symbol_order.is_empty())
+        .map_or(&[][..], |function| function.local_symbol_order.as_slice());
+    mwcc_object::write_object(&ObjectInput {
+        source_name,
+        object_format,
+        functions: function_objects,
+        data_objects,
+        small_data,
+        inline_asm_symbols,
+        forward_declared_statics,
+        local_symbol_order,
+    })
 }

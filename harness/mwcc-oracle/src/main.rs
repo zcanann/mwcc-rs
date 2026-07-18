@@ -6,6 +6,7 @@
 //! only if the two match exactly.
 //!
 //! Usage: `mwcc-oracle [GC_VERSION]`   (default 1.3.2)
+//! Set `MWCC_ORACLE_FILTER` to a filename substring for a focused probe.
 //! The real toolchain (wibo, the compiler set, powerpc-eabi-objdump) is taken
 //! from a decomp checkout; set `FFCC` to point at it.
 
@@ -54,6 +55,9 @@ fn main() -> std::process::ExitCode {
         .filter(|path| path.extension().is_some_and(|extension| extension == "c"))
         .collect();
     entries.sort();
+    if let Ok(filter) = std::env::var("MWCC_ORACLE_FILTER") {
+        entries.retain(|path| path.file_name().is_some_and(|name| name.to_string_lossy().contains(&filter)));
+    }
 
     for source in entries {
         let name = source.file_stem().unwrap().to_string_lossy().to_string();

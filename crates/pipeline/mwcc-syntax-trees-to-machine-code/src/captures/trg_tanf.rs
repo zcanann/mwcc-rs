@@ -39,33 +39,122 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 48;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -48 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 52 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 31, a: 1, offset: 32 });
-        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 31, a: 1, offset: 40, w: 0, i: 0 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 30, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::PairedSingleQuantizedStore { s: 30, a: 1, offset: 24, w: 0, i: 0 });
-        self.output.instructions.push(Instruction::FloatMove { d: 30, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -48,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 52,
+        });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 31,
+                a: 1,
+                offset: 32,
+            });
+        self.output
+            .instructions
+            .push(Instruction::PairedSingleQuantizedStore {
+                s: 31,
+                a: 1,
+                offset: 40,
+                w: 0,
+                i: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 30,
+                a: 1,
+                offset: 16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::PairedSingleQuantizedStore {
+                s: 30,
+                a: 1,
+                offset: 24,
+                w: 0,
+                i: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 30, b: 1 });
         self.record_relocation(RelocationKind::Rel24, "cos__Ff");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "cos__Ff".to_string() });
-        self.output.instructions.push(Instruction::FloatMove { d: 31, b: 1 });
-        self.output.instructions.push(Instruction::FloatMove { d: 1, b: 30 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "cos__Ff".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 31, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 1, b: 30 });
         self.record_relocation(RelocationKind::Rel24, "sin__Ff");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "sin__Ff".to_string() });
-        self.output.instructions.push(Instruction::FloatDivideSingle { d: 1, a: 1, b: 31 });
-        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 31, a: 1, offset: 40, w: 0, i: 0 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 31, a: 1, offset: 32 });
-        self.output.instructions.push(Instruction::PairedSingleQuantizedLoad { d: 30, a: 1, offset: 24, w: 0, i: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 52 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 30, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 48 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "sin__Ff".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatDivideSingle { d: 1, a: 1, b: 31 });
+        self.output
+            .instructions
+            .push(Instruction::PairedSingleQuantizedLoad {
+                d: 31,
+                a: 1,
+                offset: 40,
+                w: 0,
+                i: 0,
+            });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 31,
+            a: 1,
+            offset: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::PairedSingleQuantizedLoad {
+                d: 30,
+                a: 1,
+                offset: 24,
+                w: 0,
+                i: 0,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 52,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 30,
+            a: 1,
+            offset: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 48,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

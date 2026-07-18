@@ -1,7 +1,7 @@
 //! Pure predicates and shape queries over expressions — no `Generator` state.
 
-use std::collections::HashSet;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
+use std::collections::HashSet;
 
 /// Whether the function reads a register-resident value (a parameter or a
 /// register local) at a point where a call has already run — which would read it
@@ -86,12 +86,16 @@ pub(crate) fn values_live_across_call(function: &Function) -> Option<Vec<String>
     }
     for statement in &function.statements {
         let expressions: Vec<&Expression> = match statement {
-            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => vec![],
+            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
+                vec![]
+            }
             Statement::Store { target, value } => vec![target, value],
             Statement::Assign { value, .. } => vec![value],
             Statement::Expression(expression) => vec![expression],
             Statement::Return(value) => value.iter().collect(),
-            Statement::If { .. } | Statement::Switch { .. } | Statement::Loop { .. } => return None,
+            Statement::If { .. } | Statement::Switch { .. } | Statement::Loop { .. } => {
+                return None
+            }
         };
         for expression in expressions {
             if !take(expression, prior_call, &mut collected) {
@@ -125,28 +129,56 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
         Expression::CompoundLiteral { .. } => 0,
         Expression::CallThrough { target, arguments } => {
             count_name_occurrences(target, name)
-                + arguments.iter().map(|argument| count_name_occurrences(argument, name)).sum::<usize>()
+                + arguments
+                    .iter()
+                    .map(|argument| count_name_occurrences(argument, name))
+                    .sum::<usize>()
         }
         Expression::AggregateLiteral(_) => 0,
         Expression::Variable(variable) => usize::from(variable == name),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => 0,
-        Expression::Binary { left, right, .. } => count_name_occurrences(left, name) + count_name_occurrences(right, name),
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => count_name_occurrences(operand, name),
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => 0,
+        Expression::Binary { left, right, .. } => {
+            count_name_occurrences(left, name) + count_name_occurrences(right, name)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            count_name_occurrences(operand, name)
+        }
         Expression::PostStep { target, .. } => 2 * count_name_occurrences(target, name),
         Expression::Dereference { pointer } => count_name_occurrences(pointer, name),
         Expression::AddressOf { operand } => count_name_occurrences(operand, name),
-        Expression::Index { base, index } => count_name_occurrences(base, name) + count_name_occurrences(index, name),
-        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => count_name_occurrences(base, name),
-        Expression::Conditional { condition, when_true, when_false } => {
+        Expression::Index { base, index } => {
+            count_name_occurrences(base, name) + count_name_occurrences(index, name)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            count_name_occurrences(base, name)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
             count_name_occurrences(condition, name)
                 + count_name_occurrences(when_true, name)
                 + count_name_occurrences(when_false, name)
         }
-        Expression::Call { name: callee, arguments } => {
-            usize::from(callee == name) + arguments.iter().map(|argument| count_name_occurrences(argument, name)).sum::<usize>()
+        Expression::Call {
+            name: callee,
+            arguments,
+        } => {
+            usize::from(callee == name)
+                + arguments
+                    .iter()
+                    .map(|argument| count_name_occurrences(argument, name))
+                    .sum::<usize>()
         }
-        Expression::Assign { target, value } => count_name_occurrences(target, name) + count_name_occurrences(value, name),
-        Expression::Comma { left, right } => count_name_occurrences(left, name) + count_name_occurrences(right, name),
+        Expression::Assign { target, value } => {
+            count_name_occurrences(target, name) + count_name_occurrences(value, name)
+        }
+        Expression::Comma { left, right } => {
+            count_name_occurrences(left, name) + count_name_occurrences(right, name)
+        }
     }
 }
 
@@ -158,10 +190,17 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
 pub(crate) fn name_nesting_depth(expression: &Expression, name: &str) -> Option<usize> {
     match expression {
         Expression::Variable(variable) if variable == name => Some(0),
-        Expression::Binary { left, right, .. } => {
-            [name_nesting_depth(left, name), name_nesting_depth(right, name)].into_iter().flatten().max().map(|depth| depth + 1)
+        Expression::Binary { left, right, .. } => [
+            name_nesting_depth(left, name),
+            name_nesting_depth(right, name),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .map(|depth| depth + 1),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            name_nesting_depth(operand, name).map(|depth| depth + 1)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => name_nesting_depth(operand, name).map(|depth| depth + 1),
         _ => None,
     }
 }
@@ -171,14 +210,21 @@ pub(crate) fn name_nesting_depth(expression: &Expression, name: &str) -> Option<
 /// (byte-exact) — the `a+b` is consumed by the `*c` into a single value — not a 2-add tree.
 pub(crate) fn count_adds(expression: &Expression) -> usize {
     match expression {
-        Expression::Binary { operator: BinaryOperator::Add, left, right } => 1 + count_adds(left) + count_adds(right),
+        Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } => 1 + count_adds(left) + count_adds(right),
         _ => 0,
     }
 }
 
 /// A bare register/constant leaf, for add-tree shape classification.
 fn is_add_leaf(expression: &Expression) -> bool {
-    matches!(expression, Expression::Variable(_) | Expression::IntegerLiteral(_))
+    matches!(
+        expression,
+        Expression::Variable(_) | Expression::IntegerLiteral(_)
+    )
 }
 
 /// The leaves of an all-`+` chain of bare leaves, in source order: `Some([v1, v2, …, vN])` for a
@@ -186,7 +232,11 @@ fn is_add_leaf(expression: &Expression) -> bool {
 /// reassociates such a chain to `v1 + left-fold(v2..vN)`, which the codegen reproduces directly.
 pub(crate) fn add_chain_leaves(expression: &Expression) -> Option<Vec<&Expression>> {
     match expression {
-        Expression::Binary { operator: BinaryOperator::Add, left, right } => {
+        Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } => {
             if !is_add_leaf(right) {
                 return None;
             }
@@ -217,16 +267,31 @@ pub(crate) fn is_complex_add(expression: &Expression) -> bool {
     // Subtract-outer spelling escapes the Add-focused checks below, so catch it here. Restricted to
     // a TWO-register inner sum: `(a+10)-3` has a constant inner operand and constant-FOLDS to
     // `addi r3,r3,7` (byte-exact, driver.rs), `(a-b)-1` keeps source order, `(a+b)-c` is not a hoist.
-    if let Expression::Binary { operator: BinaryOperator::Subtract, left, right } = expression {
+    if let Expression::Binary {
+        operator: BinaryOperator::Subtract,
+        left,
+        right,
+    } = expression
+    {
         if matches!(right.as_ref(), Expression::IntegerLiteral(_)) {
-            if let Expression::Binary { operator: BinaryOperator::Add, right: inner_right, .. } = left.as_ref() {
+            if let Expression::Binary {
+                operator: BinaryOperator::Add,
+                right: inner_right,
+                ..
+            } = left.as_ref()
+            {
                 if !matches!(inner_right.as_ref(), Expression::IntegerLiteral(_)) {
                     return true;
                 }
             }
         }
     }
-    let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = expression
+    else {
         return false;
     };
     if count_adds(expression) < 2 {
@@ -247,7 +312,12 @@ pub(crate) fn is_complex_add(expression: &Expression) -> bool {
 /// reproduce. Excluded (all match mwcc): a computed non-additive other-operand (`(a-1)+b*c`), a
 /// constant already at the outer position (`(a*a)+3`, `(a-b)+1`), and no inner constant (`(a-b)+a`).
 fn is_constant_hoist_add(expression: &Expression) -> bool {
-    let Expression::Binary { operator: BinaryOperator::Add, left, right } = expression else {
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = expression
+    else {
         return false;
     };
     let register_leaf = |operand: &Expression| matches!(operand, Expression::Variable(_));
@@ -272,11 +342,20 @@ fn additive_with_constant(operand: &Expression) -> bool {
 /// different shape and is NOT this.
 pub(crate) fn single_register_computed(operand: &Expression) -> bool {
     match operand {
-        Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
-            (matches!(left.as_ref(), Expression::Variable(_)) && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
-                || (matches!(left.as_ref(), Expression::IntegerLiteral(_)) && matches!(right.as_ref(), Expression::Variable(_)))
+        Expression::Binary {
+            operator: BinaryOperator::Add | BinaryOperator::Subtract,
+            left,
+            right,
+        } => {
+            (matches!(left.as_ref(), Expression::Variable(_))
+                && matches!(right.as_ref(), Expression::IntegerLiteral(_)))
+                || (matches!(left.as_ref(), Expression::IntegerLiteral(_))
+                    && matches!(right.as_ref(), Expression::Variable(_)))
         }
-        Expression::Unary { operator: UnaryOperator::Negate, operand } => matches!(operand.as_ref(), Expression::Variable(_)),
+        Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } => matches!(operand.as_ref(), Expression::Variable(_)),
         _ => false,
     }
 }
@@ -288,11 +367,23 @@ pub(crate) fn contains_complex_add(expression: &Expression) -> bool {
         return true;
     }
     match expression {
-        Expression::Binary { left, right, .. } => contains_complex_add(left) || contains_complex_add(right),
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => contains_complex_add(operand),
-        Expression::Index { base, index } => contains_complex_add(base) || contains_complex_add(index),
-        Expression::Conditional { condition, when_true, when_false } => {
-            contains_complex_add(condition) || contains_complex_add(when_true) || contains_complex_add(when_false)
+        Expression::Binary { left, right, .. } => {
+            contains_complex_add(left) || contains_complex_add(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            contains_complex_add(operand)
+        }
+        Expression::Index { base, index } => {
+            contains_complex_add(base) || contains_complex_add(index)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            contains_complex_add(condition)
+                || contains_complex_add(when_true)
+                || contains_complex_add(when_false)
         }
         _ => false,
     }
@@ -309,14 +400,25 @@ pub(crate) fn is_constant_shift(expression: &Expression) -> bool {
 /// Whether an integer expression contains a commutative op whose LEFT operand is a constant-shift —
 /// our operand placement orders it backwards from mwcc, so defer rather than emit the swapped bytes.
 pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
-    if let Expression::Binary { operator, left, right } = expression {
+    if let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = expression
+    {
         // A CONSTANT right operand fuses (`(x>>n) & const` -> a single `rlwinm`), which is byte-exact;
         // only a non-constant right operand takes the swapped add/or/and/xor/mul order that diverges.
         // A register-LEAF right (`(a<<2) + b`) is now ordered shift-first by place_general_operands
         // (byte-exact), so only a non-leaf right (`(a<<2) + (b<<2)`, a memory/computed operand) still
         // defers — those route through a different placement path that keeps the swapped order.
-        if matches!(operator, BinaryOperator::Add | BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor)
-            && is_constant_shift(left)
+        if matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Multiply
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitXor
+        ) && is_constant_shift(left)
             && constant_value(right).is_none()
             && !is_add_leaf(right)
         {
@@ -324,11 +426,23 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
         }
     }
     match expression {
-        Expression::Binary { left, right, .. } => contains_commutative_shift_left(left) || contains_commutative_shift_left(right),
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => contains_commutative_shift_left(operand),
-        Expression::Index { base, index } => contains_commutative_shift_left(base) || contains_commutative_shift_left(index),
-        Expression::Conditional { condition, when_true, when_false } => {
-            contains_commutative_shift_left(condition) || contains_commutative_shift_left(when_true) || contains_commutative_shift_left(when_false)
+        Expression::Binary { left, right, .. } => {
+            contains_commutative_shift_left(left) || contains_commutative_shift_left(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            contains_commutative_shift_left(operand)
+        }
+        Expression::Index { base, index } => {
+            contains_commutative_shift_left(base) || contains_commutative_shift_left(index)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            contains_commutative_shift_left(condition)
+                || contains_commutative_shift_left(when_true)
+                || contains_commutative_shift_left(when_false)
         }
         _ => false,
     }
@@ -336,7 +450,11 @@ pub(crate) fn contains_commutative_shift_left(expression: &Expression) -> bool {
 
 /// Append (in evaluation order, de-duplicated) every register-resident name read
 /// within `expression`.
-fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, collected: &mut Vec<String>) {
+fn collect_register_reads(
+    expression: &Expression,
+    registers: &HashSet<&str>,
+    collected: &mut Vec<String>,
+) {
     match expression {
         Expression::CompoundLiteral { .. } => {}
         Expression::CallThrough { target, arguments } => {
@@ -352,20 +470,32 @@ fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, co
                 collected.push(name.clone());
             }
         }
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => {}
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => {}
         Expression::Binary { left, right, .. } => {
             collect_register_reads(left, registers, collected);
             collect_register_reads(right, registers, collected);
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => collect_register_reads(operand, registers, collected),
-        Expression::Dereference { pointer } => collect_register_reads(pointer, registers, collected),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            collect_register_reads(operand, registers, collected)
+        }
+        Expression::Dereference { pointer } => {
+            collect_register_reads(pointer, registers, collected)
+        }
         Expression::AddressOf { operand } => collect_register_reads(operand, registers, collected),
         Expression::Index { base, index } => {
             collect_register_reads(base, registers, collected);
             collect_register_reads(index, registers, collected);
         }
-        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => collect_register_reads(base, registers, collected),
-        Expression::Conditional { condition, when_true, when_false } => {
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            collect_register_reads(base, registers, collected)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
             collect_register_reads(condition, registers, collected);
             collect_register_reads(when_true, registers, collected);
             collect_register_reads(when_false, registers, collected);
@@ -386,22 +516,34 @@ fn collect_register_reads(expression: &Expression, registers: &HashSet<&str>, co
     }
 }
 
-fn statement_reads_across_call(statement: &Statement, prior_call: bool, registers: &HashSet<&str>) -> bool {
+fn statement_reads_across_call(
+    statement: &Statement,
+    prior_call: bool,
+    registers: &HashSet<&str>,
+) -> bool {
     match statement {
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
         Statement::Store { target, value } => {
             expression_reads_across_call(target, prior_call, registers)
                 || expression_reads_across_call(value, prior_call, registers)
         }
-        Statement::Assign { value, .. } => expression_reads_across_call(value, prior_call, registers),
-        Statement::Expression(expression) => expression_reads_across_call(expression, prior_call, registers),
+        Statement::Assign { value, .. } => {
+            expression_reads_across_call(value, prior_call, registers)
+        }
+        Statement::Expression(expression) => {
+            expression_reads_across_call(expression, prior_call, registers)
+        }
         Statement::Return(value) => value
             .as_ref()
             .is_some_and(|value| expression_reads_across_call(value, prior_call, registers)),
         // A branch body is a statement *sequence*: a call in an earlier body
         // statement clobbers a register read by a later one, so it must be sequenced
         // (the condition runs first).
-        Statement::If { condition, then_body, else_body } => {
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
             if expression_reads_across_call(condition, prior_call, registers) {
                 return true;
             }
@@ -409,12 +551,24 @@ fn statement_reads_across_call(statement: &Statement, prior_call: bool, register
             sequence_reads_across_call(then_body, body_prior, registers)
                 || sequence_reads_across_call(else_body, body_prior, registers)
         }
-        Statement::Switch { scrutinee, .. } => expression_reads_across_call(scrutinee, prior_call, registers),
+        Statement::Switch { scrutinee, .. } => {
+            expression_reads_across_call(scrutinee, prior_call, registers)
+        }
         // A loop body re-runs, so a call anywhere in it can clobber a register read
         // on any iteration — treat the whole construct as post-call when it calls.
-        Statement::Loop { initializer, condition, step, body, .. } => {
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
             let body_prior = prior_call || body.iter().any(statement_has_call);
-            initializer.iter().chain(condition).chain(step).any(|e| expression_reads_across_call(e, body_prior, registers))
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .any(|e| expression_reads_across_call(e, body_prior, registers))
                 || sequence_reads_across_call(body, body_prior, registers)
         }
     }
@@ -423,7 +577,11 @@ fn statement_reads_across_call(statement: &Statement, prior_call: bool, register
 /// Whether a statement *sequence* reads a register value after one of its own
 /// calls, propagating `prior_call` across the statements as the top-level driver
 /// does for the function body.
-fn sequence_reads_across_call(statements: &[Statement], mut prior_call: bool, registers: &HashSet<&str>) -> bool {
+fn sequence_reads_across_call(
+    statements: &[Statement],
+    mut prior_call: bool,
+    registers: &HashSet<&str>,
+) -> bool {
     for statement in statements {
         if statement_reads_across_call(statement, prior_call, registers) {
             return true;
@@ -442,7 +600,11 @@ fn sequence_reads_across_call(statements: &[Statement], mut prior_call: bool, re
 /// `a` lives in the call's argument (evaluated before the call) and nothing is
 /// read afterward, whereas `a + g()` is not (mwcc evaluates the call operand
 /// first, so `a` is read after it).
-fn expression_reads_across_call(expression: &Expression, prior_call: bool, registers: &HashSet<&str>) -> bool {
+fn expression_reads_across_call(
+    expression: &Expression,
+    prior_call: bool,
+    registers: &HashSet<&str>,
+) -> bool {
     if prior_call {
         return reads_register(expression, registers);
     }
@@ -472,27 +634,46 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
         // conservative.
         Expression::CallThrough { target, arguments } => {
             !arguments.is_empty()
-                || !matches!(target.as_ref(), Expression::Dereference { .. } | Expression::Member { .. })
+                || !matches!(
+                    target.as_ref(),
+                    Expression::Dereference { .. } | Expression::Member { .. }
+                )
                 || reads_register_after_call(target, registers)
         }
         Expression::CompoundLiteral { .. } => false,
         Expression::AggregateLiteral(_) => false,
-        Expression::PostStep { target, .. } => matches!(target.as_ref(), Expression::Call { .. }) || expression_has_call(target),
-        Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+        Expression::PostStep { target, .. } => {
+            matches!(target.as_ref(), Expression::Call { .. }) || expression_has_call(target)
+        }
+        Expression::Variable(_)
+        | Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => false,
         Expression::Binary { left, right, .. } => pair(left, right),
         Expression::Index { base, index } => pair(base, index),
         Expression::Assign { target, value } => pair(target, value),
         Expression::Comma { left, right } => pair(left, right),
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => reads_register_after_call(operand, registers),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            reads_register_after_call(operand, registers)
+        }
         Expression::Dereference { pointer } => reads_register_after_call(pointer, registers),
         Expression::AddressOf { operand } => reads_register_after_call(operand, registers),
-        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => reads_register_after_call(base, registers),
-        Expression::Conditional { condition, when_true, when_false } => {
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            reads_register_after_call(base, registers)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
             reads_register_after_call(condition, registers)
                 || reads_register_after_call(when_true, registers)
                 || reads_register_after_call(when_false, registers)
-                || (expression_has_call(condition) && (reads_register(when_true, registers) || reads_register(when_false, registers)))
-                || ((expression_has_call(when_true) || expression_has_call(when_false)) && reads_register(condition, registers))
+                || (expression_has_call(condition)
+                    && (reads_register(when_true, registers)
+                        || reads_register(when_false, registers)))
+                || ((expression_has_call(when_true) || expression_has_call(when_false))
+                    && reads_register(condition, registers))
         }
         // A call's arguments run left-to-right before the call; a read is unsafe
         // only if an earlier argument already made a call.
@@ -519,21 +700,36 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
     match expression {
         Expression::CompoundLiteral { .. } => false,
         Expression::CallThrough { target, arguments } => {
-            reads_register(target, registers) || arguments.iter().any(|argument| reads_register(argument, registers))
+            reads_register(target, registers)
+                || arguments
+                    .iter()
+                    .any(|argument| reads_register(argument, registers))
         }
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => reads_register(target, registers),
         Expression::Variable(name) => registers.contains(name.as_str()),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) => false,
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => false,
         Expression::Binary { left, right, .. } => {
             reads_register(left, registers) || reads_register(right, registers)
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => reads_register(operand, registers),
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            reads_register(operand, registers)
+        }
         Expression::Dereference { pointer } => reads_register(pointer, registers),
         Expression::AddressOf { operand } => reads_register(operand, registers),
-        Expression::Index { base, index } => reads_register(base, registers) || reads_register(index, registers),
-        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => reads_register(base, registers),
-        Expression::Conditional { condition, when_true, when_false } => {
+        Expression::Index { base, index } => {
+            reads_register(base, registers) || reads_register(index, registers)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            reads_register(base, registers)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
             reads_register(condition, registers)
                 || reads_register(when_true, registers)
                 || reads_register(when_false, registers)
@@ -541,7 +737,10 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
         // A call THROUGH a register-resident name (a function-pointer local/param) READS
         // that name — the callee NAME counts, not just the arguments.
         Expression::Call { name, arguments } => {
-            registers.contains(name.as_str()) || arguments.iter().any(|argument| reads_register(argument, registers))
+            registers.contains(name.as_str())
+                || arguments
+                    .iter()
+                    .any(|argument| reads_register(argument, registers))
         }
         Expression::Assign { target, value } => {
             reads_register(target, registers) || reads_register(value, registers)
@@ -563,22 +762,36 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
     match expression {
         // An intrinsic (`__fabs`) is not a real call, but a real call in its ARGUMENT
         // still makes the function non-leaf, so recurse into the arguments.
-        Expression::Call { name, arguments } if is_intrinsic_call(name) => arguments.iter().any(expression_has_call),
+        Expression::Call { name, arguments } if is_intrinsic_call(name) => {
+            arguments.iter().any(expression_has_call)
+        }
         Expression::Call { .. } => true,
         // An indirect call (through a function pointer) always makes the function
         // non-leaf — the link register must be saved around the `bctrl`.
         Expression::CallThrough { .. } => true,
-        Expression::Binary { left, right, .. } => expression_has_call(left) || expression_has_call(right),
+        Expression::Binary { left, right, .. } => {
+            expression_has_call(left) || expression_has_call(right)
+        }
         Expression::Unary { operand, .. } => expression_has_call(operand),
-        Expression::Conditional { condition, when_true, when_false } => {
-            expression_has_call(condition) || expression_has_call(when_true) || expression_has_call(when_false)
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            expression_has_call(condition)
+                || expression_has_call(when_true)
+                || expression_has_call(when_false)
         }
         Expression::Cast { operand, .. } => expression_has_call(operand),
         Expression::Dereference { pointer } => expression_has_call(pointer),
-        Expression::Index { base, index } => expression_has_call(base) || expression_has_call(index),
+        Expression::Index { base, index } => {
+            expression_has_call(base) || expression_has_call(index)
+        }
         // `get()->field` / `get()->arr[i]`: a call in the member/member-address base still makes
         // the function non-leaf (it must save the link register around the call).
-        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => expression_has_call(base),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            expression_has_call(base)
+        }
         _ => false,
     }
 }
@@ -588,14 +801,28 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
 pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
     match expression {
         Expression::Call { .. } | Expression::Assign { .. } => true,
-        Expression::Binary { left, right, .. } => expression_has_side_effect(left) || expression_has_side_effect(right),
-        Expression::Comma { left, right } => expression_has_side_effect(left) || expression_has_side_effect(right),
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => expression_has_side_effect(operand),
-        Expression::Conditional { condition, when_true, when_false } => {
-            expression_has_side_effect(condition) || expression_has_side_effect(when_true) || expression_has_side_effect(when_false)
+        Expression::Binary { left, right, .. } => {
+            expression_has_side_effect(left) || expression_has_side_effect(right)
+        }
+        Expression::Comma { left, right } => {
+            expression_has_side_effect(left) || expression_has_side_effect(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            expression_has_side_effect(operand)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            expression_has_side_effect(condition)
+                || expression_has_side_effect(when_true)
+                || expression_has_side_effect(when_false)
         }
         Expression::Dereference { pointer } => expression_has_side_effect(pointer),
-        Expression::Index { base, index } => expression_has_side_effect(base) || expression_has_side_effect(index),
+        Expression::Index { base, index } => {
+            expression_has_side_effect(base) || expression_has_side_effect(index)
+        }
         _ => false,
     }
 }
@@ -604,10 +831,16 @@ pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
 pub(crate) fn statement_has_call(statement: &Statement) -> bool {
     match statement {
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
-        Statement::Store { target, value } => expression_has_call(target) || expression_has_call(value),
+        Statement::Store { target, value } => {
+            expression_has_call(target) || expression_has_call(value)
+        }
         Statement::Assign { value, .. } => expression_has_call(value),
         Statement::Expression(expression) => expression_has_call(expression),
-        Statement::Switch { scrutinee, arms, default } => {
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
             expression_has_call(scrutinee)
                 || arms.iter().any(|arm| match &arm.body {
                     mwcc_syntax_trees::ArmBody::Return(result) => expression_has_call(result),
@@ -622,10 +855,20 @@ pub(crate) fn statement_has_call(statement: &Statement) -> bool {
                     }
                 })
         }
-        Statement::If { condition, then_body, else_body } => {
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
             expression_has_call(condition) || block_has_call(then_body) || block_has_call(else_body)
         }
-        Statement::Loop { initializer, condition, step, body, .. } => {
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
             initializer.as_ref().is_some_and(expression_has_call)
                 || condition.as_ref().is_some_and(expression_has_call)
                 || step.as_ref().is_some_and(expression_has_call)
@@ -641,15 +884,27 @@ pub(crate) fn block_has_call(statements: &[Statement]) -> bool {
 
 pub(crate) fn function_makes_call(function: &Function) -> bool {
     function.statements.iter().any(statement_has_call)
-        || function.return_expression.as_ref().is_some_and(expression_has_call)
-        || function.locals.iter().any(|local| local.initializer.as_ref().is_some_and(expression_has_call))
-        || function.guards.iter().any(|guard| expression_has_call(&guard.condition) || expression_has_call(&guard.value))
+        || function
+            .return_expression
+            .as_ref()
+            .is_some_and(expression_has_call)
+        || function
+            .locals
+            .iter()
+            .any(|local| local.initializer.as_ref().is_some_and(expression_has_call))
+        || function
+            .guards
+            .iter()
+            .any(|guard| expression_has_call(&guard.condition) || expression_has_call(&guard.value))
 }
 
 pub(crate) fn is_complex(expression: &Expression) -> bool {
     matches!(
         expression,
-        Expression::Binary { .. } | Expression::Unary { .. } | Expression::Conditional { .. } | Expression::Cast { .. }
+        Expression::Binary { .. }
+            | Expression::Unary { .. }
+            | Expression::Conditional { .. }
+            | Expression::Cast { .. }
     )
 }
 
@@ -677,9 +932,13 @@ pub(crate) fn register_need(expression: &Expression) -> u32 {
         }
         Expression::Unary { operand, .. } => register_need(operand),
         Expression::Cast { operand, .. } => register_need(operand),
-        Expression::Conditional { when_true, when_false, .. } => {
-            register_need(when_true).max(register_need(when_false)).max(1)
-        }
+        Expression::Conditional {
+            when_true,
+            when_false,
+            ..
+        } => register_need(when_true)
+            .max(register_need(when_false))
+            .max(1),
         _ => 1,
     }
 }
@@ -693,11 +952,18 @@ pub(crate) fn as_dereference(expression: &Expression) -> Option<&Expression> {
 }
 
 /// If `expression` is `base->field`, its base, byte offset, and member type.
-pub(crate) fn as_member(expression: &Expression) -> Option<(&Expression, u16, mwcc_syntax_trees::Type)> {
+pub(crate) fn as_member(
+    expression: &Expression,
+) -> Option<(&Expression, u16, mwcc_syntax_trees::Type)> {
     match expression {
         // Only a plain (non-indexed) member is a simple displacement access; an
         // `a[i].field` (index_stride set) routes through the indexed-load path.
-        Expression::Member { base, offset, member_type, index_stride: None } => Some((base, *offset, *member_type)),
+        Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride: None,
+        } => Some((base, *offset, *member_type)),
         _ => None,
     }
 }
@@ -712,9 +978,19 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
         Expression::IntegerLiteral(value) => Some(*value),
         // Fold `-c` and `~c` of a constant operand, so e.g. `x & ~7` becomes a
         // mask immediate rather than falling into a broken two-operand path.
-        Expression::Unary { operator: UnaryOperator::Negate, operand } => constant_value(operand).map(|value| value.wrapping_neg()),
-        Expression::Unary { operator: UnaryOperator::BitNot, operand } => constant_value(operand).map(|value| !value),
-        Expression::Binary { operator, left, right } => {
+        Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } => constant_value(operand).map(|value| value.wrapping_neg()),
+        Expression::Unary {
+            operator: UnaryOperator::BitNot,
+            operand,
+        } => constant_value(operand).map(|value| !value),
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
             use BinaryOperator::*;
             // `x - x` and `x ^ x` are 0 for any side-effect-free operand, even a
             // non-constant one (mwcc folds them without touching memory).
@@ -751,9 +1027,31 @@ pub(crate) fn same_operand(a: &Expression, b: &Expression) -> bool {
     match (a, b) {
         (Expression::IntegerLiteral(x), Expression::IntegerLiteral(y)) => x == y,
         (Expression::Variable(x), Expression::Variable(y)) => x == y,
-        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => same_operand(pa, pb),
-        (Expression::Member { base: ba, offset: oa, .. }, Expression::Member { base: bb, offset: ob, .. }) => oa == ob && same_operand(ba, bb),
-        (Expression::Index { base: ba, index: ia }, Expression::Index { base: bb, index: ib }) => same_operand(ba, bb) && same_operand(ia, ib),
+        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => {
+            same_operand(pa, pb)
+        }
+        (
+            Expression::Member {
+                base: ba,
+                offset: oa,
+                ..
+            },
+            Expression::Member {
+                base: bb,
+                offset: ob,
+                ..
+            },
+        ) => oa == ob && same_operand(ba, bb),
+        (
+            Expression::Index {
+                base: ba,
+                index: ia,
+            },
+            Expression::Index {
+                base: bb,
+                index: ib,
+            },
+        ) => same_operand(ba, bb) && same_operand(ia, ib),
         _ => false,
     }
 }
@@ -766,28 +1064,126 @@ pub(crate) fn structurally_equal(a: &Expression, b: &Expression) -> bool {
         (Expression::FloatLiteral(x), Expression::FloatLiteral(y)) => x == y,
         (Expression::StringLiteral(x), Expression::StringLiteral(y)) => x == y,
         (Expression::Variable(x), Expression::Variable(y)) => x == y,
-        (Expression::Binary { operator: oa, left: la, right: ra }, Expression::Binary { operator: ob, left: lb, right: rb }) => {
-            oa == ob && structurally_equal(la, lb) && structurally_equal(ra, rb)
+        (
+            Expression::Binary {
+                operator: oa,
+                left: la,
+                right: ra,
+            },
+            Expression::Binary {
+                operator: ob,
+                left: lb,
+                right: rb,
+            },
+        ) => oa == ob && structurally_equal(la, lb) && structurally_equal(ra, rb),
+        (
+            Expression::Unary {
+                operator: oa,
+                operand: pa,
+            },
+            Expression::Unary {
+                operator: ob,
+                operand: pb,
+            },
+        ) => oa == ob && structurally_equal(pa, pb),
+        (
+            Expression::Conditional {
+                condition: ca,
+                when_true: ta,
+                when_false: fa,
+            },
+            Expression::Conditional {
+                condition: cb,
+                when_true: tb,
+                when_false: fb,
+            },
+        ) => structurally_equal(ca, cb) && structurally_equal(ta, tb) && structurally_equal(fa, fb),
+        (
+            Expression::Cast {
+                target_type: ta,
+                operand: pa,
+            },
+            Expression::Cast {
+                target_type: tb,
+                operand: pb,
+            },
+        ) => ta == tb && structurally_equal(pa, pb),
+        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => {
+            structurally_equal(pa, pb)
         }
-        (Expression::Unary { operator: oa, operand: pa }, Expression::Unary { operator: ob, operand: pb }) => oa == ob && structurally_equal(pa, pb),
-        (Expression::Conditional { condition: ca, when_true: ta, when_false: fa }, Expression::Conditional { condition: cb, when_true: tb, when_false: fb }) => {
-            structurally_equal(ca, cb) && structurally_equal(ta, tb) && structurally_equal(fa, fb)
+        (Expression::AddressOf { operand: pa }, Expression::AddressOf { operand: pb }) => {
+            structurally_equal(pa, pb)
         }
-        (Expression::Cast { target_type: ta, operand: pa }, Expression::Cast { target_type: tb, operand: pb }) => ta == tb && structurally_equal(pa, pb),
-        (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => structurally_equal(pa, pb),
-        (Expression::AddressOf { operand: pa }, Expression::AddressOf { operand: pb }) => structurally_equal(pa, pb),
-        (Expression::Index { base: ba, index: ia }, Expression::Index { base: bb, index: ib }) => structurally_equal(ba, bb) && structurally_equal(ia, ib),
-        (Expression::Member { base: ba, offset: oa, member_type: ma, index_stride: sa }, Expression::Member { base: bb, offset: ob, member_type: mb, index_stride: sb }) => {
-            oa == ob && ma == mb && sa == sb && structurally_equal(ba, bb)
+        (
+            Expression::Index {
+                base: ba,
+                index: ia,
+            },
+            Expression::Index {
+                base: bb,
+                index: ib,
+            },
+        ) => structurally_equal(ba, bb) && structurally_equal(ia, ib),
+        (
+            Expression::Member {
+                base: ba,
+                offset: oa,
+                member_type: ma,
+                index_stride: sa,
+            },
+            Expression::Member {
+                base: bb,
+                offset: ob,
+                member_type: mb,
+                index_stride: sb,
+            },
+        ) => oa == ob && ma == mb && sa == sb && structurally_equal(ba, bb),
+        (
+            Expression::MemberAddress {
+                base: ba,
+                offset: oa,
+                element: ea,
+            },
+            Expression::MemberAddress {
+                base: bb,
+                offset: ob,
+                element: eb,
+            },
+        ) => oa == ob && ea == eb && structurally_equal(ba, bb),
+        (
+            Expression::Call {
+                name: na,
+                arguments: aa,
+            },
+            Expression::Call {
+                name: nb,
+                arguments: ab,
+            },
+        ) => {
+            na == nb
+                && aa.len() == ab.len()
+                && aa.iter().zip(ab).all(|(x, y)| structurally_equal(x, y))
         }
-        (Expression::MemberAddress { base: ba, offset: oa, element: ea }, Expression::MemberAddress { base: bb, offset: ob, element: eb }) => {
-            oa == ob && ea == eb && structurally_equal(ba, bb)
-        }
-        (Expression::Call { name: na, arguments: aa }, Expression::Call { name: nb, arguments: ab }) => {
-            na == nb && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| structurally_equal(x, y))
-        }
-        (Expression::Assign { target: ta, value: va }, Expression::Assign { target: tb, value: vb }) => structurally_equal(ta, tb) && structurally_equal(va, vb),
-        (Expression::Comma { left: la, right: ra }, Expression::Comma { left: lb, right: rb }) => structurally_equal(la, lb) && structurally_equal(ra, rb),
+        (
+            Expression::Assign {
+                target: ta,
+                value: va,
+            },
+            Expression::Assign {
+                target: tb,
+                value: vb,
+            },
+        ) => structurally_equal(ta, tb) && structurally_equal(va, vb),
+        (
+            Expression::Comma {
+                left: la,
+                right: ra,
+            },
+            Expression::Comma {
+                left: lb,
+                right: rb,
+            },
+        ) => structurally_equal(la, lb) && structurally_equal(ra, rb),
         _ => false,
     }
 }
@@ -823,7 +1219,10 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
         }
         Expression::AggregateLiteral(_) => {}
         Expression::PostStep { target, .. } => collect_computed_subexpressions(target, into),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) | Expression::StringLiteral(_) | Expression::Variable(_) => {}
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::Variable(_) => {}
         Expression::Binary { left, right, .. } => {
             into.push(expression);
             collect_computed_subexpressions(left, into);
@@ -833,10 +1232,16 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
             into.push(expression);
             collect_computed_subexpressions(operand, into);
         }
-        Expression::Cast { operand, .. } | Expression::AddressOf { operand } | Expression::Dereference { pointer: operand } => {
+        Expression::Cast { operand, .. }
+        | Expression::AddressOf { operand }
+        | Expression::Dereference { pointer: operand } => {
             collect_computed_subexpressions(operand, into);
         }
-        Expression::Conditional { condition, when_true, when_false } => {
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
             collect_computed_subexpressions(condition, into);
             collect_computed_subexpressions(when_true, into);
             collect_computed_subexpressions(when_false, into);
@@ -875,7 +1280,10 @@ pub(crate) fn leaf_name(expression: &Expression) -> Option<&str> {
 /// The variable name if `expression` is `~variable`.
 pub(crate) fn complemented_leaf_name(expression: &Expression) -> Option<&str> {
     match expression {
-        Expression::Unary { operator: UnaryOperator::BitNot, operand } => leaf_name(operand),
+        Expression::Unary {
+            operator: UnaryOperator::BitNot,
+            operand,
+        } => leaf_name(operand),
         _ => None,
     }
 }
@@ -883,7 +1291,14 @@ pub(crate) fn complemented_leaf_name(expression: &Expression) -> Option<&str> {
 /// Decompose `x & mask` where `x` is a leaf variable and `mask` an integer
 /// literal. Returns `(x, mask)` with the mask narrowed to 32 bits.
 pub(crate) fn as_masked_leaf(expression: &Expression) -> Option<(&Expression, u32)> {
-    let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expression else { return None };
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
     leaf_name(left)?;
     constant_value(right).map(|mask| (left.as_ref(), mask as u32))
 }
@@ -891,8 +1306,18 @@ pub(crate) fn as_masked_leaf(expression: &Expression) -> Option<(&Expression, u3
 /// Decompose `load & mask` where `load` is a memory load (dereference, member,
 /// or index) and `mask` an integer literal. Returns `(load, mask)`.
 pub(crate) fn as_masked_load(expression: &Expression) -> Option<(&Expression, u32)> {
-    let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expression else { return None };
-    if !matches!(left.as_ref(), Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. }) {
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    if !matches!(
+        left.as_ref(),
+        Expression::Dereference { .. } | Expression::Member { .. } | Expression::Index { .. }
+    ) {
         return None;
     }
     constant_value(right).map(|mask| (left.as_ref(), mask as u32))
@@ -946,14 +1371,23 @@ pub(crate) fn as_field(expression: &Expression) -> Option<(&Expression, FieldSou
 pub(crate) fn as_small_integer(expression: &Expression) -> Option<i16> {
     // A nonzero compile-time constant (a literal or a folded expression like
     // `2 + 3`) that fits a signed 16-bit immediate.
-    constant_value(expression).filter(|value| *value != 0).and_then(|value| i16::try_from(value).ok())
+    constant_value(expression)
+        .filter(|value| *value != 0)
+        .and_then(|value| i16::try_from(value).ok())
 }
 
 /// Decompose a constant shift of a leaf variable: `x << c` or `x >> c` with
 /// `c` in `1..=31`. Returns `(x, is_left_shift, c)`. Used to recognize the
 /// rotate idiom `(x << c) | (x >> (32-c))`.
 pub(crate) fn as_constant_shift(expression: &Expression) -> Option<(&Expression, bool, u8)> {
-    let Expression::Binary { operator, left, right } = expression else { return None };
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
     let is_left = match operator {
         BinaryOperator::ShiftLeft => true,
         BinaryOperator::ShiftRight => false,
@@ -1027,7 +1461,11 @@ pub(crate) fn false_branch_bo_bi(operator: BinaryOperator) -> Option<(u8, u8)> {
 /// If `expression` is a multiplication, return its two operands.
 pub(crate) fn as_multiplication(expression: &Expression) -> Option<(&Expression, &Expression)> {
     match expression {
-        Expression::Binary { operator: BinaryOperator::Multiply, left, right } => Some((left, right)),
+        Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left,
+            right,
+        } => Some((left, right)),
         _ => None,
     }
 }
@@ -1035,7 +1473,11 @@ pub(crate) fn as_multiplication(expression: &Expression) -> Option<(&Expression,
 pub(crate) fn is_commutative(operator: BinaryOperator) -> bool {
     matches!(
         operator,
-        BinaryOperator::Add | BinaryOperator::Multiply | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor
+        BinaryOperator::Add
+            | BinaryOperator::Multiply
+            | BinaryOperator::BitAnd
+            | BinaryOperator::BitOr
+            | BinaryOperator::BitXor
     )
 }
 
@@ -1100,7 +1542,10 @@ pub(crate) fn needs_scratch(expression: &Expression) -> bool {
 /// Whether a type is a narrow integer (sub-32-bit), whose values are extended
 /// when read and truncated when produced as a result.
 pub(crate) fn is_narrow_int(value_type: Type) -> bool {
-    matches!(value_type, Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+    matches!(
+        value_type,
+        Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort
+    )
 }
 
 /// Whether `evaluate_*` can compute `expression` into `destination` using only
@@ -1118,7 +1563,9 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
             (true, true) => fits_single_scratch(left, false) && fits_single_scratch(right, true),
         },
         Expression::Unary { operator, operand } => match operator {
-            UnaryOperator::LogicalNot => !destination_is_scratch && fits_single_scratch(operand, destination_is_scratch),
+            UnaryOperator::LogicalNot => {
+                !destination_is_scratch && fits_single_scratch(operand, destination_is_scratch)
+            }
             _ => fits_single_scratch(operand, destination_is_scratch),
         },
         // conditionals and casts are only handled at the top of an evaluation,
@@ -1136,9 +1583,15 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
 /// and calls (a separate path) are not memory loads here.
 pub(crate) fn contains_memory_load(expression: &Expression) -> bool {
     match expression {
-        Expression::Dereference { .. } | Expression::Index { .. } | Expression::Member { .. } => true,
-        Expression::Binary { left, right, .. } => contains_memory_load(left) || contains_memory_load(right),
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => contains_memory_load(operand),
+        Expression::Dereference { .. } | Expression::Index { .. } | Expression::Member { .. } => {
+            true
+        }
+        Expression::Binary { left, right, .. } => {
+            contains_memory_load(left) || contains_memory_load(right)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            contains_memory_load(operand)
+        }
         _ => false,
     }
 }
@@ -1149,8 +1602,10 @@ pub(crate) fn contains_memory_load(expression: &Expression) -> bool {
 /// schedule mwcc avoids by hoisting both loads first (the keystone allocator). Two BARE loads keep
 /// their loads adjacent (`lwz; lwz; combine`) and stay byte-exact, so they are not compound.
 pub(crate) fn is_compound_load(expression: &Expression) -> bool {
-    matches!(expression, Expression::Binary { .. } | Expression::Unary { .. } | Expression::Cast { .. })
-        && contains_memory_load(expression)
+    matches!(
+        expression,
+        Expression::Binary { .. } | Expression::Unary { .. } | Expression::Cast { .. }
+    ) && contains_memory_load(expression)
 }
 
 #[cfg(test)]
@@ -1161,7 +1616,11 @@ mod tests {
         Expression::Variable(name.to_string())
     }
     fn binary(operator: BinaryOperator, left: Expression, right: Expression) -> Expression {
-        Expression::Binary { operator, left: Box::new(left), right: Box::new(right) }
+        Expression::Binary {
+            operator,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
     }
     fn add(left: Expression, right: Expression) -> Expression {
         binary(BinaryOperator::Add, left, right)
@@ -1213,20 +1672,34 @@ mod tests {
 /// or a global variable read (any name outside `register_names`, the parameters and
 /// locals). Such a value is a load: moving it across a call or a store changes what it
 /// observes, so the inlining folds must not carry it past either.
-pub(crate) fn expression_reads_memory(expression: &Expression, register_names: &std::collections::HashSet<&str>) -> bool {
+pub(crate) fn expression_reads_memory(
+    expression: &Expression,
+    register_names: &std::collections::HashSet<&str>,
+) -> bool {
     match expression {
         Expression::Variable(name) => !register_names.contains(name.as_str()),
-        Expression::Index { .. } | Expression::Dereference { .. } | Expression::Member { .. } => true,
-        Expression::Binary { left, right, .. } => {
-            expression_reads_memory(left, register_names) || expression_reads_memory(right, register_names)
+        Expression::Index { .. } | Expression::Dereference { .. } | Expression::Member { .. } => {
+            true
         }
-        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => expression_reads_memory(operand, register_names),
-        Expression::Conditional { condition, when_true, when_false } => {
+        Expression::Binary { left, right, .. } => {
+            expression_reads_memory(left, register_names)
+                || expression_reads_memory(right, register_names)
+        }
+        Expression::Unary { operand, .. } | Expression::Cast { operand, .. } => {
+            expression_reads_memory(operand, register_names)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
             expression_reads_memory(condition, register_names)
                 || expression_reads_memory(when_true, register_names)
                 || expression_reads_memory(when_false, register_names)
         }
-        Expression::Call { arguments, .. } => arguments.iter().any(|argument| expression_reads_memory(argument, register_names)),
+        Expression::Call { arguments, .. } => arguments
+            .iter()
+            .any(|argument| expression_reads_memory(argument, register_names)),
         _ => false,
     }
 }

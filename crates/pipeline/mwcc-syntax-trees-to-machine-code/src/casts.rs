@@ -1,12 +1,11 @@
 //! Integer<->float conversions.
 
+use crate::generator::*;
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{Expression, Type};
-use crate::generator::*;
 
 impl Generator {
-
     /// The integer width (bits) of a cast's leaf operand, when determinable. Used to
     /// defer a cast-to-float of a narrow (char/short) value: mwcc first widens it to
     /// int (extsb/extsh) and reschedules the magic-constant idiom around that extra
@@ -17,11 +16,21 @@ impl Generator {
                 .locations
                 .get(name)
                 .map(|location| location.width as u32)
-                .or_else(|| self.globals.get(name).map(|global_type| global_type.width() as u32)),
+                .or_else(|| {
+                    self.globals
+                        .get(name)
+                        .map(|global_type| global_type.width() as u32)
+                }),
             Expression::Member { member_type, .. } => Some(member_type.width() as u32),
             Expression::Cast { target_type, .. } => Some(target_type.width() as u32),
-            Expression::Dereference { pointer } => self.pointee_of(pointer).ok().map(|pointee| pointee.element().width() as u32),
-            Expression::Index { base, .. } => self.pointee_of(base).ok().map(|pointee| pointee.element().width() as u32),
+            Expression::Dereference { pointer } => self
+                .pointee_of(pointer)
+                .ok()
+                .map(|pointee| pointee.element().width() as u32),
+            Expression::Index { base, .. } => self
+                .pointee_of(base)
+                .ok()
+                .map(|pointee| pointee.element().width() as u32),
             _ => None,
         }
     }
@@ -32,7 +41,12 @@ impl Generator {
     /// `0x4330000000000000`. The bias double lives in `.sdata2`; the `lfd dest,0(0)`
     /// is byte-correct here, but its `R_PPC_EMB_SDA21` relocation and the constant
     /// pool are the next M3 step. Leaf integer operands only.
-    pub(crate) fn emit_cast_to_float(&mut self, operand: &Expression, destination: u8, double: bool) -> Compilation<()> {
+    pub(crate) fn emit_cast_to_float(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<()> {
         // A cast between floating types needs an instruction only when it NARROWS:
         // `(float)` of a double rounds it to single precision with `frsp`. A leaf
         // rounds in place from its own register; a sub-expression is computed into
@@ -48,15 +62,24 @@ impl Generator {
                 let source = self.float_register_of_leaf(operand)?;
                 if double {
                     if source != destination {
-                        self.output.instructions.push(Instruction::FloatMove { d: destination, b: source });
+                        self.output.instructions.push(Instruction::FloatMove {
+                            d: destination,
+                            b: source,
+                        });
                     }
                 } else {
-                    self.output.instructions.push(Instruction::RoundToSingle { d: destination, b: source });
+                    self.output.instructions.push(Instruction::RoundToSingle {
+                        d: destination,
+                        b: source,
+                    });
                 }
             } else {
                 self.evaluate_float(operand, destination)?;
                 if !double {
-                    self.output.instructions.push(Instruction::RoundToSingle { d: destination, b: destination });
+                    self.output.instructions.push(Instruction::RoundToSingle {
+                        d: destination,
+                        b: destination,
+                    });
                 }
             }
             return Ok(());
@@ -65,15 +88,24 @@ impl Generator {
         // extsb/extsh, and mwcc reschedules the magic-constant idiom around that extra
         // instruction. That sequence is not modeled, so defer rather than emit the
         // int-width idiom unextended (wrong bytes for a negative char/short).
-        if self.cast_operand_width(operand).map_or(false, |width| width < 32) {
-            return Err(mwcc_core::Diagnostic::error("cast-to-float of a narrow (char/short) value is not modeled (roadmap)"));
+        if self
+            .cast_operand_width(operand)
+            .map_or(false, |width| width < 32)
+        {
+            return Err(mwcc_core::Diagnostic::error(
+                "cast-to-float of a narrow (char/short) value is not modeled (roadmap)",
+            ));
         }
         // The magic bias goes in a register distinct from the assembled value's f0
         // (FLOAT_SCRATCH): the destination when it isn't f0 (a return into f1), else f1
         // for a value/store into f0 — otherwise the assembled `lfd f0` would overwrite
         // the bias, leaving `fsub f0,f0,f0` = 0.
         const FLOAT_FIRST: u8 = 1; // f1
-        let bias_register = if destination != FLOAT_SCRATCH { destination } else { FLOAT_FIRST };
+        let bias_register = if destination != FLOAT_SCRATCH {
+            destination
+        } else {
+            FLOAT_FIRST
+        };
         self.emit_int_to_float(operand, destination, double, bias_register)
     }
 
@@ -81,16 +113,35 @@ impl Generator {
     /// `bias_register` (caller-chosen so a mixed-arithmetic promotion can place the bias in a
     /// register that avoids the live float operand). Assembles `0x43300000_<biased int>` on the
     /// frame and subtracts the `0x4330..` bias. The operand is an int-width GPR leaf.
-    pub(crate) fn emit_int_to_float(&mut self, operand: &Expression, destination: u8, double: bool, bias_register: u8) -> Compilation<()> {
+    pub(crate) fn emit_int_to_float(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+        double: bool,
+        bias_register: u8,
+    ) -> Compilation<()> {
         // A signed value flips its sign bit first and subtracts `0x43300000_80000000`; an
         // unsigned value skips the flip and subtracts `0x43300000_00000000`. Bumps the @N counter.
         let signed = self.signedness_of(operand)?;
         let source = self.general_register_of_leaf(operand)?;
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
         // A leaf value is already in its register, so the build's usual order applies
         // (GC/2.0p1 stores first, every other build loads the bias first).
-        self.emit_int_to_float_body(source, destination, double, signed, bias_register, self.behavior.float_cast_value_store_first);
+        self.emit_int_to_float_body(
+            source,
+            destination,
+            double,
+            signed,
+            bias_register,
+            self.behavior.float_cast_value_store_first,
+        );
         Ok(())
     }
 
@@ -99,31 +150,105 @@ impl Generator {
     /// value store precedes the bias load (they are independent; the caller decides the
     /// schedule). Assumes a 16-byte frame is already established (a leaf's own `stwu`, or
     /// a non-leaf call prologue) and uses its `r1+8`/`r1+12` scratch.
-    pub(crate) fn emit_int_to_float_body(&mut self, source: u8, destination: u8, double: bool, signed: bool, bias_register: u8, value_store_first: bool) {
-        let bias: u64 = if signed { 0x4330_0000_8000_0000 } else { 0x4330_0000_0000_0000 };
+    pub(crate) fn emit_int_to_float_body(
+        &mut self,
+        source: u8,
+        destination: u8,
+        double: bool,
+        signed: bool,
+        bias_register: u8,
+        value_store_first: bool,
+    ) {
+        let bias: u64 = if signed {
+            0x4330_0000_8000_0000
+        } else {
+            0x4330_0000_0000_0000
+        };
         self.output.has_conversion = true;
         if self.frame_size < 16 {
             self.frame_size = 16;
         }
-        if signed {
-            self.output.instructions.push(Instruction::XorImmediateShifted { a: source, s: source, immediate: 0x8000 });
-        }
-        self.output.instructions.push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
-        if value_store_first {
-            self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
+        if self.behavior.legacy_float_cast_schedule {
+            if signed {
+                self.output
+                    .instructions
+                    .push(Instruction::XorImmediateShifted {
+                        a: 0,
+                        s: source,
+                        immediate: 0x8000,
+                    });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 12,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(0, 17200));
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(0, 17200));
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: source,
+                    a: 1,
+                    offset: 12,
+                });
+            }
             self.load_double_constant(bias_register, bias);
         } else {
-            self.load_double_constant(bias_register, bias);
-            self.output.instructions.push(Instruction::StoreWord { s: source, a: 1, offset: 12 });
+            if signed {
+                self.output
+                    .instructions
+                    .push(Instruction::XorImmediateShifted {
+                        a: source,
+                        s: source,
+                        immediate: 0x8000,
+                    });
+            }
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(0, 17200)); // lis r0, 0x4330
+            if value_store_first {
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: source,
+                    a: 1,
+                    offset: 12,
+                });
+                self.load_double_constant(bias_register, bias);
+            } else {
+                self.load_double_constant(bias_register, bias);
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: source,
+                    a: 1,
+                    offset: 12,
+                });
+            }
         }
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: FLOAT_SCRATCH, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: FLOAT_SCRATCH,
+            a: 1,
+            offset: 8,
+        });
         // The bias subtract yields the result at the requested precision: `fsub`
         // for an int->double conversion, `fsubs` for int->float.
         self.output.instructions.push(if double {
-            Instruction::FloatSubtractDouble { d: destination, a: FLOAT_SCRATCH, b: bias_register }
+            Instruction::FloatSubtractDouble {
+                d: destination,
+                a: FLOAT_SCRATCH,
+                b: bias_register,
+            }
         } else {
-            Instruction::FloatSubtractSingle { d: destination, a: FLOAT_SCRATCH, b: bias_register }
+            Instruction::FloatSubtractSingle {
+                d: destination,
+                a: FLOAT_SCRATCH,
+                b: bias_register,
+            }
         });
     }
 
@@ -131,36 +256,74 @@ impl Generator {
     /// converts with `fctiwz`, then bounces the value through the stack frame.
     /// Leaf float operands only for now; int->float (the constant-pool direction)
     /// is handled separately once .sdata2 lands.
-    pub(crate) fn emit_cast_to_integer(&mut self, target_type: Type, operand: &Expression, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_cast_to_integer(
+        &mut self,
+        target_type: Type,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
         // `(int)(float)x` / `(int)(double)x` is a ROUND-TRIP conversion, not an identity — a float
         // cannot represent every int exactly, so the value can change. The full int->float->int
         // sequence (constant-pool magic in, fctiwz out) is not modeled for a cast operand, so
         // defer rather than fall through to the integer path, which would cancel both casts and
         // silently drop the conversion (returning x unchanged — a miscompile for large ints).
-        if matches!(operand, Expression::Cast { target_type: Type::Float | Type::Double, .. }) {
-            return Err(mwcc_core::Diagnostic::error("an int<-float<-int round-trip cast is not modeled (roadmap)"));
+        if matches!(
+            operand,
+            Expression::Cast {
+                target_type: Type::Float | Type::Double,
+                ..
+            }
+        ) {
+            return Err(mwcc_core::Diagnostic::error(
+                "an int<-float<-int round-trip cast is not modeled (roadmap)",
+            ));
         }
         if self.is_float_leaf(operand) {
             // float -> unsigned uses a runtime helper call (the value may exceed
             // INT_MAX, which `fctiwz` cannot represent), not the signed frame bounce.
             if !self.signed_of(target_type) {
-                return Err(mwcc_core::Diagnostic::error("float-to-unsigned conversion needs a runtime helper (roadmap)"));
+                return Err(mwcc_core::Diagnostic::error(
+                    "float-to-unsigned conversion needs a runtime helper (roadmap)",
+                ));
             }
             // float -> int: convert, bounce through the frame, then narrow if needed.
             let source = self.float_register_of_leaf(operand)?;
             self.output.has_conversion = true;
             self.frame_size = 16;
-            self.output.instructions.push(Instruction::ConvertToIntegerWordZero { d: FLOAT_SCRATCH, b: source });
-            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-            self.output.instructions.push(Instruction::StoreFloatDouble { s: FLOAT_SCRATCH, a: 1, offset: 8 });
-            self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: 12 });
+            self.output
+                .instructions
+                .push(Instruction::ConvertToIntegerWordZero {
+                    d: FLOAT_SCRATCH,
+                    b: source,
+                });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
+            self.output
+                .instructions
+                .push(Instruction::StoreFloatDouble {
+                    s: FLOAT_SCRATCH,
+                    a: 1,
+                    offset: 8,
+                });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: destination,
+                a: 1,
+                offset: 12,
+            });
             if target_type.width() < 32 {
                 // mwcc does NOT narrow a float -> (char/short) cast with an extend
                 // instruction: `return (char)a` leaves the fctiwz int in r3 as-is, and a
                 // store truncates via stb/sth. Emitting an extsb/extsh here is a spurious
                 // extra instruction; the exact contexts where mwcc does vs does not narrow
                 // are not modeled, so defer rather than diff.
-                return Err(mwcc_core::Diagnostic::error("float-to-narrow-int cast narrowing is not modeled (roadmap)"));
+                return Err(mwcc_core::Diagnostic::error(
+                    "float-to-narrow-int cast narrowing is not modeled (roadmap)",
+                ));
             }
             return Ok(());
         }
@@ -173,7 +336,9 @@ impl Generator {
         let is_float_call = matches!(operand, Expression::Call { name, .. }
             if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)));
         if self.is_float_value(operand) || self.is_float_operand(operand) || is_float_call {
-            return Err(mwcc_core::Diagnostic::error("float-to-int of a non-leaf operand needs the load/call + convert path (roadmap)"));
+            return Err(mwcc_core::Diagnostic::error(
+                "float-to-int of a non-leaf operand needs the load/call + convert path (roadmap)",
+            ));
         }
         // `(unsigned char)<char load>`: the byte load (`lbz`/`lbzx`) already zero-extends to
         // 0..255, which IS the unsigned-char value, so mwcc drops BOTH the signed-promotion
@@ -204,13 +369,19 @@ impl Generator {
             // excluded: mwcc recognizes its `lbz` already zero-extends and drops the cast
             // entirely (`(unsigned char)gc` is a bare `lbz`), a separate fold not modeled here.
             let saved_truncation_context = self.narrow_truncation_context;
-            if matches!(operand, Expression::Variable(name) if self.locations.contains_key(name.as_str())) {
+            if matches!(operand, Expression::Variable(name) if self.locations.contains_key(name.as_str()))
+            {
                 self.narrow_truncation_context = true;
             }
             let source = self.place_operand_or_scratch(operand, destination);
             self.narrow_truncation_context = saved_truncation_context;
             let source = source?;
-            self.emit_widen(destination, source, target_type.width(), self.signed_of(target_type));
+            self.emit_widen(
+                destination,
+                source,
+                target_type.width(),
+                self.signed_of(target_type),
+            );
         } else {
             self.evaluate_general(operand, destination)?;
         }

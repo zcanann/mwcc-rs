@@ -36,23 +36,70 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 3, offset: 24 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 32 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 3, offset: 28 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 36 });
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 3, offset: 20 });
-        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 3, offset: 40 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 3, offset: 36 });
-        self.output.instructions.push(Instruction::And { a: 4, s: 5, b: 4 });
-        self.output.instructions.push(Instruction::SubtractFrom { d: 0, a: 4, b: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 36 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 3, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 48 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 24,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: 32,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 28,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 3,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 4,
+            a: 3,
+            offset: 40,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 36,
+        });
+        self.output
+            .instructions
+            .push(Instruction::And { a: 4, s: 5, b: 4 });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFrom { d: 0, a: 4, b: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: 48,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

@@ -17,10 +17,11 @@
 //! pre-order (node, left subtree, right subtree); the case bodies follow in sorted
 //! value order, with the default last.
 
+use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, JumpTable, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{ArmBody, Expression, Statement, SwitchArm, Type};
-use crate::generator::*;
+use mwcc_versions::JumpTableBaseStyle;
 
 /// A pending dispatch-branch destination, resolved to an instruction index once
 /// the case bodies have been laid out.
@@ -49,12 +50,13 @@ impl Generator {
         // parameter or local). The comparisons read it directly.
         let register = match scrutinee {
             Expression::Variable(name) => {
-                let location = self
-                    .locations
-                    .get(name)
-                    .ok_or_else(|| Diagnostic::error("switch scrutinee is not a known variable (roadmap)"))?;
+                let location = self.locations.get(name).ok_or_else(|| {
+                    Diagnostic::error("switch scrutinee is not a known variable (roadmap)")
+                })?;
                 if !matches!(location.class, ValueClass::General) {
-                    return Err(Diagnostic::error("only an integer switch scrutinee is supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "only an integer switch scrutinee is supported yet (roadmap)",
+                    ));
                 }
                 location.register
             }
@@ -71,7 +73,9 @@ impl Generator {
         let mut sorted: Vec<&SwitchArm> = arms.iter().collect();
         sorted.sort_by_key(|arm| arm.value);
         if sorted.is_empty() {
-            return Err(Diagnostic::error("an empty switch is not supported (roadmap)"));
+            return Err(Diagnostic::error(
+                "an empty switch is not supported (roadmap)",
+            ));
         }
         for pair in sorted.windows(2) {
             if pair[0].value == pair[1].value {
@@ -83,7 +87,9 @@ impl Generator {
         // value order, which only matches when the arms are already written ascending — so defer
         // out-of-order arms rather than ship a mis-ordered (miscompiled) body layout.
         if arms.windows(2).any(|pair| pair[0].value >= pair[1].value) {
-            return Err(Diagnostic::error("switch arms not in ascending source order (roadmap)"));
+            return Err(Diagnostic::error(
+                "switch arms not in ascending source order (roadmap)",
+            ));
         }
         // A switch whose case values span at most 6 (so a jump table would hold at
         // most 6 entries) is *always* the comparison tree; mwcc never tables a span
@@ -96,22 +102,41 @@ impl Generator {
         if span > 6 {
             let contiguous = span == sorted.len() as i64;
             if contiguous && sorted.len() >= 7 && register == result {
-                return self.emit_jump_table(register, &sorted, default, default_is_labeled, return_type, result);
+                return self.emit_jump_table(
+                    register,
+                    &sorted,
+                    default,
+                    default_is_labeled,
+                    return_type,
+                    result,
+                );
             }
-            return Err(Diagnostic::error("wide-span switch (jump table) not implemented for this shape yet (roadmap)"));
+            return Err(Diagnostic::error(
+                "wide-span switch (jump table) not implemented for this shape yet (roadmap)",
+            ));
         }
         // The tests are `cmpwi v` and `cmpwi v+1`, so both must fit the signed
         // 16-bit immediate.
         for arm in &sorted {
             if arm.value < i16::MIN as i64 || arm.value >= i16::MAX as i64 {
-                return Err(Diagnostic::error("switch case value out of cmpwi immediate range (roadmap)"));
+                return Err(Diagnostic::error(
+                    "switch case value out of cmpwi immediate range (roadmap)",
+                ));
             }
         }
 
         // Emit the comparison tree (pre-order), collecting the branches to patch.
         let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
         let mut patches: Vec<(usize, Target)> = Vec::new();
-        self.lower_switch_range(register, &values, 0, values.len() - 1, None, None, &mut patches);
+        self.lower_switch_range(
+            register,
+            &values,
+            0,
+            values.len() - 1,
+            None,
+            None,
+            &mut patches,
+        );
 
         // Case bodies in sorted value order, then the default — each ends in `blr`.
         let mut body_start = vec![0usize; sorted.len()];
@@ -123,11 +148,15 @@ impl Generator {
                 ));
             };
             self.evaluate_tail(arm_result, return_type, result)?;
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
         }
         let default_start = self.output.instructions.len();
         self.evaluate_tail(default, return_type, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
 
         // Resolve the dispatch branches now that the bodies have addresses.
         for (index, target) in patches {
@@ -161,12 +190,13 @@ impl Generator {
     ) -> Compilation<()> {
         let register = match scrutinee {
             Expression::Variable(name) => {
-                let location = self
-                    .locations
-                    .get(name)
-                    .ok_or_else(|| Diagnostic::error("switch scrutinee is not a known variable (roadmap)"))?;
+                let location = self.locations.get(name).ok_or_else(|| {
+                    Diagnostic::error("switch scrutinee is not a known variable (roadmap)")
+                })?;
                 if !matches!(location.class, ValueClass::General) {
-                    return Err(Diagnostic::error("only an integer switch scrutinee is supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "only an integer switch scrutinee is supported yet (roadmap)",
+                    ));
                 }
                 location.register
             }
@@ -178,7 +208,9 @@ impl Generator {
         let mut sorted: Vec<&SwitchArm> = arms.iter().collect();
         sorted.sort_by_key(|arm| arm.value);
         if sorted.is_empty() {
-            return Err(Diagnostic::error("an empty switch is not supported (roadmap)"));
+            return Err(Diagnostic::error(
+                "an empty switch is not supported (roadmap)",
+            ));
         }
         for pair in sorted.windows(2) {
             if pair[0].value == pair[1].value {
@@ -186,21 +218,31 @@ impl Generator {
             }
         }
         if arms.windows(2).any(|pair| pair[0].value >= pair[1].value) {
-            return Err(Diagnostic::error("switch arms not in ascending source order (roadmap)"));
+            return Err(Diagnostic::error(
+                "switch arms not in ascending source order (roadmap)",
+            ));
         }
         // Comparison tree only (defer a jump-table span); each `cmpwi v`/`cmpwi v+1` must fit i16.
         if sorted[sorted.len() - 1].value - sorted[0].value + 1 > 6 {
-            return Err(Diagnostic::error("a wide-span statement switch is not supported yet (roadmap)"));
+            return Err(Diagnostic::error(
+                "a wide-span statement switch is not supported yet (roadmap)",
+            ));
         }
         for arm in &sorted {
             if arm.value < i16::MIN as i64 || arm.value >= i16::MAX as i64 {
-                return Err(Diagnostic::error("switch case value out of cmpwi immediate range (roadmap)"));
+                return Err(Diagnostic::error(
+                    "switch case value out of cmpwi immediate range (roadmap)",
+                ));
             }
             let ArmBody::Statements(statements) = &arm.body else {
-                return Err(Diagnostic::error("a value-returning statement-switch arm is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a value-returning statement-switch arm is not supported yet (roadmap)",
+                ));
             };
             if arm.falls_through {
-                return Err(Diagnostic::error("a fall-through statement-switch arm is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a fall-through statement-switch arm is not supported yet (roadmap)",
+                ));
             }
             // A single statement per arm has no cross-statement scheduling, so `emit_statement`
             // reproduces mwcc exactly. A run of 2+ stores mwcc latency-schedules (batches the
@@ -208,18 +250,30 @@ impl Generator {
             // diverge, so DEFER a multi-statement arm rather than ship wrong bytes (the store
             // scheduler is the roadmap fix). An empty arm (`case V: break;`) also defers.
             if statements.len() != 1 {
-                return Err(Diagnostic::error("a multi-statement switch arm needs the store scheduler (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a multi-statement switch arm needs the store scheduler (roadmap)",
+                ));
             }
         }
         // The default block is emitted as a straight statement run too, so it is subject to the
         // same single-statement constraint.
         if matches!(default_statements, Some(statements) if statements.len() != 1) {
-            return Err(Diagnostic::error("a multi-statement switch default needs the store scheduler (roadmap)"));
+            return Err(Diagnostic::error(
+                "a multi-statement switch default needs the store scheduler (roadmap)",
+            ));
         }
 
         let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
         let mut patches: Vec<(usize, Target)> = Vec::new();
-        self.lower_switch_range(register, &values, 0, values.len() - 1, None, None, &mut patches);
+        self.lower_switch_range(
+            register,
+            &values,
+            0,
+            values.len() - 1,
+            None,
+            None,
+            &mut patches,
+        );
 
         // No-default terminal collapse. The lowest-valued case's body (`Body(0)`) is laid out
         // first, immediately after the dispatch. When that case's leaf is the LAST dispatch
@@ -235,17 +289,33 @@ impl Generator {
         if default_statements.is_none() {
             let n = self.output.instructions.len();
             let last_default = n >= 1
-                && patches.iter().any(|&(i, t)| i == n - 1 && matches!(t, Target::Default))
+                && patches
+                    .iter()
+                    .any(|&(i, t)| i == n - 1 && matches!(t, Target::Default))
                 && matches!(self.output.instructions[n - 1], Instruction::Branch { .. });
             let prev_body_zero = n >= 2
-                && patches.iter().any(|&(i, t)| i == n - 2 && matches!(t, Target::Body(0)))
-                && matches!(self.output.instructions[n - 2], Instruction::BranchConditionalForward { .. });
+                && patches
+                    .iter()
+                    .any(|&(i, t)| i == n - 2 && matches!(t, Target::Body(0)))
+                && matches!(
+                    self.output.instructions[n - 2],
+                    Instruction::BranchConditionalForward { .. }
+                );
             if last_default && prev_body_zero {
-                if let Instruction::BranchConditionalForward { options, condition_bit, .. } = self.output.instructions[n - 2] {
+                if let Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    ..
+                } = self.output.instructions[n - 2]
+                {
                     // Invert the branch sense (BO 12 branch-if-true <-> 4 branch-if-false), keeping
                     // the condition bit, so the test returns on the complement and falls through.
                     let inverted = if options == 12 { 4 } else { 12 };
-                    self.output.instructions[n - 2] = Instruction::BranchConditionalToLinkRegister { options: inverted, condition_bit };
+                    self.output.instructions[n - 2] =
+                        Instruction::BranchConditionalToLinkRegister {
+                            options: inverted,
+                            condition_bit,
+                        };
                 }
                 self.output.instructions.pop(); // drop the unconditional `b default`
                 patches.retain(|&(i, _)| i != n - 1 && i != n - 2);
@@ -256,11 +326,15 @@ impl Generator {
         let mut body_start = vec![0usize; sorted.len()];
         for (index, arm) in sorted.iter().enumerate() {
             body_start[index] = self.output.instructions.len();
-            let ArmBody::Statements(statements) = &arm.body else { unreachable!() };
+            let ArmBody::Statements(statements) = &arm.body else {
+                unreachable!()
+            };
             for statement in statements {
                 self.emit_statement(statement)?;
             }
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
         }
         // A `default:` arm becomes a trailing default block; without one, the out-of-range
         // branches return directly (rewritten below), so there is nothing to emit here.
@@ -270,7 +344,9 @@ impl Generator {
                 for statement in statements {
                     self.emit_statement(statement)?;
                 }
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                self.output
+                    .instructions
+                    .push(Instruction::BranchToLinkRegister);
                 Some(start)
             }
             None => None,
@@ -281,7 +357,9 @@ impl Generator {
                 Target::Body(body) => {
                     let destination = body_start[body];
                     match &mut self.output.instructions[index] {
-                        Instruction::BranchConditionalForward { target, .. } => *target = destination,
+                        Instruction::BranchConditionalForward { target, .. } => {
+                            *target = destination
+                        }
                         Instruction::Branch { target } => *target = destination,
                         _ => unreachable!("switch patch points at a non-branch instruction"),
                     }
@@ -289,7 +367,9 @@ impl Generator {
                 Target::Default => match default_start {
                     // A trailing default block: resolve the branch to its address.
                     Some(destination) => match &mut self.output.instructions[index] {
-                        Instruction::BranchConditionalForward { target, .. } => *target = destination,
+                        Instruction::BranchConditionalForward { target, .. } => {
+                            *target = destination
+                        }
                         Instruction::Branch { target } => *target = destination,
                         _ => unreachable!("switch patch points at a non-branch instruction"),
                     },
@@ -298,9 +378,14 @@ impl Generator {
                     // unconditional branch becomes `blr`.
                     None => {
                         self.output.instructions[index] = match self.output.instructions[index] {
-                            Instruction::BranchConditionalForward { options, condition_bit, .. } => {
-                                Instruction::BranchConditionalToLinkRegister { options, condition_bit }
-                            }
+                            Instruction::BranchConditionalForward {
+                                options,
+                                condition_bit,
+                                ..
+                            } => Instruction::BranchConditionalToLinkRegister {
+                                options,
+                                condition_bit,
+                            },
                             Instruction::Branch { .. } => Instruction::BranchToLinkRegister,
                             _ => unreachable!("switch patch points at a non-branch instruction"),
                         };
@@ -340,30 +425,91 @@ impl Generator {
         let subtract = min < 0 || min >= 3;
         let bound = if subtract { max - min } else { max };
         let negated_base = -min;
-        if bound > u16::MAX as i64 || (subtract && (negated_base < i16::MIN as i64 || negated_base > i16::MAX as i64)) {
-            return Err(Diagnostic::error("switch jump-table index/base out of immediate range (roadmap)"));
+        if bound > u16::MAX as i64
+            || (subtract && (negated_base < i16::MIN as i64 || negated_base > i16::MAX as i64))
+        {
+            return Err(Diagnostic::error(
+                "switch jump-table index/base out of immediate range (roadmap)",
+            ));
         }
 
         // `index_register` holds the 0-based index; `table_register` builds the
         // table address. Rebasing frees the scrutinee register (so `lis` reuses it);
         // otherwise the scrutinee stays live for the `slwi`, so `lis` uses r4.
         let (index_register, table_register) = if subtract {
-            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: register, immediate: negated_base as i16 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: register,
+                immediate: negated_base as i16,
+            });
             (0, 3)
         } else {
             (register, 4)
         };
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: index_register, immediate: bound as u16 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: index_register,
+                immediate: bound as u16,
+            });
         let bgt_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: BGT.0, condition_bit: BGT.1, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: BGT.0,
+                condition_bit: BGT.1,
+                target: 0,
+            });
         self.record_target(RelocationKind::Addr16Ha, RelocationTarget::JumpTable);
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: table_register, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: index_register, shift: 2 });
-        self.record_target(RelocationKind::Addr16Lo, RelocationTarget::JumpTable);
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: table_register, immediate: 0 });
-        self.output.instructions.push(Instruction::LoadWordIndexed { d: 0, a: 3, b: 0 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
-        self.output.instructions.push(Instruction::BranchToCountRegister);
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: table_register,
+                a: 0,
+                immediate: 0,
+            });
+        let load_base = if self.behavior.jump_table_base_style == JumpTableBaseStyle::EarlyInPlace {
+            self.record_target(RelocationKind::Addr16Lo, RelocationTarget::JumpTable);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: table_register,
+                a: table_register,
+                immediate: 0,
+            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: 0,
+                    s: index_register,
+                    shift: 2,
+                });
+            table_register
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: 0,
+                    s: index_register,
+                    shift: 2,
+                });
+            self.record_target(RelocationKind::Addr16Lo, RelocationTarget::JumpTable);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3,
+                a: table_register,
+                immediate: 0,
+            });
+            3
+        };
+        self.output.instructions.push(Instruction::LoadWordIndexed {
+            d: 0,
+            a: load_base,
+            b: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegister);
 
         // Case bodies in value order, then the default; record each value's offset.
         let mut body_offset = std::collections::HashMap::new();
@@ -375,14 +521,20 @@ impl Generator {
                 ));
             };
             self.evaluate_tail(arm_result, return_type, result)?;
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
         }
         let default_offset = self.output.instructions.len() as u32 * 4;
         let default_index = self.output.instructions.len();
         self.evaluate_tail(default, return_type, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
 
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bgt_index] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[bgt_index]
+        {
             *target = default_index;
         }
         // The table runs over indices 0..=bound: a rebased index `i` is value
@@ -398,7 +550,10 @@ impl Generator {
         // entry — a padded table has more entries than cases) plus the dispatch,
         // and one more when the default is an explicit `default:` label.
         let anonymous_offset = sorted.len() as u32 + 1 + if default_is_labeled { 1 } else { 0 };
-        self.output.jump_tables.push(JumpTable { entries, anonymous_offset });
+        self.output.jump_tables.push(JumpTable {
+            entries,
+            anonymous_offset,
+        });
         Ok(())
     }
 
@@ -459,19 +614,43 @@ impl Generator {
                 self.emit_switch_compare(register, centre);
                 self.emit_switch_conditional(patches, BEQ, Target::Default);
                 let bge_index = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options: BGE.0, condition_bit: BGE.1, target: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options: BGE.0,
+                        condition_bit: BGE.1,
+                        target: 0,
+                    });
                 // Left [lo, centre-1] (never empty), bounded above by centre-1.
                 if left_hi == lo && klo == Some(values[lo]) {
                     self.emit_switch_branch(patches, Target::Body(lo));
                 } else {
-                    self.lower_switch_range(register, values, lo, left_hi, klo, Some(centre - 1), patches);
+                    self.lower_switch_range(
+                        register,
+                        values,
+                        lo,
+                        left_hi,
+                        klo,
+                        Some(centre - 1),
+                        patches,
+                    );
                 }
                 // Right [centre+1, hi] (never empty), bounded below by centre+1: the `bge` target.
                 if right_lo == hi && khi == Some(values[hi]) {
                     patches.push((bge_index, Target::Body(hi)));
                 } else {
-                    let right_entry = self.lower_switch_range(register, values, right_lo, hi, Some(centre + 1), khi, patches);
-                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bge_index] {
+                    let right_entry = self.lower_switch_range(
+                        register,
+                        values,
+                        right_lo,
+                        hi,
+                        Some(centre + 1),
+                        khi,
+                        patches,
+                    );
+                    if let Instruction::BranchConditionalForward { target, .. } =
+                        &mut self.output.instructions[bge_index]
+                    {
                         *target = right_entry;
                     }
                 }
@@ -481,7 +660,11 @@ impl Generator {
 
         // Interior node: pivot lower-middle once the upper bound is closed, else
         // upper-middle.
-        let mid = if khi.is_none() { lo + count / 2 } else { lo + (count - 1) / 2 };
+        let mid = if khi.is_none() {
+            lo + count / 2
+        } else {
+            lo + (count - 1) / 2
+        };
         let pivot = values[mid];
         self.emit_switch_compare(register, pivot);
         self.emit_switch_conditional(patches, BEQ, Target::Body(mid));
@@ -489,7 +672,13 @@ impl Generator {
         // The single `bge` selects the right range; the fall-through is the left
         // range, emitted inline next (pre-order).
         let bge_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: BGE.0, condition_bit: BGE.1, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: BGE.0,
+                condition_bit: BGE.1,
+                target: 0,
+            });
 
         // Left range [lo, mid-1], now bounded above by pivot-1.
         if mid == lo {
@@ -510,8 +699,18 @@ impl Generator {
             // A single value pinned on both sides: the `bge` jumps straight to it.
             patches.push((bge_index, Target::Body(hi)));
         } else {
-            let right_entry = self.lower_switch_range(register, values, mid + 1, hi, Some(pivot + 1), khi, patches);
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[bge_index] {
+            let right_entry = self.lower_switch_range(
+                register,
+                values,
+                mid + 1,
+                hi,
+                Some(pivot + 1),
+                khi,
+                patches,
+            );
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[bge_index]
+            {
                 *target = right_entry;
             }
         }
@@ -520,20 +719,38 @@ impl Generator {
     }
 
     fn emit_switch_compare(&mut self, register: u8, immediate: i64) {
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: immediate as i16 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: register,
+                immediate: immediate as i16,
+            });
     }
 
     /// Push a forward conditional branch (`(BO, BI)`) bound to `target`.
-    fn emit_switch_conditional(&mut self, patches: &mut Vec<(usize, Target)>, options: (u8, u8), target: Target) {
+    fn emit_switch_conditional(
+        &mut self,
+        patches: &mut Vec<(usize, Target)>,
+        options: (u8, u8),
+        target: Target,
+    ) {
         let index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: options.0, condition_bit: options.1, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: options.0,
+                condition_bit: options.1,
+                target: 0,
+            });
         patches.push((index, target));
     }
 
     /// Push an unconditional branch bound to `target`.
     fn emit_switch_branch(&mut self, patches: &mut Vec<(usize, Target)>, target: Target) {
         let index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::Branch { target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::Branch { target: 0 });
         patches.push((index, target));
     }
 }

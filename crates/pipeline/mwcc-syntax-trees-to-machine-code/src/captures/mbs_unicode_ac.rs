@@ -33,60 +33,169 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [7, 12, 16, 17, 24, 30, 34, 38, 39] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 });
         self.load_word_constant_static_slot(0, 0x0000c0e0);
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 8,
+        });
         self.emit_branch_conditional_to(4, 2, labels[&7]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.emit_branch_to(labels[&39]); // b
         self.bind_label(labels[&7]);
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 16 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 128 });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: 0,
+                s: 4,
+                clear: 16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 0,
+                immediate: 128,
+            });
         self.emit_branch_conditional_to(4, 0, labels[&12]); // bge
-        self.output.instructions.push(Instruction::load_immediate(5, 1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(5, 1));
         self.emit_branch_to(labels[&17]); // b
         self.bind_label(labels[&12]);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 2048 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 0,
+                immediate: 2048,
+            });
         self.emit_branch_conditional_to(4, 0, labels[&16]); // bge
-        self.output.instructions.push(Instruction::load_immediate(5, 2));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(5, 2));
         self.emit_branch_to(labels[&17]); // b
         self.bind_label(labels[&16]);
-        self.output.instructions.push(Instruction::load_immediate(5, 3));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(5, 3));
         self.bind_label(labels[&17]);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 2 });
-        self.output.instructions.push(Instruction::Add { d: 6, a: 3, b: 5 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 5, immediate: 2 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 6, a: 3, b: 5 });
         self.emit_branch_conditional_to(12, 2, labels[&30]); // beq
         self.emit_branch_conditional_to(4, 0, labels[&24]); // bge
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 1 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 5, immediate: 1 });
         self.emit_branch_conditional_to(4, 0, labels[&34]); // bge
         self.emit_branch_to(labels[&38]); // b
         self.bind_label(labels[&24]);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 4 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 5, immediate: 4 });
         self.emit_branch_conditional_to(4, 0, labels[&38]); // bge
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 26 });
-        self.output.instructions.push(Instruction::RotateAndMask { a: 4, s: 4, shift: 26, begin: 22, end: 31 });
-        self.output.instructions.push(Instruction::OrImmediate { a: 0, s: 0, immediate: 128 });
-        self.output.instructions.push(Instruction::StoreByteWithUpdate { s: 0, a: 6, offset: -1 });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: 0,
+                s: 4,
+                clear: 26,
+            });
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: 4,
+            s: 4,
+            shift: 26,
+            begin: 22,
+            end: 31,
+        });
+        self.output.instructions.push(Instruction::OrImmediate {
+            a: 0,
+            s: 0,
+            immediate: 128,
+        });
+        self.output
+            .instructions
+            .push(Instruction::StoreByteWithUpdate {
+                s: 0,
+                a: 6,
+                offset: -1,
+            });
         self.bind_label(labels[&30]);
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 4, clear: 26 });
-        self.output.instructions.push(Instruction::RotateAndMask { a: 4, s: 4, shift: 26, begin: 22, end: 31 });
-        self.output.instructions.push(Instruction::OrImmediate { a: 0, s: 0, immediate: 128 });
-        self.output.instructions.push(Instruction::StoreByteWithUpdate { s: 0, a: 6, offset: -1 });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: 0,
+                s: 4,
+                clear: 26,
+            });
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: 4,
+            s: 4,
+            shift: 26,
+            begin: 22,
+            end: 31,
+        });
+        self.output.instructions.push(Instruction::OrImmediate {
+            a: 0,
+            s: 0,
+            immediate: 128,
+        });
+        self.output
+            .instructions
+            .push(Instruction::StoreByteWithUpdate {
+                s: 0,
+                a: 6,
+                offset: -1,
+            });
         self.bind_label(labels[&34]);
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 1, immediate: 8 });
-        self.output.instructions.push(Instruction::LoadByteZeroIndexed { d: 0, a: 3, b: 5 });
-        self.output.instructions.push(Instruction::Or { a: 0, s: 4, b: 0 });
-        self.output.instructions.push(Instruction::StoreByte { s: 0, a: 6, offset: -1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 1,
+            immediate: 8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::LoadByteZeroIndexed { d: 0, a: 3, b: 5 });
+        self.output
+            .instructions
+            .push(Instruction::Or { a: 0, s: 4, b: 0 });
+        self.output.instructions.push(Instruction::StoreByte {
+            s: 0,
+            a: 6,
+            offset: -1,
+        });
         self.bind_label(labels[&38]);
-        self.output.instructions.push(Instruction::move_register(3, 5));
+        self.output
+            .instructions
+            .push(Instruction::move_register(3, 5));
         self.bind_label(labels[&39]);
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

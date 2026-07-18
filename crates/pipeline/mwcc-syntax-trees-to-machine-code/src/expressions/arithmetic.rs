@@ -4,7 +4,6 @@
 use super::*;
 
 impl Generator {
-
     /// Evaluate an integer expression into general register `destination`.
     /// mwcc collapses the bitwise distributive laws `(x&y)|(x&z) -> x&(y|z)`,
     /// `(x|y)&(x|z) -> x|(y&z)`, and `(x&y)^(x&z) -> x&(y^z)` to one inner op plus the
@@ -12,12 +11,35 @@ impl Generator {
     /// inner node, rewrite to that form and evaluate it. A common factor in the second
     /// position (`(y&x)|(z&x)`) needs mwcc's value-first operand order, not yet modeled,
     /// so it defers rather than emit the longer un-distributed sequence.
-    pub(crate) fn try_emit_distributive_bitwise(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+    pub(crate) fn try_emit_distributive_bitwise(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
         use BinaryOperator::*;
-        let (Expression::Binary { operator: inner, left: la, right: lb }, Expression::Binary { operator: inner_right, left: ra, right: rb }) = (left, right) else {
+        let (
+            Expression::Binary {
+                operator: inner,
+                left: la,
+                right: lb,
+            },
+            Expression::Binary {
+                operator: inner_right,
+                left: ra,
+                right: rb,
+            },
+        ) = (left, right)
+        else {
             return Ok(false);
         };
-        if inner != inner_right || !matches!((operator, *inner), (BitOr, BitAnd) | (BitXor, BitAnd) | (BitAnd, BitOr)) {
+        if inner != inner_right
+            || !matches!(
+                (operator, *inner),
+                (BitOr, BitAnd) | (BitXor, BitAnd) | (BitAnd, BitOr)
+            )
+        {
             return Ok(false);
         }
         let other = if same_operand(la, ra) {
@@ -29,8 +51,16 @@ impl Generator {
         } else {
             return Ok(false);
         };
-        let combined = Expression::Binary { operator, left: lb.clone(), right: other.clone() };
-        let rewritten = Expression::Binary { operator: *inner, left: la.clone(), right: Box::new(combined) };
+        let combined = Expression::Binary {
+            operator,
+            left: lb.clone(),
+            right: other.clone(),
+        };
+        let rewritten = Expression::Binary {
+            operator: *inner,
+            left: la.clone(),
+            right: Box::new(combined),
+        };
         self.evaluate_general(&rewritten, destination)?;
         Ok(true)
     }
@@ -42,8 +72,18 @@ impl Generator {
     /// full-width integer leaf `x` with simple integer tail operands is taken;
     /// pointers (scaled arithmetic), narrow leaves, and deeper or right-leaning
     /// chains keep the generic paths.
-    pub(crate) fn try_emit_additive_chain(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
-        let Expression::Binary { operator: BinaryOperator::Add, left: x, right: y } = left else {
+    pub(crate) fn try_emit_additive_chain(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: x,
+            right: y,
+        } = left
+        else {
             return Ok(false);
         };
         let (x, y, z) = (x.as_ref(), y.as_ref(), right);
@@ -52,9 +92,13 @@ impl Generator {
         // rather than fall through to the constant-fold path, which would emit the
         // left-associated form (a mismatch) now that the two-load add is selected.
         if self.is_word_load(x) && self.is_word_load(y) {
-            return Err(Diagnostic::error("additive chain over two loads needs the allocator (roadmap)"));
+            return Err(Diagnostic::error(
+                "additive chain over two loads needs the allocator (roadmap)",
+            ));
         }
-        let Some(x_register) = self.plain_integer_leaf_register(x) else { return Ok(false) };
+        let Some(x_register) = self.plain_integer_leaf_register(x) else {
+            return Ok(false);
+        };
         // The tail operands must be simple: a full-width integer leaf or a constant.
         let simple = |me: &Self, operand: &Expression| {
             constant_value(operand).is_some() || me.plain_integer_leaf_register(operand).is_some()
@@ -67,7 +111,9 @@ impl Generator {
             return Ok(false);
         }
         let leading = if x_register == destination {
-            self.output.instructions.push(Instruction::move_register(GENERAL_SCRATCH, x_register));
+            self.output
+                .instructions
+                .push(Instruction::move_register(GENERAL_SCRATCH, x_register));
             GENERAL_SCRATCH
         } else {
             x_register
@@ -78,7 +124,11 @@ impl Generator {
             right: Box::new(z.clone()),
         };
         self.evaluate_general(&tail, destination)?;
-        self.output.instructions.push(Instruction::Add { d: destination, a: leading, b: destination });
+        self.output.instructions.push(Instruction::Add {
+            d: destination,
+            a: leading,
+            b: destination,
+        });
         Ok(true)
     }
 
@@ -95,7 +145,13 @@ impl Generator {
     /// fold to 0 in `constant_value` before reaching here (kept as a fallback). A
     /// leaf `x+x`/`x*x`/… falls through — its operand is already in a register so
     /// the generic path emits `op d,a,a`.
-    pub(crate) fn try_emit_identical_load_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+    pub(crate) fn try_emit_identical_load_binary(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
         use BinaryOperator::*;
         if !same_operand(left, right) {
             return Ok(false);
@@ -107,11 +163,31 @@ impl Generator {
                 self.evaluate_general(left, GENERAL_SCRATCH)?;
                 let r = GENERAL_SCRATCH;
                 let instruction = match operator {
-                    Add => Instruction::Add { d: destination, a: r, b: r },
-                    Multiply => Instruction::MultiplyLow { d: destination, a: r, b: r },
-                    ShiftLeft => Instruction::ShiftLeftWord { a: destination, s: r, b: r },
-                    _ if self.signedness_of(left)? => Instruction::ShiftRightAlgebraicWord { a: destination, s: r, b: r },
-                    _ => Instruction::ShiftRightWord { a: destination, s: r, b: r },
+                    Add => Instruction::Add {
+                        d: destination,
+                        a: r,
+                        b: r,
+                    },
+                    Multiply => Instruction::MultiplyLow {
+                        d: destination,
+                        a: r,
+                        b: r,
+                    },
+                    ShiftLeft => Instruction::ShiftLeftWord {
+                        a: destination,
+                        s: r,
+                        b: r,
+                    },
+                    _ if self.signedness_of(left)? => Instruction::ShiftRightAlgebraicWord {
+                        a: destination,
+                        s: r,
+                        b: r,
+                    },
+                    _ => Instruction::ShiftRightWord {
+                        a: destination,
+                        s: r,
+                        b: r,
+                    },
                 };
                 self.output.instructions.push(instruction);
             }
@@ -123,8 +199,15 @@ impl Generator {
     /// `(x & m1) | (x & m2)` over the same leaf `x` is `x & (m1 | m2)` — mwcc
     /// merges the masks into one `rlwinm`/`clrlwi` rather than extracting both
     /// fields and OR-ing them.
-    pub(crate) fn try_emit_same_leaf_mask_or(&mut self, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
-        let (Some((left_leaf, m1)), Some((right_leaf, m2))) = (as_masked_leaf(left), as_masked_leaf(right)) else {
+    pub(crate) fn try_emit_same_leaf_mask_or(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let (Some((left_leaf, m1)), Some((right_leaf, m2))) =
+            (as_masked_leaf(left), as_masked_leaf(right))
+        else {
             return Ok(false);
         };
         if leaf_name(left_leaf).is_none() || leaf_name(left_leaf) != leaf_name(right_leaf) {
@@ -139,9 +222,18 @@ impl Generator {
         Ok(true)
     }
 
-    pub(crate) fn try_emit_two_load_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+    pub(crate) fn try_emit_two_load_binary(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
         use BinaryOperator::*;
-        if !matches!(operator, Add | Subtract | BitAnd | BitOr | BitXor | Multiply) {
+        if !matches!(
+            operator,
+            Add | Subtract | BitAnd | BitOr | BitXor | Multiply
+        ) {
             return Ok(false);
         }
         // Single-instruction loads only: a variable-index subscript scales to
@@ -164,12 +256,36 @@ impl Generator {
         self.evaluate_general(secondary, GENERAL_SCRATCH)?;
         let (p, s) = (primary_register, GENERAL_SCRATCH);
         let combined = match operator {
-            Add => Instruction::Add { d: destination, a: p, b: s },
-            Subtract => Instruction::SubtractFrom { d: destination, a: p, b: s },
-            Multiply => Instruction::MultiplyLow { d: destination, a: p, b: s },
-            BitAnd => Instruction::And { a: destination, s: p, b: s },
-            BitOr => Instruction::Or { a: destination, s: p, b: s },
-            _ => Instruction::Xor { a: destination, s: p, b: s },
+            Add => Instruction::Add {
+                d: destination,
+                a: p,
+                b: s,
+            },
+            Subtract => Instruction::SubtractFrom {
+                d: destination,
+                a: p,
+                b: s,
+            },
+            Multiply => Instruction::MultiplyLow {
+                d: destination,
+                a: p,
+                b: s,
+            },
+            BitAnd => Instruction::And {
+                a: destination,
+                s: p,
+                b: s,
+            },
+            BitOr => Instruction::Or {
+                a: destination,
+                s: p,
+                b: s,
+            },
+            _ => Instruction::Xor {
+                a: destination,
+                s: p,
+                b: s,
+            },
         };
         self.output.instructions.push(combined);
         Ok(true)
@@ -179,9 +295,18 @@ impl Generator {
     /// integer leaf. The subscript loads into the scratch (`lwz r0,off(base)`) and
     /// the leaf stays in its register, like the dereference/member + leaf paths
     /// (subscripts just were not routed there). Source operand order is kept.
-    pub(crate) fn try_emit_subscript_leaf_binary(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
+    pub(crate) fn try_emit_subscript_leaf_binary(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
         use BinaryOperator::*;
-        if !matches!(operator, Add | Subtract | BitAnd | BitOr | BitXor | Multiply) {
+        if !matches!(
+            operator,
+            Add | Subtract | BitAnd | BitOr | BitXor | Multiply
+        ) {
             return Ok(false);
         }
         // A full-word subscript load with either a constant index (`a[3]`, a plain
@@ -193,7 +318,10 @@ impl Generator {
             matches!(expression, Expression::Index { .. }) && me.is_word_load(expression)
         };
         // Exactly one operand is the subscript load; the other a wide integer leaf.
-        let (load, leaf, load_is_left) = match (is_word_subscript(self, left), is_word_subscript(self, right)) {
+        let (load, leaf, load_is_left) = match (
+            is_word_subscript(self, left),
+            is_word_subscript(self, right),
+        ) {
             (true, false) => (left, right, true),
             (false, true) => (right, left, false),
             _ => return Ok(false),
@@ -205,7 +333,8 @@ impl Generator {
         // canonicalizes it to the SECOND operand of a commutative op (leaf first),
         // regardless of source order — `add d,leaf,r0`. A plain (constant-index)
         // subscript keeps source order. Subtract is non-commutative either way.
-        let variable_index = matches!(load, Expression::Index { index, .. } if constant_value(index).is_none());
+        let variable_index =
+            matches!(load, Expression::Index { index, .. } if constant_value(index).is_none());
         let commutative = !matches!(operator, BinaryOperator::Subtract);
         self.evaluate_general(load, GENERAL_SCRATCH)?;
         let (a, b) = if commutative && variable_index {
@@ -216,12 +345,36 @@ impl Generator {
             (leaf_register, GENERAL_SCRATCH)
         };
         let combined = match operator {
-            Add => Instruction::Add { d: destination, a, b },
-            Subtract => Instruction::SubtractFrom { d: destination, a: b, b: a },
-            Multiply => Instruction::MultiplyLow { d: destination, a, b },
-            BitAnd => Instruction::And { a: destination, s: a, b },
-            BitOr => Instruction::Or { a: destination, s: a, b },
-            _ => Instruction::Xor { a: destination, s: a, b },
+            Add => Instruction::Add {
+                d: destination,
+                a,
+                b,
+            },
+            Subtract => Instruction::SubtractFrom {
+                d: destination,
+                a: b,
+                b: a,
+            },
+            Multiply => Instruction::MultiplyLow {
+                d: destination,
+                a,
+                b,
+            },
+            BitAnd => Instruction::And {
+                a: destination,
+                s: a,
+                b,
+            },
+            BitOr => Instruction::Or {
+                a: destination,
+                s: a,
+                b,
+            },
+            _ => Instruction::Xor {
+                a: destination,
+                s: a,
+                b,
+            },
         };
         self.output.instructions.push(combined);
         Ok(true)
@@ -230,22 +383,45 @@ impl Generator {
     /// `(cond ? c1 : c2) +/- k` with both arms constant distributes the constant
     /// into the arms — `cond ? (c1±k) : (c2±k)` — so the select's trailing `addi`
     /// absorbs it, as mwcc does (a leaf `(x?1:2)+5` is `…; addi r3,r3,7`).
-    pub(crate) fn try_emit_select_constant_fold(&mut self, operator: BinaryOperator, left: &Expression, right: &Expression, destination: u8) -> Compilation<bool> {
-        let constant_select = |expression: &Expression| matches!(expression,
+    pub(crate) fn try_emit_select_constant_fold(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let constant_select = |expression: &Expression| {
+            matches!(expression,
             Expression::Conditional { when_true, when_false, .. }
-                if constant_value(when_true).is_some() && constant_value(when_false).is_some());
+                if constant_value(when_true).is_some() && constant_value(when_false).is_some())
+        };
         // Add commutes (select either side); subtract distributes only `select - k`.
         let (select, delta) = match operator {
-            BinaryOperator::Add if constant_select(left) => match constant_value(right) { Some(k) => (left, k), None => return Ok(false) },
-            BinaryOperator::Add if constant_select(right) => match constant_value(left) { Some(k) => (right, k), None => return Ok(false) },
-            BinaryOperator::Subtract if constant_select(left) => match constant_value(right) { Some(k) => (left, -k), None => return Ok(false) },
+            BinaryOperator::Add if constant_select(left) => match constant_value(right) {
+                Some(k) => (left, k),
+                None => return Ok(false),
+            },
+            BinaryOperator::Add if constant_select(right) => match constant_value(left) {
+                Some(k) => (right, k),
+                None => return Ok(false),
+            },
+            BinaryOperator::Subtract if constant_select(left) => match constant_value(right) {
+                Some(k) => (left, -k),
+                None => return Ok(false),
+            },
             _ => return Ok(false),
         };
-        let Expression::Conditional { condition, when_true, when_false } = select else { return Ok(false) };
+        let Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } = select
+        else {
+            return Ok(false);
+        };
         let shifted_true = Expression::IntegerLiteral(constant_value(when_true).unwrap() + delta);
         let shifted_false = Expression::IntegerLiteral(constant_value(when_false).unwrap() + delta);
         self.emit_conditional(condition, &shifted_true, &shifted_false, destination, false)?;
         Ok(true)
     }
-
 }

@@ -33,10 +33,23 @@ impl Generator {
         {
             return Ok(false);
         }
-        let (x, hx, lx, iy, sx) =
-            (p_x.name.as_str(), p_hx.name.as_str(), p_lx.name.as_str(), p_iy.name.as_str(), p_sx.name.as_str());
-        let [Statement::Assign { name: assign_name, value: assign_value }, Statement::Store { target: high_target, value: high_value }, Statement::Store { target: low_target, value: low_value }] =
-            function.statements.as_slice()
+        let (x, hx, lx, iy, sx) = (
+            p_x.name.as_str(),
+            p_hx.name.as_str(),
+            p_lx.name.as_str(),
+            p_iy.name.as_str(),
+            p_sx.name.as_str(),
+        );
+        let [Statement::Assign {
+            name: assign_name,
+            value: assign_value,
+        }, Statement::Store {
+            target: high_target,
+            value: high_value,
+        }, Statement::Store {
+            target: low_target,
+            value: low_value,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -44,12 +57,19 @@ impl Generator {
             return Ok(false);
         }
         // hx = (hx - HI_BIT) | ((iy + K) << S).
-        let Expression::Binary { operator: BinaryOperator::BitOr, left: base, right: shifted } = assign_value
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: base,
+            right: shifted,
+        } = assign_value
         else {
             return Ok(false);
         };
-        let Expression::Binary { operator: BinaryOperator::Subtract, left: sub_left, right: sub_right } =
-            base.as_ref()
+        let Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: sub_left,
+            right: sub_right,
+        } = base.as_ref()
         else {
             return Ok(false);
         };
@@ -65,13 +85,19 @@ impl Generator {
         let Ok(addis_immediate) = i16::try_from(-(*hi_bit >> 16)) else {
             return Ok(false);
         };
-        let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: sum, right: shift_amount } =
-            shifted.as_ref()
+        let Expression::Binary {
+            operator: BinaryOperator::ShiftLeft,
+            left: sum,
+            right: shift_amount,
+        } = shifted.as_ref()
         else {
             return Ok(false);
         };
-        let Expression::Binary { operator: BinaryOperator::Add, left: add_left, right: add_right } =
-            sum.as_ref()
+        let Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: add_left,
+            right: add_right,
+        } = sum.as_ref()
         else {
             return Ok(false);
         };
@@ -99,7 +125,11 @@ impl Generator {
         {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::BitOr, left: or_left, right: or_right } = high_value
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: or_left,
+            right: or_right,
+        } = high_value
         else {
             return Ok(false);
         };
@@ -120,20 +150,74 @@ impl Generator {
         };
         // -- emit --
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: iy_register, immediate: exponent_bias });
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: hx_register, a: hx_register, immediate: addis_immediate });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: 0, shift: shift_amount });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: iy_register,
+            immediate: exponent_bias,
+        });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: hx_register,
+                a: hx_register,
+                immediate: addis_immediate,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 0,
+                shift: shift_amount,
+            });
         // The spill delays into the int computation.
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::Or { a: 0, s: hx_register, b: 0 });
-        self.output.instructions.push(Instruction::Or { a: 0, s: 0, b: sx_register });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
+        self.output.instructions.push(Instruction::Or {
+            a: 0,
+            s: hx_register,
+            b: 0,
+        });
+        self.output.instructions.push(Instruction::Or {
+            a: 0,
+            s: 0,
+            b: sx_register,
+        });
         // Stores reorder by readiness: lx first.
-        self.output.instructions.push(Instruction::StoreWord { s: lx_register, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: lx_register,
+            a: 1,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 1,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // @N: measured via objprobe after implementation.
         self.output.anonymous_label_bump += 0;
         Ok(true)
@@ -169,13 +253,20 @@ impl Generator {
             return Ok(false);
         }
         let (hx, lx, ix) = (p_hx.name.as_str(), p_lx.name.as_str(), p_ix.name.as_str());
-        let [Statement::If { condition: outer, then_body, else_body }] = function.statements.as_slice()
+        let [Statement::If {
+            condition: outer,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
         // Outer: ix >= K (i16).
-        let Expression::Binary { operator: BinaryOperator::GreaterEqual, left: outer_left, right: outer_right } =
-            outer
+        let Expression::Binary {
+            operator: BinaryOperator::GreaterEqual,
+            left: outer_left,
+            right: outer_right,
+        } = outer
         else {
             return Ok(false);
         };
@@ -189,13 +280,21 @@ impl Generator {
             return Ok(false);
         };
         // Then arm: hx = HI_BIT | (LOW_MASK & hx) — oris + clrlwi form.
-        let [Statement::Assign { name: then_name, value: then_value }] = then_body.as_slice() else {
+        let [Statement::Assign {
+            name: then_name,
+            value: then_value,
+        }] = then_body.as_slice()
+        else {
             return Ok(false);
         };
         if then_name != hx {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::BitOr, left: hi_bit, right: masked } = then_value
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: hi_bit,
+            right: masked,
+        } = then_value
         else {
             return Ok(false);
         };
@@ -208,8 +307,11 @@ impl Generator {
         let Ok(oris_immediate) = u16::try_from(*hi_bit >> 16) else {
             return Ok(false);
         };
-        let Expression::Binary { operator: BinaryOperator::BitAnd, left: mask, right: mask_source } =
-            masked.as_ref()
+        let Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: mask,
+            right: mask_source,
+        } = masked.as_ref()
         else {
             return Ok(false);
         };
@@ -225,22 +327,30 @@ impl Generator {
         }
         let clear = mask.leading_zeros() as u8;
         // Else arm: [n = K - ix][the inner shift diamond].
-        let [Statement::Assign { name: n, value: n_value }, Statement::If { condition: inner, then_body: small_arm, else_body: big_arm }] =
-            else_body.as_slice()
+        let [Statement::Assign {
+            name: n,
+            value: n_value,
+        }, Statement::If {
+            condition: inner,
+            then_body: small_arm,
+            else_body: big_arm,
+        }] = else_body.as_slice()
         else {
             return Ok(false);
         };
         if n == hx || n == lx || n == ix {
             return Ok(false);
         }
-        if !function
-            .locals
-            .iter()
-            .any(|local| local.name == *n && local.declared_type == Type::Int && local.initializer.is_none())
-        {
+        if !function.locals.iter().any(|local| {
+            local.name == *n && local.declared_type == Type::Int && local.initializer.is_none()
+        }) {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::Subtract, left: n_left, right: n_right } = n_value
+        let Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: n_left,
+            right: n_right,
+        } = n_value
         else {
             return Ok(false);
         };
@@ -250,8 +360,11 @@ impl Generator {
             return Ok(false);
         }
         // Inner: n <= 31.
-        let Expression::Binary { operator: BinaryOperator::LessEqual, left: inner_left, right: inner_right } =
-            inner
+        let Expression::Binary {
+            operator: BinaryOperator::LessEqual,
+            left: inner_left,
+            right: inner_right,
+        } = inner
         else {
             return Ok(false);
         };
@@ -261,45 +374,67 @@ impl Generator {
             return Ok(false);
         }
         // Small arm: hx = (hx<<n)|(lx>>(32-n)); lx <<= n;
-        let [Statement::Assign { name: sh_name, value: sh_value }, Statement::Assign { name: sl_name, value: sl_value }] =
-            small_arm.as_slice()
+        let [Statement::Assign {
+            name: sh_name,
+            value: sh_value,
+        }, Statement::Assign {
+            name: sl_name,
+            value: sl_value,
+        }] = small_arm.as_slice()
         else {
             return Ok(false);
         };
         if sh_name != hx || sl_name != lx {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::BitOr, left: shifted_high, right: shifted_low } =
-            sh_value
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: shifted_high,
+            right: shifted_low,
+        } = sh_value
         else {
             return Ok(false);
         };
-        let shift_of = |expression: &Expression, operator: BinaryOperator, value: &str| -> Option<()> {
-            let Expression::Binary { operator: found, left, right } = expression else {
-                return None;
+        let shift_of =
+            |expression: &Expression, operator: BinaryOperator, value: &str| -> Option<()> {
+                let Expression::Binary {
+                    operator: found,
+                    left,
+                    right,
+                } = expression
+                else {
+                    return None;
+                };
+                if *found != operator
+                    || !matches!(left.as_ref(), Expression::Variable(v) if v == value)
+                {
+                    return None;
+                }
+                match right.as_ref() {
+                    Expression::Variable(v) if v == n => Some(()),
+                    _ => None,
+                }
             };
-            if *found != operator || !matches!(left.as_ref(), Expression::Variable(v) if v == value) {
-                return None;
-            }
-            match right.as_ref() {
-                Expression::Variable(v) if v == n => Some(()),
-                _ => None,
-            }
-        };
         if shift_of(shifted_high.as_ref(), BinaryOperator::ShiftLeft, hx).is_none() {
             return Ok(false);
         }
         {
-            let Expression::Binary { operator: BinaryOperator::ShiftRight, left: low_source, right: amount } =
-                shifted_low.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::ShiftRight,
+                left: low_source,
+                right: amount,
+            } = shifted_low.as_ref()
             else {
                 return Ok(false);
             };
             if !matches!(low_source.as_ref(), Expression::Variable(v) if v == lx) {
                 return Ok(false);
             }
-            let Expression::Binary { operator: BinaryOperator::Subtract, left: from, right: taken } =
-                amount.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                left: from,
+                right: taken,
+            } = amount.as_ref()
             else {
                 return Ok(false);
             };
@@ -313,8 +448,13 @@ impl Generator {
             return Ok(false);
         }
         // Big arm: hx = lx << (n-32); lx = 0;
-        let [Statement::Assign { name: bh_name, value: bh_value }, Statement::Assign { name: bl_name, value: bl_value }] =
-            big_arm.as_slice()
+        let [Statement::Assign {
+            name: bh_name,
+            value: bh_value,
+        }, Statement::Assign {
+            name: bl_name,
+            value: bl_value,
+        }] = big_arm.as_slice()
         else {
             return Ok(false);
         };
@@ -322,16 +462,22 @@ impl Generator {
             return Ok(false);
         }
         {
-            let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: low_source, right: amount } =
-                bh_value
+            let Expression::Binary {
+                operator: BinaryOperator::ShiftLeft,
+                left: low_source,
+                right: amount,
+            } = bh_value
             else {
                 return Ok(false);
             };
             if !matches!(low_source.as_ref(), Expression::Variable(v) if v == lx) {
                 return Ok(false);
             }
-            let Expression::Binary { operator: BinaryOperator::Subtract, left: from, right: taken } =
-                amount.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                left: from,
+                right: taken,
+            } = amount.as_ref()
             else {
                 return Ok(false);
             };
@@ -342,52 +488,127 @@ impl Generator {
             }
         }
         // Return: hx + (int)lx.
-        let Some(Expression::Binary { operator: BinaryOperator::Add, left: ret_left, right: ret_right }) =
-            &function.return_expression
+        let Some(Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: ret_left,
+            right: ret_right,
+        }) = &function.return_expression
         else {
             return Ok(false);
         };
         if !matches!(ret_left.as_ref(), Expression::Variable(v) if v == hx) {
             return Ok(false);
         }
-        let Expression::Cast { target_type: Type::Int, operand } = ret_right.as_ref() else {
+        let Expression::Cast {
+            target_type: Type::Int,
+            operand,
+        } = ret_right.as_ref()
+        else {
             return Ok(false);
         };
         if !matches!(operand.as_ref(), Expression::Variable(v) if v == lx) {
             return Ok(false);
         }
-        let (Some(hx_register), Some(lx_register), Some(ix_register)) =
-            (self.lookup_general(hx), self.lookup_general(lx), self.lookup_general(ix))
-        else {
+        let (Some(hx_register), Some(lx_register), Some(ix_register)) = (
+            self.lookup_general(hx),
+            self.lookup_general(lx),
+            self.lookup_general(ix),
+        ) else {
             return Ok(false);
         };
         // -- emit --
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: ix_register, immediate: threshold });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: ix_register,
+                immediate: threshold,
+            });
         let else_label = self.fresh_label();
         self.emit_branch_conditional_to(12, 0, else_label); // blt
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: hx_register, clear });
-        self.output.instructions.push(Instruction::OrImmediateShifted { a: 0, s: 0, immediate: oris_immediate });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: 0,
+                s: hx_register,
+                clear,
+            });
+        self.output
+            .instructions
+            .push(Instruction::OrImmediateShifted {
+                a: 0,
+                s: 0,
+                immediate: oris_immediate,
+            });
         let join_label = self.fresh_label();
         self.emit_branch_to(join_label);
         // n takes ix's home: subfic r5, r5, K.
         self.bind_label(else_label);
-        self.output.instructions.push(Instruction::SubtractFromImmediate { d: ix_register, a: ix_register, immediate: threshold });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: ix_register, immediate: 31 });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFromImmediate {
+                d: ix_register,
+                a: ix_register,
+                immediate: threshold,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: ix_register,
+                immediate: 31,
+            });
         let big_label = self.fresh_label();
         self.emit_branch_conditional_to(12, 1, big_label); // bgt
-        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 0, a: ix_register, immediate: 32 });
-        self.output.instructions.push(Instruction::ShiftLeftWord { a: hx_register, s: hx_register, b: ix_register });
-        self.output.instructions.push(Instruction::ShiftRightWord { a: 0, s: lx_register, b: 0 });
-        self.output.instructions.push(Instruction::ShiftLeftWord { a: lx_register, s: lx_register, b: ix_register });
-        self.output.instructions.push(Instruction::Or { a: 0, s: hx_register, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFromImmediate {
+                d: 0,
+                a: ix_register,
+                immediate: 32,
+            });
+        self.output.instructions.push(Instruction::ShiftLeftWord {
+            a: hx_register,
+            s: hx_register,
+            b: ix_register,
+        });
+        self.output.instructions.push(Instruction::ShiftRightWord {
+            a: 0,
+            s: lx_register,
+            b: 0,
+        });
+        self.output.instructions.push(Instruction::ShiftLeftWord {
+            a: lx_register,
+            s: lx_register,
+            b: ix_register,
+        });
+        self.output.instructions.push(Instruction::Or {
+            a: 0,
+            s: hx_register,
+            b: 0,
+        });
         self.emit_branch_to(join_label);
         self.bind_label(big_label);
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: ix_register, immediate: -32 });
-        self.output.instructions.push(Instruction::ShiftLeftWord { a: 0, s: lx_register, b: 0 });
-        self.output.instructions.push(Instruction::load_immediate(lx_register, 0));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: ix_register,
+            immediate: -32,
+        });
+        self.output.instructions.push(Instruction::ShiftLeftWord {
+            a: 0,
+            s: lx_register,
+            b: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(lx_register, 0));
         self.bind_label(join_label);
-        self.output.instructions.push(Instruction::Add { d: 3, a: 0, b: lx_register });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::Add {
+            d: 3,
+            a: 0,
+            b: lx_register,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }
@@ -421,8 +642,23 @@ impl Generator {
             return Ok(false);
         }
         // The four extracts in e_fmod's order: x-high, x-low, y-high, y-low.
-        let [Statement::Assign { name: hx, value: hx_value }, Statement::Assign { name: lx, value: lx_value }, Statement::Assign { name: hy, value: hy_value }, Statement::Assign { name: ly, value: ly_value }, Statement::If { condition: outer, then_body, else_body }] =
-            function.statements.as_slice()
+        let [Statement::Assign {
+            name: hx,
+            value: hx_value,
+        }, Statement::Assign {
+            name: lx,
+            value: lx_value,
+        }, Statement::Assign {
+            name: hy,
+            value: hy_value,
+        }, Statement::Assign {
+            name: ly,
+            value: ly_value,
+        }, Statement::If {
+            condition: outer,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -443,10 +679,9 @@ impl Generator {
             return Ok(false);
         }
         let typed_local = |name: &str, declared: Type| {
-            function
-                .locals
-                .iter()
-                .any(|local| local.name == name && local.declared_type == declared && local.initializer.is_none())
+            function.locals.iter().any(|local| {
+                local.name == name && local.declared_type == declared && local.initializer.is_none()
+            })
         };
         if !typed_local(hx, Type::Int)
             || !typed_local(hy, Type::Int)
@@ -456,27 +691,43 @@ impl Generator {
             return Ok(false);
         }
         // The ladder (fire 427's shape over the punned locals).
-        let is_pair = |expression: &Expression, operator: BinaryOperator, a: &str, b: &str| -> bool {
-            let Expression::Binary { operator: found, left, right } = expression else {
-                return false;
+        let is_pair =
+            |expression: &Expression, operator: BinaryOperator, a: &str, b: &str| -> bool {
+                let Expression::Binary {
+                    operator: found,
+                    left,
+                    right,
+                } = expression
+                else {
+                    return false;
+                };
+                *found == operator
+                    && matches!(left.as_ref(), Expression::Variable(v) if v == a)
+                    && matches!(right.as_ref(), Expression::Variable(v) if v == b)
             };
-            *found == operator
-                && matches!(left.as_ref(), Expression::Variable(v) if v == a)
-                && matches!(right.as_ref(), Expression::Variable(v) if v == b)
-        };
         if !is_pair(outer, BinaryOperator::LessEqual, hx, hy) {
             return Ok(false);
         }
-        let [Statement::If { condition: or_test, then_body: or_then, else_body: or_else }, Statement::If { condition: eq_test, then_body: eq_then, else_body: eq_else }] =
-            then_body.as_slice()
+        let [Statement::If {
+            condition: or_test,
+            then_body: or_then,
+            else_body: or_else,
+        }, Statement::If {
+            condition: eq_test,
+            then_body: eq_then,
+            else_body: eq_else,
+        }] = then_body.as_slice()
         else {
             return Ok(false);
         };
         if !or_else.is_empty() || !eq_else.is_empty() {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::LogicalOr, left: or_left, right: or_right } =
-            or_test
+        let Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: or_left,
+            right: or_right,
+        } = or_test
         else {
             return Ok(false);
         };
@@ -503,35 +754,85 @@ impl Generator {
         };
         // -- emit (registers per the capture: hx r0, hy r3, lx r4, ly r0) --
         self.frame_size = 32;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 2, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::CompareWord { a: 0, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 2,
+                a: 1,
+                offset: 16,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 1,
+            offset: 16,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 4,
+            a: 1,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWord { a: 0, b: 3 });
         // ly's load DELAYS into the compare->branch latency, reusing dead hx's r0.
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
         let end_label = self.fresh_label();
         self.emit_branch_conditional_to(12, 1, end_label); // bgt
         let first_return_label = self.fresh_label();
         self.emit_branch_conditional_to(12, 0, first_return_label); // blt
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 4, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 4, b: 0 });
         let equality_label = self.fresh_label();
         self.emit_branch_conditional_to(4, 0, equality_label); // bge
         let join_label = self.fresh_label();
         self.bind_label(first_return_label);
-        self.output.instructions.push(Instruction::load_immediate(3, k1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, k1));
         self.emit_branch_to(join_label);
         self.bind_label(equality_label);
         self.emit_branch_conditional_to(4, 2, end_label); // bne (CR0 reused from the cmplw)
-        self.output.instructions.push(Instruction::load_immediate(3, k2));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, k2));
         self.emit_branch_to(join_label);
         self.bind_label(end_label);
-        self.output.instructions.push(Instruction::load_immediate(3, k3));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, k3));
         self.bind_label(join_label);
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // @N: measured via objprobe — the real extab lands at @12 (mwcc
         // numbers the ladder's internal labels).
         self.output.anonymous_label_bump += 7;
@@ -572,12 +873,19 @@ impl Generator {
         if array == sx {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: shifted, right: amount } =
-            index.as_ref()
+        let Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left: shifted,
+            right: amount,
+        } = index.as_ref()
         else {
             return Ok(false);
         };
-        let Expression::Cast { target_type: Type::UnsignedInt, operand } = shifted.as_ref() else {
+        let Expression::Cast {
+            target_type: Type::UnsignedInt,
+            operand,
+        } = shifted.as_ref()
+        else {
             return Ok(false);
         };
         if !matches!(operand.as_ref(), Expression::Variable(v) if v == sx)
@@ -595,11 +903,25 @@ impl Generator {
         // -- emit --
         self.emit_address_high(4, &array);
         // (sx >> 31) << 3 in one rotate-mask: rotate left 4, keep bit 28.
-        self.output.instructions.push(Instruction::RotateAndMask { a: 0, s: sx_register, shift: 4, begin: 28, end: 28 });
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: 0,
+            s: sx_register,
+            shift: 4,
+            begin: 28,
+            end: 28,
+        });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::LoadFloatDoubleIndexed { d: 1, a: 3, b: 0 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 4,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::LoadFloatDoubleIndexed { d: 1, a: 3, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }
@@ -631,35 +953,60 @@ impl Generator {
         {
             return Ok(false);
         }
-        let (hx, lx, hy, ly) = (p_hx.name.as_str(), p_lx.name.as_str(), p_hy.name.as_str(), p_ly.name.as_str());
-        let [Statement::If { condition: outer, then_body, else_body }] = function.statements.as_slice()
+        let (hx, lx, hy, ly) = (
+            p_hx.name.as_str(),
+            p_lx.name.as_str(),
+            p_hy.name.as_str(),
+            p_ly.name.as_str(),
+        );
+        let [Statement::If {
+            condition: outer,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
         if !else_body.is_empty() {
             return Ok(false);
         }
-        let is_pair = |expression: &Expression, operator: BinaryOperator, a: &str, b: &str| -> bool {
-            let Expression::Binary { operator: found, left, right } = expression else {
-                return false;
+        let is_pair =
+            |expression: &Expression, operator: BinaryOperator, a: &str, b: &str| -> bool {
+                let Expression::Binary {
+                    operator: found,
+                    left,
+                    right,
+                } = expression
+                else {
+                    return false;
+                };
+                *found == operator
+                    && matches!(left.as_ref(), Expression::Variable(v) if v == a)
+                    && matches!(right.as_ref(), Expression::Variable(v) if v == b)
             };
-            *found == operator
-                && matches!(left.as_ref(), Expression::Variable(v) if v == a)
-                && matches!(right.as_ref(), Expression::Variable(v) if v == b)
-        };
         if !is_pair(outer, BinaryOperator::LessEqual, hx, hy) {
             return Ok(false);
         }
-        let [Statement::If { condition: or_test, then_body: or_then, else_body: or_else }, Statement::If { condition: eq_test, then_body: eq_then, else_body: eq_else }] =
-            then_body.as_slice()
+        let [Statement::If {
+            condition: or_test,
+            then_body: or_then,
+            else_body: or_else,
+        }, Statement::If {
+            condition: eq_test,
+            then_body: eq_then,
+            else_body: eq_else,
+        }] = then_body.as_slice()
         else {
             return Ok(false);
         };
         if !or_else.is_empty() || !eq_else.is_empty() {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::LogicalOr, left: or_left, right: or_right } =
-            or_test
+        let Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: or_left,
+            right: or_right,
+        } = or_test
         else {
             return Ok(false);
         };
@@ -693,25 +1040,45 @@ impl Generator {
             return Ok(false);
         };
         // -- emit --
-        self.output.instructions.push(Instruction::CompareWord { a: hx_register, b: hy_register });
+        self.output.instructions.push(Instruction::CompareWord {
+            a: hx_register,
+            b: hy_register,
+        });
         let end_label = self.fresh_label();
         self.emit_branch_conditional_to(12, 1, end_label); // bgt
         let first_return_label = self.fresh_label();
         self.emit_branch_conditional_to(12, 0, first_return_label); // blt (the || short-circuit)
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: lx_register, b: ly_register });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord {
+                a: lx_register,
+                b: ly_register,
+            });
         let equality_label = self.fresh_label();
         self.emit_branch_conditional_to(4, 0, equality_label); // bge
         self.bind_label(first_return_label);
-        self.output.instructions.push(Instruction::load_immediate(3, k1));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, k1));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // The equality test REUSES the cmplw's CR0 (no second compare).
         self.bind_label(equality_label);
         self.emit_branch_conditional_to(4, 2, end_label); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, k2));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, k2));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(end_label);
-        self.output.instructions.push(Instruction::load_immediate(3, k3));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, k3));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // @N: measured via objprobe after implementation.
         self.output.anonymous_label_bump += 0;
         Ok(true)
@@ -743,13 +1110,20 @@ impl Generator {
             return Ok(false);
         }
         let (hx, lx) = (p_hx.name.as_str(), p_lx.name.as_str());
-        let [Statement::If { condition: outer_test, then_body, else_body }] = function.statements.as_slice()
+        let [Statement::If {
+            condition: outer_test,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
         // Outer: hx < BIG (lis-only constant).
-        let Expression::Binary { operator: BinaryOperator::Less, left: outer_left, right: outer_right } =
-            outer_test
+        let Expression::Binary {
+            operator: BinaryOperator::Less,
+            left: outer_left,
+            right: outer_right,
+        } = outer_test
         else {
             return Ok(false);
         };
@@ -766,13 +1140,19 @@ impl Generator {
             return Ok(false);
         };
         // Inner diamond: if (hx == 0) loop-over-lx else loop-over-(hx<<A).
-        let [Statement::If { condition: inner_test, then_body: zero_arm, else_body: shift_arm }] =
-            then_body.as_slice()
+        let [Statement::If {
+            condition: inner_test,
+            then_body: zero_arm,
+            else_body: shift_arm,
+        }] = then_body.as_slice()
         else {
             return Ok(false);
         };
-        let Expression::Binary { operator: BinaryOperator::Equal, left: inner_left, right: inner_right } =
-            inner_test
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left: inner_left,
+            right: inner_right,
+        } = inner_test
         else {
             return Ok(false);
         };
@@ -793,16 +1173,29 @@ impl Generator {
         let mut result_local: Option<String> = None;
         let mut counter_local: Option<String> = None;
         let mut parse_arm = |statements: &[Statement]| -> Option<ArmLoop> {
-            let [Statement::Loop { kind: LoopKind::For, initializer: Some(init), condition: Some(cond), step: Some(step), body }] =
-                statements
+            let [Statement::Loop {
+                kind: LoopKind::For,
+                initializer: Some(init),
+                condition: Some(cond),
+                step: Some(step),
+                body,
+            }] = statements
             else {
                 return None;
             };
             // The comma init: (ix = K, i = SRC).
-            let Expression::Comma { left: first, right: second } = init else {
+            let Expression::Comma {
+                left: first,
+                right: second,
+            } = init
+            else {
                 return None;
             };
-            let Expression::Assign { target: ix_target, value: ix_value } = first.as_ref() else {
+            let Expression::Assign {
+                target: ix_target,
+                value: ix_value,
+            } = first.as_ref()
+            else {
                 return None;
             };
             let Expression::Variable(ix_name) = ix_target.as_ref() else {
@@ -812,7 +1205,11 @@ impl Generator {
                 return None;
             };
             let start = i16::try_from(*start).ok()?;
-            let Expression::Assign { target: i_target, value: i_value } = second.as_ref() else {
+            let Expression::Assign {
+                target: i_target,
+                value: i_value,
+            } = second.as_ref()
+            else {
                 return None;
             };
             let Expression::Variable(i_name) = i_target.as_ref() else {
@@ -820,14 +1217,22 @@ impl Generator {
             };
             let source = match i_value.as_ref() {
                 Expression::Variable(v) if v == lx => ArmSource::InPlaceLow,
-                Expression::Binary { operator: BinaryOperator::ShiftLeft, left, right } => {
+                Expression::Binary {
+                    operator: BinaryOperator::ShiftLeft,
+                    left,
+                    right,
+                } => {
                     if !matches!(left.as_ref(), Expression::Variable(v) if v == hx) {
                         return None;
                     }
                     let Expression::IntegerLiteral(amount) = right.as_ref() else {
                         return None;
                     };
-                    ArmSource::ShiftOfHigh(u8::try_from(*amount).ok().filter(|a| (1..=31).contains(a))?)
+                    ArmSource::ShiftOfHigh(
+                        u8::try_from(*amount)
+                            .ok()
+                            .filter(|a| (1..=31).contains(a))?,
+                    )
                 }
                 _ => return None,
             };
@@ -848,8 +1253,11 @@ impl Generator {
                 _ => return None,
             }
             // Condition: i > 0. Step: i <<= 1. Body: ix -= 1.
-            let Expression::Binary { operator: BinaryOperator::Greater, left: cond_left, right: cond_right } =
-                cond
+            let Expression::Binary {
+                operator: BinaryOperator::Greater,
+                left: cond_left,
+                right: cond_right,
+            } = cond
             else {
                 return None;
             };
@@ -858,11 +1266,18 @@ impl Generator {
             {
                 return None;
             }
-            let Expression::Assign { target: step_target, value: step_value } = step else {
+            let Expression::Assign {
+                target: step_target,
+                value: step_value,
+            } = step
+            else {
                 return None;
             };
-            let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: step_left, right: step_right } =
-                step_value.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::ShiftLeft,
+                left: step_left,
+                right: step_right,
+            } = step_value.as_ref()
             else {
                 return None;
             };
@@ -872,11 +1287,18 @@ impl Generator {
             {
                 return None;
             }
-            let [Statement::Assign { name: body_name, value: body_value }] = body.as_slice() else {
+            let [Statement::Assign {
+                name: body_name,
+                value: body_value,
+            }] = body.as_slice()
+            else {
                 return None;
             };
-            let Expression::Binary { operator: BinaryOperator::Subtract, left: body_left, right: body_right } =
-                body_value
+            let Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                left: body_left,
+                right: body_right,
+            } = body_value
             else {
                 return None;
             };
@@ -900,19 +1322,29 @@ impl Generator {
             return Ok(false);
         }
         // The else arm: ix = (hx >> S) - K.
-        let [Statement::Assign { name: else_name, value: else_value }] = else_body.as_slice() else {
+        let [Statement::Assign {
+            name: else_name,
+            value: else_value,
+        }] = else_body.as_slice()
+        else {
             return Ok(false);
         };
         if Some(else_name.as_str()) != result_local.as_deref() {
             return Ok(false);
         }
-        let Expression::Binary { operator: BinaryOperator::Subtract, left: shifted, right: offset } =
-            else_value
+        let Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: shifted,
+            right: offset,
+        } = else_value
         else {
             return Ok(false);
         };
-        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: shift_source, right: shift_amount } =
-            shifted.as_ref()
+        let Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left: shift_source,
+            right: shift_amount,
+        } = shifted.as_ref()
         else {
             return Ok(false);
         };
@@ -938,7 +1370,8 @@ impl Generator {
         {
             return Ok(false);
         }
-        let (Some(hx_register), Some(lx_register)) = (self.lookup_general(hx), self.lookup_general(lx))
+        let (Some(hx_register), Some(lx_register)) =
+            (self.lookup_general(hx), self.lookup_general(lx))
         else {
             return Ok(false);
         };
@@ -946,53 +1379,117 @@ impl Generator {
             return Ok(false);
         }
         // -- emit --
-        self.output.instructions.push(Instruction::AddImmediateShifted { d: 0, a: 0, immediate: bound_high });
-        self.output.instructions.push(Instruction::CompareWord { a: hx_register, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 0,
+                a: 0,
+                immediate: bound_high,
+            });
+        self.output.instructions.push(Instruction::CompareWord {
+            a: hx_register,
+            b: 0,
+        });
         let else_label = self.fresh_label();
         self.emit_branch_conditional_to(4, 0, else_label); // bge
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: hx_register, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: hx_register,
+                immediate: 0,
+            });
         let shift_arm_label = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, shift_arm_label); // bne
-        // Arm 1: the loop over lx, ix in r3, counter in lx's home.
-        self.output.instructions.push(Instruction::load_immediate(3, zero_loop.start));
+                                                                // Arm 1: the loop over lx, ix in r3, counter in lx's home.
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, zero_loop.start));
         let test1 = self.fresh_label();
         self.emit_branch_to(test1);
         let body1 = self.fresh_label();
         self.bind_label(body1);
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: lx_register, s: lx_register, shift: 1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -1 });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: lx_register,
+                s: lx_register,
+                shift: 1,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: -1,
+        });
         self.bind_label(test1);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: lx_register, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: lx_register,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(12, 1, body1); // bgt
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // Arm 2: the loop over hx<<A; the shift temp rides r0 (the bound
         // is dead), and its init emits BEFORE the li overwrites r3.
         self.bind_label(shift_arm_label);
         let ArmSource::ShiftOfHigh(amount) = shift_loop.source else {
             return Ok(false);
         };
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: hx_register, shift: amount });
-        self.output.instructions.push(Instruction::load_immediate(3, shift_loop.start));
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: hx_register,
+                shift: amount,
+            });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, shift_loop.start));
         let test2 = self.fresh_label();
         self.emit_branch_to(test2);
         let body2 = self.fresh_label();
         self.bind_label(body2);
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: 0, shift: 1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: -1 });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 0,
+                shift: 1,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: -1,
+        });
         self.bind_label(test2);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(12, 1, body2); // bgt
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // The else arm: srawi + addi in place.
         self.bind_label(else_label);
         self.output
             .instructions
-            .push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: hx_register, shift: else_shift });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: negated_offset });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+            .push(Instruction::ShiftRightAlgebraicImmediate {
+                a: 3,
+                s: hx_register,
+                shift: else_shift,
+            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: negated_offset,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // @N: measured via objprobe after implementation.
         self.output.anonymous_label_bump += 0;
         Ok(true)
     }
-
 }

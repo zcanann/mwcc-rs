@@ -21,10 +21,18 @@ impl Generator {
                 if bytes.len() + 1 > 8 {
                     self.emit_address_high(destination, &placeholder);
                     self.record_relocation(RelocationKind::Addr16Lo, &placeholder);
-                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: 0 });
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: destination,
+                        a: destination,
+                        immediate: 0,
+                    });
                 } else {
                     self.record_relocation(RelocationKind::EmbSda21, &placeholder);
-                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 0, immediate: 0 });
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: destination,
+                        a: 0,
+                        immediate: 0,
+                    });
                 }
                 // The `@@str{index}` placeholder is resolved to the function's per-function `@N`
                 // string symbol by the unit's string resolver (apps/mwcc), which places each
@@ -33,18 +41,24 @@ impl Generator {
                 // function that also has a jump table).
                 Ok(())
             }
-            GlobalAddressing::Absolute => Err(Diagnostic::error("a string literal under absolute addressing is not supported yet (roadmap)")),
+            GlobalAddressing::Absolute => Err(Diagnostic::error(
+                "a string literal under absolute addressing is not supported yet (roadmap)",
+            )),
         }
     }
 
     /// Intern a string literal into the function's pooled list (by bytes), returning
     /// its index. The unit-wide resolver assigns the `@N` names after lowering.
     pub(crate) fn intern_string_literal(&mut self, bytes: &[u8]) -> usize {
-        if let Some(index) = self.output.string_literals.iter().position(|existing| existing.as_slice() == bytes) {
+        if let Some(index) = self
+            .output
+            .string_literals
+            .iter()
+            .position(|existing| existing.as_slice() == bytes)
+        {
             return index;
         }
         self.output.string_literals.push(bytes.to_vec());
         self.output.string_literals.len() - 1
     }
-
 }

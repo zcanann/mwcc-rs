@@ -12,7 +12,9 @@ impl Generator {
         result: u8,
     ) -> Compilation<()> {
         let final_in_result = match final_return {
-            Expression::Variable(name) => self.locations.get(name).map(|location| location.register) == Some(result),
+            Expression::Variable(name) => {
+                self.locations.get(name).map(|location| location.register) == Some(result)
+            }
             _ => false,
         };
 
@@ -23,9 +25,10 @@ impl Generator {
         // would emit a redundant second `cmpwi` (a byte diff). Defer it rather than ship that.
         let guard_count = guards.len();
         for (pair_index, pair) in guards.windows(2).enumerate() {
-            if let (Some(first), Some(second)) =
-                (guard_comparison_key(&pair[0].condition), guard_comparison_key(&pair[1].condition))
-            {
+            if let (Some(first), Some(second)) = (
+                guard_comparison_key(&pair[0].condition),
+                guard_comparison_key(&pair[1].condition),
+            ) {
                 if first == second {
                     // When the SECOND guard of the pair is the LAST guard, it folds with the final
                     // return into a select (the `is_last` path below). If that select lowers
@@ -37,15 +40,26 @@ impl Generator {
                     // addi`). Compare-based tails (==0/!=0/<=0/variable) are NOT branchless here and
                     // keep deferring (they also defer in evaluate_tail), so no DIFF is shipped.
                     let second_is_last = pair_index + 2 == guard_count;
-                    if second_is_last && (!final_in_result || constant_value(&pair[1].value).is_some()) {
+                    if second_is_last
+                        && (!final_in_result || constant_value(&pair[1].value).is_some())
+                    {
                         let select = guard_select(&pair[1].condition, &pair[1].value, final_return);
-                        if let Expression::Conditional { condition, when_true, when_false } = &select {
-                            if crate::control_flow::select_folds_branchless(condition, when_true, when_false) {
+                        if let Expression::Conditional {
+                            condition,
+                            when_true,
+                            when_false,
+                        } = &select
+                        {
+                            if crate::control_flow::select_folds_branchless(
+                                condition, when_true, when_false,
+                            ) {
                                 continue;
                             }
                         }
                     }
-                    return Err(Diagnostic::error("consecutive guards sharing a compare need cross-guard CR reuse (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "consecutive guards sharing a compare need cross-guard CR reuse (roadmap)",
+                    ));
                 }
             }
         }
@@ -58,19 +72,41 @@ impl Generator {
             // fall-through and the constant as the cold tail: `cmplwi p,0; beq COLD; <*p>; blr;
             // COLD: li CONST; blr`.
             if is_last {
-                if let Some((pointer, hot, cold)) = guarded_null_dereference(&guard.condition, &guard.value, final_return, return_type) {
+                if let Some((pointer, hot, cold)) = guarded_null_dereference(
+                    &guard.condition,
+                    &guard.value,
+                    final_return,
+                    return_type,
+                ) {
                     if let Some(pointer_register) = self.lookup_general(pointer) {
-                        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: pointer_register, immediate: 0 });
+                        self.output
+                            .instructions
+                            .push(Instruction::CompareLogicalWordImmediate {
+                                a: pointer_register,
+                                immediate: 0,
+                            });
                         let branch_index = self.output.instructions.len();
-                        self.output.instructions.push(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 });
+                        self.output
+                            .instructions
+                            .push(Instruction::BranchConditionalForward {
+                                options: 12,
+                                condition_bit: 2,
+                                target: 0,
+                            });
                         self.evaluate_tail(hot, return_type, result)?;
-                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        self.output
+                            .instructions
+                            .push(Instruction::BranchToLinkRegister);
                         let cold_label = self.output.instructions.len();
-                        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                        if let Instruction::BranchConditionalForward { target, .. } =
+                            &mut self.output.instructions[branch_index]
+                        {
                             *target = cold_label;
                         }
                         self.evaluate_tail(cold, return_type, result)?;
-                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        self.output
+                            .instructions
+                            .push(Instruction::BranchToLinkRegister);
                         return Ok(());
                     }
                 }
@@ -98,7 +134,9 @@ impl Generator {
                 let bump_before = self.output.anonymous_label_bump;
                 match self.evaluate_tail(&select, return_type, result) {
                     Ok(()) => {
-                        self.output.instructions.push(Instruction::BranchToLinkRegister);
+                        self.output
+                            .instructions
+                            .push(Instruction::BranchToLinkRegister);
                         return Ok(());
                     }
                     Err(_) => {
@@ -117,11 +155,21 @@ impl Generator {
             // leaf paths below would defer at general_register_of_leaf.)
             if let Some(constant) = constant_value(&guard.value) {
                 let branch_index = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options,
+                        condition_bit,
+                        target: 0,
+                    });
                 self.load_integer_constant(result, constant);
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                self.output
+                    .instructions
+                    .push(Instruction::BranchToLinkRegister);
                 let next = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                if let Instruction::BranchConditionalForward { target, .. } =
+                    &mut self.output.instructions[branch_index]
+                {
                     *target = next;
                 }
                 continue;
@@ -130,11 +178,20 @@ impl Generator {
 
             if is_last && final_in_result {
                 // false path returns the final value already in the result register
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options,
+                        condition_bit,
+                    });
                 if result != value_register {
-                    self.output.instructions.push(Instruction::move_register(result, value_register));
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(result, value_register));
                 }
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                self.output
+                    .instructions
+                    .push(Instruction::BranchToLinkRegister);
                 return Ok(());
             }
 
@@ -142,22 +199,41 @@ impl Generator {
             // conditional return falling through to the next guard (mwcc: `cmpwi; bnelr`),
             // not a forward branch over the return.
             if result == value_register {
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options: options ^ 8,
+                        condition_bit,
+                    });
                 continue;
             }
             let branch_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
-            self.output.instructions.push(Instruction::move_register(result, value_register));
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
+            self.output
+                .instructions
+                .push(Instruction::move_register(result, value_register));
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             let next = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_index]
+            {
                 *target = next;
             }
         }
 
         // Final fall-through return.
         self.evaluate_tail(final_return, return_type, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(())
     }
 }

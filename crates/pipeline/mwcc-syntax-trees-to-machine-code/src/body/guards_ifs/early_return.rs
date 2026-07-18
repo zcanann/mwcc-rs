@@ -59,7 +59,12 @@ impl Generator {
         // `arr[i ± k]` folds the scaled element offset onto the store displacement.
         let mut index_leaf = index;
         let mut element_offset: i64 = 0;
-        if let Expression::Binary { operator, left, right } = index {
+        if let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = index
+        {
             if let Some(k) = constant_value(right) {
                 match operator {
                     BinaryOperator::Add => {
@@ -80,10 +85,15 @@ impl Generator {
         let Ok(offset) = i16::try_from(element_offset) else {
             return Ok(false);
         };
-        let stored_constant = constant_value(stored).and_then(|constant| i16::try_from(constant).ok());
+        let stored_constant =
+            constant_value(stored).and_then(|constant| i16::try_from(constant).ok());
         let stored_register = if stored_constant.is_none() {
-            let Expression::Variable(name) = stored else { return Ok(false) };
-            let Some(register) = self.lookup_general(name) else { return Ok(false) };
+            let Expression::Variable(name) = stored else {
+                return Ok(false);
+            };
+            let Some(register) = self.lookup_general(name) else {
+                return Ok(false);
+            };
             if offset != 0 {
                 return Ok(false);
             }
@@ -95,11 +105,21 @@ impl Generator {
         let result = mwcc_target::Eabi::general_result().number;
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
         self.evaluate_tail(guard_value, function.return_type, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         let continuation = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[branch_index]
+        {
             *target = continuation;
         }
 
@@ -110,11 +130,32 @@ impl Generator {
             // r3 live before the store) — `lis B; slwi; addi B,B; li r3,R; stwx v,B,r0`.
             let base = self.fresh_virtual_general();
             self.emit_address_high(base, array);
-            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: index_register,
+                    shift,
+                });
             self.record_relocation(RelocationKind::Addr16Lo, array);
-            self.output.instructions.push(Instruction::AddImmediate { d: base, a: base, immediate: 0 });
-            self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
-            self.output.instructions.push(crate::expressions::indexed_store(pointee, register, base, GENERAL_SCRATCH)?);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: base,
+                a: base,
+                immediate: 0,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: result,
+                a: 0,
+                immediate: return_constant,
+            });
+            self.output
+                .instructions
+                .push(crate::expressions::indexed_store(
+                    pointee,
+                    register,
+                    base,
+                    GENERAL_SCRATCH,
+                )?);
         } else {
             let constant = stored_constant.expect("checked above");
             // Phase D: the base-high is a virtual in both forms — a redefined vreg keeps
@@ -123,29 +164,74 @@ impl Generator {
             // next register, matching mwcc's r4/r5 split.
             let high = self.fresh_virtual_general();
             self.emit_address_high(high, array);
-            self.output.instructions.push(Instruction::ShiftLeftImmediate { a: GENERAL_SCRATCH, s: index_register, shift });
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: index_register,
+                    shift,
+                });
             self.record_relocation(RelocationKind::Addr16Lo, array);
-            self.output.instructions.push(Instruction::AddImmediate { d: index_register, a: high, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: index_register,
+                a: high,
+                immediate: 0,
+            });
             if offset == 0 {
                 // The standalone sequence, the return materialized after the store.
-                self.output.instructions.push(Instruction::AddImmediate { d: high, a: 0, immediate: constant });
-                self.output.instructions.push(crate::expressions::indexed_store(pointee, high, index_register, GENERAL_SCRATCH)?);
-                self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: high,
+                    a: 0,
+                    immediate: constant,
+                });
+                self.output
+                    .instructions
+                    .push(crate::expressions::indexed_store(
+                        pointee,
+                        high,
+                        index_register,
+                        GENERAL_SCRATCH,
+                    )?);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: result,
+                    a: 0,
+                    immediate: return_constant,
+                });
             } else {
                 // The value's virtual overlaps the still-live high (which the `add`
                 // redefines as the effective address), so it allocates past it.
                 let value_register = self.fresh_virtual_general();
-                self.output.instructions.push(Instruction::AddImmediate { d: value_register, a: 0, immediate: constant });
-                self.output.instructions.push(Instruction::Add { d: high, a: index_register, b: GENERAL_SCRATCH });
-                self.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: return_constant });
-                self.output.instructions.push(displacement_store(pointee, value_register, high, offset)?);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: value_register,
+                    a: 0,
+                    immediate: constant,
+                });
+                self.output.instructions.push(Instruction::Add {
+                    d: high,
+                    a: index_register,
+                    b: GENERAL_SCRATCH,
+                });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: result,
+                    a: 0,
+                    immediate: return_constant,
+                });
+                self.output.instructions.push(displacement_store(
+                    pointee,
+                    value_register,
+                    high,
+                    offset,
+                )?);
             }
         }
         self.emit_epilogue_and_return();
         Ok(true)
     }
 
-    pub(crate) fn try_ordered_early_return_branch(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_ordered_early_return_branch(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         // A VOID early return over a single-store continuation: `if (a) return; *p = 5;`
         // is a conditional RETURN (the void exit needs no value), then the plain store
         // body — `cmpwi; bnelr; li r0,5; stw r0,0(r4); blr`. The store emission is the
@@ -156,13 +242,23 @@ impl Generator {
             && function.locals.is_empty()
             && !function_makes_call(function)
         {
-            if let [Statement::If { condition, then_body, else_body }, rest @ ..] = function.statements.as_slice() {
+            if let [Statement::If {
+                condition,
+                then_body,
+                else_body,
+            }, rest @ ..] = function.statements.as_slice()
+            {
                 if matches!(then_body.as_slice(), [Statement::Return(None)])
                     && else_body.is_empty()
                     && matches!(rest, [Statement::Store { .. }])
                 {
                     let (options, condition_bit) = self.emit_condition_test(condition)?;
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: options ^ 8,
+                            condition_bit,
+                        });
                     self.emit_statement(&rest[0])?;
                     self.emit_epilogue_and_return();
                     return Ok(true);
@@ -170,10 +266,18 @@ impl Generator {
             }
             return Ok(false);
         }
-        if !function.guards.is_empty() || function.return_type == Type::Void || function.return_expression.is_none() {
+        if !function.guards.is_empty()
+            || function.return_type == Type::Void
+            || function.return_expression.is_none()
+        {
             return Ok(false);
         }
-        let [Statement::If { condition, then_body, else_body }, rest @ ..] = function.statements.as_slice() else {
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }, rest @ ..] = function.statements.as_slice()
+        else {
             return Ok(false);
         };
         let [Statement::Return(Some(value))] = then_body.as_slice() else {
@@ -191,7 +295,11 @@ impl Generator {
         // valued store needs no materialization and stays with the sequential path (store,
         // then the return move — verified byte-exact there); two or more stores interleave
         // through the batch scheduler and defer.
-        if let [Statement::Store { target, value: stored }] = rest {
+        if let [Statement::Store {
+            target,
+            value: stored,
+        }] = rest
+        {
             if function.guards.is_empty() && function.locals.is_empty() {
                 // A computed-index GLOBAL-ARRAY target has its own captured schedules
                 // (the address build interleaves with the return) — a dedicated arm.
@@ -199,7 +307,9 @@ impl Generator {
                     if let Expression::Variable(array) = base.as_ref() {
                         if let Some(&total_size) = self.global_array_sizes.get(array.as_str()) {
                             if constant_value(index).is_none() {
-                                return self.try_guarded_global_array_store(function, condition, value, array, total_size, index, stored);
+                                return self.try_guarded_global_array_store(
+                                    function, condition, value, array, total_size, index, stored,
+                                );
                             }
                         }
                     }
@@ -218,7 +328,9 @@ impl Generator {
                 } else {
                     None
                 };
-                let stored_is_constant = constant_value(stored).and_then(|constant| i16::try_from(constant).ok()).is_some();
+                let stored_is_constant = constant_value(stored)
+                    .and_then(|constant| i16::try_from(constant).ok())
+                    .is_some();
                 let stored_is_two_leaf = matches!(stored, Expression::Binary { left, right, .. }
                     if matches!(left.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_))
                         && matches!(right.as_ref(), Expression::Variable(_) | Expression::IntegerLiteral(_)));
@@ -227,23 +339,42 @@ impl Generator {
                 }
                 let (pointer_name, byte_offset, pointee): (&String, i64, Pointee) = match target {
                     Expression::Dereference { pointer } => {
-                        let Expression::Variable(name) = pointer.as_ref() else { return Ok(false) };
+                        let Expression::Variable(name) = pointer.as_ref() else {
+                            return Ok(false);
+                        };
                         (name, 0, self.pointee_of(pointer)?)
                     }
                     Expression::Index { base, index } => {
-                        let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
-                        let Some(constant) = constant_value(index) else { return Ok(false) };
+                        let Expression::Variable(name) = base.as_ref() else {
+                            return Ok(false);
+                        };
+                        let Some(constant) = constant_value(index) else {
+                            return Ok(false);
+                        };
                         let pointee = self.pointee_of(base)?;
                         (name, constant * pointee.size() as i64, pointee)
                     }
-                    Expression::Member { base, offset, member_type, index_stride: None } => {
-                        let Expression::Variable(name) = base.as_ref() else { return Ok(false) };
-                        let Some(pointee) = pointee_of_type(*member_type) else { return Ok(false) };
+                    Expression::Member {
+                        base,
+                        offset,
+                        member_type,
+                        index_stride: None,
+                    } => {
+                        let Expression::Variable(name) = base.as_ref() else {
+                            return Ok(false);
+                        };
+                        let Some(pointee) = pointee_of_type(*member_type) else {
+                            return Ok(false);
+                        };
                         (name, *offset as i64, pointee)
                     }
                     _ => return Ok(false),
                 };
-                if !function.parameters.iter().any(|parameter| &parameter.name == pointer_name) {
+                if !function
+                    .parameters
+                    .iter()
+                    .any(|parameter| &parameter.name == pointer_name)
+                {
                     return Ok(false);
                 }
                 let Some(pointer_register) = self.lookup_general(pointer_name) else {
@@ -262,7 +393,9 @@ impl Generator {
                 }
                 let return_value = match function.return_expression.as_ref() {
                     Some(expression) => {
-                        if let Some(constant) = constant_value(expression).and_then(|constant| i16::try_from(constant).ok()) {
+                        if let Some(constant) = constant_value(expression)
+                            .and_then(|constant| i16::try_from(constant).ok())
+                        {
                             ReturnValue::Constant(constant)
                         } else if let Expression::Variable(name) = expression {
                             match self.lookup_general(name) {
@@ -286,14 +419,29 @@ impl Generator {
                     // (`bgtlr`) rather than a forward branch over a no-op value move. `options ^ 8`
                     // inverts the skip-when-false test to return-when-true. The materialized store
                     // value and the return then follow exactly as below (`li r0,5; li r3,0; stw`).
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: options ^ 8,
+                            condition_bit,
+                        });
                 } else {
                     let branch_index = self.output.instructions.len();
-                    self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options,
+                            condition_bit,
+                            target: 0,
+                        });
                     self.evaluate_tail(value, function.return_type, result)?;
-                    self.output.instructions.push(Instruction::BranchToLinkRegister);
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchToLinkRegister);
                     let continuation = self.output.instructions.len();
-                    if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                    if let Instruction::BranchConditionalForward { target, .. } =
+                        &mut self.output.instructions[branch_index]
+                    {
                         *target = continuation;
                     }
                 }
@@ -301,22 +449,43 @@ impl Generator {
                     // A constant `li r3,C`; a register `mr r3,reg` (a self-move when the return value
                     // already sits in the result register — coalesced away later).
                     ReturnValue::Constant(constant) => {
-                        generator.output.instructions.push(Instruction::AddImmediate { d: result, a: 0, immediate: constant });
+                        generator
+                            .output
+                            .instructions
+                            .push(Instruction::AddImmediate {
+                                d: result,
+                                a: 0,
+                                immediate: constant,
+                            });
                     }
                     ReturnValue::Register(register) => {
-                        generator.output.instructions.push(Instruction::Or { a: result, s: register, b: register });
+                        generator.output.instructions.push(Instruction::Or {
+                            a: result,
+                            s: register,
+                            b: register,
+                        });
                     }
                 };
                 if let Some(store_register) = stored_register_leaf {
                     // CASE A — the store value is already in a register: store it DIRECTLY (no r0
                     // materialization), then the return (`bgtlr; stw r4,0(r5); li r3,0; blr`).
-                    self.output.instructions.push(displacement_store(pointee, store_register, pointer_register, offset)?);
+                    self.output.instructions.push(displacement_store(
+                        pointee,
+                        store_register,
+                        pointer_register,
+                        offset,
+                    )?);
                     emit_return_value(self);
                 } else {
                     // CASE B — materialize the value in r0, schedule the return between, then store.
                     self.evaluate_general(stored, GENERAL_SCRATCH)?;
                     emit_return_value(self);
-                    self.output.instructions.push(displacement_store(pointee, GENERAL_SCRATCH, pointer_register, offset)?);
+                    self.output.instructions.push(displacement_store(
+                        pointee,
+                        GENERAL_SCRATCH,
+                        pointer_register,
+                        offset,
+                    )?);
                 }
                 self.emit_epilogue_and_return();
                 return Ok(true);
@@ -326,7 +495,10 @@ impl Generator {
 
         // A single reassignment is the verified continuation shape; longer tails are
         // unverified against mwcc (they may fold or reschedule differently) — defer.
-        if !rest.iter().all(|statement| matches!(statement, Statement::Assign { .. })) {
+        if !rest
+            .iter()
+            .all(|statement| matches!(statement, Statement::Assign { .. }))
+        {
             return Ok(false);
         }
         let written: Vec<&str> = rest
@@ -337,7 +509,11 @@ impl Generator {
             })
             .chain(function.locals.iter().map(|local| local.name.as_str()))
             .collect();
-        let reads_written = |expression: &Expression| written.iter().any(|name| expression_reads_name(expression, name));
+        let reads_written = |expression: &Expression| {
+            written
+                .iter()
+                .any(|name| expression_reads_name(expression, name))
+        };
         // A guard VALUE reading a reassigned name is unverified — defer.
         if reads_written(value) {
             return Ok(false);
@@ -346,10 +522,16 @@ impl Generator {
             rest.iter().any(|statement| match statement {
                 Statement::Assign { value, .. } => expression_reads_name(value, name),
                 _ => false,
-            }) || function.return_expression.as_ref().is_some_and(|ret| expression_reads_name(ret, name))
+            }) || function
+                .return_expression
+                .as_ref()
+                .is_some_and(|ret| expression_reads_name(ret, name))
         };
-        let distinct_parameter_reads =
-            function.parameters.iter().filter(|parameter| tail_reads_parameter(&parameter.name)).count();
+        let distinct_parameter_reads = function
+            .parameters
+            .iter()
+            .filter(|parameter| tail_reads_parameter(&parameter.name))
+            .count();
 
         // The branch form is mwcc's shape for a tail reading TWO-plus distinct parameters
         // (`add r3,r4,r5` after the branch), with a condition reading no reassigned name.
@@ -358,26 +540,45 @@ impl Generator {
             // return. emit_condition_test yields the skip-when-false encoding directly.
             let result = mwcc_target::Eabi::general_result().number;
             let (options, condition_bit) = self.emit_condition_test(condition)?;
-            if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result)) {
+            if matches!(value, Expression::Variable(name) if self.lookup_general(name) == Some(result))
+            {
                 // The guard VALUE already occupies the result register, so mwcc returns it with a
                 // single conditional branch-to-lr (`bgtlr`) — the forward branch over a `blr` whose
                 // value move would be a no-op is redundant. options^8 turns the skip-when-false
                 // encoding into return-when-true.
-                self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: options ^ 8, condition_bit });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options: options ^ 8,
+                        condition_bit,
+                    });
             } else {
                 let branch_index = self.output.instructions.len();
-                self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options,
+                        condition_bit,
+                        target: 0,
+                    });
                 self.evaluate_tail(value, function.return_type, result)?;
-                self.output.instructions.push(Instruction::BranchToLinkRegister);
+                self.output
+                    .instructions
+                    .push(Instruction::BranchToLinkRegister);
                 let continuation = self.output.instructions.len();
-                if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+                if let Instruction::BranchConditionalForward { target, .. } =
+                    &mut self.output.instructions[branch_index]
+                {
                     *target = continuation;
                 }
             }
 
             // The continuation is a pure value-tracking body; anything it cannot compile must
             // DEFER (the guard block is already in the output).
-            let reduced = Function { statements: rest.to_vec(), ..function.clone() };
+            let reduced = Function {
+                statements: rest.to_vec(),
+                ..function.clone()
+            };
             if !self.try_value_tracking(&reduced)? {
                 return Err(Diagnostic::error("an early-return continuation outside the value-tracking shape is not supported yet (roadmap)"));
             }
@@ -396,7 +597,11 @@ impl Generator {
             && matches!(value, Expression::Variable(_))
             && matches!(function.return_type, Type::Int | Type::UnsignedInt)
         {
-            let [Statement::Assign { name: assigned, value: assigned_value }] = rest else {
+            let [Statement::Assign {
+                name: assigned,
+                value: assigned_value,
+            }] = rest
+            else {
                 return Ok(false);
             };
             let Some(Expression::Variable(returned)) = function.return_expression.as_ref() else {
@@ -411,19 +616,29 @@ impl Generator {
             if !two_leaf {
                 return Ok(false);
             }
-            let Expression::Variable(value_name) = value else { return Ok(false) };
+            let Expression::Variable(value_name) = value else {
+                return Ok(false);
+            };
             let Some(value_register) = self.lookup_general(value_name) else {
                 return Ok(false);
             };
             let result = mwcc_target::Eabi::general_result().number;
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             self.evaluate_tail(assigned_value, function.return_type, result)?;
-            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
-            self.output.instructions.push(Instruction::Or { a: result, s: value_register, b: value_register });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options,
+                    condition_bit,
+                });
+            self.output.instructions.push(Instruction::Or {
+                a: result,
+                s: value_register,
+                b: value_register,
+            });
             self.emit_epilogue_and_return();
             return Ok(true);
         }
         Ok(false)
     }
-
 }

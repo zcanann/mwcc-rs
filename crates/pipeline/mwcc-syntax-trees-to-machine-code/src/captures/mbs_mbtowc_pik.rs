@@ -34,34 +34,73 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [4, 8, 13, 18] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&4]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(labels[&4]);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&8]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, -1));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, -1));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(labels[&8]);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, labels[&13]); // beq
-        self.output.instructions.push(Instruction::LoadByteZero { d: 0, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::ExtendSignByte { a: 0, s: 0 });
-        self.output.instructions.push(Instruction::StoreHalfword { s: 0, a: 3, offset: 0 });
+        self.output.instructions.push(Instruction::LoadByteZero {
+            d: 0,
+            a: 4,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ExtendSignByte { a: 0, s: 0 });
+        self.output.instructions.push(Instruction::StoreHalfword {
+            s: 0,
+            a: 3,
+            offset: 0,
+        });
         self.bind_label(labels[&13]);
-        self.output.instructions.push(Instruction::LoadByteZero { d: 0, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::ExtendSignByteRecord { a: 0, s: 0 });
+        self.output.instructions.push(Instruction::LoadByteZero {
+            d: 0,
+            a: 4,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ExtendSignByteRecord { a: 0, s: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&18]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(labels[&18]);
-        self.output.instructions.push(Instruction::load_immediate(3, 1));
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 1));
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

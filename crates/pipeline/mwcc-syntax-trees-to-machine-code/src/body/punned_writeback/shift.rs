@@ -49,7 +49,10 @@ impl Generator {
         // so the normalizer leaves it uninitialized while folding the rest.
         let mut carry_local: Option<&str> = None;
         let normalized = !function.locals.is_empty()
-            && function.locals.iter().any(|local| local.initializer.is_some());
+            && function
+                .locals
+                .iter()
+                .any(|local| local.initializer.is_some());
         if normalized {
             for local in &function.locals {
                 if local.array_length.is_some() {
@@ -66,7 +69,9 @@ impl Generator {
                     if shift.is_some() {
                         return Ok(false);
                     }
-                    let Some(parsed) = &guard else { return Ok(false) };
+                    let Some(parsed) = &guard else {
+                        return Ok(false);
+                    };
                     let Some((constant, logical, offset)) = parse_shift_init(init, parsed.name)
                     else {
                         return Ok(false);
@@ -98,7 +103,8 @@ impl Generator {
             }
         } else {
             while let Some(Statement::Assign { name, value }) = function.statements.get(cursor) {
-                let Some(declaration) = function.locals.iter().find(|local| &local.name == name) else {
+                let Some(declaration) = function.locals.iter().find(|local| &local.name == name)
+                else {
                     return Ok(false);
                 };
                 if declaration.initializer.is_some() || declaration.array_length.is_some() {
@@ -126,7 +132,9 @@ impl Generator {
                 }
                 if shift.is_none() && declaration.declared_type == Type::UnsignedInt {
                     if let Some(parsed) = &guard {
-                        if let Some((constant, logical, offset)) = parse_shift_init(value, parsed.name) {
+                        if let Some((constant, logical, offset)) =
+                            parse_shift_init(value, parsed.name)
+                        {
                             mask_constant = Some((constant, logical, offset));
                             shift = Some(name.as_str());
                             cursor += 1;
@@ -160,17 +168,29 @@ impl Generator {
                 Statement::Store { target, value } => {
                     count_name_occurrences(target, name) + count_name_occurrences(value, name)
                 }
-                Statement::If { condition, then_body, else_body } => {
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
                     count_name_occurrences(condition, name)
-                        + then_body.iter().map(|inner| reads_in(inner, name)).sum::<usize>()
-                        + else_body.iter().map(|inner| reads_in(inner, name)).sum::<usize>()
+                        + then_body
+                            .iter()
+                            .map(|inner| reads_in(inner, name))
+                            .sum::<usize>()
+                        + else_body
+                            .iter()
+                            .map(|inner| reads_in(inner, name))
+                            .sum::<usize>()
                 }
                 Statement::Return(Some(value)) => count_name_occurrences(value, name),
                 _ => 1,
             }
         }
-        let guard_tail_reads: usize =
-            tail.iter().map(|statement| reads_in(statement, guard.name)).sum();
+        let guard_tail_reads: usize = tail
+            .iter()
+            .map(|statement| reads_in(statement, guard.name))
+            .sum();
         if guard_tail_reads > 2 {
             // Beyond the sign block's reads (the self-add's shift, or the
             // carry diamond's ==K4 + K3-j0 pair — validated structurally
@@ -178,7 +198,12 @@ impl Generator {
             return Ok(false);
         }
         // The early-return test.
-        let Some(Statement::If { condition, then_body, else_body }) = tail.first() else {
+        let Some(Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }) = tail.first()
+        else {
             return Ok(false);
         };
         if !matches!(then_body.as_slice(), [Statement::Return(Some(Expression::Variable(v)))] if v == x)
@@ -187,7 +212,11 @@ impl Generator {
             return Ok(false);
         }
         // `((a & i) | b) == 0` or `(a & i) == 0`, a/b punned, i the shift.
-        let Expression::Binary { operator: BinaryOperator::Equal, left: test, right: zero } = condition
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left: test,
+            right: zero,
+        } = condition
         else {
             return Ok(false);
         };
@@ -196,25 +225,46 @@ impl Generator {
         }
         let local_index = |name: &str| locals.iter().position(|&(local, _)| local == name);
         let parse_and = |expr: &Expression| -> Option<usize> {
-            let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = expr else {
+            let Expression::Binary {
+                operator: BinaryOperator::BitAnd,
+                left,
+                right,
+            } = expr
+            else {
                 return None;
             };
-            let Expression::Variable(a) = left.as_ref() else { return None };
-            let Expression::Variable(i) = right.as_ref() else { return None };
+            let Expression::Variable(a) = left.as_ref() else {
+                return None;
+            };
+            let Expression::Variable(i) = right.as_ref() else {
+                return None;
+            };
             if i != shift {
                 return None;
             }
             local_index(a)
         };
         let (test_and_local, test_or_local) = match test.as_ref() {
-            Expression::Binary { operator: BinaryOperator::BitOr, left, right } => {
-                let Some(a) = parse_and(left) else { return Ok(false) };
-                let Expression::Variable(b) = right.as_ref() else { return Ok(false) };
-                let Some(b) = local_index(b) else { return Ok(false) };
+            Expression::Binary {
+                operator: BinaryOperator::BitOr,
+                left,
+                right,
+            } => {
+                let Some(a) = parse_and(left) else {
+                    return Ok(false);
+                };
+                let Expression::Variable(b) = right.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(b) = local_index(b) else {
+                    return Ok(false);
+                };
                 (a, Some(b))
             }
             other => {
-                let Some(a) = parse_and(other) else { return Ok(false) };
+                let Some(a) = parse_and(other) else {
+                    return Ok(false);
+                };
                 (a, None)
             }
         };
@@ -224,17 +274,25 @@ impl Generator {
         // guard-false path, so it lands in the home, not r0.
         let mut float_guard: Option<(u64, u64)> = None;
         enum SignBlock {
-            Add { local: usize, constant: i64 },
+            Add {
+                local: usize,
+                constant: i64,
+            },
             CarryDiamond {
-                local: usize,          // i0 — takes +1
-                other: usize,          // i1 — the carry source, receives j
-                equal_bound: i16,      // j0 == K4
-                shift_base: i16,       // K3 in `1 << (K3 - j0)`
+                local: usize,     // i0 — takes +1
+                other: usize,     // i1 — the carry source, receives j
+                equal_bound: i16, // j0 == K4
+                shift_base: i16,  // K3 in `1 << (K3 - j0)`
             },
         }
         let mut sign_block: Option<SignBlock> = None;
         let mut mutation_statements: &[Statement] = &tail[1..];
-        if let Some(Statement::If { condition, then_body, else_body }) = tail.get(1) {
+        if let Some(Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }) = tail.get(1)
+        {
             let Some(guard_bits) = float_guard_condition(condition) else {
                 return Ok(false);
             };
@@ -243,63 +301,104 @@ impl Generator {
             }
             float_guard = Some(guard_bits);
             let mut body: &[Statement] = then_body;
-            if let Some(Statement::If { condition, then_body: sign_body, else_body }) = body.first() {
+            if let Some(Statement::If {
+                condition,
+                then_body: sign_body,
+                else_body,
+            }) = body.first()
+            {
                 // `if (l < 0) ...`
-                let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition
+                let Expression::Binary {
+                    operator: BinaryOperator::Less,
+                    left,
+                    right,
+                } = condition
                 else {
                     return Ok(false);
                 };
                 if crate::analysis::constant_value(right) != Some(0) {
                     return Ok(false);
                 }
-                let Expression::Variable(signed) = left.as_ref() else { return Ok(false) };
-                let Some(sign_local) = local_index(signed) else { return Ok(false) };
+                let Expression::Variable(signed) = left.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(sign_local) = local_index(signed) else {
+                    return Ok(false);
+                };
                 if !else_body.is_empty() {
                     return Ok(false);
                 }
                 match sign_body.as_slice() {
                     // arm2: `l += C2 >> j0;`
-                    [Statement::Assign { name: add_name, value: add_value }] => {
+                    [Statement::Assign {
+                        name: add_name,
+                        value: add_value,
+                    }] => {
                         if local_index(add_name) != Some(sign_local) {
                             return Ok(false);
                         }
-                        let Expression::Binary { operator: BinaryOperator::Add, left: base, right: shifted } =
-                            add_value
+                        let Expression::Binary {
+                            operator: BinaryOperator::Add,
+                            left: base,
+                            right: shifted,
+                        } = add_value
                         else {
                             return Ok(false);
                         };
-                        if !matches!(base.as_ref(), Expression::Variable(v) if v == add_name.as_str()) {
+                        if !matches!(base.as_ref(), Expression::Variable(v) if v == add_name.as_str())
+                        {
                             return Ok(false);
                         }
-                        let Expression::Binary { operator: BinaryOperator::ShiftRight, left: c2, right: by } =
-                            shifted.as_ref()
+                        let Expression::Binary {
+                            operator: BinaryOperator::ShiftRight,
+                            left: c2,
+                            right: by,
+                        } = shifted.as_ref()
                         else {
                             return Ok(false);
                         };
-                        let Some(c2) = crate::analysis::constant_value(c2) else { return Ok(false) };
+                        let Some(c2) = crate::analysis::constant_value(c2) else {
+                            return Ok(false);
+                        };
                         if !matches!(by.as_ref(), Expression::Variable(v) if v == guard.name) {
                             return Ok(false);
                         }
-                        sign_block = Some(SignBlock::Add { local: sign_local, constant: c2 });
+                        sign_block = Some(SignBlock::Add {
+                            local: sign_local,
+                            constant: c2,
+                        });
                     }
                     // arm3: `if (j0 == K4) l += 1; else { j = other + (1 << (K3 - j0));
                     //        if (j < other) l += 1; other = j; }`
-                    [Statement::If { condition, then_body, else_body }] => {
-                        let Some(carry) = carry_local else { return Ok(false) };
-                        let Expression::Binary { operator: BinaryOperator::Equal, left, right } = condition
+                    [Statement::If {
+                        condition,
+                        then_body,
+                        else_body,
+                    }] => {
+                        let Some(carry) = carry_local else {
+                            return Ok(false);
+                        };
+                        let Expression::Binary {
+                            operator: BinaryOperator::Equal,
+                            left,
+                            right,
+                        } = condition
                         else {
                             return Ok(false);
                         };
                         if !matches!(left.as_ref(), Expression::Variable(v) if v == guard.name) {
                             return Ok(false);
                         }
-                        let Some(equal_bound) =
-                            crate::analysis::constant_value(right).and_then(|k| i16::try_from(k).ok())
+                        let Some(equal_bound) = crate::analysis::constant_value(right)
+                            .and_then(|k| i16::try_from(k).ok())
                         else {
                             return Ok(false);
                         };
                         // then: l += 1
-                        let [Statement::Assign { name: inc, value: inc_value }] = then_body.as_slice()
+                        let [Statement::Assign {
+                            name: inc,
+                            value: inc_value,
+                        }] = then_body.as_slice()
                         else {
                             return Ok(false);
                         };
@@ -312,31 +411,53 @@ impl Generator {
                             return Ok(false);
                         }
                         // else: the carry sequence
-                        let [Statement::Assign { name: j_name, value: j_value }, Statement::If { condition: carry_cond, then_body: carry_then, else_body: carry_else }, Statement::Assign { name: copy_name, value: copy_value }] =
-                            else_body.as_slice()
+                        let [Statement::Assign {
+                            name: j_name,
+                            value: j_value,
+                        }, Statement::If {
+                            condition: carry_cond,
+                            then_body: carry_then,
+                            else_body: carry_else,
+                        }, Statement::Assign {
+                            name: copy_name,
+                            value: copy_value,
+                        }] = else_body.as_slice()
                         else {
                             return Ok(false);
                         };
                         if j_name != carry {
                             return Ok(false);
                         }
-                        let Expression::Binary { operator: BinaryOperator::Add, left: base, right: one_shift } =
-                            j_value
+                        let Expression::Binary {
+                            operator: BinaryOperator::Add,
+                            left: base,
+                            right: one_shift,
+                        } = j_value
                         else {
                             return Ok(false);
                         };
-                        let Expression::Variable(other_name) = base.as_ref() else { return Ok(false) };
-                        let Some(other) = local_index(other_name) else { return Ok(false) };
-                        let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: one, right: amount } =
-                            one_shift.as_ref()
+                        let Expression::Variable(other_name) = base.as_ref() else {
+                            return Ok(false);
+                        };
+                        let Some(other) = local_index(other_name) else {
+                            return Ok(false);
+                        };
+                        let Expression::Binary {
+                            operator: BinaryOperator::ShiftLeft,
+                            left: one,
+                            right: amount,
+                        } = one_shift.as_ref()
                         else {
                             return Ok(false);
                         };
                         if crate::analysis::constant_value(one) != Some(1) {
                             return Ok(false);
                         }
-                        let Expression::Binary { operator: BinaryOperator::Subtract, left: k3, right: by } =
-                            amount.as_ref()
+                        let Expression::Binary {
+                            operator: BinaryOperator::Subtract,
+                            left: k3,
+                            right: by,
+                        } = amount.as_ref()
                         else {
                             return Ok(false);
                         };
@@ -352,8 +473,11 @@ impl Generator {
                         if !carry_else.is_empty() {
                             return Ok(false);
                         }
-                        let Expression::Binary { operator: BinaryOperator::Less, left: jl, right: jr } =
-                            carry_cond
+                        let Expression::Binary {
+                            operator: BinaryOperator::Less,
+                            left: jl,
+                            right: jr,
+                        } = carry_cond
                         else {
                             return Ok(false);
                         };
@@ -362,7 +486,10 @@ impl Generator {
                         {
                             return Ok(false);
                         }
-                        let [Statement::Assign { name: inc2, value: inc2_value }] = carry_then.as_slice()
+                        let [Statement::Assign {
+                            name: inc2,
+                            value: inc2_value,
+                        }] = carry_then.as_slice()
                         else {
                             return Ok(false);
                         };
@@ -424,21 +551,31 @@ impl Generator {
         let mut mutations: Vec<(usize, Mutation)> = Vec::new();
         let mut tail_cursor = 0usize;
         while let Some(Statement::Assign { name, value }) = mutation_statements.get(tail_cursor) {
-            let Some(index) = local_index(name) else { return Ok(false) };
+            let Some(index) = local_index(name) else {
+                return Ok(false);
+            };
             if mutations.iter().any(|&(seen, _)| seen == index) {
                 return Ok(false);
             }
             let mutation = if let Some(constant) = crate::analysis::constant_value(value) {
-                let Ok(small) = i16::try_from(constant) else { return Ok(false) };
+                let Ok(small) = i16::try_from(constant) else {
+                    return Ok(false);
+                };
                 Mutation::Rewrite(small)
-            } else if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = value {
+            } else if let Expression::Binary {
+                operator: BinaryOperator::BitAnd,
+                left,
+                right,
+            } = value
+            {
                 if !matches!(left.as_ref(), Expression::Variable(v) if v == name.as_str()) {
                     return Ok(false);
                 }
                 match right.as_ref() {
-                    Expression::Unary { operator: UnaryOperator::BitNot, operand }
-                        if matches!(operand.as_ref(), Expression::Variable(v) if v == shift) =>
-                    {
+                    Expression::Unary {
+                        operator: UnaryOperator::BitNot,
+                        operand,
+                    } if matches!(operand.as_ref(), Expression::Variable(v) if v == shift) => {
                         Mutation::AndcShift
                     }
                     other => {
@@ -462,7 +599,12 @@ impl Generator {
             tail_cursor += 1;
         }
         // At most one rewrite (the li r0 dedupe across two is unmeasured).
-        if mutations.iter().filter(|(_, m)| matches!(m, Mutation::Rewrite(_))).count() > 1 {
+        if mutations
+            .iter()
+            .filter(|(_, m)| matches!(m, Mutation::Rewrite(_)))
+            .count()
+            > 1
+        {
             return Ok(false);
         }
         // The r0 materialization sinks below the home-writing mutations
@@ -508,7 +650,7 @@ impl Generator {
         let mask_position = position; // li or the addi completing the pair
         position += 1;
         position += 1; // stfd
-        // Which locals load: any with a read (test, extract source, andc/mask mutation).
+                       // Which locals load: any with a read (test, extract source, andc/mask mutation).
         let has_read = |index: usize| {
             index == test_and_local
                 || test_or_local == Some(index)
@@ -516,8 +658,7 @@ impl Generator {
                 || matches!(sign_block, Some(SignBlock::Add { local, .. }) if local == index)
                 || matches!(sign_block, Some(SignBlock::CarryDiamond { local, other, .. }) if local == index || other == index)
                 || mutations.iter().any(|&(m, ref form)| {
-                    m == index
-                        && (!matches!(form, Mutation::Rewrite(_)) || float_guard.is_some())
+                    m == index && (!matches!(form, Mutation::Rewrite(_)) || float_guard.is_some())
                 })
         };
         let mut load_positions: Vec<Option<u32>> = Vec::new();
@@ -544,8 +685,8 @@ impl Generator {
         });
         let branch_position = position; // bne
         position += 2; // bne + b
-        // The inexact-guard block (lfd, lfd, fadd, fcmpo, ble) and the
-        // sign-add (cmpwi, bge, sraw2, add).
+                       // The inexact-guard block (lfd, lfd, fadd, fcmpo, ble) and the
+                       // sign-add (cmpwi, bge, sraw2, add).
         if float_guard.is_some() {
             position += 5;
         }
@@ -573,7 +714,10 @@ impl Generator {
             None => None,
         };
         // Mutations occupy sequential slots (the shared `not` adds one).
-        let andc_count = mutations.iter().filter(|(_, m)| matches!(m, Mutation::AndcShift)).count();
+        let andc_count = mutations
+            .iter()
+            .filter(|(_, m)| matches!(m, Mutation::AndcShift))
+            .count();
         let not_position = (andc_count >= 2).then(|| {
             let at = position;
             position += 1;
@@ -596,7 +740,11 @@ impl Generator {
             // The self-add's constant CSEs the lis intermediate — the
             // temp then lives to the second sraw (measured arm2).
             let last = sraw2_position.unwrap_or(addi);
-            values.push(Value { class: Class::Temp, def: lis, last });
+            values.push(Value {
+                class: Class::Temp,
+                def: lis,
+                last,
+            });
             tags.push("temp");
         }
         // With a MULTI-READ guard the fold lands in the home, freeing the
@@ -608,16 +756,28 @@ impl Generator {
         let mask_value_index = if mask_in_scratch {
             None
         } else {
-            values.push(Value { class: Class::Mask, def: mask_position, last: sraw_position });
+            values.push(Value {
+                class: Class::Mask,
+                def: mask_position,
+                last: sraw_position,
+            });
             tags.push("mask");
             Some(values.len() - 1)
         };
         let computed_last = sraw2_position.unwrap_or(fold_position);
-        values.push(Value { class: Class::Computed, def: extract_position, last: computed_last });
+        values.push(Value {
+            class: Class::Computed,
+            def: extract_position,
+            last: computed_last,
+        });
         tags.push("computed");
         let computed_value_index = values.len() - 1;
         let carry_one_value_index = carry_one_range.map(|(def, last)| {
-            values.push(Value { class: Class::Mask, def, last });
+            values.push(Value {
+                class: Class::Mask,
+                def,
+                last,
+            });
             tags.push("carry-one");
             values.len() - 1
         });
@@ -638,7 +798,11 @@ impl Generator {
         };
         let shift_crosses = shift_last > branch_position;
         let shift_value_index = if shift_crosses {
-            values.push(Value { class: Class::Shift, def: sraw_position, last: shift_last });
+            values.push(Value {
+                class: Class::Shift,
+                def: sraw_position,
+                last: shift_last,
+            });
             tags.push("shift");
             Some(values.len() - 1)
         } else {
@@ -646,7 +810,9 @@ impl Generator {
         };
         let mut local_value_indices: Vec<Option<usize>> = vec![None; locals.len()];
         for index in 0..locals.len() {
-            let Some(load) = load_positions[index] else { continue };
+            let Some(load) = load_positions[index] else {
+                continue;
+            };
             // The home's last read.
             let mut last = load;
             if locals[index].0 == guard.source {
@@ -703,7 +869,11 @@ impl Generator {
                     Class::LoadSurviving
                 }
             };
-            values.push(Value { class, def: load, last });
+            values.push(Value {
+                class,
+                def: load,
+                last,
+            });
             tags.push("local");
             local_value_indices[index] = Some(values.len() - 1);
         }
@@ -715,21 +885,38 @@ impl Generator {
         let home = |index: usize| local_value_indices[index].map(|i| registers[i]);
         // -- emit --
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
         if needs_temp {
             let temp_register = registers[0];
             let high = ((mask_constant + 0x8000) >> 16) as i16;
             let low = mask_constant as i16;
-            self.output.instructions.push(Instruction::load_immediate_shifted(temp_register, high));
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(temp_register, high));
             self.output.instructions.push(Instruction::AddImmediate {
                 d: mask_register,
                 a: temp_register,
                 immediate: low,
             });
         } else {
-            self.output.instructions.push(Instruction::load_immediate(mask_register, mask_constant as i16));
+            self.output.instructions.push(Instruction::load_immediate(
+                mask_register,
+                mask_constant as i16,
+            ));
         }
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
         for (index, &(_, offset)) in locals.iter().enumerate() {
             if load_positions[index].is_some() {
                 self.output.instructions.push(Instruction::LoadWord {
@@ -739,7 +926,8 @@ impl Generator {
                 });
             }
         }
-        let source_home = home(local_index(guard.source).expect("validated")).expect("source loads");
+        let source_home =
+            home(local_index(guard.source).expect("validated")).expect("source loads");
         match guard.mask {
             Some(mask) => {
                 let rotated = ((32 - guard.shift as u32) % 32) as u8;
@@ -755,11 +943,13 @@ impl Generator {
                 });
             }
             None => {
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
-                    a: guard_register,
-                    s: source_home,
-                    shift: guard.shift,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: guard_register,
+                        s: source_home,
+                        shift: guard.shift,
+                    });
             }
         }
         let negative = i16::try_from(-guard.offset_k).expect("validated");
@@ -782,7 +972,11 @@ impl Generator {
                 guard_register
             }
         } else {
-            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: guard_register, immediate: negative });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: guard_register,
+                immediate: negative,
+            });
             0
         };
         if logical_shift {
@@ -792,23 +986,33 @@ impl Generator {
                 b: shift_amount,
             });
         } else {
-            self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
-                a: shift_register,
-                s: mask_register,
-                b: shift_amount,
-            });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightAlgebraicWord {
+                    a: shift_register,
+                    s: mask_register,
+                    b: shift_amount,
+                });
         }
         // The test.
         let and_home = home(test_and_local).expect("test local loads");
         if let Some(or_local) = test_or_local {
-            self.output.instructions.push(Instruction::And { a: 0, s: and_home, b: shift_register });
+            self.output.instructions.push(Instruction::And {
+                a: 0,
+                s: and_home,
+                b: shift_register,
+            });
             self.output.instructions.push(Instruction::OrRecord {
                 a: 0,
                 s: home(or_local).expect("test local loads"),
                 b: 0,
             });
         } else {
-            self.output.instructions.push(Instruction::AndRecord { a: 0, s: and_home, b: shift_register });
+            self.output.instructions.push(Instruction::AndRecord {
+                a: 0,
+                s: and_home,
+                b: shift_register,
+            });
         }
         let continuation = self.fresh_label();
         let epilogue = self.fresh_label();
@@ -822,8 +1026,12 @@ impl Generator {
             // chains to the join.
             self.load_double_constant(2, huge);
             self.load_double_constant(0, zero);
-            self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
-            self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+            self.output
+                .instructions
+                .push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
             self.emit_branch_conditional_to(4, 1, join);
         }
         match &sign_block {
@@ -832,17 +1040,33 @@ impl Generator {
                 let register = home(*local).expect("sign local loads");
                 let temp_register = registers[0];
                 let skip = self.fresh_label();
-                self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: register,
+                        immediate: 0,
+                    });
                 self.emit_branch_conditional_to(4, 0, skip); // bge
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicWord {
-                    a: 0,
-                    s: temp_register,
-                    b: guard_register,
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicWord {
+                        a: 0,
+                        s: temp_register,
+                        b: guard_register,
+                    });
+                self.output.instructions.push(Instruction::Add {
+                    d: register,
+                    a: register,
+                    b: 0,
                 });
-                self.output.instructions.push(Instruction::Add { d: register, a: register, b: 0 });
                 self.bind_label(skip);
             }
-            Some(SignBlock::CarryDiamond { local, other, equal_bound, shift_base }) => {
+            Some(SignBlock::CarryDiamond {
+                local,
+                other,
+                equal_bound,
+                shift_base,
+            }) => {
                 // `if (l < 0) { if (j0 == K4) l += 1; else { j = other +
                 // (1 << (K3 - j0)); if (j < other) l += 1; other = j; } }`
                 // — j lives in r0; the ONE constant takes a model register
@@ -855,36 +1079,74 @@ impl Generator {
                 let continue_at = self.fresh_label(); // the trailing mutations
                 let else_at = self.fresh_label();
                 let no_carry = self.fresh_label();
-                self.output.instructions.push(Instruction::CompareWordImmediate { a: register, immediate: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: register,
+                        immediate: 0,
+                    });
                 self.emit_branch_conditional_to(4, 0, continue_at); // bge — skip the diamond
-                self.output.instructions.push(Instruction::CompareWordImmediate {
-                    a: guard_register,
-                    immediate: *equal_bound,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: guard_register,
+                        immediate: *equal_bound,
+                    });
                 self.emit_branch_conditional_to(4, 2, else_at); // bne
-                self.output.instructions.push(Instruction::AddImmediate { d: register, a: register, immediate: 1 });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: register,
+                    a: register,
+                    immediate: 1,
+                });
                 self.emit_branch_to(continue_at);
                 self.bind_label(else_at);
-                self.output.instructions.push(Instruction::SubtractFromImmediate {
-                    d: 0,
-                    a: guard_register,
-                    immediate: *shift_base,
+                self.output
+                    .instructions
+                    .push(Instruction::SubtractFromImmediate {
+                        d: 0,
+                        a: guard_register,
+                        immediate: *shift_base,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(one_register, 1));
+                self.output.instructions.push(Instruction::ShiftLeftWord {
+                    a: 0,
+                    s: one_register,
+                    b: 0,
                 });
-                self.output.instructions.push(Instruction::load_immediate(one_register, 1));
-                self.output.instructions.push(Instruction::ShiftLeftWord { a: 0, s: one_register, b: 0 });
-                self.output.instructions.push(Instruction::Add { d: 0, a: other_register, b: 0 });
-                self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: other_register });
+                self.output.instructions.push(Instruction::Add {
+                    d: 0,
+                    a: other_register,
+                    b: 0,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareLogicalWord {
+                        a: 0,
+                        b: other_register,
+                    });
                 self.emit_branch_conditional_to(4, 0, no_carry); // bge — unsigned no-carry
-                self.output.instructions.push(Instruction::AddImmediate { d: register, a: register, immediate: 1 });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: register,
+                    a: register,
+                    immediate: 1,
+                });
                 self.bind_label(no_carry);
-                self.output.instructions.push(Instruction::move_register(other_register, 0));
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(other_register, 0));
                 self.bind_label(continue_at);
             }
             None => {}
         }
         // Mutations (the shared `not` precedes the first andc pair).
         if not_position.is_some() {
-            self.output.instructions.push(Instruction::Nor { a: 0, s: shift_register, b: shift_register });
+            self.output.instructions.push(Instruction::Nor {
+                a: 0,
+                s: shift_register,
+                b: shift_register,
+            });
         }
         for (index, mutation) in &mutations {
             let index = *index;
@@ -897,12 +1159,18 @@ impl Generator {
                     } else {
                         0
                     };
-                    self.output.instructions.push(Instruction::load_immediate(target, *constant));
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(target, *constant));
                 }
                 Mutation::AndcShift => {
                     let register = home(index).expect("loaded");
                     if not_position.is_some() {
-                        self.output.instructions.push(Instruction::And { a: register, s: register, b: 0 });
+                        self.output.instructions.push(Instruction::And {
+                            a: register,
+                            s: register,
+                            b: 0,
+                        });
                     } else {
                         self.output.instructions.push(Instruction::AndComplement {
                             a: register,
@@ -928,16 +1196,34 @@ impl Generator {
         self.bind_label(join);
         for (index, &(_, offset)) in locals.iter().enumerate() {
             let from_scratch = float_guard.is_none()
-                && mutations.iter().any(|&(m, ref form)| {
-                    m == index && !matches!(form, Mutation::AndcShift)
-                });
-            let register = if from_scratch { 0 } else { home(index).map(|r| r).unwrap_or(0) };
-            self.output.instructions.push(Instruction::StoreWord { s: register, a: 1, offset: 8 + offset });
+                && mutations
+                    .iter()
+                    .any(|&(m, ref form)| m == index && !matches!(form, Mutation::AndcShift));
+            let register = if from_scratch {
+                0
+            } else {
+                home(index).map(|r| r).unwrap_or(0)
+            };
+            self.output.instructions.push(Instruction::StoreWord {
+                s: register,
+                a: 1,
+                offset: 8 + offset,
+            });
         }
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 1,
+            a: 1,
+            offset: 8,
+        });
         self.bind_label(epilogue);
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // Pre-pool labels: one plus one per LOADED local (measured V1c
         // @7 and W11 @7 with one load, V1b @8 with two — the never-read
         // store-only local costs nothing), plus one for the shared `not`
@@ -956,5 +1242,4 @@ impl Generator {
             };
         Ok(true)
     }
-
 }

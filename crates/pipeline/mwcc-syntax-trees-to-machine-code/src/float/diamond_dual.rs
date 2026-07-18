@@ -1,14 +1,15 @@
 //! The DUAL-TAIL arm (try_dual_tail_float_return) and the
 //! CONDITIONAL-LOCAL diamond (try_conditional_local_float_return).
 
+use super::{
+    build_tree, collect_arith, collect_literals, float_def, float_reads_register, FloatOp, Operand,
+    Tree, FLOAT_ARITH_LATENCY, FLOAT_MUL_GATE, LOAD_LATENCY,
+};
+use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Type};
 use mwcc_vreg::{assign_float_registers, linearize, DagNode, OpKind, FROZEN_FLOAT_REG, HAZARD_FPU};
-use crate::generator::*;
-use super::{
-    build_tree, collect_arith, collect_literals, float_def, float_reads_register, FloatOp, Operand, Tree, FLOAT_ARITH_LATENCY, FLOAT_MUL_GATE, LOAD_LATENCY,
-};
 
 impl Generator {
     /// The DUAL-TAIL float return (the k_sin iy split's simple form):
@@ -43,7 +44,11 @@ impl Generator {
                 .locations
                 .get(name)
                 .is_some_and(|location| location.class == ValueClass::General),
-            Expression::Binary { operator, left, right } => {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
                 matches!(
                     operator,
                     BinaryOperator::Less
@@ -107,7 +112,10 @@ impl Generator {
                 return Ok(false);
             };
             // A literal duplicated across locals shares its load — unmodeled.
-            if chain_literals.iter().any(|bits| shared_literals.contains(bits)) {
+            if chain_literals
+                .iter()
+                .any(|bits| shared_literals.contains(bits))
+            {
                 return Ok(false);
             }
             shared_literals.extend(chain_literals);
@@ -121,12 +129,17 @@ impl Generator {
             let mut tail_literals: Vec<u64> = Vec::new();
             collect_literals(then_value, &mut tail_literals);
             collect_literals(else_value, &mut tail_literals);
-            if tail_literals.iter().any(|bits| shared_literals.contains(bits)) {
+            if tail_literals
+                .iter()
+                .any(|bits| shared_literals.contains(bits))
+            {
                 return Ok(false);
             }
         }
         // Tail liveness: which locals/params each tail reads.
-        let reads_of = |tree_value: &Expression, name: &str| crate::analysis::count_name_occurrences(tree_value, name);
+        let reads_of = |tree_value: &Expression, name: &str| {
+            crate::analysis::count_name_occurrences(tree_value, name)
+        };
         let escaping_locals: Vec<usize> = (0..local_trees.len())
             .filter(|&index| {
                 let name = &local_names[index].0;
@@ -169,7 +182,9 @@ impl Generator {
             collect_literals(else_value, &mut else_literals);
             (locals_read + params_read + then_literals.len().max(else_literals.len())) as u8
         };
-        let window_floor = tail_pressure(then_value).max(tail_pressure(else_value)).max(union_floor);
+        let window_floor = tail_pressure(then_value)
+            .max(tail_pressure(else_value))
+            .max(union_floor);
 
         // ---- the shared DAG ----
         let mut nodes: Vec<DagNode> = Vec::new();
@@ -188,7 +203,12 @@ impl Generator {
             collect_arith(local_tree, 0, &mut refs);
             refs.sort_by_key(|&(_, level)| std::cmp::Reverse(level));
             for &(arith, _) in &refs {
-                let push_const = |bits: u64, nodes: &mut Vec<DagNode>, ops: &mut Vec<FloatOp>, built: &mut Vec<(*const Tree, Operand)>, key: *const Tree, next_value: &mut u32| {
+                let push_const = |bits: u64,
+                                  nodes: &mut Vec<DagNode>,
+                                  ops: &mut Vec<FloatOp>,
+                                  built: &mut Vec<(*const Tree, Operand)>,
+                                  key: *const Tree,
+                                  next_value: &mut u32| {
                     let index = nodes.len();
                     nodes.push(DagNode::new("lfd", LOAD_LATENCY).writes(&[*next_value]));
                     *next_value += 1;
@@ -196,19 +216,47 @@ impl Generator {
                     built.push((key, Operand::Node(index)));
                 };
                 match arith {
-                    Tree::Madd { factor_left, factor_right, addend }
-                    | Tree::Fnmsub { factor_left, factor_right, base: addend }
-                    | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                    Tree::Madd {
+                        factor_left,
+                        factor_right,
+                        addend,
+                    }
+                    | Tree::Fnmsub {
+                        factor_left,
+                        factor_right,
+                        base: addend,
+                    }
+                    | Tree::Fmsub {
+                        factor_left,
+                        factor_right,
+                        subtrahend: addend,
+                    } => {
                         for side in [factor_left, factor_right, addend] {
                             if let Tree::Const(bits) = side.as_ref() {
-                                push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree, &mut next_value);
+                                push_const(
+                                    *bits,
+                                    &mut nodes,
+                                    &mut ops,
+                                    &mut built,
+                                    side.as_ref() as *const Tree,
+                                    &mut next_value,
+                                );
                             }
                         }
                     }
-                    Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                    Tree::Mul { left, right }
+                    | Tree::Fadd { left, right }
+                    | Tree::Fsub { left, right } => {
                         for side in [left, right] {
                             if let Tree::Const(bits) = side.as_ref() {
-                                push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree, &mut next_value);
+                                push_const(
+                                    *bits,
+                                    &mut nodes,
+                                    &mut ops,
+                                    &mut built,
+                                    side.as_ref() as *const Tree,
+                                    &mut next_value,
+                                );
                             }
                         }
                     }
@@ -220,14 +268,28 @@ impl Generator {
                 fn has_const(tree: &Tree, found: &mut Vec<u64>) {
                     match tree {
                         Tree::Const(bits) => found.push(*bits),
-                        Tree::Madd { factor_left, factor_right, addend }
-                        | Tree::Fnmsub { factor_left, factor_right, base: addend }
-                        | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                        Tree::Madd {
+                            factor_left,
+                            factor_right,
+                            addend,
+                        }
+                        | Tree::Fnmsub {
+                            factor_left,
+                            factor_right,
+                            base: addend,
+                        }
+                        | Tree::Fmsub {
+                            factor_left,
+                            factor_right,
+                            subtrahend: addend,
+                        } => {
                             has_const(factor_left, found);
                             has_const(factor_right, found);
                             has_const(addend, found);
                         }
-                        Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                        Tree::Mul { left, right }
+                        | Tree::Fadd { left, right }
+                        | Tree::Fsub { left, right } => {
                             has_const(left, found);
                             has_const(right, found);
                         }
@@ -252,18 +314,19 @@ impl Generator {
                 && tree_literals.is_empty();
             local_is_product.push(is_product);
             for (order_index, &(arith, _)) in refs.iter().enumerate() {
-                let resolve = |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
-                    match subtree {
-                        Tree::Param(9) if in_frame => Some(Operand::Node(0)),
-                        Tree::Param(value) => Some(Operand::Param(*value)),
-                        Tree::LocalRef(local) => local_operands.get(*local).copied(),
-                        _ => built
-                            .iter()
-                            .rev()
-                            .find(|(key, _)| std::ptr::eq(*key, subtree as *const Tree))
-                            .map(|&(_, operand)| operand),
-                    }
-                };
+                let resolve =
+                    |subtree: &Tree, built: &[(*const Tree, Operand)]| -> Option<Operand> {
+                        match subtree {
+                            Tree::Param(9) if in_frame => Some(Operand::Node(0)),
+                            Tree::Param(value) => Some(Operand::Param(*value)),
+                            Tree::LocalRef(local) => local_operands.get(*local).copied(),
+                            _ => built
+                                .iter()
+                                .rev()
+                                .find(|(key, _)| std::ptr::eq(*key, subtree as *const Tree))
+                                .map(|&(_, operand)| operand),
+                        }
+                    };
                 let value_of = |operand: Operand, nodes: &Vec<DagNode>| -> u32 {
                     match operand {
                         Operand::Param(value) => value,
@@ -273,44 +336,87 @@ impl Generator {
                 let index = nodes.len();
                 let is_root = order_index + 1 == refs.len();
                 let (op, operands): (FloatOp, Vec<Operand>) = match arith {
-                    Tree::Madd { factor_left, factor_right, addend } => {
-                        let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let b = resolve(addend, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
+                    Tree::Madd {
+                        factor_left,
+                        factor_right,
+                        addend,
+                    } => {
+                        let left = resolve(factor_left, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let right = resolve(factor_right, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(addend, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) {
+                            (right, left)
+                        } else {
+                            (left, right)
+                        };
                         (FloatOp::Madd { a, c, b }, vec![a, c, b])
                     }
-                    Tree::Fnmsub { factor_left, factor_right, base } => {
-                        let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let b = resolve(base, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
+                    Tree::Fnmsub {
+                        factor_left,
+                        factor_right,
+                        base,
+                    } => {
+                        let left = resolve(factor_left, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let right = resolve(factor_right, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(base, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) {
+                            (right, left)
+                        } else {
+                            (left, right)
+                        };
                         (FloatOp::Fnmsub { a, c, b }, vec![a, c, b])
                     }
-                    Tree::Fmsub { factor_left, factor_right, subtrahend } => {
-                        let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let b = resolve(subtrahend, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
+                    Tree::Fmsub {
+                        factor_left,
+                        factor_right,
+                        subtrahend,
+                    } => {
+                        let left = resolve(factor_left, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let right = resolve(factor_right, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(subtrahend, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) {
+                            (right, left)
+                        } else {
+                            (left, right)
+                        };
                         (FloatOp::Fmsub { a, c, b }, vec![a, c, b])
                     }
                     Tree::Mul { left, right } => {
-                        let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let c = resolve(right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let a = resolve(left, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let c = resolve(right, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
                         (FloatOp::Mul { a, c }, vec![a, c])
                     }
                     Tree::Fadd { left, right } => {
-                        let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
-                        let b = resolve(right, &built).ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let a = resolve(left, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
+                        let b = resolve(right, &built)
+                            .ok_or_else(|| Diagnostic::error("dual shared operand"))?;
                         (FloatOp::Add { a, b }, vec![a, b])
                     }
                     _ => return Ok(false),
                 };
-                let reads: Vec<u32> = operands.iter().map(|&operand| value_of(operand, &nodes)).collect();
-                let mut node = DagNode::new(if is_product { "flocal" } else { "fshared" }, FLOAT_ARITH_LATENCY)
-                    .hazard(HAZARD_FPU)
-                    .reads(&reads)
-                    .writes(&[next_value]);
+                let reads: Vec<u32> = operands
+                    .iter()
+                    .map(|&operand| value_of(operand, &nodes))
+                    .collect();
+                let mut node = DagNode::new(
+                    if is_product { "flocal" } else { "fshared" },
+                    FLOAT_ARITH_LATENCY,
+                )
+                .hazard(HAZARD_FPU)
+                .reads(&reads)
+                .writes(&[next_value]);
                 next_value += 1;
                 if matches!(op, FloatOp::Mul { .. }) {
                     node = node.gate(FLOAT_MUL_GATE);
@@ -342,14 +448,19 @@ impl Generator {
             }
         }
         if !nodes.is_empty() {
-            nodes.push(DagNode::new("sink", 1).kind(OpKind::Store).reads(&sink_reads));
+            nodes.push(
+                DagNode::new("sink", 1)
+                    .kind(OpKind::Store)
+                    .reads(&sink_reads),
+            );
             ops.push(FloatOp::Sink);
         }
 
         let synthetic = |value: &Expression| Function {
             return_type: function.return_type,
             section: None,
-            asm_body: None, force_active: false,
+            asm_body: None,
+            force_active: false,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,
@@ -380,9 +491,11 @@ impl Generator {
             // the shared DAG still allocates on the reverse/tier machine.
             model.void_forward = false;
             let registers = assign_float_registers(&nodes, &order, &params, model);
-            if registers.iter().enumerate().any(|(index, register)| {
-                register.is_none() && !matches!(ops[index], FloatOp::Sink)
-            }) {
+            if registers
+                .iter()
+                .enumerate()
+                .any(|(index, register)| register.is_none() && !matches!(ops[index], FloatOp::Sink))
+            {
                 return Ok(false);
             }
             let mut registers = registers;
@@ -417,7 +530,8 @@ impl Generator {
                 Function {
                     return_type: function.return_type,
                     section: None,
-                    asm_body: None, force_active: false,
+                    asm_body: None,
+                    force_active: false,
                     name: function.name.clone(),
                     is_static: function.is_static,
                     is_weak: function.is_weak,
@@ -461,7 +575,9 @@ impl Generator {
                     self.float.pseudo_params = dry_pseudos.clone();
                     if composed {
                         if let Some(name) = &x_pseudo_name {
-                            self.float.pseudo_params.retain(|(pseudo, _)| pseudo != name);
+                            self.float
+                                .pseudo_params
+                                .retain(|(pseudo, _)| pseudo != name);
                         }
                         let payload = composition.as_ref().expect("checked");
                         self.float.reload_x = Some(8);
@@ -481,7 +597,8 @@ impl Generator {
                     }
                     let claimed_ok = matches!(claimed, Ok(true));
                     let mut last_read: Option<usize> = None;
-                    for (offset, instruction) in self.output.instructions[mark..].iter().enumerate() {
+                    for (offset, instruction) in self.output.instructions[mark..].iter().enumerate()
+                    {
                         if float_reads_register(instruction, 30) {
                             last_read = Some(offset);
                         }
@@ -507,7 +624,10 @@ impl Generator {
                 self.float.pseudo_params = saved_pseudo;
                 self.float.reload_x = saved_reload;
                 // Everything still live at (or beyond) the root's slot.
-                let root_position = order.iter().position(|&node| node == root_node).expect("scheduled");
+                let root_position = order
+                    .iter()
+                    .position(|&node| node == root_node)
+                    .expect("scheduled");
                 let live_end = |node: usize| -> usize {
                     let write = nodes[node].writes.first().copied();
                     (0..nodes.len())
@@ -535,18 +655,26 @@ impl Generator {
                         exclusions.push(register);
                     }
                 }
-                let Some(root_register) = (0..32u8).find(|register| !exclusions.contains(register)) else {
+                let Some(root_register) = (0..32u8).find(|register| !exclusions.contains(register))
+                else {
                     return Ok(false);
                 };
                 registers[root_node] = Some(root_register);
             }
             let register_of = |operand: Operand| -> u8 {
                 match operand {
-                    Operand::Param(value) => params.iter().find(|&&(v, _)| v == value).map(|&(_, register)| register).unwrap_or(1),
+                    Operand::Param(value) => params
+                        .iter()
+                        .find(|&&(v, _)| v == value)
+                        .map(|&(_, register)| register)
+                        .unwrap_or(1),
                     Operand::Node(index) => registers[index].unwrap_or(1),
                 }
             };
-            let shared_loads = ops.iter().filter(|op| matches!(op, FloatOp::Const(_))).count();
+            let shared_loads = ops
+                .iter()
+                .filter(|op| matches!(op, FloatOp::Const(_)))
+                .count();
             let mut emitted_ops = 0usize;
             let mut emitted_loads = 0usize;
             for &node in &order {
@@ -560,47 +688,72 @@ impl Generator {
                         emitted_loads += 1;
                     }
                     FloatOp::FrameLoad(offset) => {
-                        self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 1, offset: *offset });
+                        self.output.instructions.push(Instruction::LoadFloatDouble {
+                            d,
+                            a: 1,
+                            offset: *offset,
+                        });
                         emitted_loads += 1;
                         if let Some((high, low, _)) = self.float.dual_compare {
                             // The big compare constant materializes right
                             // after the reload: lis r3 + addi r0 (measured).
-                            self.output.instructions.push(Instruction::load_immediate_shifted(3, high));
-                            self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 3, immediate: low });
+                            self.output
+                                .instructions
+                                .push(Instruction::load_immediate_shifted(3, high));
+                            self.output.instructions.push(Instruction::AddImmediate {
+                                d: 0,
+                                a: 3,
+                                immediate: low,
+                            });
                         }
                     }
-                    FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
-                        d,
-                        a: register_of(*a),
-                        c: register_of(*c),
-                        b: register_of(*b),
-                    }),
-                    FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble {
-                        d,
-                        a: register_of(*a),
-                        c: register_of(*c),
-                        b: register_of(*b),
-                    }),
-                    FloatOp::Fmsub { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplySubtractDouble {
-                        d,
-                        a: register_of(*a),
-                        c: register_of(*c),
-                        b: register_of(*b),
-                    }),
+                    FloatOp::Madd { a, c, b } => {
+                        self.output
+                            .instructions
+                            .push(Instruction::FloatMultiplyAddDouble {
+                                d,
+                                a: register_of(*a),
+                                c: register_of(*c),
+                                b: register_of(*b),
+                            })
+                    }
+                    FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(
+                        Instruction::FloatNegativeMultiplySubtractDouble {
+                            d,
+                            a: register_of(*a),
+                            c: register_of(*c),
+                            b: register_of(*b),
+                        },
+                    ),
+                    FloatOp::Fmsub { a, c, b } => {
+                        self.output
+                            .instructions
+                            .push(Instruction::FloatMultiplySubtractDouble {
+                                d,
+                                a: register_of(*a),
+                                c: register_of(*c),
+                                b: register_of(*b),
+                            })
+                    }
                     FloatOp::Mul { a, c } => {
                         let (mut ra, mut rc) = (register_of(*a), register_of(*c));
-                        let both_params = matches!(a, Operand::Param(_)) && matches!(c, Operand::Param(_));
+                        let both_params =
+                            matches!(a, Operand::Param(_)) && matches!(c, Operand::Param(_));
                         let const_a = matches!(a, Operand::Node(index) if matches!(ops[*index], FloatOp::Const(_)));
                         if !both_params && !const_a && rc > ra {
                             std::mem::swap(&mut ra, &mut rc);
                         }
-                        self.output.instructions.push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
+                        self.output
+                            .instructions
+                            .push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
                     }
-                    FloatOp::Add { a, b } => self.output.instructions.push(Instruction::FloatAddDouble {
-                        d,
-                        a: register_of(*a),
-                        b: register_of(*b),
-                    }),
+                    FloatOp::Add { a, b } => {
+                        self.output.instructions.push(Instruction::FloatAddDouble {
+                            d,
+                            a: register_of(*a),
+                            b: register_of(*b),
+                        })
+                    }
                     _ => {
                         rollback(self);
                         return Ok(false);
@@ -616,7 +769,10 @@ impl Generator {
                 // load (measured at chain depths 3 and 4).
                 if let Some((_, _, ix_register)) = self.float.dual_compare {
                     if condition_encoding.is_none() && emitted_loads == 4 {
-                        self.output.instructions.push(Instruction::CompareWord { a: ix_register, b: 0 });
+                        self.output.instructions.push(Instruction::CompareWord {
+                            a: ix_register,
+                            b: 0,
+                        });
                         // Less against the materialized constant: skip to
                         // the else tail on bge.
                         condition_encoding = Some((4, 0));
@@ -637,12 +793,17 @@ impl Generator {
             // Pseudo-params for the tails.
             for &index in &escaping_locals {
                 if let Operand::Node(node) = local_operands[index] {
-                    self.float.pseudo_params.push((local_names[index].0.clone(), registers[node].expect("checked above")));
+                    self.float.pseudo_params.push((
+                        local_names[index].0.clone(),
+                        registers[node].expect("checked above"),
+                    ));
                 }
             }
             if in_frame {
                 if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
-                    self.float.pseudo_params.push((name.clone(), registers[0].expect("checked above")));
+                    self.float
+                        .pseudo_params
+                        .push((name.clone(), registers[0].expect("checked above")));
                 }
             }
         }
@@ -653,7 +814,13 @@ impl Generator {
             None => self.emit_condition_test(&guard.condition)?,
         };
         let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
         // The if pair + the else-join label (measured: pools at @8/@9).
         self.output.anonymous_label_bump += 3;
         match self.try_float_dag_return(&synthetic(then_value)) {
@@ -668,12 +835,18 @@ impl Generator {
             // The then tail joins the caller's shared epilogue (measured:
             // b <addi;blr>); the else tail falls through into it.
             then_join = Some(self.output.instructions.len());
-            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
         } else {
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
         }
         let else_start = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[branch_index]
+        {
             *target = else_start;
         }
         let composition_real = self.float.else_composition.clone();
@@ -681,30 +854,59 @@ impl Generator {
             // The inner diamond opens the else branch: lis r0 + cmpw against
             // the preserved ix, ble to the punned arm, the literal arm
             // through the f0 scratch, the addis/li/stw/stw arm, join.
-            self.output.instructions.push(Instruction::load_immediate_shifted(0, payload.compare_high));
-            self.output.instructions.push(Instruction::CompareWord { a: payload.ix_register, b: 0 });
-            let skip_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward {
-                options: payload.skip_options,
-                condition_bit: payload.skip_bit,
-                target: 0,
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(0, payload.compare_high));
+            self.output.instructions.push(Instruction::CompareWord {
+                a: payload.ix_register,
+                b: 0,
             });
+            let skip_index = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: payload.skip_options,
+                    condition_bit: payload.skip_bit,
+                    target: 0,
+                });
             self.load_double_constant(0, payload.then_bits);
-            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: payload.qx_offset });
+            self.output
+                .instructions
+                .push(Instruction::StoreFloatDouble {
+                    s: 0,
+                    a: 1,
+                    offset: payload.qx_offset,
+                });
             let join_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
             let diamond_else = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_index] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[skip_index]
+            {
                 *target = diamond_else;
             }
-            self.output.instructions.push(Instruction::AddImmediateShifted {
-                d: payload.addis_target,
-                a: payload.ix_register,
-                immediate: payload.addis_shift,
+            self.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: payload.addis_target,
+                    a: payload.ix_register,
+                    immediate: payload.addis_shift,
+                });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, 0));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: payload.addis_target,
+                a: 1,
+                offset: payload.qx_offset,
             });
-            self.output.instructions.push(Instruction::load_immediate(0, 0));
-            self.output.instructions.push(Instruction::StoreWord { s: payload.addis_target, a: 1, offset: payload.qx_offset });
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: payload.qx_offset + 4 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: payload.qx_offset + 4,
+            });
             let join = self.output.instructions.len();
             if let Instruction::Branch { target } = &mut self.output.instructions[join_index] {
                 *target = join;
@@ -715,14 +917,17 @@ impl Generator {
             self.output.anonymous_label_bump += 4;
             // The composed tail: x re-reloads, the diamond local frame-reads.
             if let Some((name, _)) = param_ids.iter().find(|(_, value)| *value == 9) {
-                self.float.pseudo_params.retain(|(pseudo, _)| pseudo != name);
+                self.float
+                    .pseudo_params
+                    .retain(|(pseudo, _)| pseudo != name);
             }
             self.float.reload_x = Some(8);
             self.float.frame_local = Some((payload.qx_name.clone(), payload.qx_offset));
             let composed_synthetic = Function {
                 return_type: function.return_type,
                 section: None,
-                asm_body: None, force_active: false,
+                asm_body: None,
+                force_active: false,
                 name: function.name.clone(),
                 is_static: function.is_static,
                 is_weak: function.is_weak,
@@ -760,7 +965,9 @@ impl Generator {
                 }
             }
         } else {
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
         }
         self.float.pseudo_params.clear();
         Ok(true)
@@ -772,7 +979,10 @@ impl Generator {
     /// the tail's DAG assigns qx as a window-top tier value (the PHANTOM
     /// node) — and fall through the join into the tail (measured: the
     /// four-tail register battery; `return qx` alone stays deferred).
-    pub(crate) fn try_conditional_local_float_return(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_conditional_local_float_return(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         use mwcc_syntax_trees::Statement;
         if function.return_type != Type::Double
             || !function.guards.is_empty()
@@ -785,21 +995,30 @@ impl Generator {
             return Ok(false);
         };
         let local = &function.locals[0];
-        if local.declared_type != Type::Double || local.initializer.is_some() || local.array_length.is_some() {
+        if local.declared_type != Type::Double
+            || local.initializer.is_some()
+            || local.array_length.is_some()
+        {
             return Ok(false);
         }
         let qx = local.name.as_str();
         if matches!(return_expression, Expression::Variable(_)) {
             return Ok(false);
         }
-        let Some(Statement::If { condition, then_body, else_body }) = function.statements.first() else {
+        let Some(Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }) = function.statements.first()
+        else {
             return Ok(false);
         };
         let arm_literal = |body: &[Statement]| -> Option<u64> {
             match body {
-                [Statement::Assign { name, value: Expression::FloatLiteral(value) }] if name == qx => {
-                    Some(value.to_bits())
-                }
+                [Statement::Assign {
+                    name,
+                    value: Expression::FloatLiteral(value),
+                }] if name == qx => Some(value.to_bits()),
                 _ => None,
             }
         };
@@ -807,10 +1026,15 @@ impl Generator {
         // *((int*)&qx+1) = 0;` — HI a general leaf (stw direct) or
         // leaf±lis-able-constant (addis into the freed condition register).
         let punned_else: Option<&Expression> = match else_body.as_slice() {
-            [Statement::Store { target: hi_target, value: hi_value }, Statement::Store { target: lo_target, value: lo_value }]
-                if crate::frame::pun_word_offset_pub(hi_target, qx) == Some(0)
-                    && crate::frame::pun_word_offset_pub(lo_target, qx) == Some(4)
-                    && crate::analysis::constant_value(lo_value) == Some(0) =>
+            [Statement::Store {
+                target: hi_target,
+                value: hi_value,
+            }, Statement::Store {
+                target: lo_target,
+                value: lo_value,
+            }] if crate::frame::pun_word_offset_pub(hi_target, qx) == Some(0)
+                && crate::frame::pun_word_offset_pub(lo_target, qx) == Some(4)
+                && crate::analysis::constant_value(lo_value) == Some(0) =>
             {
                 Some(hi_value)
             }
@@ -847,9 +1071,11 @@ impl Generator {
                 };
                 Some((register, None))
             }
-            Some(Expression::Binary { operator, left, right })
-                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) =>
-            {
+            Some(Expression::Binary {
+                operator,
+                left,
+                right,
+            }) if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract) => {
                 // addis needs a plain-Variable condition whose register the
                 // shifted add reuses (measured: addis r3,r4,-32).
                 if !matches!(condition, Expression::Variable(_)) {
@@ -861,7 +1087,11 @@ impl Generator {
                 let Some(constant) = crate::analysis::constant_value(right) else {
                     return Ok(false);
                 };
-                let signed = if matches!(operator, BinaryOperator::Subtract) { -constant } else { constant };
+                let signed = if matches!(operator, BinaryOperator::Subtract) {
+                    -constant
+                } else {
+                    constant
+                };
                 if signed & 0xffff != 0 {
                     return Ok(false);
                 }
@@ -877,7 +1107,8 @@ impl Generator {
         let synthetic = Function {
             return_type: function.return_type,
             section: None,
-            asm_body: None, force_active: false,
+            asm_body: None,
+            force_active: false,
             name: function.name.clone(),
             is_static: function.is_static,
             is_weak: function.is_weak,
@@ -910,15 +1141,37 @@ impl Generator {
             // the tail reads qx as a FrameLoad (measured: the D2 battery).
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             self.frame_size = 16;
-            self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
             let skip_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
             self.load_double_constant(0, then_bits);
-            self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 8 });
+            self.output
+                .instructions
+                .push(Instruction::StoreFloatDouble {
+                    s: 0,
+                    a: 1,
+                    offset: 8,
+                });
             let join_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::Branch { target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
             let else_start = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_index] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[skip_index]
+            {
                 *target = else_start;
             }
             let hi_store_register = match addis_shift {
@@ -931,18 +1184,30 @@ impl Generator {
                         .get(name)
                         .map(|location| location.register)
                         .expect("condition tested above");
-                    self.output.instructions.push(Instruction::AddImmediateShifted {
-                        d: condition_register,
-                        a: hi_register,
-                        immediate: shift,
-                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::AddImmediateShifted {
+                            d: condition_register,
+                            a: hi_register,
+                            immediate: shift,
+                        });
                     condition_register
                 }
                 None => hi_register,
             };
-            self.output.instructions.push(Instruction::load_immediate(0, 0));
-            self.output.instructions.push(Instruction::StoreWord { s: hi_store_register, a: 1, offset: 8 });
-            self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 12 });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, 0));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: hi_store_register,
+                a: 1,
+                offset: 8,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 12,
+            });
             let join = self.output.instructions.len();
             if let Instruction::Branch { target } = &mut self.output.instructions[join_index] {
                 *target = join;
@@ -957,8 +1222,14 @@ impl Generator {
                     return other.map(|_| false);
                 }
             }
-            self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            });
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             // The FRAME form consumes 3 labels like the register form; the
             // root DECONTRACTION adds its own +1 inside the claim (measured:
             // pool @9 = bump 4 decontracted, extab @41 = bump 3 contracted).
@@ -982,12 +1253,22 @@ impl Generator {
         // The diamond: test; skip to the else arm; then-load; join branch.
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let skip_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
         self.load_double_constant(register, then_bits);
         let join_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::Branch { target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::Branch { target: 0 });
         let else_start = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[skip_index] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[skip_index]
+        {
             *target = else_start;
         }
         self.load_double_constant(register, else_bits);
@@ -1006,10 +1287,11 @@ impl Generator {
                 return other.map(|_| false);
             }
         }
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // The if pair + the join label (measured via objprobe).
         self.output.anonymous_label_bump += 3;
         Ok(true)
     }
 }
-

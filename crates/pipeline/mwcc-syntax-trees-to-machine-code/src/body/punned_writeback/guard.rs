@@ -50,7 +50,11 @@ impl Generator {
                 return Ok(false);
             }
             let (core, offset_k) = match init {
-                Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+                Expression::Binary {
+                    operator: BinaryOperator::Subtract,
+                    left,
+                    right,
+                } => {
                     let Some(k) = crate::analysis::constant_value(right) else {
                         return Ok(false);
                     };
@@ -60,7 +64,11 @@ impl Generator {
             };
             // `(punned >> S) & M` or bare `punned >> S`.
             let (shifted, mask) = match core {
-                Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
+                Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left,
+                    right,
+                } => {
                     let Some(mask) = crate::analysis::constant_value(right) else {
                         return Ok(false);
                     };
@@ -68,7 +76,12 @@ impl Generator {
                 }
                 other => (other, None),
             };
-            let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = shifted else {
+            let Expression::Binary {
+                operator: BinaryOperator::ShiftRight,
+                left,
+                right,
+            } = shifted
+            else {
                 return Ok(false);
             };
             let Expression::Variable(source) = left.as_ref() else {
@@ -100,8 +113,14 @@ impl Generator {
         }
         // statements = [If{cond, [early-return-x if]? [mutations]}] + one
         // punned store per local writing it back to ITS offset.
-        let (Some(Statement::If { condition, then_body, else_body }), stores) =
-            (function.statements.first(), &function.statements[1..])
+        let (
+            Some(Statement::If {
+                condition,
+                then_body,
+                else_body,
+            }),
+            stores,
+        ) = (function.statements.first(), &function.statements[1..])
         else {
             return Ok(false);
         };
@@ -125,7 +144,9 @@ impl Generator {
             for statement in block {
                 match statement {
                     Statement::Assign { name, value } => {
-                        let Some(index) = locals.iter().position(|&(local, _)| local == name.as_str()) else {
+                        let Some(index) =
+                            locals.iter().position(|&(local, _)| local == name.as_str())
+                        else {
                             return false;
                         };
                         if !mutated.contains(&index) {
@@ -133,12 +154,17 @@ impl Generator {
                         }
                         // The chain `i0 = i1 = C`: both locals mutate from
                         // one small constant.
-                        if let Expression::Assign { target, value: inner_value } = value {
+                        if let Expression::Assign {
+                            target,
+                            value: inner_value,
+                        } = value
+                        {
                             let Expression::Variable(inner) = target.as_ref() else {
                                 return false;
                             };
-                            let Some(inner_index) =
-                                locals.iter().position(|&(local, _)| local == inner.as_str())
+                            let Some(inner_index) = locals
+                                .iter()
+                                .position(|&(local, _)| local == inner.as_str())
                             else {
                                 return false;
                             };
@@ -180,8 +206,13 @@ impl Generator {
                         left,
                         right,
                     })) if matches!((left.as_ref(), right.as_ref()),
-                        (Expression::Variable(a), Expression::Variable(b)) if a == x && b == x) => {}
-                    Statement::If { condition: _, then_body, else_body } => {
+                        (Expression::Variable(a), Expression::Variable(b)) if a == x && b == x) => {
+                    }
+                    Statement::If {
+                        condition: _,
+                        then_body,
+                        else_body,
+                    } => {
                         *conditions += 1;
                         if !validate_block(then_body, locals, x, mutated, conditions, arms) {
                             return false;
@@ -201,12 +232,26 @@ impl Generator {
         let mut mutated: Vec<usize> = Vec::new();
         let mut inner_conditions = 0usize;
         let mut else_arms = 0usize;
-        if !validate_block(block, &locals, x, &mut mutated, &mut inner_conditions, &mut else_arms) {
+        if !validate_block(
+            block,
+            &locals,
+            x,
+            &mut mutated,
+            &mut inner_conditions,
+            &mut else_arms,
+        ) {
             return Ok(false);
         }
         if !else_body.is_empty() {
             else_arms += 1;
-            if !validate_block(else_body, &locals, x, &mut mutated, &mut inner_conditions, &mut else_arms) {
+            if !validate_block(
+                else_body,
+                &locals,
+                x,
+                &mut mutated,
+                &mut inner_conditions,
+                &mut else_arms,
+            ) {
                 return Ok(false);
             }
         }
@@ -219,7 +264,11 @@ impl Generator {
                 .map(|statement| match statement {
                     Statement::Assign { value, .. } => count_name_occurrences(value, name),
                     Statement::Return(Some(value)) => count_name_occurrences(value, name),
-                    Statement::If { condition, then_body, else_body } => {
+                    Statement::If {
+                        condition,
+                        then_body,
+                        else_body,
+                    } => {
                         count_name_occurrences(condition, name)
                             + block_reads(then_body, name)
                             + block_reads(else_body, name)
@@ -232,7 +281,11 @@ impl Generator {
             block
                 .iter()
                 .map(|statement| match statement {
-                    Statement::If { condition, then_body, else_body } => {
+                    Statement::If {
+                        condition,
+                        then_body,
+                        else_body,
+                    } => {
                         count_name_occurrences(condition, name)
                             + block_condition_reads(then_body, name)
                             + block_condition_reads(else_body, name)
@@ -243,12 +296,15 @@ impl Generator {
         }
         fn block_self_masks(block: &[Statement], name: &str) -> bool {
             block.iter().any(|statement| match statement {
-                Statement::Assign { name: target, value } => {
-                    target.as_str() == name && crate::analysis::constant_value(value).is_none()
-                }
-                Statement::If { then_body, else_body, .. } => {
-                    block_self_masks(then_body, name) || block_self_masks(else_body, name)
-                }
+                Statement::Assign {
+                    name: target,
+                    value,
+                } => target.as_str() == name && crate::analysis::constant_value(value).is_none(),
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => block_self_masks(then_body, name) || block_self_masks(else_body, name),
                 _ => false,
             })
         }
@@ -269,13 +325,21 @@ impl Generator {
         // spill, fadd clobbering f1 (x is spilled), the pooled 0.0, the
         // loads woven before the fcmpo, ble skip.
         let float_guard: Option<(u64, u64)> = match condition {
-            Expression::Binary { operator: BinaryOperator::Greater, left, right } => {
+            Expression::Binary {
+                operator: BinaryOperator::Greater,
+                left,
+                right,
+            } => {
                 let zero = match right.as_ref() {
                     Expression::FloatLiteral(value) => Some(value.to_bits()),
                     _ => None,
                 };
                 let huge = match left.as_ref() {
-                    Expression::Binary { operator: BinaryOperator::Add, left: huge, right: xvar } => {
+                    Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: huge,
+                        right: xvar,
+                    } => {
                         if matches!(xvar.as_ref(), Expression::Variable(name) if name == x) {
                             match huge.as_ref() {
                                 Expression::FloatLiteral(value) => Some(value.to_bits()),
@@ -316,8 +380,12 @@ impl Generator {
         // read nowhere else in the function.
         let mut guard_compare: Option<(i16, i64)> = None;
         if let Some(guard) = &guard_local {
-
-            let Expression::Binary { operator: BinaryOperator::Less, left, right } = condition else {
+            let Expression::Binary {
+                operator: BinaryOperator::Less,
+                left,
+                right,
+            } = condition
+            else {
                 return Ok(false);
             };
             if !matches!(left.as_ref(), Expression::Variable(name) if name == guard.name) {
@@ -332,7 +400,8 @@ impl Generator {
             let condition_reads = count_name_occurrences(condition, guard.name)
                 + block_condition_reads(block, guard.name)
                 + block_condition_reads(else_body, guard.name);
-            let non_condition = block_reads(block, guard.name) - block_condition_reads(block, guard.name)
+            let non_condition = block_reads(block, guard.name)
+                - block_condition_reads(block, guard.name)
                 + block_reads(else_body, guard.name)
                 - block_condition_reads(else_body, guard.name)
                 + stores
@@ -380,7 +449,11 @@ impl Generator {
         }
         fn block_needs_scratch(block: &[Statement]) -> bool {
             block.iter().any(|statement| match statement {
-                Statement::If { condition, then_body, else_body } => {
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
                     condition_needs_scratch(condition)
                         || block_needs_scratch(then_body)
                         || block_needs_scratch(else_body)
@@ -394,9 +467,11 @@ impl Generator {
             block.iter().any(|statement| match statement {
                 Statement::Assign { name: target, .. } => target.as_str() == name,
                 Statement::Return(_) => true,
-                Statement::If { then_body, else_body, .. } => {
-                    !else_body.is_empty() && covered(then_body, name) && covered(else_body, name)
-                }
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => !else_body.is_empty() && covered(then_body, name) && covered(else_body, name),
                 _ => false,
             })
         }
@@ -436,7 +511,13 @@ impl Generator {
         }
         // -- commit --
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
         let hoisted = if guard_local.is_none() && float_guard.is_none() {
             Some(self.emit_condition_test(condition)?)
         } else {
@@ -446,20 +527,34 @@ impl Generator {
             // The huge pool load precedes the spill (measured).
             self.load_double_constant(0, huge);
         }
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
         if let Some((_, zero)) = float_guard {
             // fadd f1,f0,f1 clobbers x's register — the spill covers the
             // tail's reload; the pooled 0.0 loads before the int reads.
-            self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 0, b: 1 });
+            self.output
+                .instructions
+                .push(Instruction::FloatAddDouble { d: 1, a: 0, b: 1 });
             self.load_double_constant(0, zero);
         }
         for (index, &(_, offset)) in locals.iter().enumerate() {
-            self.output.instructions.push(Instruction::LoadWord { d: registers[index], a: 1, offset: 8 + offset });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: registers[index],
+                a: 1,
+                offset: 8 + offset,
+            });
         }
         if float_guard.is_some() {
             // No has_float_branch bump: the writeback's fcmpo+ble counts
             // only the arm's own labels (measured: pool @50 vs +3's @53).
-            self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
         }
         if let Some(guard) = &guard_local {
             // The guard local computes AFTER the loads: the fused shift+mask
@@ -486,11 +581,13 @@ impl Generator {
                     });
                 }
                 None => {
-                    self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
-                        a: guard_register,
-                        s: source_register,
-                        shift: guard.shift,
-                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::ShiftRightAlgebraicImmediate {
+                            a: guard_register,
+                            s: source_register,
+                            shift: guard.shift,
+                        });
                 }
             }
             if guard_compare.is_none() && guard.offset_k != 0 {
@@ -506,7 +603,8 @@ impl Generator {
         }
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
-        let outer_laddered = !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
+        let outer_laddered =
+            !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
         if outer_laddered && !(guard_local.is_some() && guard_compare.is_none()) {
             // Laddered forms are BYTE-verified only for the multi-read
             // guard (L1: the addi lands in the home and every condition
@@ -528,24 +626,33 @@ impl Generator {
                         if bound == 0 {
                             // A zero bound records the fold itself — the
                             // compare is free (measured G1: addic. r0; bge).
-                            self.output.instructions.push(Instruction::AddImmediateCarryingRecord {
-                                d: 0,
-                                a: guard_register,
-                                immediate: negative,
-                            });
+                            self.output.instructions.push(
+                                Instruction::AddImmediateCarryingRecord {
+                                    d: 0,
+                                    a: guard_register,
+                                    immediate: negative,
+                                },
+                            );
                         } else {
                             self.output.instructions.push(Instruction::AddImmediate {
                                 d: 0,
                                 a: guard_register,
                                 immediate: negative,
                             });
-                            self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: bound });
+                            self.output
+                                .instructions
+                                .push(Instruction::CompareWordImmediate {
+                                    a: 0,
+                                    immediate: bound,
+                                });
                         }
                     } else {
-                        self.output.instructions.push(Instruction::CompareWordImmediate {
-                            a: guard_register,
-                            immediate: bound,
-                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::CompareWordImmediate {
+                                a: guard_register,
+                                immediate: bound,
+                            });
                     }
                     (4, 0) // bge — the Less guard's skip sense
                 }
@@ -613,12 +720,26 @@ impl Generator {
         walked?;
         self.bind_label(join);
         for (index, &(_, offset)) in locals.iter().enumerate() {
-            self.output.instructions.push(Instruction::StoreWord { s: registers[index], a: 1, offset: 8 + offset });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: registers[index],
+                a: 1,
+                offset: 8 + offset,
+            });
         }
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 1,
+            a: 1,
+            offset: 8,
+        });
         self.bind_label(epilogue);
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // Pre-pool labels: the outer if pair, one per additional punned
         // local, two per inner condition, one per else arm (measured up to
         // the two-condition/one-arm forms; deeper shapes iterate). The
@@ -633,9 +754,11 @@ impl Generator {
                         operator: BinaryOperator::Add,
                         ..
                     })) => 1,
-                    Statement::If { then_body, else_body, .. } => {
-                        count_fadd_returns(then_body) + count_fadd_returns(else_body)
-                    }
+                    Statement::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => count_fadd_returns(then_body) + count_fadd_returns(else_body),
                     _ => 0,
                 })
                 .sum()
@@ -649,5 +772,4 @@ impl Generator {
             + count_fadd_returns(else_body);
         Ok(true)
     }
-
 }

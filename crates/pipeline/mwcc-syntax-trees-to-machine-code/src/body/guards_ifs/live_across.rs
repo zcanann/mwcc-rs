@@ -15,8 +15,16 @@ impl Generator {
     pub(crate) fn try_float_param_reassign(&mut self, function: &Function) -> Compilation<bool> {
         // The only "calls" allowed are the __fabs INTRINSIC in the arms
         // (a single fabs instruction, not a real call — checked per arm below).
-        let has_real_call = function.return_expression.as_ref().is_some_and(crate::analysis::expression_has_call)
-            || function.locals.iter().any(|local| local.initializer.as_ref().is_some_and(crate::analysis::expression_has_call));
+        let has_real_call = function
+            .return_expression
+            .as_ref()
+            .is_some_and(crate::analysis::expression_has_call)
+            || function.locals.iter().any(|local| {
+                local
+                    .initializer
+                    .as_ref()
+                    .is_some_and(crate::analysis::expression_has_call)
+            });
         if !matches!(function.return_type, Type::Float | Type::Double)
             || function.return_expression.is_none()
             || !function.guards.is_empty()
@@ -35,7 +43,9 @@ impl Generator {
                     && !local.is_static
                     && local.array_length.is_none() =>
             {
-                let Some(Expression::Variable(source)) = &local.initializer else { return Ok(false) };
+                let Some(Expression::Variable(source)) = &local.initializer else {
+                    return Ok(false);
+                };
                 if self.float_register_of(source).is_err() {
                     return Ok(false);
                 }
@@ -52,7 +62,14 @@ impl Generator {
         // Statements: `if (int-param cmp const) { fparam = -fparam; }` runs.
         let mut reassigns: Vec<(&Expression, &str, bool)> = Vec::new();
         for statement in &function.statements {
-            let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
+            let Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } = statement
+            else {
+                return Ok(false);
+            };
             if !else_body.is_empty() || then_body.len() != 1 {
                 return Ok(false);
             }
@@ -67,15 +84,23 @@ impl Generator {
             if !condition_ok {
                 return Ok(false);
             }
-            let Statement::Assign { name, value } = &then_body[0] else { return Ok(false) };
+            let Statement::Assign { name, value } = &then_body[0] else {
+                return Ok(false);
+            };
             let target = resolve(alias, name);
             // `x = -x` (fneg) or `x = __fabs(x)` (the fabs instruction).
             let (source, is_abs) = match value {
-                Expression::Unary { operator: UnaryOperator::Negate, operand } => match operand.as_ref() {
+                Expression::Unary {
+                    operator: UnaryOperator::Negate,
+                    operand,
+                } => match operand.as_ref() {
                     Expression::Variable(source) => (source, false),
                     _ => return Ok(false),
                 },
-                Expression::Call { name: callee, arguments } if is_intrinsic_call(callee) => match arguments.as_slice() {
+                Expression::Call {
+                    name: callee,
+                    arguments,
+                } if is_intrinsic_call(callee) => match arguments.as_slice() {
                     [Expression::Variable(source)] => (source, true),
                     _ => return Ok(false),
                 },
@@ -97,35 +122,58 @@ impl Generator {
                 return Ok(false);
             }
             let register = self.float_register_of(source).expect("checked");
-            self.locations.insert(local.to_string(), crate::generator::Location {
-                class: crate::generator::ValueClass::Float,
-                register,
-                signed: true,
-                width: if function.return_type == Type::Float { 32 } else { 64 },
-                pointee: None,
-                stride: None,
-            });
+            self.locations.insert(
+                local.to_string(),
+                crate::generator::Location {
+                    class: crate::generator::ValueClass::Float,
+                    register,
+                    signed: true,
+                    width: if function.return_type == Type::Float {
+                        32
+                    } else {
+                        64
+                    },
+                    pointee: None,
+                    stride: None,
+                },
+            );
         }
         // Each if's join label advances mwcc's anonymous-@N counter by 2.
         self.output.anonymous_label_bump += 2 * reassigns.len() as u32;
         for (condition, target, is_abs) in &reassigns {
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             let branch_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
             let register = self.float_register_of(target).expect("checked");
             self.output.instructions.push(if *is_abs {
-                Instruction::FloatAbsolute { d: register, b: register }
+                Instruction::FloatAbsolute {
+                    d: register,
+                    b: register,
+                }
             } else {
-                Instruction::FloatNegate { d: register, b: register }
+                Instruction::FloatNegate {
+                    d: register,
+                    b: register,
+                }
             });
             let join = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_index]
+            {
                 *target = join;
             }
         }
         let result = Eabi::float_result().number;
         self.evaluate_tail(return_expression, function.return_type, result)?;
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 
@@ -138,7 +186,8 @@ impl Generator {
     /// and the trailing return/guards consume the locals as pseudo-params.
     pub(crate) fn try_live_across_branches(&mut self, function: &Function) -> Compilation<bool> {
         let int_return = function.return_type == Type::Int && function.return_expression.is_some();
-        let void_stores = function.return_type == Type::Void && function.return_expression.is_none();
+        let void_stores =
+            function.return_type == Type::Void && function.return_expression.is_none();
         if !(int_return || void_stores)
             || function_makes_call(function)
             || function.locals.is_empty()
@@ -153,7 +202,10 @@ impl Generator {
         // are allowed: their conditions/values may read the live locals, which
         // resolve through the registered home locations below.
         for guard in &function.guards {
-            if !matches!(&guard.condition, Expression::Variable(_) | Expression::Binary { .. }) {
+            if !matches!(
+                &guard.condition,
+                Expression::Variable(_) | Expression::Binary { .. }
+            ) {
                 return Ok(false);
             }
         }
@@ -168,15 +220,26 @@ impl Generator {
         }
         // The statements: a run of `if (param <cmp> const) { local = value; ... }`
         // blocks (no else), reassigning ONLY the declared locals.
-        let local_names: Vec<&str> = function.locals.iter().map(|local| local.name.as_str()).collect();
+        let local_names: Vec<&str> = function
+            .locals
+            .iter()
+            .map(|local| local.name.as_str())
+            .collect();
         let simple_value = |expression: &Expression| -> bool {
-            let readable = |name: &str| self.lookup_general(name).is_some() || local_names.contains(&name);
+            let readable =
+                |name: &str| self.lookup_general(name).is_some() || local_names.contains(&name);
             match expression {
                 Expression::IntegerLiteral(value) => i16::try_from(*value).is_ok(),
                 Expression::Variable(name) => readable(name.as_str()),
-                Expression::Binary { operator, left, right } => {
-                    matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply)
-                        && matches!(left.as_ref(), Expression::Variable(name) if readable(name.as_str()))
+                Expression::Binary {
+                    operator,
+                    left,
+                    right,
+                } => {
+                    matches!(
+                        operator,
+                        BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply
+                    ) && matches!(left.as_ref(), Expression::Variable(name) if readable(name.as_str()))
                         && matches!(right.as_ref(), Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok())
                 }
                 _ => false,
@@ -192,8 +255,13 @@ impl Generator {
                 if !void_stores {
                     return Ok(false);
                 }
-                let Expression::Variable(global) = target else { return Ok(false) };
-                if !matches!(self.globals.get(global.as_str()), Some(Type::Int | Type::UnsignedInt)) {
+                let Expression::Variable(global) = target else {
+                    return Ok(false);
+                };
+                if !matches!(
+                    self.globals.get(global.as_str()),
+                    Some(Type::Int | Type::UnsignedInt)
+                ) {
                     return Ok(false);
                 }
                 if !simple_value(value) {
@@ -206,21 +274,34 @@ impl Generator {
                 // A branch after the tail began — outside this slice.
                 return Ok(false);
             }
-            let Statement::If { condition, then_body, else_body } = statement else { return Ok(false) };
+            let Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } = statement
+            else {
+                return Ok(false);
+            };
             if !else_body.is_empty() {
                 return Ok(false);
             }
             // The condition: a bare param, or param <cmp> constant.
             let condition_param = match condition {
                 Expression::Variable(name) => Some(name.as_str()),
-                Expression::Binary { left, right, .. } => match (left.as_ref(), constant_value(right)) {
-                    (Expression::Variable(name), Some(_)) => Some(name.as_str()),
-                    _ => None,
-                },
+                Expression::Binary { left, right, .. } => {
+                    match (left.as_ref(), constant_value(right)) {
+                        (Expression::Variable(name), Some(_)) => Some(name.as_str()),
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
-            let Some(condition_param) = condition_param else { return Ok(false) };
-            if self.lookup_general(condition_param).is_none() || local_names.contains(&condition_param) {
+            let Some(condition_param) = condition_param else {
+                return Ok(false);
+            };
+            if self.lookup_general(condition_param).is_none()
+                || local_names.contains(&condition_param)
+            {
                 return Ok(false);
             }
             // A NARROW condition operand (`unsigned char t`) — mwcc interleaves the
@@ -237,7 +318,9 @@ impl Generator {
                 return Ok(false);
             }
             for inner in then_body {
-                let Statement::Assign { name, value } = inner else { return Ok(false) };
+                let Statement::Assign { name, value } = inner else {
+                    return Ok(false);
+                };
                 if !local_names.contains(&name.as_str()) || !simple_value(value) {
                     return Ok(false);
                 }
@@ -264,7 +347,11 @@ impl Generator {
                 _ => None,
             })
             .collect();
-        if function.locals.iter().any(|local| !assigned.contains(&local.name.as_str())) {
+        if function
+            .locals
+            .iter()
+            .any(|local| !assigned.contains(&local.name.as_str()))
+        {
             return Ok(false);
         }
         // Init values must be simple too.
@@ -281,7 +368,11 @@ impl Generator {
                 matches!(expression, Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right }
                     if matches!(left.as_ref(), Expression::Variable(inner) if inner == name) && constant_value(right).is_some())
             };
-            if function.return_expression.as_ref().is_some_and(&reads_as_addi) {
+            if function
+                .return_expression
+                .as_ref()
+                .is_some_and(&reads_as_addi)
+            {
                 return true;
             }
             if tail_stores.iter().any(|statement| matches!(statement, Statement::Store { value, .. } if reads_as_addi(value))) {
@@ -342,17 +433,32 @@ impl Generator {
                 !forbids_r0(&local.name)
             };
             let candidates: Vec<u8> = if !r0_ok {
-                dying_condition_registers.iter().copied().chain(5..=12).collect()
+                dying_condition_registers
+                    .iter()
+                    .copied()
+                    .chain(5..=12)
+                    .collect()
             } else {
-                std::iter::once(0u8).chain(dying_condition_registers.iter().copied()).chain(5..=12).collect()
+                std::iter::once(0u8)
+                    .chain(dying_condition_registers.iter().copied())
+                    .chain(5..=12)
+                    .collect()
             };
-            let Some(register) = candidates.into_iter().find(|register| !taken.contains(register)) else {
+            let Some(register) = candidates
+                .into_iter()
+                .find(|register| !taken.contains(register))
+            else {
                 return Ok(false);
             };
             taken.push(register);
             homes.push((local.name.clone(), register));
         }
-        let home_of = |name: &str| homes.iter().find(|(local, _)| local == name).map(|&(_, register)| register);
+        let home_of = |name: &str| {
+            homes
+                .iter()
+                .find(|(local, _)| local == name)
+                .map(|&(_, register)| register)
+        };
 
         // EMISSION. First branch: cmpwi, speculative inits, branch; later
         // branches: cmpwi, branch, arm. Each if's join label advances mwcc's
@@ -360,7 +466,14 @@ impl Generator {
         self.output.anonymous_label_bump += 2 * branch_conditions.len() as u32;
         for (index, statement) in function.statements.iter().enumerate() {
             // Tail stores emit after the branch structure.
-            let Statement::If { condition, then_body, .. } = statement else { break };
+            let Statement::If {
+                condition,
+                then_body,
+                ..
+            } = statement
+            else {
+                break;
+            };
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             if index == 0 {
                 for local in &function.locals {
@@ -369,58 +482,84 @@ impl Generator {
                 }
             }
             let branch_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
             for inner in then_body {
-                let Statement::Assign { name, value } = inner else { unreachable!() };
+                let Statement::Assign { name, value } = inner else {
+                    unreachable!()
+                };
                 // A reassignment may read the local itself (its home).
                 let home = home_of(name).expect("assigned");
                 self.evaluate_with_live_locals(value, home, &homes)?;
             }
             let join = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_index]
+            {
                 *target = join;
             }
         }
         // The trailing return consumes the locals as pseudo-params.
         for (name, register) in &homes {
-            self.locations.insert(name.clone(), crate::generator::Location {
-                class: crate::generator::ValueClass::General,
-                register: *register,
-                signed: true,
-                width: 32,
-                pointee: None,
-                stride: None,
-            });
+            self.locations.insert(
+                name.clone(),
+                crate::generator::Location {
+                    class: crate::generator::ValueClass::General,
+                    register: *register,
+                    signed: true,
+                    width: 32,
+                    pointee: None,
+                    stride: None,
+                },
+            );
         }
         if void_stores {
             // The tail: a single bare-local store emits directly; a richer run
             // routes through the DAG store-fill with the live locals as
             // PSEUDO-PARAMS (their homes registered above resolve through
             // lookup_general like any parameter).
-            if let [Statement::Store { target: Expression::Variable(global), value: Expression::Variable(name) }] =
-                tail_stores.as_slice()
+            if let [Statement::Store {
+                target: Expression::Variable(global),
+                value: Expression::Variable(name),
+            }] = tail_stores.as_slice()
             {
                 let source = self.lookup_general(name).expect("registered home");
                 self.record_relocation(RelocationKind::EmbSda21, global);
-                self.output.instructions.push(Instruction::StoreWord { s: source, a: 0, offset: 0 });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: source,
+                    a: 0,
+                    offset: 0,
+                });
                 self.emit_epilogue_and_return();
                 return Ok(true);
             }
             let mut pseudo = function.parameters.clone();
             for (name, _) in &homes {
-                pseudo.push(mwcc_syntax_trees::Parameter { parameter_type: Type::Int, name: name.clone() });
+                pseudo.push(mwcc_syntax_trees::Parameter {
+                    parameter_type: Type::Int,
+                    name: name.clone(),
+                });
             }
             let synthesized = Function {
                 return_type: Type::Void,
                 section: None,
-                asm_body: None, force_active: false,
+                asm_body: None,
+                force_active: false,
                 name: function.name.clone(),
                 is_static: function.is_static,
                 is_weak: function.is_weak,
                 text_deferred: false,
                 parameters: pseudo,
                 locals: Vec::new(),
-                statements: tail_stores.iter().map(|&statement| statement.clone()).collect(),
+                statements: tail_stores
+                    .iter()
+                    .map(|&statement| statement.clone())
+                    .collect(),
                 guards: Vec::new(),
                 return_expression: None,
             };
@@ -433,11 +572,12 @@ impl Generator {
         let result = Eabi::general_result().number;
         if function.guards.is_empty() {
             self.evaluate_tail(return_expression, Type::Int, result)?;
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
         } else {
             self.emit_guard_sequence(&function.guards, return_expression, Type::Int, result)?;
         }
         Ok(true)
     }
-
 }

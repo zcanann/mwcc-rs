@@ -9,7 +9,11 @@ use mwcc_syntax_trees::{Function, Type};
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const BIO_CONV_FROM_AST_HASH: u64 = 0x9955b3eb1383ff26; // pikmin; +BfBB (f510)
 /// Cosmetic AST variants with IDENTICAL instruction streams (@N-normalized).
-const BIO_CONV_FROM_AST_HASHES: &[u64] = &[BIO_CONV_FROM_AST_HASH, 0x7eb651f5d38f8dc9, 0x783f2f528f6d1b98];
+const BIO_CONV_FROM_AST_HASHES: &[u64] = &[
+    BIO_CONV_FROM_AST_HASH,
+    0x7eb651f5d38f8dc9,
+    0x783f2f528f6d1b98,
+];
 
 impl Generator {
     pub(super) fn try_bio_conv_from(&mut self, function: &Function) -> Compilation<bool> {
@@ -36,11 +40,14 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

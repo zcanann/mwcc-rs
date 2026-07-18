@@ -3,7 +3,6 @@
 #[allow(unused_imports)]
 use super::*;
 
-
 /// How a run of constant stores materializes its values (see `constant_store_run_plan`). `AllSame`
 /// reuses the scratch register for one repeated `li`; `Distinct` gives each store's value its own
 /// register (materialized up front, r(N+1) descending to r3 with the last in r0), stored in source
@@ -17,7 +16,14 @@ pub(crate) enum ConstStoreRun {
 /// (or the commuted `<const> OP <var>`). Two consecutive guards with the same key share one
 /// `cmpwi` in mwcc, which emit_guard_sequence does not model (so it defers such a pair).
 pub(crate) fn guard_comparison_key(condition: &Expression) -> Option<(String, i64)> {
-    let Expression::Binary { operator, left, right } = condition else { return None };
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = condition
+    else {
+        return None;
+    };
     if !matches!(
         operator,
         BinaryOperator::Less
@@ -45,7 +51,9 @@ pub(crate) fn accesses_pointer(expression: &Expression, pointer: &str) -> bool {
     let is_pointer = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == pointer);
     match expression {
         Expression::Dereference { pointer: inner } => is_pointer(inner.as_ref()),
-        Expression::Index { base, index } => is_pointer(base.as_ref()) && constant_value(index).is_some(),
+        Expression::Index { base, index } => {
+            is_pointer(base.as_ref()) && constant_value(index).is_some()
+        }
         Expression::Member { base, .. } => {
             is_pointer(base.as_ref())
                 || matches!(base.as_ref(), Expression::Dereference { pointer: inner } if is_pointer(inner.as_ref()))
@@ -59,7 +67,12 @@ pub(crate) fn accesses_pointer(expression: &Expression, pointer: &str) -> bool {
 /// `(pointer, hot_access, cold_constant)`. mwcc branches on `p == 0` to the cold constant and puts the
 /// access in the fall-through — it cannot fold to a branchless select because dereferencing null is
 /// unsafe. Int-width return only (a narrow return sign-extends even the cold constant, a byte diff).
-pub(crate) fn guarded_null_dereference<'a>(condition: &'a Expression, value: &'a Expression, default: &'a Expression, return_type: Type) -> Option<(&'a str, &'a Expression, &'a Expression)> {
+pub(crate) fn guarded_null_dereference<'a>(
+    condition: &'a Expression,
+    value: &'a Expression,
+    default: &'a Expression,
+    return_type: Type,
+) -> Option<(&'a str, &'a Expression, &'a Expression)> {
     // int/unsigned or a narrow int (char/short): the cold constant is truncated and loaded directly
     // (no over-extension) and each hot access loads at its natural width (lbz/lha/lwz).
     if !matches!(return_type, Type::Int | Type::UnsignedInt) && !is_narrow_int(return_type) {
@@ -68,7 +81,10 @@ pub(crate) fn guarded_null_dereference<'a>(condition: &'a Expression, value: &'a
     match condition {
         // `if (!p) return VALUE; return DEFAULT;` — p == 0 yields the constant VALUE (cold), p != 0
         // yields the DEFAULT access of p (hot).
-        Expression::Unary { operator: UnaryOperator::LogicalNot, operand } => {
+        Expression::Unary {
+            operator: UnaryOperator::LogicalNot,
+            operand,
+        } => {
             if let Expression::Variable(pointer) = operand.as_ref() {
                 if constant_value(value).is_some() && accesses_pointer(default, pointer) {
                     return Some((pointer.as_str(), default, value));
@@ -92,8 +108,16 @@ pub(crate) fn guarded_null_dereference<'a>(condition: &'a Expression, value: &'a
 /// guard `if (!c) ...` is compiled by stripping the `!` and swapping the arms —
 /// `(c) ? default : value` — not as the bare `(!c) ? value : default` a ternary
 /// would (mwcc normalizes only on the guard path, not a written ternary).
-pub(crate) fn guard_select(condition: &Expression, value: &Expression, default: &Expression) -> Expression {
-    if let Expression::Unary { operator: UnaryOperator::LogicalNot, operand } = condition {
+pub(crate) fn guard_select(
+    condition: &Expression,
+    value: &Expression,
+    default: &Expression,
+) -> Expression {
+    if let Expression::Unary {
+        operator: UnaryOperator::LogicalNot,
+        operand,
+    } = condition
+    {
         Expression::Conditional {
             condition: Box::new((**operand).clone()),
             when_true: Box::new(default.clone()),
@@ -115,10 +139,18 @@ pub(crate) fn statement_references_name(statement: &Statement, name: &str) -> bo
         // Jumps redirect control anywhere — conservative, like the other
         // control-flow arms below.
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => true,
-        Statement::Store { target, value } => expression_reads_name(target, name) || expression_reads_name(value, name),
-        Statement::Assign { name: target, value } => target == name || expression_reads_name(value, name),
+        Statement::Store { target, value } => {
+            expression_reads_name(target, name) || expression_reads_name(value, name)
+        }
+        Statement::Assign {
+            name: target,
+            value,
+        } => target == name || expression_reads_name(value, name),
         Statement::Expression(expression) => expression_reads_name(expression, name),
-        Statement::If { .. } | Statement::Switch { .. } | Statement::Loop { .. } | Statement::Return(_) => true,
+        Statement::If { .. }
+        | Statement::Switch { .. }
+        | Statement::Loop { .. }
+        | Statement::Return(_) => true,
     }
 }
 
@@ -132,23 +164,43 @@ pub(crate) fn remove_dead_locals(function: &Function) -> Option<Function> {
     }
     let referenced = |name: &str| -> bool {
         function.locals.iter().any(|local| {
-            local.name != name && local.initializer.as_ref().map_or(false, |init| expression_reads_name(init, name))
-        }) || function.statements.iter().any(|statement| statement_references_name(statement, name))
+            local.name != name
+                && local
+                    .initializer
+                    .as_ref()
+                    .map_or(false, |init| expression_reads_name(init, name))
+        }) || function
+            .statements
+            .iter()
+            .any(|statement| statement_references_name(statement, name))
             || function.guards.iter().any(|guard| {
-                expression_reads_name(&guard.condition, name) || expression_reads_name(&guard.value, name)
+                expression_reads_name(&guard.condition, name)
+                    || expression_reads_name(&guard.value, name)
             })
-            || function.return_expression.as_ref().map_or(false, |ret| expression_reads_name(ret, name))
+            || function
+                .return_expression
+                .as_ref()
+                .map_or(false, |ret| expression_reads_name(ret, name))
     };
     let kept: Vec<LocalDeclaration> = function
         .locals
         .iter()
-        .filter(|local| referenced(&local.name) || local.initializer.as_ref().map_or(false, |init| expression_has_call(init)))
+        .filter(|local| {
+            referenced(&local.name)
+                || local
+                    .initializer
+                    .as_ref()
+                    .map_or(false, |init| expression_has_call(init))
+        })
         .cloned()
         .collect();
     if kept.len() == function.locals.len() {
         return None;
     }
-    Some(Function { locals: kept, ..function.clone() })
+    Some(Function {
+        locals: kept,
+        ..function.clone()
+    })
 }
 
 /// A DEAD trailing local whose initializer has a side effect (`int x = g();` where x is never read):
@@ -167,17 +219,23 @@ pub(crate) fn hoist_dead_trailing_call_local(function: &Function) -> Option<Func
         return None;
     }
     // Dead: not read by any earlier local's initializer, a statement, a guard, or the return.
-    let read_elsewhere = function
-        .locals
+    let read_elsewhere = function.locals.iter().rev().skip(1).any(|local| {
+        local
+            .initializer
+            .as_ref()
+            .map_or(false, |init| expression_reads_name(init, &name))
+    }) || function
+        .statements
         .iter()
-        .rev()
-        .skip(1)
-        .any(|local| local.initializer.as_ref().map_or(false, |init| expression_reads_name(init, &name)))
-        || function.statements.iter().any(|statement| statement_references_name(statement, &name))
+        .any(|statement| statement_references_name(statement, &name))
         || function.guards.iter().any(|guard| {
-            expression_reads_name(&guard.condition, &name) || expression_reads_name(&guard.value, &name)
+            expression_reads_name(&guard.condition, &name)
+                || expression_reads_name(&guard.value, &name)
         })
-        || function.return_expression.as_ref().map_or(false, |ret| expression_reads_name(ret, &name));
+        || function
+            .return_expression
+            .as_ref()
+            .map_or(false, |ret| expression_reads_name(ret, &name));
     if read_elsewhere {
         return None;
     }
@@ -185,7 +243,11 @@ pub(crate) fn hoist_dead_trailing_call_local(function: &Function) -> Option<Func
     locals.pop();
     let mut statements = function.statements.clone();
     statements.insert(0, Statement::Expression(initializer));
-    Some(Function { locals, statements, ..function.clone() })
+    Some(Function {
+        locals,
+        statements,
+        ..function.clone()
+    })
 }
 
 /// Fold a pure function-pointer alias local into the single call THROUGH it: `F t = gf;
@@ -205,7 +267,9 @@ pub(crate) fn inline_first_call_target_alias(function: &Function) -> Option<Func
     let Some(Expression::Variable(target)) = &local.initializer else {
         return None;
     };
-    let Some(Statement::Expression(Expression::Call { name, arguments })) = function.statements.first() else {
+    let Some(Statement::Expression(Expression::Call { name, arguments })) =
+        function.statements.first()
+    else {
         return None;
     };
     if name != &local.name {
@@ -213,15 +277,27 @@ pub(crate) fn inline_first_call_target_alias(function: &Function) -> Option<Func
     }
     let reads_local = |expression: &Expression| expression_reads_name(expression, &local.name);
     if arguments.iter().any(reads_local)
-        || function.statements[1..].iter().any(|statement| statement_references_name(statement, &local.name))
-        || function.guards.iter().any(|guard| reads_local(&guard.condition) || reads_local(&guard.value))
+        || function.statements[1..]
+            .iter()
+            .any(|statement| statement_references_name(statement, &local.name))
+        || function
+            .guards
+            .iter()
+            .any(|guard| reads_local(&guard.condition) || reads_local(&guard.value))
         || function.return_expression.as_ref().is_some_and(reads_local)
     {
         return None;
     }
     let mut statements = function.statements.clone();
-    statements[0] = Statement::Expression(Expression::Call { name: target.clone(), arguments: arguments.clone() });
-    Some(Function { locals: Vec::new(), statements, ..function.clone() })
+    statements[0] = Statement::Expression(Expression::Call {
+        name: target.clone(),
+        arguments: arguments.clone(),
+    });
+    Some(Function {
+        locals: Vec::new(),
+        statements,
+        ..function.clone()
+    })
 }
 
 /// Fold single-assignment, return-only locals (whose initializers make no call) into
@@ -242,7 +318,10 @@ pub(crate) fn inline_first_call_target_alias(function: &Function) -> Option<Func
 /// dedup-safe bucket by the caller.
 /// Substitute values into every expression position of a statement (recursing
 /// into if-blocks).
-pub(crate) fn substitute_statement(statement: &Statement, values: &std::collections::HashMap<String, Expression>) -> Statement {
+pub(crate) fn substitute_statement(
+    statement: &Statement,
+    values: &std::collections::HashMap<String, Expression>,
+) -> Statement {
     match statement {
         Statement::Store { target, value } => Statement::Store {
             target: crate::value_tracking::substitute(target, values),
@@ -252,10 +331,20 @@ pub(crate) fn substitute_statement(statement: &Statement, values: &std::collecti
             name: name.clone(),
             value: crate::value_tracking::substitute(value, values),
         },
-        Statement::If { condition, then_body, else_body } => Statement::If {
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => Statement::If {
             condition: crate::value_tracking::substitute(condition, values),
-            then_body: then_body.iter().map(|inner| substitute_statement(inner, values)).collect(),
-            else_body: else_body.iter().map(|inner| substitute_statement(inner, values)).collect(),
+            then_body: then_body
+                .iter()
+                .map(|inner| substitute_statement(inner, values))
+                .collect(),
+            else_body: else_body
+                .iter()
+                .map(|inner| substitute_statement(inner, values))
+                .collect(),
         },
         other => other.clone(),
     }
@@ -263,11 +352,23 @@ pub(crate) fn substitute_statement(statement: &Statement, values: &std::collecti
 
 pub(crate) fn statement_reads(statement: &Statement, name: &str) -> usize {
     match statement {
-        Statement::Store { target, value } => count_name_occurrences(target, name) + count_name_occurrences(value, name),
+        Statement::Store { target, value } => {
+            count_name_occurrences(target, name) + count_name_occurrences(value, name)
+        }
         Statement::Assign { value, .. } => count_name_occurrences(value, name),
-        Statement::If { then_body, else_body, .. } => {
-            then_body.iter().map(|inner| statement_reads(inner, name)).sum::<usize>()
-                + else_body.iter().map(|inner| statement_reads(inner, name)).sum::<usize>()
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body
+                .iter()
+                .map(|inner| statement_reads(inner, name))
+                .sum::<usize>()
+                + else_body
+                    .iter()
+                    .map(|inner| statement_reads(inner, name))
+                    .sum::<usize>()
         }
         _ => 0,
     }
@@ -279,9 +380,15 @@ pub(crate) fn statement_reads(statement: &Statement, name: &str) -> usize {
 pub(crate) fn is_punned_frame_read(expression: &Expression) -> bool {
     fn is_address_of_variable(pointer: &Expression) -> bool {
         match pointer {
-            Expression::AddressOf { operand } => matches!(operand.as_ref(), Expression::Variable(_)),
+            Expression::AddressOf { operand } => {
+                matches!(operand.as_ref(), Expression::Variable(_))
+            }
             Expression::Cast { operand, .. } => is_address_of_variable(operand),
-            Expression::Binary { operator: BinaryOperator::Add | BinaryOperator::Subtract, left, right } => {
+            Expression::Binary {
+                operator: BinaryOperator::Add | BinaryOperator::Subtract,
+                left,
+                right,
+            } => {
                 (constant_value(left).is_some() && is_address_of_variable(right))
                     || (constant_value(right).is_some() && is_address_of_variable(left))
             }
@@ -293,16 +400,21 @@ pub(crate) fn is_punned_frame_read(expression: &Expression) -> bool {
         // The masked word (`hx & 0x7fffffff`) shares its punned load AND the mask
         // through the guard-chain emitter, so it is dedup-safe in guard conditions
         // the same way the bare read is.
-        Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
-            constant_value(right).is_some() && is_punned_frame_read(left)
-        }
+        Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left,
+            right,
+        } => constant_value(right).is_some() && is_punned_frame_read(left),
         _ => false,
     }
 }
 
 /// See `lower_function`: reads of static const float/double globals become their
 /// literal values (mwcc de-names them into the anonymous constant pool).
-pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwcc_syntax_trees::GlobalDeclaration]) -> Option<Function> {
+pub(crate) fn substitute_const_float_globals(
+    function: &Function,
+    globals: &[mwcc_syntax_trees::GlobalDeclaration],
+) -> Option<Function> {
     let shadowed: std::collections::HashSet<&str> = function
         .parameters
         .iter()
@@ -326,7 +438,11 @@ pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwc
     if values.is_empty() {
         return None;
     }
-    let reads_any = |expression: &Expression| values.keys().any(|name| expression_reads_name(expression, name));
+    let reads_any = |expression: &Expression| {
+        values
+            .keys()
+            .any(|name| expression_reads_name(expression, name))
+    };
     let mut touched = false;
     let map = |expression: &Expression, touched: &mut bool| {
         if reads_any(expression) {
@@ -336,15 +452,34 @@ pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwc
             expression.clone()
         }
     };
-    fn map_statement(statement: &Statement, map: &mut dyn FnMut(&Expression) -> Expression) -> Statement {
+    fn map_statement(
+        statement: &Statement,
+        map: &mut dyn FnMut(&Expression) -> Expression,
+    ) -> Statement {
         match statement {
-            Statement::Store { target, value } => Statement::Store { target: map(target), value: map(value) },
-            Statement::Assign { name, value } => Statement::Assign { name: name.clone(), value: map(value) },
+            Statement::Store { target, value } => Statement::Store {
+                target: map(target),
+                value: map(value),
+            },
+            Statement::Assign { name, value } => Statement::Assign {
+                name: name.clone(),
+                value: map(value),
+            },
             Statement::Expression(expression) => Statement::Expression(map(expression)),
-            Statement::If { condition, then_body, else_body } => Statement::If {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => Statement::If {
                 condition: map(condition),
-                then_body: then_body.iter().map(|inner| map_statement(inner, map)).collect(),
-                else_body: else_body.iter().map(|inner| map_statement(inner, map)).collect(),
+                then_body: then_body
+                    .iter()
+                    .map(|inner| map_statement(inner, map))
+                    .collect(),
+                else_body: else_body
+                    .iter()
+                    .map(|inner| map_statement(inner, map))
+                    .collect(),
             },
             Statement::Return(value) => Statement::Return(value.as_ref().map(map)),
             other => other.clone(),
@@ -354,7 +489,8 @@ pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwc
     let function = Function {
         return_type: function.return_type,
         section: function.section.clone(),
-        asm_body: None, force_active: false,
+        asm_body: None,
+        force_active: false,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -363,20 +499,44 @@ pub(crate) fn substitute_const_float_globals(function: &Function, globals: &[mwc
         locals: function
             .locals
             .iter()
-            .map(|local| LocalDeclaration { initializer: local.initializer.as_ref().map(&mut map_expression), ..local.clone() })
+            .map(|local| LocalDeclaration {
+                initializer: local.initializer.as_ref().map(&mut map_expression),
+                ..local.clone()
+            })
             .collect(),
-        statements: function.statements.iter().map(|statement| map_statement(statement, &mut map_expression)).collect(),
+        statements: function
+            .statements
+            .iter()
+            .map(|statement| map_statement(statement, &mut map_expression))
+            .collect(),
         guards: function
             .guards
             .iter()
-            .map(|guard| GuardedReturn { condition: map_expression(&guard.condition), value: map_expression(&guard.value) })
+            .map(|guard| GuardedReturn {
+                condition: map_expression(&guard.condition),
+                value: map_expression(&guard.value),
+            })
             .collect(),
         return_expression: function.return_expression.as_ref().map(&mut map_expression),
     };
     touched.then_some(function)
 }
 
-pub(crate) fn inline_frame_feeding_locals(function: &Function) -> Option<Function> {
+/// The normalized body plus the source-local pressure erased by normalization.
+///
+/// Older generators reserve a rounded word slot for frame-feeding register
+/// locals, except for locals read by more than one guard test: those stay live
+/// in a register across the tests.  Keep the source facts here and leave the
+/// version-specific layout decision to the frame emitter.
+pub(crate) struct InlinedFrameFeedingLocals {
+    pub(crate) function: Function,
+    pub(crate) local_count: usize,
+    pub(crate) repeated_guard_local_count: usize,
+}
+
+pub(crate) fn inline_frame_feeding_locals(
+    function: &Function,
+) -> Option<InlinedFrameFeedingLocals> {
     if function.locals.is_empty() {
         return None;
     }
@@ -386,17 +546,34 @@ pub(crate) fn inline_frame_feeding_locals(function: &Function) -> Option<Functio
     // statement kinds keep the pass out.
     // A statement ASSIGNING a local would read back a stale substituted value —
     // those bodies (the frexp family) belong to the frame path, not this pass.
-    let local_names: std::collections::HashSet<&str> = function.locals.iter().map(|local| local.name.as_str()).collect();
+    let local_names: std::collections::HashSet<&str> = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect();
     let assigns_local = |statement: &Statement| match statement {
         Statement::Assign { name, .. } => local_names.contains(name.as_str()),
         _ => false,
     };
-    let simple = |statement: &Statement| matches!(statement, Statement::Store { .. } | Statement::Assign { .. });
+    let simple = |statement: &Statement| {
+        matches!(
+            statement,
+            Statement::Store { .. } | Statement::Assign { .. }
+        )
+    };
     if !function.statements.iter().all(|statement| match statement {
         Statement::Store { .. } => true,
-        Statement::If { then_body, else_body, .. } => {
-            then_body.iter().all(|inner| simple(inner) && !assigns_local(inner))
-                && else_body.iter().all(|inner| simple(inner) && !assigns_local(inner))
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body
+                .iter()
+                .all(|inner| simple(inner) && !assigns_local(inner))
+                && else_body
+                    .iter()
+                    .all(|inner| simple(inner) && !assigns_local(inner))
         }
         _ => false,
     }) {
@@ -421,7 +598,9 @@ pub(crate) fn inline_frame_feeding_locals(function: &Function) -> Option<Functio
             return None;
         }
     }
-    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    let mut values: std::collections::HashMap<String, Expression> =
+        std::collections::HashMap::new();
+    let mut repeated_guard_local_count = 0usize;
     for (index, local) in function.locals.iter().enumerate() {
         let initializer = local.initializer.as_ref()?;
         if expression_has_call(initializer) {
@@ -442,10 +621,15 @@ pub(crate) fn inline_frame_feeding_locals(function: &Function) -> Option<Functio
                 .statements
                 .iter()
                 .map(|statement| match statement {
-                    Statement::If { condition, .. } => count_name_occurrences(condition, &local.name),
+                    Statement::If { condition, .. } => {
+                        count_name_occurrences(condition, &local.name)
+                    }
                     _ => 0,
                 })
                 .sum::<usize>();
+        if guard_condition_reads > 1 {
+            repeated_guard_local_count += 1;
+        }
         let other_reads = function.locals[index + 1..]
             .iter()
             .filter_map(|later| later.initializer.as_ref())
@@ -464,37 +648,47 @@ pub(crate) fn inline_frame_feeding_locals(function: &Function) -> Option<Functio
             + count_name_occurrences(return_expression, &local.name);
         // The pun check runs on the SUBSTITUTED initializer — `int ix = hx & C;`
         // resolves through hx's own punned read first.
-        let dedup_safe = is_punned_frame_read(&crate::value_tracking::substitute(initializer, &values)) && other_reads == 0;
+        let dedup_safe =
+            is_punned_frame_read(&crate::value_tracking::substitute(initializer, &values))
+                && other_reads == 0;
         if other_reads + if dedup_safe { 0 } else { guard_condition_reads } > 1 {
             return None;
         }
         let resolved = crate::value_tracking::substitute(initializer, &values);
         values.insert(local.name.clone(), resolved);
     }
-    Some(Function {
-        return_type: function.return_type,
-        section: function.section.clone(),
-        asm_body: None, force_active: false,
-        name: function.name.clone(),
-        is_static: function.is_static,
-        is_weak: function.is_weak,
-        text_deferred: function.text_deferred,
-        parameters: function.parameters.clone(),
-        locals: Vec::new(),
-        statements: function
-            .statements
-            .iter()
-            .map(|statement| substitute_statement(statement, &values))
-            .collect(),
-        guards: function
-            .guards
-            .iter()
-            .map(|guard| GuardedReturn {
-                condition: crate::value_tracking::substitute(&guard.condition, &values),
-                value: crate::value_tracking::substitute(&guard.value, &values),
-            })
-            .collect(),
-        return_expression: Some(crate::value_tracking::substitute(return_expression, &values)),
+    Some(InlinedFrameFeedingLocals {
+        function: Function {
+            return_type: function.return_type,
+            section: function.section.clone(),
+            asm_body: None,
+            force_active: false,
+            name: function.name.clone(),
+            is_static: function.is_static,
+            is_weak: function.is_weak,
+            text_deferred: function.text_deferred,
+            parameters: function.parameters.clone(),
+            locals: Vec::new(),
+            statements: function
+                .statements
+                .iter()
+                .map(|statement| substitute_statement(statement, &values))
+                .collect(),
+            guards: function
+                .guards
+                .iter()
+                .map(|guard| GuardedReturn {
+                    condition: crate::value_tracking::substitute(&guard.condition, &values),
+                    value: crate::value_tracking::substitute(&guard.value, &values),
+                })
+                .collect(),
+            return_expression: Some(crate::value_tracking::substitute(
+                return_expression,
+                &values,
+            )),
+        },
+        local_count: function.locals.len(),
+        repeated_guard_local_count,
     })
 }
 
@@ -508,7 +702,10 @@ pub(crate) fn normalize_leading_local_assigns(function: &Function) -> Option<Fun
     if function.return_type != Type::Double
         || function.locals.is_empty()
         || function.statements.is_empty()
-        || function.locals.iter().any(|local| local.initializer.is_some() || local.array_length.is_some())
+        || function
+            .locals
+            .iter()
+            .any(|local| local.initializer.is_some() || local.array_length.is_some())
     {
         return None;
     }
@@ -516,7 +713,10 @@ pub(crate) fn normalize_leading_local_assigns(function: &Function) -> Option<Fun
     let mut rest = function.statements.as_slice();
     while let [Statement::Assign { name, value }, tail @ ..] = rest {
         let is_declared = function.locals.iter().any(|local| &local.name == name);
-        if !is_declared || assigned.iter().any(|(seen, _)| seen == name) || expression_has_call(value) {
+        if !is_declared
+            || assigned.iter().any(|(seen, _)| seen == name)
+            || expression_has_call(value)
+        {
             break;
         }
         assigned.push((name.clone(), value.clone()));
@@ -535,7 +735,11 @@ pub(crate) fn normalize_leading_local_assigns(function: &Function) -> Option<Fun
     }
     let mut locals: Vec<LocalDeclaration> = Vec::new();
     for (name, value) in &assigned {
-        let declared = function.locals.iter().find(|local| &local.name == name).expect("checked above");
+        let declared = function
+            .locals
+            .iter()
+            .find(|local| &local.name == name)
+            .expect("checked above");
         let mut normalized = declared.clone();
         normalized.initializer = Some(value.clone());
         locals.push(normalized);
@@ -548,7 +752,8 @@ pub(crate) fn normalize_leading_local_assigns(function: &Function) -> Option<Fun
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
-        asm_body: None, force_active: false,
+        asm_body: None,
+        force_active: false,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -577,10 +782,12 @@ pub(crate) fn inline_return_only_locals(function: &Function) -> Option<Function>
         .map(|parameter| parameter.name.as_str())
         .chain(function.locals.iter().map(|local| local.name.as_str()))
         .collect();
-    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    let mut values: std::collections::HashMap<String, Expression> =
+        std::collections::HashMap::new();
     for local in &function.locals {
         let initializer = local.initializer.as_ref()?;
-        if expression_has_call(initializer) || expression_reads_memory(initializer, &register_names) {
+        if expression_has_call(initializer) || expression_reads_memory(initializer, &register_names)
+        {
             return None;
         }
         let resolved = crate::value_tracking::substitute(initializer, &values);
@@ -593,14 +800,19 @@ pub(crate) fn inline_return_only_locals(function: &Function) -> Option<Function>
         let Statement::Expression(expression) = statement else {
             return None;
         };
-        if function.locals.iter().any(|local| expression_reads_name(expression, &local.name)) {
+        if function
+            .locals
+            .iter()
+            .any(|local| expression_reads_name(expression, &local.name))
+        {
             return None;
         }
     }
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
-        asm_body: None, force_active: false,
+        asm_body: None,
+        force_active: false,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -609,7 +821,10 @@ pub(crate) fn inline_return_only_locals(function: &Function) -> Option<Function>
         locals: Vec::new(),
         statements: function.statements.clone(),
         guards: function.guards.clone(),
-        return_expression: Some(crate::value_tracking::substitute(return_expression, &values)),
+        return_expression: Some(crate::value_tracking::substitute(
+            return_expression,
+            &values,
+        )),
     })
 }
 
@@ -623,18 +838,27 @@ pub(crate) fn inline_switch_scrutinee_locals(function: &Function) -> Option<Func
     if function.locals.is_empty() || !function.guards.is_empty() || function_makes_call(function) {
         return None;
     }
-    let [Statement::Switch { scrutinee, arms, default }] = function.statements.as_slice() else {
+    let [Statement::Switch {
+        scrutinee,
+        arms,
+        default,
+    }] = function.statements.as_slice()
+    else {
         return None;
     };
     // Each local's value, with earlier locals folded in. A narrow local (width < 32) changes the
     // lowering (truncation/sign-extension) and a call-bearing initializer is a call result — bail.
-    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    let mut values: std::collections::HashMap<String, Expression> =
+        std::collections::HashMap::new();
     for local in &function.locals {
         let initializer = local.initializer.as_ref()?;
         if expression_has_call(initializer) || local.declared_type.width() < 32 {
             return None;
         }
-        values.insert(local.name.clone(), crate::value_tracking::substitute(initializer, &values));
+        values.insert(
+            local.name.clone(),
+            crate::value_tracking::substitute(initializer, &values),
+        );
     }
     // No inlined local may be read more than once across the whole body, so substituting it cannot
     // duplicate a computation (mwcc materializes a multiply-read value once in a register).
@@ -673,7 +897,8 @@ pub(crate) fn inline_switch_scrutinee_locals(function: &Function) -> Option<Func
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
-        asm_body: None, force_active: false,
+        asm_body: None,
+        force_active: false,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -691,7 +916,10 @@ pub(crate) fn inline_switch_scrutinee_locals(function: &Function) -> Option<Func
             }),
         }],
         guards: function.guards.clone(),
-        return_expression: function.return_expression.as_ref().map(|expression| crate::value_tracking::substitute(expression, &values)),
+        return_expression: function
+            .return_expression
+            .as_ref()
+            .map(|expression| crate::value_tracking::substitute(expression, &values)),
     })
 }
 
@@ -713,7 +941,9 @@ pub(crate) fn fold_would_duplicate(
         }
         let total = read_count.entry(name.to_string()).or_insert(0);
         *total += occurrences;
-        let computed = values.get(name).is_some_and(|value| !matches!(value, Expression::Variable(_)));
+        let computed = values
+            .get(name)
+            .is_some_and(|value| !matches!(value, Expression::Variable(_)));
         if computed && *total >= 2 {
             return true;
         }
@@ -736,15 +966,25 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     // `*p = x + 1;` (`addi r0,r4,1; stw r0,0(r3)`) — the store value substitutes the
     // tracked expression, reads before the assignment keep the raw (pristine) register.
     // A narrow reassigned param would drop its re-narrowing when substituted — bail.
-    let local_name_set: std::collections::HashSet<&str> =
-        function.locals.iter().map(|local| local.name.as_str()).collect();
-    let mut reassigned_parameters: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let local_name_set: std::collections::HashSet<&str> = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect();
+    let mut reassigned_parameters: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
     for statement in &function.statements {
-        let Statement::Assign { name, .. } = statement else { continue };
+        let Statement::Assign { name, .. } = statement else {
+            continue;
+        };
         if local_name_set.contains(name.as_str()) {
             continue;
         }
-        let Some(parameter) = function.parameters.iter().find(|parameter| &parameter.name == name) else {
+        let Some(parameter) = function
+            .parameters
+            .iter()
+            .find(|parameter| &parameter.name == name)
+        else {
             continue;
         };
         if parameter.parameter_type.width() < 32 {
@@ -779,7 +1019,9 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     for local in &function.locals {
         if (local.declared_type.width() as u32) < 32 {
             if let Some(Expression::Variable(initializer_name)) = &local.initializer {
-                if variable_width(initializer_name).is_some_and(|width| width > local.declared_type.width() as u32) {
+                if variable_width(initializer_name)
+                    .is_some_and(|width| width > local.declared_type.width() as u32)
+                {
                     return None;
                 }
             }
@@ -795,14 +1037,22 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     // call-bearing initializer is a call result to preserve, not inline). `read_count`
     // tracks how many times each name's CURRENT value-version is read, to reject
     // duplicating a computation; reassignment resets it.
-    let mut values: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+    let mut values: std::collections::HashMap<String, Expression> =
+        std::collections::HashMap::new();
     let mut read_count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for local in &function.locals {
-        let Some(initializer) = &local.initializer else { continue };
-        if expression_has_call(initializer) || fold_would_duplicate(initializer, &tracked_names, &values, &mut read_count) {
+        let Some(initializer) = &local.initializer else {
+            continue;
+        };
+        if expression_has_call(initializer)
+            || fold_would_duplicate(initializer, &tracked_names, &values, &mut read_count)
+        {
             return None;
         }
-        values.insert(local.name.clone(), crate::value_tracking::substitute(initializer, &values));
+        values.insert(
+            local.name.clone(),
+            crate::value_tracking::substitute(initializer, &values),
+        );
     }
     let mut new_statements = Vec::new();
     let mut in_leading_ifs = true;
@@ -813,12 +1063,20 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
             // reassigned parameter (its pre-assignment value) — while the substituted
             // stores after it carry their own dataflow. An if reading a LOCAL cannot pass
             // through (the fold removes locals); an if after an assign/store bails.
-            Statement::If { condition, then_body, else_body } if in_leading_ifs => {
-                if !matches!(then_body.as_slice(), [Statement::Return(_)]) || !else_body.is_empty() {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } if in_leading_ifs => {
+                if !matches!(then_body.as_slice(), [Statement::Return(_)]) || !else_body.is_empty()
+                {
                     return None;
                 }
-                let reads_local =
-                    |expression: &Expression| local_name_set.iter().any(|name| expression_reads_name(expression, name));
+                let reads_local = |expression: &Expression| {
+                    local_name_set
+                        .iter()
+                        .any(|name| expression_reads_name(expression, name))
+                };
                 if reads_local(condition) {
                     return None;
                 }
@@ -838,7 +1096,10 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
                 if fold_would_duplicate(value, &tracked_names, &values, &mut read_count) {
                     return None;
                 }
-                values.insert(name.clone(), crate::value_tracking::substitute(value, &values));
+                values.insert(
+                    name.clone(),
+                    crate::value_tracking::substitute(value, &values),
+                );
                 read_count.insert(name.clone(), 0);
             }
             Statement::Store { target, value } => {
@@ -873,7 +1134,10 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     }
     // A store-free body (a pure dead-local, pure return-folding, or a guard prefix with
     // no store behind it) belongs to the value-tracking / guard paths, not ours.
-    if !new_statements.iter().any(|statement| matches!(statement, Statement::Store { .. })) {
+    if !new_statements
+        .iter()
+        .any(|statement| matches!(statement, Statement::Store { .. }))
+    {
         return None;
     }
     let folded_return = function
@@ -882,7 +1146,11 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
         .map(|expression| crate::value_tracking::substitute(expression, &values));
     // Every local must be fully folded away — none may survive in a resulting store or the
     // return (e.g. a local whose aggregate or address use could not be substituted).
-    let survives = |expression: &Expression| local_name_set.iter().any(|name| expression_reads_name(expression, name));
+    let survives = |expression: &Expression| {
+        local_name_set
+            .iter()
+            .any(|name| expression_reads_name(expression, name))
+    };
     for statement in &new_statements {
         if let Statement::Store { target, value } = statement {
             if survives(target) || survives(value) {
@@ -896,7 +1164,8 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
-        asm_body: None, force_active: false,
+        asm_body: None,
+        force_active: false,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -926,7 +1195,9 @@ pub(crate) fn inline_single_call_result(function: &Function) -> Option<Function>
     // assignment — and the call must not read the local itself.
     let mut call_value: Option<Expression> = None;
     if let Some(initializer) = &function.locals[0].initializer {
-        if !matches!(initializer, Expression::Call { .. }) || expression_reads_name(initializer, local_name) {
+        if !matches!(initializer, Expression::Call { .. })
+            || expression_reads_name(initializer, local_name)
+        {
             return None;
         }
         call_value = Some(initializer.clone());
@@ -959,16 +1230,25 @@ pub(crate) fn inline_single_call_result(function: &Function) -> Option<Function>
     // twice would call twice. Substitute the call into that single use (`gi = x + 1;` ->
     // `gi = foo(a) + 1;`); the re-dispatch is byte-exact (call fused with a constant) or
     // defers (a value live across the call), never a diff.
-    let occurrences = |expression: &Expression| crate::analysis::count_name_occurrences(expression, local_name);
+    let occurrences =
+        |expression: &Expression| crate::analysis::count_name_occurrences(expression, local_name);
     let mut values = std::collections::HashMap::new();
     values.insert(local_name.to_string(), call_value);
     let (statements, return_expression) = match &store {
         // Store sink: a void function with no return, the local consumed once in the value.
-        Some((target, value)) if function.return_type == Type::Void && function.return_expression.is_none() => {
+        Some((target, value))
+            if function.return_type == Type::Void && function.return_expression.is_none() =>
+        {
             if occurrences(value) != 1 {
                 return None;
             }
-            (vec![Statement::Store { target: target.clone(), value: crate::value_tracking::substitute(value, &values) }], None)
+            (
+                vec![Statement::Store {
+                    target: target.clone(),
+                    value: crate::value_tracking::substitute(value, &values),
+                }],
+                None,
+            )
         }
         // Return sink: no stores, the trailing return consumes the local once.
         None => {
@@ -982,17 +1262,28 @@ pub(crate) fn inline_single_call_result(function: &Function) -> Option<Function>
             // — different bytes from the inlined call-expression form (`return f(x)+x` -> the callee-
             // saved combine's `add r3,r31,r3`). So do NOT fold it away; leave the local for the
             // callee-saved dispatch (or a clean defer), never a wrong-bytes inline.
-            if function.parameters.iter().any(|parameter| expression_reads_name(return_expression, &parameter.name)) {
+            if function
+                .parameters
+                .iter()
+                .any(|parameter| expression_reads_name(return_expression, &parameter.name))
+            {
                 return None;
             }
-            (Vec::new(), Some(crate::value_tracking::substitute(return_expression, &values)))
+            (
+                Vec::new(),
+                Some(crate::value_tracking::substitute(
+                    return_expression,
+                    &values,
+                )),
+            )
         }
         _ => return None,
     };
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
-        asm_body: None, force_active: false,
+        asm_body: None,
+        force_active: false,
         name: function.name.clone(),
         is_static: function.is_static,
         is_weak: function.is_weak,
@@ -1025,7 +1316,12 @@ pub(crate) fn pointer_word_offset(target: &Expression, pointer: &str) -> Option<
     if is_cast(inner.as_ref()) {
         return Some(0);
     }
-    if let Expression::Binary { operator: BinaryOperator::Add, left, right } = inner.as_ref() {
+    if let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = inner.as_ref()
+    {
         if crate::analysis::constant_value(left) == Some(1) && is_cast(right) {
             return Some(4);
         }
@@ -1040,7 +1336,12 @@ pub(crate) fn pointer_word_offset(target: &Expression, pointer: &str) -> Option<
 /// inexact-raising guard, matched at the outer arm level and inside the
 /// writeback walker.
 pub(crate) fn float_guard_condition(condition: &Expression) -> Option<(u64, u64)> {
-    let Expression::Binary { operator: BinaryOperator::Greater, left, right } = condition else {
+    let Expression::Binary {
+        operator: BinaryOperator::Greater,
+        left,
+        right,
+    } = condition
+    else {
         return None;
     };
     let Expression::FloatLiteral(zero) = right.as_ref() else {
@@ -1049,7 +1350,11 @@ pub(crate) fn float_guard_condition(condition: &Expression) -> Option<(u64, u64)
     if *zero != 0.0 {
         return None;
     }
-    let Expression::Binary { operator: BinaryOperator::Add, left: huge, right: xvar } = left.as_ref()
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: huge,
+        right: xvar,
+    } = left.as_ref()
     else {
         return None;
     };
@@ -1076,16 +1381,28 @@ pub(crate) struct GuardLocal<'a> {
 /// the cast selects the LOGICAL shift (srw), the offset folds into the
 /// r0 scratch before the shift (arm3's `0xffffffff >> (j0 - 20)`).
 pub(crate) fn parse_shift_init(init: &Expression, guard_name: &str) -> Option<(i64, bool, i64)> {
-    let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = init else {
+    let Expression::Binary {
+        operator: BinaryOperator::ShiftRight,
+        left,
+        right,
+    } = init
+    else {
         return None;
     };
     let (constant_expr, logical) = match left.as_ref() {
-        Expression::Cast { target_type: Type::UnsignedInt, operand } => (operand.as_ref(), true),
+        Expression::Cast {
+            target_type: Type::UnsignedInt,
+            operand,
+        } => (operand.as_ref(), true),
         other => (other, false),
     };
     let constant = crate::analysis::constant_value(constant_expr)?;
     let (amount, offset) = match right.as_ref() {
-        Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+        Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left,
+            right,
+        } => {
             let offset = crate::analysis::constant_value(right)?;
             (left.as_ref(), offset)
         }
@@ -1100,55 +1417,92 @@ pub(crate) fn parse_shift_init(init: &Expression, guard_name: &str) -> Option<(i
 /// Parse `((source >> S) [& M]) - K` as a guard-local initializer.
 pub(crate) fn parse_guard_init<'a>(name: &'a str, init: &'a Expression) -> Option<GuardLocal<'a>> {
     let (core, offset_k) = match init {
-        Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+        Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left,
+            right,
+        } => {
             let k = crate::analysis::constant_value(right)?;
             (left.as_ref(), k)
         }
         other => (other, 0),
     };
     let (shifted, mask) = match core {
-        Expression::Binary { operator: BinaryOperator::BitAnd, left, right } => {
+        Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left,
+            right,
+        } => {
             let mask = crate::analysis::constant_value(right)?;
             (left.as_ref(), Some(mask))
         }
         other => (other, None),
     };
-    let Expression::Binary { operator: BinaryOperator::ShiftRight, left, right } = shifted else {
+    let Expression::Binary {
+        operator: BinaryOperator::ShiftRight,
+        left,
+        right,
+    } = shifted
+    else {
         return None;
     };
     let Expression::Variable(source) = left.as_ref() else {
         return None;
     };
     let shift = u8::try_from(crate::analysis::constant_value(right)?).ok()?;
-    Some(GuardLocal { name, source, shift, mask, offset_k })
+    Some(GuardLocal {
+        name,
+        source,
+        shift,
+        mask,
+        offset_k,
+    })
 }
 
-
-
-
-
-
-
-
 /// Whether any statement, guard, or the return expression calls one of `names`.
-pub(crate) fn function_calls_any(function: &Function, names: &std::collections::HashSet<String>) -> bool {
-    fn expression_calls(expression: &Expression, names: &std::collections::HashSet<String>) -> bool {
+pub(crate) fn function_calls_any(
+    function: &Function,
+    names: &std::collections::HashSet<String>,
+) -> bool {
+    fn expression_calls(
+        expression: &Expression,
+        names: &std::collections::HashSet<String>,
+    ) -> bool {
         use mwcc_syntax_trees::Expression as E;
         match expression {
             E::Call { name, arguments } => {
-                names.contains(name) || arguments.iter().any(|argument| expression_calls(argument, names))
+                names.contains(name)
+                    || arguments
+                        .iter()
+                        .any(|argument| expression_calls(argument, names))
             }
-            E::Binary { left, right, .. } => expression_calls(left, names) || expression_calls(right, names),
-            E::Unary { operand, .. } | E::Cast { operand, .. } | E::AddressOf { operand } => expression_calls(operand, names),
+            E::Binary { left, right, .. } => {
+                expression_calls(left, names) || expression_calls(right, names)
+            }
+            E::Unary { operand, .. } | E::Cast { operand, .. } | E::AddressOf { operand } => {
+                expression_calls(operand, names)
+            }
             E::Dereference { pointer } => expression_calls(pointer, names),
-            E::Index { base, index } => expression_calls(base, names) || expression_calls(index, names),
-            E::Member { base, .. } | E::MemberAddress { base, .. } => expression_calls(base, names),
-            E::Conditional { condition, when_true, when_false } => {
-                expression_calls(condition, names) || expression_calls(when_true, names) || expression_calls(when_false, names)
+            E::Index { base, index } => {
+                expression_calls(base, names) || expression_calls(index, names)
             }
-            E::Assign { target, value } => expression_calls(target, names) || expression_calls(value, names),
+            E::Member { base, .. } | E::MemberAddress { base, .. } => expression_calls(base, names),
+            E::Conditional {
+                condition,
+                when_true,
+                when_false,
+            } => {
+                expression_calls(condition, names)
+                    || expression_calls(when_true, names)
+                    || expression_calls(when_false, names)
+            }
+            E::Assign { target, value } => {
+                expression_calls(target, names) || expression_calls(value, names)
+            }
             E::PostStep { target, .. } => expression_calls(target, names),
-            E::Comma { left, right } => expression_calls(left, names) || expression_calls(right, names),
+            E::Comma { left, right } => {
+                expression_calls(left, names) || expression_calls(right, names)
+            }
             _ => false,
         }
     }
@@ -1156,39 +1510,70 @@ pub(crate) fn function_calls_any(function: &Function, names: &std::collections::
         use mwcc_syntax_trees::Statement as S;
         match statement {
             S::Break | S::Continue | S::Goto(_) | S::Label(_) => false,
-            S::Store { target, value } => expression_calls(target, names) || expression_calls(value, names),
+            S::Store { target, value } => {
+                expression_calls(target, names) || expression_calls(value, names)
+            }
             S::Assign { value, .. } => expression_calls(value, names),
             S::Expression(expression) => expression_calls(expression, names),
-            S::If { condition, then_body, else_body } => {
+            S::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
                 expression_calls(condition, names)
                     || then_body.iter().any(|inner| statement_calls(inner, names))
                     || else_body.iter().any(|inner| statement_calls(inner, names))
             }
-            S::Return(value) => value.as_ref().is_some_and(|expression| expression_calls(expression, names)),
-            S::Switch { scrutinee, arms, default } => {
+            S::Return(value) => value
+                .as_ref()
+                .is_some_and(|expression| expression_calls(expression, names)),
+            S::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => {
                 expression_calls(scrutinee, names)
                     || default.as_ref().is_some_and(|body| match body {
-                        mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
+                        mwcc_syntax_trees::ArmBody::Return(expression) => {
+                            expression_calls(expression, names)
+                        }
                         mwcc_syntax_trees::ArmBody::Statements(statements) => {
                             statements.iter().any(|inner| statement_calls(inner, names))
                         }
                     })
                     || arms.iter().any(|arm| match &arm.body {
-                        mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
+                        mwcc_syntax_trees::ArmBody::Return(expression) => {
+                            expression_calls(expression, names)
+                        }
                         mwcc_syntax_trees::ArmBody::Statements(statements) => {
                             statements.iter().any(|inner| statement_calls(inner, names))
                         }
                     })
             }
-            S::Loop { initializer, condition, step, body, .. } => {
-                initializer.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                    || condition.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                    || step.as_ref().is_some_and(|expression| expression_calls(expression, names))
+            S::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                initializer
+                    .as_ref()
+                    .is_some_and(|expression| expression_calls(expression, names))
+                    || condition
+                        .as_ref()
+                        .is_some_and(|expression| expression_calls(expression, names))
+                    || step
+                        .as_ref()
+                        .is_some_and(|expression| expression_calls(expression, names))
                     || body.iter().any(|inner| statement_calls(inner, names))
             }
         }
     }
-    function.statements.iter().any(|statement| statement_calls(statement, names))
+    function
+        .statements
+        .iter()
+        .any(|statement| statement_calls(statement, names))
         || function.guards.iter().any(|guard| {
             expression_calls(&guard.condition, names) || expression_calls(&guard.value, names)
         })
@@ -1197,8 +1582,3 @@ pub(crate) fn function_calls_any(function: &Function, names: &std::collections::
             .as_ref()
             .is_some_and(|expression| expression_calls(expression, names))
 }
-
-
-
-
-

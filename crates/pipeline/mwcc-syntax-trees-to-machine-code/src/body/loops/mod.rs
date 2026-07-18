@@ -3,8 +3,8 @@
 #[allow(unused_imports)]
 use super::*;
 
-mod counters;
-mod walker;
 mod count_register;
-mod poll_search;
+mod counters;
 mod fill_copy;
+mod poll_search;
+mod walker;

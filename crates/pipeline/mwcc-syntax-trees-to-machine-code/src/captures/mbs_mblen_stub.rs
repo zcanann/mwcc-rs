@@ -13,9 +13,7 @@ impl Generator {
     pub(super) fn try_mbs_mblen_stub(&mut self, function: &Function) -> Compilation<bool> {
         // Gate on the NAME only — the pik variant is int(const char*, size_t),
         // BfBB's decompiled shell is void(void); the hash decides.
-        if function.name != "mblen"
-            || !self.frame_slots.is_empty()
-        {
+        if function.name != "mblen" || !self.frame_slots.is_empty() {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
@@ -32,11 +30,14 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

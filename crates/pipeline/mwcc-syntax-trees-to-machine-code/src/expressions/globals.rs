@@ -36,9 +36,19 @@ impl Generator {
         // save-scheduler's (the lis is an `a == 0` load-immediate form it hoists).
         if !self.globals.contains_key(name) && self.call_return_types.contains_key(name) {
             self.record_relocation(RelocationKind::Addr16Ha, name);
-            self.output.instructions.push(Instruction::AddImmediateShifted { d: destination, a: 0, immediate: 0 });
+            self.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: destination,
+                    a: 0,
+                    immediate: 0,
+                });
             self.record_relocation(RelocationKind::Addr16Lo, name);
-            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: destination,
+                a: destination,
+                immediate: 0,
+            });
             return Ok(());
         }
         self.emit_global_load_value(name, destination)?;
@@ -58,15 +68,24 @@ impl Generator {
     /// operands before extending either, matching mwcc's batched schedule, so it
     /// drives the load and the extension separately through this and
     /// [`Self::global_char_extend`].
-    pub(crate) fn emit_global_load_value(&mut self, name: &str, destination: u8) -> Compilation<()> {
-        let global_type = *self.globals.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+    pub(crate) fn emit_global_load_value(
+        &mut self,
+        name: &str,
+        destination: u8,
+    ) -> Compilation<()> {
+        let global_type = *self
+            .globals
+            .get(name)
+            .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
                 self.record_relocation(RelocationKind::EmbSda21, name);
                 let instruction = self.global_load_instruction(global_type, destination, 0)?;
                 self.output.instructions.push(instruction);
             }
-            GlobalAddressing::Absolute => self.emit_global_load_absolute(name, global_type, destination)?,
+            GlobalAddressing::Absolute => {
+                self.emit_global_load_absolute(name, global_type, destination)?
+            }
         }
         Ok(())
     }
@@ -74,14 +93,22 @@ impl Generator {
     /// Whether reading global `name` needs a trailing `extsb` — a signed plain
     /// `char` (unsigned char and the self-extending half/word loads need none).
     pub(crate) fn global_char_extend(&self, name: &str) -> Compilation<bool> {
-        let global_type = *self.globals.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        let global_type = *self
+            .globals
+            .get(name)
+            .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         Ok(global_type == Type::Char && self.behavior.char_is_signed)
     }
 
     /// The type-appropriate load of a global from base register `a` (displacement
     /// zero): the small-data and absolute paths share the instruction choice and
     /// differ only in how `a`/the relocation are set up.
-    pub(crate) fn global_load_instruction(&self, global_type: Type, d: u8, a: u8) -> Compilation<Instruction> {
+    pub(crate) fn global_load_instruction(
+        &self,
+        global_type: Type,
+        d: u8,
+        a: u8,
+    ) -> Compilation<Instruction> {
         Ok(match global_type {
             Type::Int | Type::UnsignedInt => Instruction::LoadWord { d, a, offset: 0 },
             Type::Char | Type::UnsignedChar => Instruction::LoadByteZero { d, a, offset: 0 },
@@ -90,8 +117,14 @@ impl Generator {
             Type::Float => Instruction::LoadFloatSingle { d, a, offset: 0 },
             Type::Double => Instruction::LoadFloatDouble { d, a, offset: 0 },
             // A pointer global is a 32-bit address word.
-            Type::Pointer(_) | Type::StructPointer { .. } => Instruction::LoadWord { d, a, offset: 0 },
-            other => return Err(Diagnostic::error(format!("global of type {other:?} is not supported yet"))),
+            Type::Pointer(_) | Type::StructPointer { .. } => {
+                Instruction::LoadWord { d, a, offset: 0 }
+            }
+            other => {
+                return Err(Diagnostic::error(format!(
+                    "global of type {other:?} is not supported yet"
+                )))
+            }
         })
     }
 
@@ -100,7 +133,9 @@ impl Generator {
     /// or load based on r0 reads literal zero, not the register (the `li` trap).
     pub(crate) fn emit_address_high(&mut self, base: u8, name: &str) {
         self.record_relocation(RelocationKind::Addr16Ha, name);
-        self.output.instructions.push(Instruction::load_immediate_shifted(base, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(base, 0));
     }
 
     /// Load a global under absolute (`-sdata 0`) addressing. mwcc's address-mode
@@ -111,7 +146,12 @@ impl Generator {
     /// into the load. An integer load whose destination is the scratch r0 would
     /// need a separate base that avoids the (un-reserved) sibling operand — that
     /// liveness is the register allocator's to track, so it defers for now.
-    pub(crate) fn emit_global_load_absolute(&mut self, name: &str, global_type: Type, destination: u8) -> Compilation<()> {
+    pub(crate) fn emit_global_load_absolute(
+        &mut self,
+        name: &str,
+        global_type: Type,
+        destination: u8,
+    ) -> Compilation<()> {
         if global_type == Type::Float {
             let base = self.lowest_free_general()?;
             self.emit_address_high(base, name);
@@ -123,7 +163,11 @@ impl Generator {
         if destination != GENERAL_SCRATCH {
             self.emit_address_high(destination, name);
             self.record_relocation(RelocationKind::Addr16Lo, name);
-            self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: destination,
+                a: destination,
+                immediate: 0,
+            });
             let load = self.global_load_instruction(global_type, destination, destination)?;
             self.output.instructions.push(load);
             return Ok(());
@@ -143,17 +187,26 @@ impl Generator {
     /// Store `source` to a file-scope global. Small-data uses the `0(r0)` SDA21
     /// placeholder; absolute addressing materializes the high half into a free
     /// base GPR (avoiding the value register) and folds `name@l` into the store.
-    pub(crate) fn emit_global_store(&mut self, name: &str, pointee: Pointee, source: u8) -> Compilation<()> {
+    pub(crate) fn emit_global_store(
+        &mut self,
+        name: &str,
+        pointee: Pointee,
+        source: u8,
+    ) -> Compilation<()> {
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
                 self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(displacement_store(pointee, source, 0, 0)?);
+                self.output
+                    .instructions
+                    .push(displacement_store(pointee, source, 0, 0)?);
             }
             GlobalAddressing::Absolute => {
                 let base = self.free_general_excluding(source)?;
                 self.emit_address_high(base, name);
                 self.record_relocation(RelocationKind::Addr16Lo, name);
-                self.output.instructions.push(displacement_store(pointee, source, base, 0)?);
+                self.output
+                    .instructions
+                    .push(displacement_store(pointee, source, base, 0)?);
             }
         }
         Ok(())
@@ -173,5 +226,4 @@ impl Generator {
         }
         Some(register)
     }
-
 }

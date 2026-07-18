@@ -2,11 +2,14 @@
 //! grammar — qualifiers, pointers, typedef names, enum/struct/union references) and
 //! the struct/union field-layout builders. Part of the `items` module.
 
-use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
-use mwcc_tokens::Token;
-use crate::parser::{Parser, StructField, StructLayout};
 use super::*;
+use crate::parser::{Parser, StructField, StructLayout};
+use mwcc_core::{Compilation, Diagnostic};
+use mwcc_syntax_trees::{
+    Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter,
+    Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
+};
+use mwcc_tokens::Token;
 
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
@@ -64,7 +67,9 @@ impl Parser {
                         self.last_struct_tag = Some(tag);
                         Ok(struct_type)
                     }
-                    None => Err(Diagnostic::error("struct values are not supported yet — use a struct pointer")),
+                    None => Err(Diagnostic::error(
+                        "struct values are not supported yet — use a struct pointer",
+                    )),
                 };
             }
             self.advance();
@@ -90,7 +95,9 @@ impl Parser {
                         self.last_struct_tag = Some(tag);
                         Ok(union_type)
                     }
-                    None => Err(Diagnostic::error("union values are not supported yet — use a union pointer")),
+                    None => Err(Diagnostic::error(
+                        "union values are not supported yet — use a union pointer",
+                    )),
                 };
             }
             self.advance();
@@ -125,11 +132,13 @@ impl Parser {
                 self.advance();
                 if *self.peek() != Token::Star {
                     return match self.struct_value_type(&tag) {
-                    Some(struct_type) => {
-                        self.last_struct_tag = Some(tag);
-                        Ok(struct_type)
-                    }
-                        None => Err(Diagnostic::error("struct values are not supported yet — use a struct pointer")),
+                        Some(struct_type) => {
+                            self.last_struct_tag = Some(tag);
+                            Ok(struct_type)
+                        }
+                        None => Err(Diagnostic::error(
+                            "struct values are not supported yet — use a struct pointer",
+                        )),
                     };
                 }
                 self.advance();
@@ -169,7 +178,9 @@ impl Parser {
             if let Some(&(element, total, inner)) = self.array_typedefs.get(name) {
                 self.advance();
                 if *self.peek() == Token::Star {
-                    return Err(Diagnostic::error("a pointer to an array-typedef value is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a pointer to an array-typedef value is not supported yet (roadmap)",
+                    ));
                 }
                 self.last_array_typedef = Some((element, total, inner));
                 return Ok(Type::Pointer(pointee_of(element)?));
@@ -177,7 +188,9 @@ impl Parser {
             if let Some(&(element, length)) = self.row_pointer_typedefs.get(name) {
                 self.advance();
                 if *self.peek() == Token::Star {
-                    return Err(Diagnostic::error("a pointer to a row-pointer-typedef value is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a pointer to a row-pointer-typedef value is not supported yet (roadmap)",
+                    ));
                 }
                 self.last_array_typedef = Some((element, 0, length));
                 return Ok(Type::Pointer(pointee_of(element)?));
@@ -188,7 +201,13 @@ impl Parser {
             // Plain `char` follows the build's signedness default: signed on
             // mainline/1.3.2+, UNSIGNED on GC/1.3 (build 53) and `-char unsigned`
             // (no `extsb` on read). `signed char`/`unsigned char` below are explicit.
-            Token::KeywordChar => if self.char_is_signed { Type::Char } else { Type::UnsignedChar },
+            Token::KeywordChar => {
+                if self.char_is_signed {
+                    Type::Char
+                } else {
+                    Type::UnsignedChar
+                }
+            }
             // `short` / `short int`.
             Token::KeywordShort => {
                 let _ = self.eat_keyword(Token::KeywordInt);
@@ -217,7 +236,11 @@ impl Parser {
                         long_count += 1;
                     }
                     let _ = self.eat_keyword(Token::KeywordInt);
-                    if long_count >= 2 { Type::UnsignedLongLong } else { Type::UnsignedInt }
+                    if long_count >= 2 {
+                        Type::UnsignedLongLong
+                    } else {
+                        Type::UnsignedInt
+                    }
                 }
                 _ => Type::UnsignedInt,
             },
@@ -349,7 +372,9 @@ impl Parser {
                             align = Some(align.unwrap_or(1).max(requested));
                         }
                     }
-                    Token::EndOfFile => return Err(Diagnostic::error("unterminated __attribute__")),
+                    Token::EndOfFile => {
+                        return Err(Diagnostic::error("unterminated __attribute__"))
+                    }
                     _ => {}
                 }
             }
@@ -376,11 +401,19 @@ impl Parser {
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
                 self.advance(); // `struct`
-                let tag = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                let tag = if matches!(self.peek(), Token::Identifier(_)) {
+                    Some(self.parse_identifier()?)
+                } else {
+                    None
+                };
                 let inner = self.parse_struct_body()?;
                 let inner_size = inner.size;
                 let inner_align = (inner.align as u16).max(1);
-                let member_name = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                let member_name = if matches!(self.peek(), Token::Identifier(_)) {
+                    Some(self.parse_identifier()?)
+                } else {
+                    None
+                };
                 // An inline struct member may be an ARRAY — `struct { … } queue[3];` (EXIControl's
                 // callback queue). Parse the dimension(s); `array_bytes` is the total so the fields
                 // after it lay out correctly (`count * inner_size`), `None` for a scalar member.
@@ -391,14 +424,28 @@ impl Parser {
                     array_count = Some(array_count.unwrap_or(1).saturating_mul(dimension));
                     self.expect(Token::BracketClose)?;
                 }
-                let member_bytes = array_count.map_or(inner_size, |count| count.saturating_mul(inner_size));
+                let member_bytes =
+                    array_count.map_or(inner_size, |count| count.saturating_mul(inner_size));
                 let array_bytes = array_count.map(|count| count.saturating_mul(inner_size));
                 match (tag, member_name) {
                     (Some(tag), Some(name)) => {
                         self.structs.insert(tag.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
-                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(tag), array_element: None, array_bytes, bit_field: None });
+                        layout.fields.insert(
+                            name,
+                            StructField {
+                                member_type: Type::Struct {
+                                    size: inner_size,
+                                    align: inner_align as u8,
+                                },
+                                offset,
+                                struct_tag: Some(tag),
+                                array_element: None,
+                                array_bytes,
+                                bit_field: None,
+                            },
+                        );
                         offset += member_bytes;
                     }
                     (Some(tag), None) => {
@@ -415,21 +462,37 @@ impl Parser {
                         self.structs.insert(synthetic.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
-                        layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset, struct_tag: Some(synthetic), array_element: None, array_bytes, bit_field: None });
+                        layout.fields.insert(
+                            name,
+                            StructField {
+                                member_type: Type::Struct {
+                                    size: inner_size,
+                                    align: inner_align as u8,
+                                },
+                                offset,
+                                struct_tag: Some(synthetic),
+                                array_element: None,
+                                array_bytes,
+                                bit_field: None,
+                            },
+                        );
                         offset += member_bytes;
                     }
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
                         for (field_name, field) in &inner.fields {
-                            layout.fields.insert(field_name.clone(), StructField {
-                                member_type: field.member_type,
-                                offset: offset + field.offset,
-                                struct_tag: field.struct_tag.clone(),
-                                array_element: field.array_element,
-                                array_bytes: field.array_bytes,
-                                bit_field: field.bit_field,
-                            });
+                            layout.fields.insert(
+                                field_name.clone(),
+                                StructField {
+                                    member_type: field.member_type,
+                                    offset: offset + field.offset,
+                                    struct_tag: field.struct_tag.clone(),
+                                    array_element: field.array_element,
+                                    array_bytes: field.array_bytes,
+                                    bit_field: field.bit_field,
+                                },
+                            );
                         }
                         offset += inner_size;
                     }
@@ -453,11 +516,19 @@ impl Parser {
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
                 self.advance(); // `union`
-                let tag = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                let tag = if matches!(self.peek(), Token::Identifier(_)) {
+                    Some(self.parse_identifier()?)
+                } else {
+                    None
+                };
                 let inner = self.parse_union_body()?;
                 let inner_size = inner.size;
                 let inner_align = (inner.align as u16).max(1);
-                let member_name = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                let member_name = if matches!(self.peek(), Token::Identifier(_)) {
+                    Some(self.parse_identifier()?)
+                } else {
+                    None
+                };
                 self.expect(Token::Semicolon)?;
                 if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
                     // mwcc TRIMS the container to the bytes its bits use
@@ -474,35 +545,45 @@ impl Parser {
                     // not resolve through it and defers. Other sizes keep deferring.
                     (_, Some(name)) => {
                         if inner_size != 4 {
-                            return Err(Diagnostic::error("a named union member of this size is not supported yet (roadmap)"));
+                            return Err(Diagnostic::error(
+                                "a named union member of this size is not supported yet (roadmap)",
+                            ));
                         }
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
-                        layout.fields.insert(name, StructField {
-                            member_type: Type::UnsignedInt,
-                            offset,
-                            struct_tag: None,
-                            array_element: None,
-                            array_bytes: None,
-                            bit_field: None,
-                        });
+                        layout.fields.insert(
+                            name,
+                            StructField {
+                                member_type: Type::UnsignedInt,
+                                offset,
+                                struct_tag: None,
+                                array_element: None,
+                                array_bytes: None,
+                                bit_field: None,
+                            },
+                        );
                         offset += inner_size;
                     }
                     // `union Tag { … };` — register the tag, no member contributed.
-                    (Some(tag), None) => { self.structs.insert(tag, inner); }
+                    (Some(tag), None) => {
+                        self.structs.insert(tag, inner);
+                    }
                     // `union { … };` — flatten every member at the union's offset.
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
                         offset = offset.div_ceil(inner_align) * inner_align;
                         for (field_name, field) in &inner.fields {
-                            layout.fields.insert(field_name.clone(), StructField {
-                                member_type: field.member_type,
-                                offset: offset + field.offset,
-                                struct_tag: field.struct_tag.clone(),
-                                array_element: field.array_element,
-                                array_bytes: field.array_bytes,
-                                bit_field: field.bit_field,
-                            });
+                            layout.fields.insert(
+                                field_name.clone(),
+                                StructField {
+                                    member_type: field.member_type,
+                                    offset: offset + field.offset,
+                                    struct_tag: field.struct_tag.clone(),
+                                    array_element: field.array_element,
+                                    array_bytes: field.array_bytes,
+                                    bit_field: field.bit_field,
+                                },
+                            );
                         }
                         offset += inner_size;
                     }
@@ -520,9 +601,9 @@ impl Parser {
             };
             if let Some((element, base_len, _inner)) = array_typedef {
                 self.advance(); // the array-typedef name
-                // `Mtx *group_mtx;` — a POINTER to the array type is a plain 4-byte
-                // pointer member (subscripts through it defer in codegen); route it
-                // through the ordinary pointer-member layout.
+                                // `Mtx *group_mtx;` — a POINTER to the array type is a plain 4-byte
+                                // pointer member (subscripts through it defer in codegen); route it
+                                // through the ordinary pointer-member layout.
                 if *self.peek() == Token::Star {
                     self.advance();
                     let field_name = self.parse_identifier()?;
@@ -532,14 +613,17 @@ impl Parser {
                     self.advance(); // `;`
                     offset = offset.div_ceil(4) * 4;
                     alignment_max = alignment_max.max(4);
-                    layout.fields.insert(field_name, StructField {
-                        member_type: Type::Pointer(pointee_of(element)?),
-                        offset,
-                        struct_tag: None,
-                        array_element: None,
-                        array_bytes: None,
-                        bit_field: None,
-                    });
+                    layout.fields.insert(
+                        field_name,
+                        StructField {
+                            member_type: Type::Pointer(pointee_of(element)?),
+                            offset,
+                            struct_tag: None,
+                            array_element: None,
+                            array_bytes: None,
+                            bit_field: None,
+                        },
+                    );
                     offset += 4;
                     continue;
                 }
@@ -556,14 +640,24 @@ impl Parser {
                         count = count.saturating_mul(extra);
                     }
                     if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                    // mwcc TRIMS the container to the bytes its bits use
-                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
-                    // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + (bits_used as u16).div_ceil(8);
-                }
+                        // mwcc TRIMS the container to the bytes its bits use
+                        // (measured: 4 bits -> next byte member at +1; 9-12 bits
+                        // -> +2; the container type still sets the alignment).
+                        offset = unit_offset + (bits_used as u16).div_ceil(8);
+                    }
                     alignment_max = alignment_max.max(alignment);
                     offset = offset.div_ceil(alignment) * alignment;
-                    layout.fields.insert(field_name, StructField { member_type: element, offset, struct_tag: None, array_element: Some(pointee_of(element)?), array_bytes: Some(count.saturating_mul(element_size)), bit_field: None });
+                    layout.fields.insert(
+                        field_name,
+                        StructField {
+                            member_type: element,
+                            offset,
+                            struct_tag: None,
+                            array_element: Some(pointee_of(element)?),
+                            array_bytes: Some(count.saturating_mul(element_size)),
+                            bit_field: None,
+                        },
+                    );
                     offset += count.saturating_mul(element_size);
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -578,7 +672,9 @@ impl Parser {
             // member model yet, so defer rather than lay it out as a plain pointer
             // that a later `s->m[i][j]` would stride wrongly through.
             if self.last_array_typedef.take().is_some() {
-                return Err(Diagnostic::error("a row-pointer-typedef struct member is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a row-pointer-typedef struct member is not supported yet (roadmap)",
+                ));
             }
             let struct_tag = self.last_struct_tag.take();
             // A declarator may carry `__attribute__((aligned(n)))` between the type
@@ -591,7 +687,9 @@ impl Parser {
                 // A function-pointer member `RET (*name)(params)` is a 4-byte pointer
                 // (the `field_type` parsed above is just the return type). Consume the
                 // declarator and record a pointer-typed member so `p->name` resolves.
-                if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                if *self.peek() == Token::ParenOpen
+                    && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                {
                     self.advance(); // `(`
                     self.advance(); // `*`
                     let pointer_name = self.parse_identifier()?;
@@ -602,20 +700,34 @@ impl Parser {
                         match self.advance() {
                             Token::ParenOpen => depth += 1,
                             Token::ParenClose => depth -= 1,
-                            Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer member")),
+                            Token::EndOfFile => {
+                                return Err(Diagnostic::error(
+                                    "unterminated function-pointer member",
+                                ))
+                            }
                             _ => {}
                         }
                     }
                     if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                    // mwcc TRIMS the container to the bytes its bits use
-                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
-                    // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + (bits_used as u16).div_ceil(8);
-                }
+                        // mwcc TRIMS the container to the bytes its bits use
+                        // (measured: 4 bits -> next byte member at +1; 9-12 bits
+                        // -> +2; the container type still sets the alignment).
+                        offset = unit_offset + (bits_used as u16).div_ceil(8);
+                    }
                     let alignment = 4u16;
                     alignment_max = alignment_max.max(alignment);
                     offset = offset.div_ceil(alignment) * alignment;
-                    layout.fields.insert(pointer_name, StructField { member_type: Type::StructPointer { element_size: 0 }, offset, struct_tag: None, array_element: None, array_bytes: None, bit_field: None });
+                    layout.fields.insert(
+                        pointer_name,
+                        StructField {
+                            member_type: Type::StructPointer { element_size: 0 },
+                            offset,
+                            struct_tag: None,
+                            array_element: None,
+                            array_bytes: None,
+                            bit_field: None,
+                        },
+                    );
                     offset += 4;
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -634,17 +746,23 @@ impl Parser {
                     if width == 0 {
                         bit_unit = None;
                     } else if width > unit_bits {
-                        return Err(Diagnostic::error("an unsupported anonymous bit-field width (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "an unsupported anonymous bit-field width (roadmap)",
+                        ));
                     } else {
                         match bit_unit {
-                            Some((unit_type, unit_offset, bits_used)) if unit_type == field_type && bits_used + width <= unit_bits => {
+                            Some((unit_type, unit_offset, bits_used))
+                                if unit_type == field_type && bits_used + width <= unit_bits =>
+                            {
                                 bit_unit = Some((field_type, unit_offset, bits_used + width));
                             }
                             Some((unit_type, ..)) if unit_type != field_type => {
                                 return Err(Diagnostic::error("a struct mixing adjacent bit-field types is not supported yet (roadmap)"));
                             }
                             _ => {
-                                let alignment = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
+                                let alignment = type_alignment(field_type)
+                                    .max(1)
+                                    .max(attr_align.unwrap_or(1));
                                 let unit_offset = offset.div_ceil(alignment) * alignment;
                                 offset = unit_offset + type_size(field_type);
                                 alignment_max = alignment_max.max(alignment);
@@ -666,10 +784,14 @@ impl Parser {
                     let width = self.parse_integer_constant()? as u8;
                     let unit_bits = (type_size(field_type) * 8) as u8;
                     if width == 0 || width > unit_bits {
-                        return Err(Diagnostic::error("an unsupported bit-field width (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "an unsupported bit-field width (roadmap)",
+                        ));
                     }
                     let (unit_offset, bit_offset) = match bit_unit {
-                        Some((unit_type, unit_offset, bits_used)) if unit_type == field_type && bits_used + width <= unit_bits => {
+                        Some((unit_type, unit_offset, bits_used))
+                            if unit_type == field_type && bits_used + width <= unit_bits =>
+                        {
                             bit_unit = Some((field_type, unit_offset, bits_used + width));
                             (unit_offset, bits_used)
                         }
@@ -677,7 +799,9 @@ impl Parser {
                             return Err(Diagnostic::error("a struct mixing adjacent bit-field types is not supported yet (roadmap)"));
                         }
                         _ => {
-                            let alignment = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
+                            let alignment = type_alignment(field_type)
+                                .max(1)
+                                .max(attr_align.unwrap_or(1));
                             let unit_offset = offset.div_ceil(alignment) * alignment;
                             offset = unit_offset + type_size(field_type);
                             alignment_max = alignment_max.max(alignment);
@@ -685,7 +809,17 @@ impl Parser {
                             (unit_offset, 0)
                         }
                     };
-                    layout.fields.insert(field_name, StructField { member_type: field_type, offset: unit_offset, struct_tag: None, array_element: None, array_bytes: None, bit_field: Some((bit_offset, width)) });
+                    layout.fields.insert(
+                        field_name,
+                        StructField {
+                            member_type: field_type,
+                            offset: unit_offset,
+                            struct_tag: None,
+                            array_element: None,
+                            array_bytes: None,
+                            bit_field: Some((bit_offset, width)),
+                        },
+                    );
                     if !self.eat_keyword(Token::Comma) {
                         break;
                     }
@@ -712,7 +846,10 @@ impl Parser {
                     // size still lays the array out correctly (4 bytes per pointer, the
                     // struct width per struct), so later members resolve; indexed
                     // element access defers in codegen rather than miscomputing.
-                    if !matches!(field_type, Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }) {
+                    if !matches!(
+                        field_type,
+                        Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }
+                    ) {
                         array_element = Some(pointee_of(field_type)?);
                     }
                     // One or more dimensions — `field[N]`, `field[R][C]`, … — occupy the
@@ -731,10 +868,22 @@ impl Parser {
                 // Natural alignment: to the element's alignment (a struct value to its
                 // own alignment, every other type to its size — for an array, that
                 // element's).
-                let alignment = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
+                let alignment = type_alignment(field_type)
+                    .max(1)
+                    .max(attr_align.unwrap_or(1));
                 alignment_max = alignment_max.max(alignment);
                 offset = offset.div_ceil(alignment) * alignment;
-                layout.fields.insert(field_name, StructField { member_type: field_type, offset, struct_tag: struct_tag.clone(), array_element, array_bytes: is_array.then_some(size), bit_field: None });
+                layout.fields.insert(
+                    field_name,
+                    StructField {
+                        member_type: field_type,
+                        offset,
+                        struct_tag: struct_tag.clone(),
+                        array_element,
+                        array_bytes: is_array.then_some(size),
+                        bit_field: None,
+                    },
+                );
                 offset += size;
                 if !self.eat_keyword(Token::Comma) {
                     break;
@@ -769,7 +918,11 @@ impl Parser {
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
                 self.advance(); // `struct`
-                let tag = if matches!(self.peek(), Token::Identifier(_)) { Some(self.parse_identifier()?) } else { None };
+                let tag = if matches!(self.peek(), Token::Identifier(_)) {
+                    Some(self.parse_identifier()?)
+                } else {
+                    None
+                };
                 let inner = self.parse_struct_body()?;
                 let inner_size = inner.size;
                 let inner_align = (inner.align as u16).max(1);
@@ -783,17 +936,33 @@ impl Parser {
                     let name = self.parse_identifier()?;
                     let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
                     self.structs.insert(variant_tag.clone(), inner);
-                    layout.fields.insert(name, StructField { member_type: Type::Struct { size: inner_size, align: inner_align as u8 }, offset: 0, struct_tag: Some(variant_tag), array_element: None, array_bytes: None, bit_field: None });
+                    layout.fields.insert(
+                        name,
+                        StructField {
+                            member_type: Type::Struct {
+                                size: inner_size,
+                                align: inner_align as u8,
+                            },
+                            offset: 0,
+                            struct_tag: Some(variant_tag),
+                            array_element: None,
+                            array_bytes: None,
+                            bit_field: None,
+                        },
+                    );
                 } else {
                     for (field_name, field) in &inner.fields {
-                        layout.fields.insert(field_name.clone(), StructField {
-                            member_type: field.member_type,
-                            offset: field.offset,
-                            struct_tag: field.struct_tag.clone(),
-                            array_element: field.array_element,
-                            array_bytes: field.array_bytes,
-                            bit_field: field.bit_field,
-                        });
+                        layout.fields.insert(
+                            field_name.clone(),
+                            StructField {
+                                member_type: field.member_type,
+                                offset: field.offset,
+                                struct_tag: field.struct_tag.clone(),
+                                array_element: field.array_element,
+                                array_bytes: field.array_bytes,
+                                bit_field: field.bit_field,
+                            },
+                        );
                     }
                 }
                 max_size = max_size.max(inner_size);
@@ -805,14 +974,18 @@ impl Parser {
             // An array-typedef (or row-pointer-typedef) union member would lay out at
             // the decayed pointer's size (4) instead of the array's — defer.
             if self.last_array_typedef.take().is_some() {
-                return Err(Diagnostic::error("an array-typedef union member is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "an array-typedef union member is not supported yet (roadmap)",
+                ));
             }
             let struct_tag = self.last_struct_tag.take();
             let attr_align = self.skip_attributes()?;
             let name = self.parse_identifier()?;
             // Bit-fields and multiple declarators in a union are uncommon and defer.
             if matches!(self.peek(), Token::Colon | Token::Comma) {
-                return Err(Diagnostic::error("an irregular union member shape is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "an irregular union member shape is not supported yet (roadmap)",
+                ));
             }
             // An array member occupies the product of its dimensions; it still
             // starts at offset 0, so it only widens the union.
@@ -830,8 +1003,20 @@ impl Parser {
                 }
                 size = total * type_size(field_type);
             }
-            let align = type_alignment(field_type).max(1).max(attr_align.unwrap_or(1));
-            layout.fields.insert(name, StructField { member_type: field_type, offset: 0, struct_tag, array_element, array_bytes: is_array.then_some(size), bit_field: None });
+            let align = type_alignment(field_type)
+                .max(1)
+                .max(attr_align.unwrap_or(1));
+            layout.fields.insert(
+                name,
+                StructField {
+                    member_type: field_type,
+                    offset: 0,
+                    struct_tag,
+                    array_element,
+                    array_bytes: is_array.then_some(size),
+                    bit_field: None,
+                },
+            );
             max_size = max_size.max(size);
             max_align = max_align.max(align);
             self.expect(Token::Semicolon)?;

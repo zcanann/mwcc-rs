@@ -10,16 +10,37 @@ impl Generator {
     /// the `cmpwi` immediate, and the SKIP branch (the inverse of the taken condition
     /// — branch past the guarded body when it is false). Ordering comparisons require
     /// a signed `int` operand (`cmpwi` is signed); everything else yields `None`.
-    pub(crate) fn parse_hoisted_if_condition<'a>(&self, function: &Function, condition: &'a Expression) -> Option<(&'a String, i16, u8, u8)> {
+    pub(crate) fn parse_hoisted_if_condition<'a>(
+        &self,
+        function: &Function,
+        condition: &'a Expression,
+    ) -> Option<(&'a String, i16, u8, u8)> {
         match condition {
             Expression::Variable(name) => Some((name, 0, 12, 2)), // if(x): cmpwi x,0; beq
-            Expression::Binary { operator, left, right } => {
-                let Expression::Variable(name) = left.as_ref() else { return None };
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                let Expression::Variable(name) = left.as_ref() else {
+                    return None;
+                };
                 let immediate = i16::try_from(constant_value(right)?).ok()?;
-                let ordering = matches!(operator,
-                    BinaryOperator::Less | BinaryOperator::LessEqual
-                    | BinaryOperator::Greater | BinaryOperator::GreaterEqual);
-                if ordering && function.parameters.iter().find(|parameter| &parameter.name == name).map(|parameter| parameter.parameter_type) != Some(Type::Int) {
+                let ordering = matches!(
+                    operator,
+                    BinaryOperator::Less
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::Greater
+                        | BinaryOperator::GreaterEqual
+                );
+                if ordering
+                    && function
+                        .parameters
+                        .iter()
+                        .find(|parameter| &parameter.name == name)
+                        .map(|parameter| parameter.parameter_type)
+                        != Some(Type::Int)
+                {
                     return None;
                 }
                 let branch = match operator {
@@ -37,6 +58,73 @@ impl Generator {
         }
     }
 
+    /// Emit the prologue shared by the conditional-call return and store
+    /// owners. Build 163's conditional region allocator reserves one eight-byte
+    /// lane per promoted parameter above a 16-byte base and writes the linkage
+    /// area before decrementing r1; mainline retains `FramePlan`'s layout.
+    fn emit_conditional_saved_prologue(
+        &mut self,
+        homes: &[u8],
+        incoming: &[u8],
+        condition_register: u8,
+        compare_constant: i16,
+    ) {
+        debug_assert_eq!(homes.len(), incoming.len());
+        self.non_leaf = true;
+        self.callee_saved = homes.to_vec();
+        match self.behavior.frame_convention {
+            FrameConvention::Predecrement => {
+                self.frame_size = (((8 + 4 * homes.len() as i32) + 15) / 16 * 16) as i16;
+                let mut prologue =
+                    mwcc_vreg::FramePlan::sized_for(homes.to_vec()).prologue_interleaved(incoming);
+                prologue.insert(
+                    2,
+                    Instruction::CompareWordImmediate {
+                        a: condition_register,
+                        immediate: compare_constant,
+                    },
+                );
+                self.output.instructions.extend(prologue);
+            }
+            FrameConvention::LinkageFirst => {
+                self.frame_size = 16 + 8 * homes.len() as i16;
+                self.output
+                    .instructions
+                    .push(Instruction::MoveFromLinkRegister { d: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: condition_register,
+                        immediate: compare_constant,
+                    });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -self.frame_size,
+                    });
+                for (index, (&home, &source)) in homes.iter().zip(incoming.iter()).enumerate() {
+                    self.output.instructions.push(Instruction::StoreWord {
+                        s: home,
+                        a: 1,
+                        offset: self.frame_size - 4 * (index as i16 + 1),
+                    });
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: home,
+                        a: source,
+                        immediate: 0,
+                    });
+                }
+            }
+        }
+    }
+
     /// `T f(…, int b, …) { if (b) return call(…); return DEFAULT; }` — an early
     /// return whose value is a CALL, guarding a constant default. mwcc hoists the
     /// condition test into the prologue (`cmpwi b,0` after `mflr`), branches to the
@@ -45,14 +133,24 @@ impl Generator {
     /// returned directly). Gated narrow: one guard with a call value and a constant
     /// default, no other statements.
     pub(crate) fn try_guarded_call_return(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.locals.is_empty() || !function.statements.is_empty() {
+        if !self.frame_slots.is_empty()
+            || !function.locals.is_empty()
+            || !function.statements.is_empty()
+        {
             return Ok(false);
         }
-        if matches!(function.return_type, Type::Float | Type::Double) || function.return_type == Type::Void {
+        if matches!(function.return_type, Type::Float | Type::Double)
+            || function.return_type == Type::Void
+        {
             return Ok(false);
         }
-        let [guard] = function.guards.as_slice() else { return Ok(false) };
-        if !matches!(guard.value, Expression::Call { .. } | Expression::CallThrough { .. }) {
+        let [guard] = function.guards.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(
+            guard.value,
+            Expression::Call { .. } | Expression::CallThrough { .. }
+        ) {
             return Ok(false);
         }
         // The default (fall-through) return must be a constant — a parameter default
@@ -63,10 +161,14 @@ impl Generator {
         if constant_value(default_return).is_none() {
             return Ok(false);
         }
-        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) = self.parse_hoisted_if_condition(function, &guard.condition) else {
+        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) =
+            self.parse_hoisted_if_condition(function, &guard.condition)
+        else {
             return Ok(false);
         };
-        let Some(cond_location) = self.locations.get(cond_name) else { return Ok(false) };
+        let Some(cond_location) = self.locations.get(cond_name) else {
+            return Ok(false);
+        };
         if cond_location.class != ValueClass::General {
             return Ok(false);
         }
@@ -75,10 +177,27 @@ impl Generator {
         // -- emit -- prologue: stwu; mflr; [cmpwi hoisted]; stw r0 (LR only).
         self.non_leaf = true;
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: cond_register, immediate: cmp_constant });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: cond_register,
+                immediate: cmp_constant,
+            });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         let else_label = self.fresh_label();
         let join_label = self.fresh_label();
         self.emit_branch_conditional_to(skip_bo, skip_bi, else_label);
@@ -90,10 +209,22 @@ impl Generator {
         self.bind_label(else_label);
         self.evaluate_tail(default_return, function.return_type, result)?;
         self.bind_label(join_label);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 2;
         Ok(true)
     }
@@ -107,18 +238,36 @@ impl Generator {
     /// it, body = call(s) then one in-place `counter +/- const`.
     pub(crate) fn try_callee_saved_call_loop(&mut self, function: &Function) -> Compilation<bool> {
         use mwcc_syntax_trees::LoopKind;
-        if function.return_type != Type::Void || !function.guards.is_empty() || !self.frame_slots.is_empty() || !function.locals.is_empty() {
+        if function.return_type != Type::Void
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
-        let [Statement::Loop { kind: LoopKind::While, initializer: None, condition: Some(condition), step: None, body }] =
-            function.statements.as_slice()
+        let [Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(condition),
+            step: None,
+            body,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
         // `while (n)` — the counter, a general parameter, live across the body's calls.
-        let Expression::Variable(counter) = condition else { return Ok(false) };
+        let Expression::Variable(counter) = condition else {
+            return Ok(false);
+        };
         // Body = call(s), then a single in-place `counter +/- const` update.
-        let Some((Statement::Assign { name: update_name, value: update_value }, call_statements)) = body.split_last() else {
+        let Some((
+            Statement::Assign {
+                name: update_name,
+                value: update_value,
+            },
+            call_statements,
+        )) = body.split_last()
+        else {
             return Ok(false);
         };
         // Exactly one call in the body — two calls reschedule the counter step (deferred).
@@ -127,11 +276,19 @@ impl Generator {
         }
         // The in-place counter step `counter +/- const`; emitted directly as `addi`
         // (a reassignment through emit_statement defers in a call context).
-        let Expression::Binary { operator, left, right } = update_value else { return Ok(false) };
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = update_value
+        else {
+            return Ok(false);
+        };
         if !matches!(left.as_ref(), Expression::Variable(other) if other == counter) {
             return Ok(false);
         }
-        let Some(magnitude) = constant_value(right).and_then(|value| i16::try_from(value).ok()) else {
+        let Some(magnitude) = constant_value(right).and_then(|value| i16::try_from(value).ok())
+        else {
             return Ok(false);
         };
         let step = match operator {
@@ -139,15 +296,26 @@ impl Generator {
             BinaryOperator::Subtract => magnitude.checked_neg().unwrap_or(0),
             _ => return Ok(false),
         };
-        if !call_statements.iter().all(|statement| matches!(statement,
-            Statement::Expression(Expression::Call { .. }) | Statement::Expression(Expression::CallThrough { .. })))
+        if !call_statements.iter().all(|statement| {
+            matches!(
+                statement,
+                Statement::Expression(Expression::Call { .. })
+                    | Statement::Expression(Expression::CallThrough { .. })
+            )
+        }) {
+            return Ok(false);
+        }
+        if function
+            .parameters
+            .iter()
+            .position(|parameter| &parameter.name == counter)
+            .is_none()
         {
             return Ok(false);
         }
-        if function.parameters.iter().position(|parameter| &parameter.name == counter).is_none() {
+        let Some(location) = self.locations.get(counter) else {
             return Ok(false);
-        }
-        let Some(location) = self.locations.get(counter) else { return Ok(false) };
+        };
         if location.class != ValueClass::General {
             return Ok(false);
         }
@@ -161,31 +329,72 @@ impl Generator {
         let home = self.fresh_virtual_general();
         self.callee_saved = vec![home];
         let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
-        self.output.instructions.extend(plan.prologue_interleaved(&[counter_incoming]));
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&[counter_incoming]));
         if let Some(location) = self.locations.get_mut(counter) {
             location.register = home;
         }
         let skip = self.output.instructions.len();
-        self.output.instructions.push(Instruction::Branch { target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::Branch { target: 0 });
         let body_top = self.output.instructions.len();
         // The calls (reading the counter from its callee-saved home), then the counter
         // step emitted directly (emit_statement would defer the reassignment).
         for statement in call_statements {
             self.emit_statement(statement)?;
         }
-        self.output.instructions.push(Instruction::AddImmediate { d: home, a: home, immediate: step });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: home,
+            a: home,
+            immediate: step,
+        });
         let condition_at = self.output.instructions.len();
         if let Instruction::Branch { target } = &mut self.output.instructions[skip] {
             *target = condition_at;
         }
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let back = if options == 4 { 12 } else { 4 };
-        self.output.instructions.push(Instruction::BranchConditionalForward { options: back, condition_bit, target: body_top });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: back,
+                condition_bit,
+                target: body_top,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: home,
+            a: 1,
+            offset: self.frame_size - 4,
+        });
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+        }
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump = 4; // the while loop's labels
         Ok(true)
     }
@@ -198,15 +407,28 @@ impl Generator {
     /// its simplest form — a value live across a CONDITIONAL call. Gated narrow:
     /// a single saved general parameter, an `if (param) { calls… }` with empty
     /// else, and calls whose arguments do not reference the saved value.
-    pub(crate) fn try_callee_saved_conditional_call(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+    pub(crate) fn try_callee_saved_conditional_call(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
-        if matches!(function.return_type, Type::Float | Type::Double) || function.return_type == Type::Void {
+        if matches!(function.return_type, Type::Float | Type::Double)
+            || function.return_type == Type::Void
+        {
             return Ok(false);
         }
         // Body = exactly one `if (cond) { … }` with an empty else.
-        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
+        else {
             return Ok(false);
         };
         if !else_body.is_empty() {
@@ -214,13 +436,20 @@ impl Generator {
         }
         // The if-condition, hoisted into the prologue as `cmpwi operand, const` with an
         // inverse skip branch (shared with the guarded-call-return shape).
-        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) = self.parse_hoisted_if_condition(function, condition) else {
+        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) =
+            self.parse_hoisted_if_condition(function, condition)
+        else {
             return Ok(false);
         };
         // then-body = plain (void-result) calls only.
         if then_body.is_empty()
-            || !then_body.iter().all(|statement| matches!(statement,
-                Statement::Expression(Expression::Call { .. }) | Statement::Expression(Expression::CallThrough { .. })))
+            || !then_body.iter().all(|statement| {
+                matches!(
+                    statement,
+                    Statement::Expression(Expression::Call { .. })
+                        | Statement::Expression(Expression::CallThrough { .. })
+                )
+            })
         {
             return Ok(false);
         }
@@ -229,12 +458,25 @@ impl Generator {
         // return-shape the straight-line callee-saved path allows for two saved values.
         let saved_names: Vec<&String> = match function.return_expression.as_ref() {
             Some(Expression::Variable(name)) => vec![name],
-            Some(Expression::Binary { operator, left, right })
-                if matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract
-                    | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor) =>
+            Some(Expression::Binary {
+                operator,
+                left,
+                right,
+            }) if matches!(
+                operator,
+                BinaryOperator::Add
+                    | BinaryOperator::Subtract
+                    | BinaryOperator::BitAnd
+                    | BinaryOperator::BitOr
+                    | BinaryOperator::BitXor
+            ) =>
             {
                 match (left.as_ref(), right.as_ref()) {
-                    (Expression::Variable(left_name), Expression::Variable(right_name)) if left_name != right_name => vec![left_name, right_name],
+                    (Expression::Variable(left_name), Expression::Variable(right_name))
+                        if left_name != right_name =>
+                    {
+                        vec![left_name, right_name]
+                    }
                     _ => return Ok(false),
                 }
             }
@@ -247,24 +489,36 @@ impl Generator {
             if *name == cond_name {
                 return Ok(false);
             }
-            let Some(index) = function.parameters.iter().position(|parameter| &parameter.name == *name) else {
+            let Some(index) = function
+                .parameters
+                .iter()
+                .position(|parameter| &parameter.name == *name)
+            else {
                 return Ok(false);
             };
-            let Some(location) = self.locations.get(*name) else { return Ok(false) };
+            let Some(location) = self.locations.get(*name) else {
+                return Ok(false);
+            };
             if location.class != ValueClass::General {
                 return Ok(false);
             }
             promoted.push((index, (*name).clone(), location.register));
         }
         if then_body.iter().any(|statement| match statement {
-            Statement::Expression(Expression::Call { arguments, .. }) => arguments
-                .iter()
-                .any(|argument| saved_names.iter().any(|name| expression_reads_name(argument, name))),
+            Statement::Expression(Expression::Call { arguments, .. }) => {
+                arguments.iter().any(|argument| {
+                    saved_names
+                        .iter()
+                        .any(|name| expression_reads_name(argument, name))
+                })
+            }
             _ => false,
         }) {
             return Ok(false);
         }
-        let Some(cond_location) = self.locations.get(cond_name) else { return Ok(false) };
+        let Some(cond_location) = self.locations.get(cond_name) else {
+            return Ok(false);
+        };
         if cond_location.class != ValueClass::General {
             return Ok(false);
         }
@@ -274,16 +528,18 @@ impl Generator {
         let count = promoted.len();
 
         // -- emit --
-        self.non_leaf = true;
-        self.frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
-        self.callee_saved = homes.clone();
-        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
-        let incoming_ordered: Vec<u8> = promoted.iter().rev().map(|(_, _, incoming)| *incoming).collect();
-        let mut prologue = plan.prologue_interleaved(&incoming_ordered);
-        // mwcc fills the ready slot after `mflr` with the if-condition test.
-        prologue.insert(2, Instruction::CompareWordImmediate { a: cond_register, immediate: cmp_constant });
-        self.output.instructions.extend(prologue);
+        let incoming_ordered: Vec<u8> = promoted
+            .iter()
+            .rev()
+            .map(|(_, _, incoming)| *incoming)
+            .collect();
+        self.emit_conditional_saved_prologue(
+            &homes,
+            &incoming_ordered,
+            cond_register,
+            cmp_constant,
+        );
         for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
             if let Some(location) = self.locations.get_mut(name) {
                 location.register = homes[rank];
@@ -300,15 +556,55 @@ impl Generator {
         // sit after the merge, since the call is one-armed), then the return move/compute,
         // then the saved GPRs (highest first), then `mtlr`/`addi`/`blr`. Hand-emitted —
         // the LR-reload hoist can't cross the branch.
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
         let result = Eabi::general_result().number;
-        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
-        for (index, &home) in homes.iter().enumerate() {
-            self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 * (index as i16 + 1) });
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.evaluate_tail(
+                function.return_expression.as_ref().unwrap(),
+                function.return_type,
+                result,
+            )?;
         }
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        });
+        if self.behavior.frame_convention == FrameConvention::Predecrement {
+            self.evaluate_tail(
+                function.return_expression.as_ref().unwrap(),
+                function.return_type,
+                result,
+            )?;
+        }
+        for (index, &home) in homes.iter().enumerate() {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: home,
+                a: 1,
+                offset: self.frame_size - 4 * (index as i16 + 1),
+            });
+        }
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+        }
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // An `if` advances the anonymous `@N` counter by 2 (positional model), which
         // the exception-unwind `@N` entry is numbered against.
         self.output.anonymous_label_bump += 2;
@@ -323,8 +619,14 @@ impl Generator {
     /// stw r0,20; stw r31,12; mr r31,p; beq skip; bl g; skip: li r0,C; stw r0,0(r31);
     /// lwz r0,20; lwz r31,12; mtlr; addi; blr`. Scoped to ONE saved parameter and ONE
     /// constant store; the value is constant so only the store's base is live.
-    pub(crate) fn try_callee_saved_conditional_call_then_store(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+    pub(crate) fn try_callee_saved_conditional_call_then_store(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
         if function.return_type != Type::Void {
@@ -332,19 +634,31 @@ impl Generator {
         }
         // Body = `if (cond) { calls } <trailing store>`: the if with an empty else,
         // followed by exactly one store.
-        let [Statement::If { condition, then_body, else_body }, Statement::Store { target, value }] = function.statements.as_slice() else {
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }, Statement::Store { target, value }] = function.statements.as_slice()
+        else {
             return Ok(false);
         };
         if !else_body.is_empty() || constant_value(value).is_none() {
             return Ok(false);
         }
-        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) = self.parse_hoisted_if_condition(function, condition) else {
+        let Some((cond_name, cmp_constant, skip_bo, skip_bi)) =
+            self.parse_hoisted_if_condition(function, condition)
+        else {
             return Ok(false);
         };
         // then-body = plain (void-result) calls only.
         if then_body.is_empty()
-            || !then_body.iter().all(|statement| matches!(statement,
-                Statement::Expression(Expression::Call { .. }) | Statement::Expression(Expression::CallThrough { .. })))
+            || !then_body.iter().all(|statement| {
+                matches!(
+                    statement,
+                    Statement::Expression(Expression::Call { .. })
+                        | Statement::Expression(Expression::CallThrough { .. })
+                )
+            })
         {
             return Ok(false);
         }
@@ -354,7 +668,9 @@ impl Generator {
             .parameters
             .iter()
             .filter_map(|parameter| {
-                if expression_reads_name(target, &parameter.name) || expression_reads_name(value, &parameter.name) {
+                if expression_reads_name(target, &parameter.name)
+                    || expression_reads_name(value, &parameter.name)
+                {
                     self.locations
                         .get(&parameter.name)
                         .filter(|location| location.class == ValueClass::General)
@@ -373,21 +689,17 @@ impl Generator {
         {
             return Ok(false);
         }
-        let Some(cond_location) = self.locations.get(cond_name) else { return Ok(false) };
+        let Some(cond_location) = self.locations.get(cond_name) else {
+            return Ok(false);
+        };
         if cond_location.class != ValueClass::General {
             return Ok(false);
         }
         let cond_register = cond_location.register;
 
         // -- emit -- (mirrors try_callee_saved_conditional_call, a trailing store for the return)
-        self.non_leaf = true;
-        self.frame_size = 16; // 8 (LR area) + 4 (one saved GPR), padded to 16
         let home = self.fresh_virtual_general();
-        self.callee_saved = vec![home];
-        let mut prologue = mwcc_vreg::FramePlan::sized_for(vec![home]).prologue_interleaved(&[saved[0].1]);
-        // mwcc fills the ready slot after `mflr` with the if-condition test.
-        prologue.insert(2, Instruction::CompareWordImmediate { a: cond_register, immediate: cmp_constant });
-        self.output.instructions.extend(prologue);
+        self.emit_conditional_saved_prologue(&[home], &[saved[0].1], cond_register, cmp_constant);
         // The saved parameter now lives in its callee-saved home.
         if let Some(location) = self.locations.get_mut(&saved[0].0) {
             location.register = home;
@@ -403,11 +715,38 @@ impl Generator {
         // the saved LR reloads FIRST (it can only sit after the merge), then the saved GPR,
         // then `mtlr`/`addi`/`blr`. Hand-emitted — the LR-reload hoist can't cross the branch.
         self.emit_statement(&function.statements[1])?;
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: home, a: 1, offset: self.frame_size - 4 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: home,
+            a: 1,
+            offset: self.frame_size - 4,
+        });
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+        }
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += 2;
         Ok(true)
     }
@@ -420,7 +759,10 @@ impl Generator {
     /// single reused global argument, an equality condition, and a constant store back to
     /// the same global — the shape the driver.rs pre-check otherwise defers ("a global read
     /// in both an if-condition and its body needs value reuse across the branch").
-    pub(crate) fn try_guarded_global_reuse_call(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_guarded_global_reuse_call(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if !self.frame_slots.is_empty()
             || !function.guards.is_empty()
             || !function.locals.is_empty()
@@ -428,7 +770,12 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::If { condition, then_body, else_body }] = function.statements.as_slice() else {
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
+        else {
             return Ok(false);
         };
         if !else_body.is_empty() {
@@ -436,21 +783,34 @@ impl Generator {
         }
         // The condition is `g REL C`: a scalar global against a small constant, tested for
         // (in)equality (`cmpwi` is sign-agnostic for `==`/`!=`).
-        let Expression::Binary { operator, left, right } = condition else { return Ok(false) };
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = condition
+        else {
+            return Ok(false);
+        };
         if !matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
             return Ok(false);
         }
-        let Expression::Variable(global) = left.as_ref() else { return Ok(false) };
+        let Expression::Variable(global) = left.as_ref() else {
+            return Ok(false);
+        };
         if !self.globals.contains_key(global.as_str()) {
             return Ok(false);
         }
-        let Some(condition_constant) = constant_value(right).and_then(|value| i16::try_from(value).ok()) else {
+        let Some(condition_constant) =
+            constant_value(right).and_then(|value| i16::try_from(value).ok())
+        else {
             return Ok(false);
         };
         // The body is exactly `ext(g); g = C2;` — a direct external call reusing g as its
         // ONLY argument, then a constant store back to the same global.
-        let [Statement::Expression(Expression::Call { name: call_name, arguments }), store @ Statement::Store { target, value }] =
-            then_body.as_slice()
+        let [Statement::Expression(Expression::Call {
+            name: call_name,
+            arguments,
+        }), store @ Statement::Store { target, value }] = then_body.as_slice()
         else {
             return Ok(false);
         };
@@ -463,34 +823,56 @@ impl Generator {
         if !matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == global) {
             return Ok(false);
         }
-        if !matches!(target, Expression::Variable(name) if name == global) || constant_value(value).is_none() {
+        if !matches!(target, Expression::Variable(name) if name == global)
+            || constant_value(value).is_none()
+        {
             return Ok(false);
         }
 
         // -- emit -- the LR-only non-leaf frame, then g loaded once into r3 and tested there.
         self.non_leaf = true;
         self.frame_size = 16;
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![]).prologue());
         let result = Eabi::general_result().number;
         self.evaluate_general(left, result)?; // lwz r3, g
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: result, immediate: condition_constant });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: result,
+                immediate: condition_constant,
+            });
         let (skip_bo, skip_bi) = false_branch_bo_bi(*operator).expect("equality is a comparison");
         let skip = self.fresh_label();
         self.emit_branch_conditional_to(skip_bo, skip_bi, skip);
         // The call reuses g (already in r3) — emit the `bl` directly, no argument reload.
         self.record_relocation(RelocationKind::Rel24, call_name);
-        self.output.instructions.push(Instruction::BranchAndLink { target: call_name.clone() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: call_name.clone(),
+        });
         // g = C2 (`li r0,C2; stw r0,g`), then the epilogue at the join.
         self.emit_statement(store)?;
         self.bind_label(skip);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: self.frame_size,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // The extab anonymous symbol lands at @8 for this shape (measured) — the guard plus
         // the reused-global load advance the counter by 3, one more than the bare guard-call.
         self.output.anonymous_label_bump += 3;
         Ok(true)
     }
-
 }

@@ -37,25 +37,74 @@ impl Generator {
             }
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
         self.record_relocation(RelocationKind::Addr16Ha, "tmp_float");
-        self.output.instructions.push(Instruction::load_immediate_shifted(4, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(4, 0));
         self.record_relocation(RelocationKind::Addr16Lo, "tmp_float");
-        self.output.instructions.push(Instruction::LoadFloatSingleWithUpdate { d: 3, a: 4, offset: 0 });
+        self.output
+            .instructions
+            .push(Instruction::LoadFloatSingleWithUpdate {
+                d: 3,
+                a: 4,
+                offset: 0,
+            });
         self.record_relocation(RelocationKind::Addr16Ha, "__four_over_pi_m1");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
-        self.output.instructions.push(Instruction::LoadFloatSingle { d: 2, a: 4, offset: 4 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
+        self.output.instructions.push(Instruction::LoadFloatSingle {
+            d: 2,
+            a: 4,
+            offset: 4,
+        });
         self.record_relocation(RelocationKind::Addr16Lo, "__four_over_pi_m1");
-        self.output.instructions.push(Instruction::StoreFloatSingleWithUpdate { s: 3, a: 3, offset: 0 });
-        self.output.instructions.push(Instruction::LoadFloatSingle { d: 1, a: 4, offset: 8 });
-        self.output.instructions.push(Instruction::LoadFloatSingle { d: 0, a: 4, offset: 12 });
-        self.output.instructions.push(Instruction::StoreFloatSingle { s: 2, a: 3, offset: 4 });
-        self.output.instructions.push(Instruction::StoreFloatSingle { s: 1, a: 3, offset: 8 });
-        self.output.instructions.push(Instruction::StoreFloatSingle { s: 0, a: 3, offset: 12 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatSingleWithUpdate {
+                s: 3,
+                a: 3,
+                offset: 0,
+            });
+        self.output.instructions.push(Instruction::LoadFloatSingle {
+            d: 1,
+            a: 4,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::LoadFloatSingle {
+            d: 0,
+            a: 4,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatSingle {
+                s: 2,
+                a: 3,
+                offset: 4,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatSingle {
+                s: 1,
+                a: 3,
+                offset: 8,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatSingle {
+                s: 0,
+                a: 3,
+                offset: 12,
+            });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

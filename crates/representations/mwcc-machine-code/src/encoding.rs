@@ -186,6 +186,7 @@ impl Instruction {
                 (60 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
             Instruction::BranchToLinkRegister => 0x4E80_0020,
+            Instruction::BranchToLinkRegisterAndLink => 0x4E80_0021,
             // The displacement is supplied by the relocation; emit the placeholder.
             Instruction::BranchAndLink { .. } => 0x4800_0001,
             Instruction::MoveFromLinkRegister { d } => 0x7C08_02A6 | ((d as u32) << 21),

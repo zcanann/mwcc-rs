@@ -46,88 +46,291 @@ impl Generator {
         ] {
             self.output.intern_constant(bits, 8);
         }
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [20, 28, 33, 39, 63] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::load_immediate(4, 0));
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::load_immediate_shifted(0, 16));
-        self.output.instructions.push(Instruction::CompareWord { a: 5, b: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 31, a: 1, offset: 24 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(4, 0));
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(0, 16));
+        self.output
+            .instructions
+            .push(Instruction::CompareWord { a: 5, b: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 1,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 31,
+                a: 1,
+                offset: 24,
+            });
         self.emit_branch_conditional_to(4, 0, labels[&33]); // bge
-        self.output.instructions.push(Instruction::ClearLeftImmediate { a: 0, s: 5, clear: 1 });
-        self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: 0,
+                s: 5,
+                clear: 1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::OrRecord { a: 0, s: 0, b: 3 });
         self.emit_branch_conditional_to(4, 2, labels[&20]); // bne
         self.load_double_constant(1, 0xc350000000000000);
-        self.output.instructions.push(Instruction::load_immediate(0, 33));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 33));
         self.record_relocation(RelocationKind::EmbSda21, "zero");
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 0,
+            a: 0,
+            offset: 0,
+        });
         self.record_relocation(RelocationKind::EmbSda21, "errno");
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::FloatDivideDouble { d: 1, a: 1, b: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatDivideDouble { d: 1, a: 1, b: 0 });
         self.emit_branch_to(labels[&63]); // b
         self.bind_label(labels[&20]);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 5, immediate: 0 });
         self.emit_branch_conditional_to(4, 0, labels[&28]); // bge
-        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 1 });
         self.record_relocation(RelocationKind::EmbSda21, "zero");
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::load_immediate(0, 33));
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 0,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 33));
         self.record_relocation(RelocationKind::EmbSda21, "errno");
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::FloatDivideDouble { d: 1, a: 1, b: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatDivideDouble { d: 1, a: 1, b: 0 });
         self.emit_branch_to(labels[&63]); // b
         self.bind_label(labels[&28]);
         self.load_double_constant(0, 0x4350000000000000);
-        self.output.instructions.push(Instruction::load_immediate(4, -54));
-        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 0 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 0, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 1, offset: 8 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(4, -54));
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 0,
+                a: 1,
+                offset: 8,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 1,
+            offset: 8,
+        });
         self.bind_label(labels[&33]);
-        self.output.instructions.push(Instruction::load_immediate_shifted(0, 32752));
-        self.output.instructions.push(Instruction::CompareWord { a: 5, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(0, 32752));
+        self.output
+            .instructions
+            .push(Instruction::CompareWord { a: 5, b: 0 });
         self.emit_branch_conditional_to(12, 0, labels[&39]); // blt
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 0, b: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 0,
+            a: 1,
+            offset: 8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatAddDouble { d: 1, a: 0, b: 0 });
         self.emit_branch_to(labels[&63]); // b
         self.bind_label(labels[&39]);
-        self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: 5, shift: 20 });
-        self.output.instructions.push(Instruction::load_immediate_shifted(0, 17200));
-        self.output.instructions.push(Instruction::Add { d: 4, a: 3, b: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: -1023 });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightAlgebraicImmediate {
+                a: 3,
+                s: 5,
+                shift: 20,
+            });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(0, 17200));
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 4, a: 3, b: 4 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 16,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: -1023,
+        });
         self.load_double_constant(1, 0x4330000080000000);
-        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 3, s: 4, shift: 31 });
-        self.output.instructions.push(Instruction::Add { d: 0, a: 4, b: 3 });
-        self.output.instructions.push(Instruction::XorImmediateShifted { a: 0, s: 0, immediate: 32768 });
-        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 3, a: 3, immediate: 1023 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: 3, shift: 20 });
-        self.output.instructions.push(Instruction::RotateAndMaskInsert { a: 0, s: 5, shift: 0, begin: 12, end: 31 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 0, a: 1, offset: 16 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::FloatSubtractDouble { d: 31, a: 0, b: 1 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: 3,
+                s: 4,
+                shift: 31,
+            });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 0, a: 4, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::XorImmediateShifted {
+                a: 0,
+                s: 0,
+                immediate: 32768,
+            });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFromImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1023,
+            });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 3,
+                shift: 20,
+            });
+        self.output
+            .instructions
+            .push(Instruction::RotateAndMaskInsert {
+                a: 0,
+                s: 5,
+                shift: 0,
+                begin: 12,
+                end: 31,
+            });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 0,
+            a: 1,
+            offset: 16,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatSubtractDouble { d: 31, a: 0, b: 1 });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 1,
+            a: 1,
+            offset: 8,
+        });
         self.record_relocation(RelocationKind::Rel24, "__ieee754_log");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__ieee754_log".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__ieee754_log".to_string(),
+        });
         self.load_double_constant(0, 0x3fdbcb7b1526e50e);
         self.load_double_constant(2, 0x3d59fef311f12b36);
-        self.output.instructions.push(Instruction::FloatMultiplyDouble { d: 1, a: 0, c: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplyDouble { d: 1, a: 0, c: 1 });
         self.load_double_constant(0, 0x3fd34413509f6000);
-        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 1, a: 2, c: 31, b: 1 });
-        self.output.instructions.push(Instruction::FloatMultiplyAddDouble { d: 1, a: 0, c: 31, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplyAddDouble {
+                d: 1,
+                a: 2,
+                c: 31,
+                b: 1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplyAddDouble {
+                d: 1,
+                a: 0,
+                c: 31,
+                b: 1,
+            });
         self.bind_label(labels[&63]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 31, a: 1, offset: 24 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 31,
+            a: 1,
+            offset: 24,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

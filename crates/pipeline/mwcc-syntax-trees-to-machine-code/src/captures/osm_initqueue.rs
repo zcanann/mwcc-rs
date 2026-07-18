@@ -37,36 +37,117 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 28 });
-        self.output.instructions.push(Instruction::move_register(31, 5));
-        self.output.instructions.push(Instruction::StoreWord { s: 30, a: 1, offset: 24 });
-        self.output.instructions.push(Instruction::move_register(30, 4));
-        self.output.instructions.push(Instruction::StoreWord { s: 29, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::move_register(29, 3));
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 28,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(31, 5));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 30,
+            a: 1,
+            offset: 24,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(30, 4));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 29,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(29, 3));
         self.record_relocation(RelocationKind::Rel24, "OSInitThreadQueue");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSInitThreadQueue".to_string() });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 29, immediate: 8 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSInitThreadQueue".to_string(),
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 29,
+            immediate: 8,
+        });
         self.record_relocation(RelocationKind::Rel24, "OSInitThreadQueue");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSInitThreadQueue".to_string() });
-        self.output.instructions.push(Instruction::StoreWord { s: 30, a: 29, offset: 16 });
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 29, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 29, offset: 24 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 29, offset: 28 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 28 });
-        self.output.instructions.push(Instruction::LoadWord { d: 30, a: 1, offset: 24 });
-        self.output.instructions.push(Instruction::LoadWord { d: 29, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSInitThreadQueue".to_string(),
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 30,
+            a: 29,
+            offset: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 29,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 29,
+            offset: 24,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 29,
+            offset: 28,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 28,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 30,
+            a: 1,
+            offset: 24,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 29,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

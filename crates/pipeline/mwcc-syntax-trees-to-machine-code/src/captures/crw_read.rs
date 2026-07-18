@@ -37,43 +37,125 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        self.output.symbol_order = ["__CARDBlock", "BlockReadCallback", "__CARDReadSegment"].into_iter().map(String::from).collect();
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        self.output.symbol_order = ["__CARDBlock", "BlockReadCallback", "__CARDReadSegment"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [12, 21] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::MultiplyImmediate { d: 9, a: 3, immediate: 272 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::MultiplyImmediate {
+                d: 9,
+                a: 3,
+                immediate: 272,
+            });
         self.record_relocation(RelocationKind::Addr16Ha, "__CARDBlock");
-        self.output.instructions.push(Instruction::load_immediate_shifted(8, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(8, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.record_relocation(RelocationKind::Addr16Lo, "__CARDBlock");
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 8, immediate: 0 });
-        self.output.instructions.push(Instruction::Add { d: 8, a: 0, b: 9 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 8, offset: 0 });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 8,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 8, a: 0, b: 9 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 8,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&12]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, -3));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, -3));
         self.emit_branch_to(labels[&21]); // b
         self.bind_label(labels[&12]);
-        self.output.instructions.push(Instruction::StoreWord { s: 7, a: 8, offset: 212 });
-        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: 5, shift: 9 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 7,
+            a: 8,
+            offset: 212,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: 0,
+                s: 5,
+                shift: 9,
+            });
         self.record_relocation(RelocationKind::Addr16Ha, "BlockReadCallback");
-        self.output.instructions.push(Instruction::load_immediate_shifted(5, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 8, offset: 172 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(5, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 8,
+            offset: 172,
+        });
         self.record_relocation(RelocationKind::Addr16Lo, "BlockReadCallback");
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 5, immediate: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 8, offset: 176 });
-        self.output.instructions.push(Instruction::move_register(4, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 8, offset: 180 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 5,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 8,
+            offset: 176,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(4, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 6,
+            a: 8,
+            offset: 180,
+        });
         self.record_relocation(RelocationKind::Rel24, "__CARDReadSegment");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__CARDReadSegment".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__CARDReadSegment".to_string(),
+        });
         self.bind_label(labels[&21]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

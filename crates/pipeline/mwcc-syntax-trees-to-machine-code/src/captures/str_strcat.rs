@@ -32,23 +32,60 @@ impl Generator {
             _ => return Ok(false),
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [2, 6] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: -1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 3, immediate: -1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: -1,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 3,
+            immediate: -1,
+        });
         self.bind_label(labels[&2]);
-        self.output.instructions.push(Instruction::LoadByteZeroWithUpdate { d: 0, a: 5, offset: 1 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::LoadByteZeroWithUpdate {
+                d: 0,
+                a: 5,
+                offset: 1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&2]); // bne
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 5, immediate: -1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: -1,
+        });
         self.bind_label(labels[&6]);
-        self.output.instructions.push(Instruction::LoadByteZeroWithUpdate { d: 0, a: 4, offset: 1 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::StoreByteWithUpdate { s: 0, a: 5, offset: 1 });
+        self.output
+            .instructions
+            .push(Instruction::LoadByteZeroWithUpdate {
+                d: 0,
+                a: 4,
+                offset: 1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreByteWithUpdate {
+                s: 0,
+                a: 5,
+                offset: 1,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&6]); // bne
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

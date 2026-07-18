@@ -35,26 +35,79 @@ impl Generator {
             }
         };
         // -- emit (the capture, verbatim) --
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
         self.record_relocation(RelocationKind::Addr16Ha, "WaitingQueue");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
         self.record_relocation(RelocationKind::Addr16Lo, "WaitingQueue");
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 3, immediate: 8 });
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 3, offset: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 3, immediate: 16 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 3, immediate: 24 });
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 3, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 6, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 6, a: 6, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 5, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 4, offset: 4 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 3,
+            immediate: 8,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 3,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 3,
+            immediate: 16,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 3,
+            immediate: 24,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 3,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 6,
+            a: 6,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 6,
+            a: 6,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 5,
+            a: 5,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 5,
+            a: 5,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 4,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 4,
+            offset: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

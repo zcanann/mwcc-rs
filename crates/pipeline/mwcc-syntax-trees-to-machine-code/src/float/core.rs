@@ -1,14 +1,15 @@
 //! The CORE float DAG return arm (try_float_dag_return): the frozen
 //! order + register models over one return tree.
 
+use super::{
+    build_tree, collect_arith, collect_literals, count_arith, FloatOp, Operand, Tree,
+    FLOAT_ARITH_LATENCY, FLOAT_MUL_GATE, LOAD_LATENCY,
+};
+use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Type};
 use mwcc_vreg::{assign_float_registers, linearize, DagNode, FROZEN_FLOAT_REG, HAZARD_FPU};
-use crate::generator::*;
-use super::{
-    build_tree, collect_arith, collect_literals, count_arith, FloatOp, Operand, Tree, FLOAT_ARITH_LATENCY, FLOAT_MUL_GATE, LOAD_LATENCY,
-};
 
 impl Generator {
     /// Claim `return <double multiply-add tree>;` for the frozen float
@@ -29,10 +30,9 @@ impl Generator {
             let Expression::Variable(value_name) = &guard.value else {
                 return Ok(false);
             };
-            let value_in_f1 = self
-                .locations
-                .get(value_name)
-                .is_some_and(|location| location.class == ValueClass::Float && location.register == 1);
+            let value_in_f1 = self.locations.get(value_name).is_some_and(|location| {
+                location.class == ValueClass::Float && location.register == 1
+            });
             if !value_in_f1 {
                 return Ok(false);
             }
@@ -43,7 +43,11 @@ impl Generator {
             };
             let condition_ok = match &guard.condition {
                 Expression::Variable(name) => condition_param_ok(name),
-                Expression::Binary { operator, left, right } => {
+                Expression::Binary {
+                    operator,
+                    left,
+                    right,
+                } => {
                     matches!(
                         operator,
                         BinaryOperator::Less
@@ -83,11 +87,14 @@ impl Generator {
         fn contains_literal(expression: &Expression) -> bool {
             match expression {
                 Expression::FloatLiteral(_) => true,
-                Expression::Binary { left, right, .. } => contains_literal(left) || contains_literal(right),
+                Expression::Binary { left, right, .. } => {
+                    contains_literal(left) || contains_literal(right)
+                }
                 _ => false,
             }
         }
-        let mut fold_map: std::collections::HashMap<String, Expression> = std::collections::HashMap::new();
+        let mut fold_map: std::collections::HashMap<String, Expression> =
+            std::collections::HashMap::new();
         let mut kept_locals: Vec<(String, Expression)> = Vec::new();
         for (index, local) in function.locals.iter().enumerate() {
             let Some(initializer) = local.initializer.as_ref() else {
@@ -173,7 +180,13 @@ impl Generator {
         let mut local_trees: Vec<Tree> = Vec::new();
         for (index, (_, initializer)) in kept_locals.iter().enumerate() {
             let prior = &local_names[..index];
-            let Some(local_tree) = super::build_tree_with_tables(initializer, &param_ids, prior, &mut seen_literals, &mut table_context) else {
+            let Some(local_tree) = super::build_tree_with_tables(
+                initializer,
+                &param_ids,
+                prior,
+                &mut seen_literals,
+                &mut table_context,
+            ) else {
                 return Ok(false);
             };
             if count_arith(&local_tree) != 1 || !seen_literals.is_empty() {
@@ -181,7 +194,13 @@ impl Generator {
             }
             local_trees.push(local_tree);
         }
-        let Some(tree) = super::build_tree_with_tables(return_expression, &param_ids, &local_names, &mut seen_literals, &mut table_context) else {
+        let Some(tree) = super::build_tree_with_tables(
+            return_expression,
+            &param_ids,
+            &local_names,
+            &mut seen_literals,
+            &mut table_context,
+        ) else {
             return Ok(false);
         };
         if table_context.name.is_some() {
@@ -193,18 +212,38 @@ impl Generator {
             collect_arith(&tree, 0, &mut refs);
             for (arith, _) in &refs {
                 let sides: Vec<&Tree> = match arith {
-                    Tree::Madd { factor_left, factor_right, addend }
-                    | Tree::Fnmsub { factor_left, factor_right, base: addend }
-                    | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                    Tree::Madd {
+                        factor_left,
+                        factor_right,
+                        addend,
+                    }
+                    | Tree::Fnmsub {
+                        factor_left,
+                        factor_right,
+                        base: addend,
+                    }
+                    | Tree::Fmsub {
+                        factor_left,
+                        factor_right,
+                        subtrahend: addend,
+                    } => {
                         vec![factor_left, factor_right, addend]
                     }
-                    Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                    Tree::Mul { left, right }
+                    | Tree::Fadd { left, right }
+                    | Tree::Fsub { left, right } => {
                         vec![left, right]
                     }
                     _ => Vec::new(),
                 };
-                let pools = sides.iter().filter(|side| matches!(side, Tree::Const(_))).count();
-                let tables = sides.iter().filter(|side| matches!(side, Tree::TableConst(_))).count();
+                let pools = sides
+                    .iter()
+                    .filter(|side| matches!(side, Tree::Const(_)))
+                    .count();
+                let tables = sides
+                    .iter()
+                    .filter(|side| matches!(side, Tree::TableConst(_)))
+                    .count();
                 if pools > 0 && tables > 0 {
                     return Ok(false);
                 }
@@ -234,13 +273,16 @@ impl Generator {
                 if parameter.parameter_type == Type::Double {
                     continue;
                 }
-                let reads = crate::analysis::count_name_occurrences(return_expression, &parameter.name)
-                    + function
-                        .locals
-                        .iter()
-                        .filter_map(|local| local.initializer.as_ref())
-                        .map(|init| crate::analysis::count_name_occurrences(init, &parameter.name))
-                        .sum::<usize>();
+                let reads =
+                    crate::analysis::count_name_occurrences(return_expression, &parameter.name)
+                        + function
+                            .locals
+                            .iter()
+                            .filter_map(|local| local.initializer.as_ref())
+                            .map(|init| {
+                                crate::analysis::count_name_occurrences(init, &parameter.name)
+                            })
+                            .sum::<usize>();
                 if reads != 0 {
                     return Ok(false);
                 }
@@ -253,14 +295,28 @@ impl Generator {
         fn subtree_reads_value(tree: &Tree, value: u32) -> bool {
             match tree {
                 Tree::Param(read) => *read == value,
-                Tree::Madd { factor_left, factor_right, addend }
-                | Tree::Fnmsub { factor_left, factor_right, base: addend }
-                | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                Tree::Madd {
+                    factor_left,
+                    factor_right,
+                    addend,
+                }
+                | Tree::Fnmsub {
+                    factor_left,
+                    factor_right,
+                    base: addend,
+                }
+                | Tree::Fmsub {
+                    factor_left,
+                    factor_right,
+                    subtrahend: addend,
+                } => {
                     subtree_reads_value(factor_left, value)
                         || subtree_reads_value(factor_right, value)
                         || subtree_reads_value(addend, value)
                 }
-                Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                Tree::Mul { left, right }
+                | Tree::Fadd { left, right }
+                | Tree::Fsub { left, right } => {
                     subtree_reads_value(left, value) || subtree_reads_value(right, value)
                 }
                 _ => false,
@@ -268,9 +324,14 @@ impl Generator {
         }
         let tree = if self.float.frame_local.is_some() {
             let direct = |side: &Tree| matches!(side, Tree::Param(7));
-            let inside = |side: &Tree| subtree_reads_value(side, 7) && !matches!(side, Tree::Param(7));
+            let inside =
+                |side: &Tree| subtree_reads_value(side, 7) && !matches!(side, Tree::Param(7));
             match tree {
-                Tree::Madd { factor_left, factor_right, addend } => {
+                Tree::Madd {
+                    factor_left,
+                    factor_right,
+                    addend,
+                } => {
                     if !(direct(&factor_left) || direct(&factor_right))
                         && (inside(&factor_left) || inside(&factor_right))
                     {
@@ -285,13 +346,24 @@ impl Generator {
                         self.output.anonymous_label_bump += 1;
                         Tree::Fadd {
                             left: addend,
-                            right: Box::new(Tree::Mul { left: factor_left, right: factor_right }),
+                            right: Box::new(Tree::Mul {
+                                left: factor_left,
+                                right: factor_right,
+                            }),
                         }
                     } else {
-                        Tree::Madd { factor_left, factor_right, addend }
+                        Tree::Madd {
+                            factor_left,
+                            factor_right,
+                            addend,
+                        }
                     }
                 }
-                Tree::Fnmsub { factor_left, factor_right, base } => {
+                Tree::Fnmsub {
+                    factor_left,
+                    factor_right,
+                    base,
+                } => {
                     if !(direct(&factor_left) || direct(&factor_right))
                         && (inside(&factor_left) || inside(&factor_right))
                     {
@@ -301,18 +373,34 @@ impl Generator {
                         self.output.anonymous_label_bump += 1;
                         Tree::Fsub {
                             left: base,
-                            right: Box::new(Tree::Mul { left: factor_left, right: factor_right }),
+                            right: Box::new(Tree::Mul {
+                                left: factor_left,
+                                right: factor_right,
+                            }),
                         }
                     } else {
-                        Tree::Fnmsub { factor_left, factor_right, base }
+                        Tree::Fnmsub {
+                            factor_left,
+                            factor_right,
+                            base,
+                        }
                     }
                 }
-                Tree::Fmsub { factor_left, factor_right, subtrahend } => {
-                    if subtree_reads_value(&factor_left, 7) || subtree_reads_value(&factor_right, 7) {
+                Tree::Fmsub {
+                    factor_left,
+                    factor_right,
+                    subtrahend,
+                } => {
+                    if subtree_reads_value(&factor_left, 7) || subtree_reads_value(&factor_right, 7)
+                    {
                         // qx*(...) - b in frame form is unmeasured.
                         return Ok(false);
                     }
-                    Tree::Fmsub { factor_left, factor_right, subtrahend }
+                    Tree::Fmsub {
+                        factor_left,
+                        factor_right,
+                        subtrahend,
+                    }
                 }
                 other => other,
             }
@@ -330,9 +418,21 @@ impl Generator {
                 fn walk(tree: &Tree, index: usize, count: &mut usize) {
                     match tree {
                         Tree::LocalRef(local) if *local == index => *count += 1,
-                        Tree::Madd { factor_left, factor_right, addend }
-                        | Tree::Fnmsub { factor_left, factor_right, base: addend }
-                        | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                        Tree::Madd {
+                            factor_left,
+                            factor_right,
+                            addend,
+                        }
+                        | Tree::Fnmsub {
+                            factor_left,
+                            factor_right,
+                            base: addend,
+                        }
+                        | Tree::Fmsub {
+                            factor_left,
+                            factor_right,
+                            subtrahend: addend,
+                        } => {
                             walk(factor_left, index, count);
                             walk(factor_right, index, count);
                             walk(addend, index, count);
@@ -355,7 +455,11 @@ impl Generator {
             };
             for (index, _) in kept_locals.iter().enumerate() {
                 let root_only = match &tree {
-                    Tree::Madd { factor_left, factor_right, addend } => {
+                    Tree::Madd {
+                        factor_left,
+                        factor_right,
+                        addend,
+                    } => {
                         let direct = [factor_left, factor_right, addend]
                             .iter()
                             .filter(|sub| matches!(sub.as_ref(), Tree::LocalRef(local) if *local == index))
@@ -448,14 +552,23 @@ impl Generator {
             let index = nodes.len();
             let (op, reads) = match local_tree {
                 Tree::Mul { left, right } => {
-                    let a = resolve_leaf(left).ok_or_else(|| Diagnostic::error("float local operand"))?;
-                    let c = resolve_leaf(right).ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    let a = resolve_leaf(left)
+                        .ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    let c = resolve_leaf(right)
+                        .ok_or_else(|| Diagnostic::error("float local operand"))?;
                     (FloatOp::Mul { a, c }, vec![a, c])
                 }
-                Tree::Madd { factor_left, factor_right, addend } => {
-                    let a = resolve_leaf(factor_left).ok_or_else(|| Diagnostic::error("float local operand"))?;
-                    let c = resolve_leaf(factor_right).ok_or_else(|| Diagnostic::error("float local operand"))?;
-                    let b = resolve_leaf(addend).ok_or_else(|| Diagnostic::error("float local operand"))?;
+                Tree::Madd {
+                    factor_left,
+                    factor_right,
+                    addend,
+                } => {
+                    let a = resolve_leaf(factor_left)
+                        .ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    let c = resolve_leaf(factor_right)
+                        .ok_or_else(|| Diagnostic::error("float local operand"))?;
+                    let b = resolve_leaf(addend)
+                        .ok_or_else(|| Diagnostic::error("float local operand"))?;
                     (FloatOp::Madd { a, c, b }, vec![a, c, b])
                 }
                 _ => return Ok(false),
@@ -483,50 +596,108 @@ impl Generator {
         }
         // Pass 1: pooled constant loads, grouped per consumer (factor first).
         for &(arith, _) in &arith_refs {
-            let push_table = |offset: i16, nodes: &mut Vec<DagNode>, ops: &mut Vec<FloatOp>, built: &mut Vec<(*const Tree, Operand)>, key: *const Tree| {
+            let push_table = |offset: i16,
+                              nodes: &mut Vec<DagNode>,
+                              ops: &mut Vec<FloatOp>,
+                              built: &mut Vec<(*const Tree, Operand)>,
+                              key: *const Tree| {
                 let index = nodes.len();
                 nodes.push(DagNode::new("lfd_t", LOAD_LATENCY).writes(&[10 + index as u32]));
                 ops.push(FloatOp::TableLoad(offset));
                 built.push((key, Operand::Node(index)));
             };
-            let push_const = |bits: u64, nodes: &mut Vec<DagNode>, ops: &mut Vec<FloatOp>, built: &mut Vec<(*const Tree, Operand)>, key: *const Tree| {
+            let push_const = |bits: u64,
+                              nodes: &mut Vec<DagNode>,
+                              ops: &mut Vec<FloatOp>,
+                              built: &mut Vec<(*const Tree, Operand)>,
+                              key: *const Tree| {
                 let index = nodes.len();
                 nodes.push(DagNode::new("lfd", LOAD_LATENCY).writes(&[10 + index as u32]));
                 ops.push(FloatOp::Const(bits));
                 built.push((key, Operand::Node(index)));
             };
             match arith {
-                Tree::Madd { factor_left, factor_right, addend }
-                | Tree::Fnmsub { factor_left, factor_right, base: addend }
-                | Tree::Fmsub { factor_left, factor_right, subtrahend: addend } => {
+                Tree::Madd {
+                    factor_left,
+                    factor_right,
+                    addend,
+                }
+                | Tree::Fnmsub {
+                    factor_left,
+                    factor_right,
+                    base: addend,
+                }
+                | Tree::Fmsub {
+                    factor_left,
+                    factor_right,
+                    subtrahend: addend,
+                } => {
                     for factor in [factor_left, factor_right] {
                         if let Tree::Const(bits) = factor.as_ref() {
-                            push_const(*bits, &mut nodes, &mut ops, &mut built, factor.as_ref() as *const Tree);
+                            push_const(
+                                *bits,
+                                &mut nodes,
+                                &mut ops,
+                                &mut built,
+                                factor.as_ref() as *const Tree,
+                            );
                         }
                     }
                     if let Tree::Const(bits) = addend.as_ref() {
-                        push_const(*bits, &mut nodes, &mut ops, &mut built, addend.as_ref() as *const Tree);
+                        push_const(
+                            *bits,
+                            &mut nodes,
+                            &mut ops,
+                            &mut built,
+                            addend.as_ref() as *const Tree,
+                        );
                     }
                     // Table reads load AFTER the arith's pool constants
                     // (measured: 0.5 then T[2] in the mixed probe).
                     for factor in [factor_left, factor_right] {
                         if let Tree::TableConst(offset) = factor.as_ref() {
-                            push_table(*offset, &mut nodes, &mut ops, &mut built, factor.as_ref() as *const Tree);
+                            push_table(
+                                *offset,
+                                &mut nodes,
+                                &mut ops,
+                                &mut built,
+                                factor.as_ref() as *const Tree,
+                            );
                         }
                     }
                     if let Tree::TableConst(offset) = addend.as_ref() {
-                        push_table(*offset, &mut nodes, &mut ops, &mut built, addend.as_ref() as *const Tree);
+                        push_table(
+                            *offset,
+                            &mut nodes,
+                            &mut ops,
+                            &mut built,
+                            addend.as_ref() as *const Tree,
+                        );
                     }
                 }
-                Tree::Mul { left, right } | Tree::Fadd { left, right } | Tree::Fsub { left, right } => {
+                Tree::Mul { left, right }
+                | Tree::Fadd { left, right }
+                | Tree::Fsub { left, right } => {
                     for side in [left, right] {
                         if let Tree::Const(bits) = side.as_ref() {
-                            push_const(*bits, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree);
+                            push_const(
+                                *bits,
+                                &mut nodes,
+                                &mut ops,
+                                &mut built,
+                                side.as_ref() as *const Tree,
+                            );
                         }
                     }
                     for side in [left, right] {
                         if let Tree::TableConst(offset) = side.as_ref() {
-                            push_table(*offset, &mut nodes, &mut ops, &mut built, side.as_ref() as *const Tree);
+                            push_table(
+                                *offset,
+                                &mut nodes,
+                                &mut ops,
+                                &mut built,
+                                side.as_ref() as *const Tree,
+                            );
                         }
                     }
                 }
@@ -557,14 +728,28 @@ impl Generator {
             };
             let index = nodes.len();
             match arith {
-                Tree::Fmsub { factor_left, factor_right, subtrahend } => {
-                    let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let b = resolve(subtrahend, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                Tree::Fmsub {
+                    factor_left,
+                    factor_right,
+                    subtrahend,
+                } => {
+                    let left = resolve(factor_left, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let right = resolve(factor_right, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(subtrahend, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     // Measured: a pooled-constant factor takes A; else the
                     // source-left factor keeps it.
-                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
-                    let reads: Vec<u32> = [a, c, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) {
+                        (right, left)
+                    } else {
+                        (left, right)
+                    };
+                    let reads: Vec<u32> = [a, c, b]
+                        .iter()
+                        .map(|&operand| value_of(operand, &nodes))
+                        .collect();
                     nodes.push(
                         DagNode::new("fmsub", FLOAT_ARITH_LATENCY)
                             .hazard(HAZARD_FPU)
@@ -573,14 +758,28 @@ impl Generator {
                     );
                     ops.push(FloatOp::Fmsub { a, c, b });
                 }
-                Tree::Fnmsub { factor_left, factor_right, base } => {
-                    let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let b = resolve(base, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                Tree::Fnmsub {
+                    factor_left,
+                    factor_right,
+                    base,
+                } => {
+                    let left = resolve(factor_left, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let right = resolve(factor_right, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(base, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     // The same measured slot convention as fmadd: a pooled
                     // constant factor takes A (fnmsub f1,f2,f1,f0).
-                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
-                    let reads: Vec<u32> = [a, c, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) {
+                        (right, left)
+                    } else {
+                        (left, right)
+                    };
+                    let reads: Vec<u32> = [a, c, b]
+                        .iter()
+                        .map(|&operand| value_of(operand, &nodes))
+                        .collect();
                     nodes.push(
                         DagNode::new("fnmsub", FLOAT_ARITH_LATENCY)
                             .hazard(HAZARD_FPU)
@@ -589,14 +788,28 @@ impl Generator {
                     );
                     ops.push(FloatOp::Fnmsub { a, c, b });
                 }
-                Tree::Madd { factor_left, factor_right, addend } => {
-                    let left = resolve(factor_left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let right = resolve(factor_right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let b = resolve(addend, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                Tree::Madd {
+                    factor_left,
+                    factor_right,
+                    addend,
+                } => {
+                    let left = resolve(factor_left, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let right = resolve(factor_right, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(addend, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
                     // The measured slot convention: a pooled-constant factor
                     // takes A; otherwise source order stands.
-                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) { (right, left) } else { (left, right) };
-                    let reads: Vec<u32> = [a, c, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    let (a, c) = if matches!(factor_right.as_ref(), Tree::Const(_)) {
+                        (right, left)
+                    } else {
+                        (left, right)
+                    };
+                    let reads: Vec<u32> = [a, c, b]
+                        .iter()
+                        .map(|&operand| value_of(operand, &nodes))
+                        .collect();
                     nodes.push(
                         DagNode::new("fmadd", FLOAT_ARITH_LATENCY)
                             .hazard(HAZARD_FPU)
@@ -606,9 +819,14 @@ impl Generator {
                     ops.push(FloatOp::Madd { a, c, b });
                 }
                 Tree::Mul { left, right } => {
-                    let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let c = resolve(right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let reads: Vec<u32> = [a, c].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    let a = resolve(left, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let c = resolve(right, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let reads: Vec<u32> = [a, c]
+                        .iter()
+                        .map(|&operand| value_of(operand, &nodes))
+                        .collect();
                     nodes.push(
                         DagNode::new("fmul", FLOAT_ARITH_LATENCY)
                             .gate(FLOAT_MUL_GATE)
@@ -619,9 +837,14 @@ impl Generator {
                     ops.push(FloatOp::Mul { a, c });
                 }
                 Tree::Fadd { left, right } => {
-                    let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let b = resolve(right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let reads: Vec<u32> = [a, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    let a = resolve(left, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(right, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let reads: Vec<u32> = [a, b]
+                        .iter()
+                        .map(|&operand| value_of(operand, &nodes))
+                        .collect();
                     nodes.push(
                         DagNode::new("fadd", FLOAT_ARITH_LATENCY)
                             .hazard(HAZARD_FPU)
@@ -631,9 +854,14 @@ impl Generator {
                     ops.push(FloatOp::Add { a, b });
                 }
                 Tree::Fsub { left, right } => {
-                    let a = resolve(left, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let b = resolve(right, &built).ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
-                    let reads: Vec<u32> = [a, b].iter().map(|&operand| value_of(operand, &nodes)).collect();
+                    let a = resolve(left, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let b = resolve(right, &built)
+                        .ok_or_else(|| Diagnostic::error("float DAG operand resolution"))?;
+                    let reads: Vec<u32> = [a, b]
+                        .iter()
+                        .map(|&operand| value_of(operand, &nodes))
+                        .collect();
                     let mut node = DagNode::new("fsub", FLOAT_ARITH_LATENCY)
                         .hazard(HAZARD_FPU)
                         .reads(&reads)
@@ -665,8 +893,7 @@ impl Generator {
             self.float.phantom_register = registers[index];
         }
         if registers.iter().any(|register| register.is_none()) {
-            {
-            }
+            {}
             return Ok(false);
         }
         // mwcc pools the constants in SOURCE-appearance order (measured:
@@ -681,7 +908,11 @@ impl Generator {
         }
         let register_of = |operand: Operand| -> u8 {
             match operand {
-                Operand::Param(value) => params.iter().find(|&&(v, _)| v == value).map(|&(_, register)| register).unwrap_or(1),
+                Operand::Param(value) => params
+                    .iter()
+                    .find(|&&(v, _)| v == value)
+                    .map(|&(_, register)| register)
+                    .unwrap_or(1),
                 Operand::Node(index) => registers[index].unwrap_or(1),
             }
         };
@@ -694,7 +925,8 @@ impl Generator {
             .rposition(|&node| nodes[node].local_home)
             .map(|position| position + 1)
             .unwrap_or(0);
-        if !function.guards.is_empty() && order[..split].iter().any(|&node| !nodes[node].local_home) {
+        if !function.guards.is_empty() && order[..split].iter().any(|&node| !nodes[node].local_home)
+        {
             return Ok(false);
         }
         // The TABLE BASE weave (measured: lis at slot 0 before the first
@@ -705,8 +937,22 @@ impl Generator {
         // and deep table shapes all open fmul z; lis; addi). A single
         // local splits them around the first float op.
         let table_pair_after_first = table_context.name.is_some() && kept_locals.len() >= 2;
+        let table_load_count = ops
+            .iter()
+            .filter(|operation| matches!(operation, FloatOp::TableLoad(_)))
+            .count();
+        let legacy_complex_table_anchor = self.behavior.coefficient_table_relocation_style
+            == mwcc_versions::CoefficientTableRelocationStyle::SectionAnchorForComplexDag
+            && (kept_locals.len() >= 2 || table_load_count >= 3);
+        let table_relocation_name = table_context.name.as_ref().map(|name| {
+            if legacy_complex_table_anchor {
+                "...rodata.0".to_string()
+            } else {
+                name.clone()
+            }
+        });
         let mut table_addi_pending = false;
-        if let Some(name) = &table_context.name {
+        if let Some(name) = &table_relocation_name {
             if !table_pair_after_first {
                 self.emit_address_high(3, name);
                 table_addi_pending = true;
@@ -718,12 +964,16 @@ impl Generator {
                     .is_some_and(|&node| matches!(ops[node], FloatOp::TableLoad(_)))
                 {
                     self.record_relocation(RelocationKind::Addr16Lo, name);
-                    self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: 3,
+                        a: 3,
+                        immediate: 0,
+                    });
                     table_addi_pending = false;
                 }
             }
         }
-        let table_name = table_context.name.clone();
+        let table_name = table_relocation_name;
         let mut emitted = 0usize;
         for &node in &order {
             if emitted == split {
@@ -731,10 +981,12 @@ impl Generator {
                     let (options, condition_bit) = self.emit_condition_test(&guard.condition)?;
                     // The TRUE-condition conditional return (bnelr/bltlr...):
                     // invert the skip-branch encoding.
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister {
-                        options: options ^ 8,
-                        condition_bit,
-                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: options ^ 8,
+                            condition_bit,
+                        });
                     // The folded if's branch labels advance @N by 2 ahead of
                     // the pooled constants.
                     self.output.anonymous_label_bump += 2;
@@ -745,30 +997,48 @@ impl Generator {
             match &ops[node] {
                 FloatOp::Const(bits) => self.load_double_constant(d, *bits),
                 FloatOp::FrameLoad(offset) => {
-                    self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 1, offset: *offset })
+                    self.output.instructions.push(Instruction::LoadFloatDouble {
+                        d,
+                        a: 1,
+                        offset: *offset,
+                    })
                 }
                 FloatOp::TableLoad(offset) => {
-                    self.output.instructions.push(Instruction::LoadFloatDouble { d, a: 3, offset: *offset })
+                    self.output.instructions.push(Instruction::LoadFloatDouble {
+                        d,
+                        a: 3,
+                        offset: *offset,
+                    })
                 }
                 FloatOp::Phantom => {}
-                FloatOp::Madd { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplyAddDouble {
-                    d,
-                    a: register_of(*a),
-                    c: register_of(*c),
-                    b: register_of(*b),
-                }),
-                FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(Instruction::FloatNegativeMultiplySubtractDouble {
-                    d,
-                    a: register_of(*a),
-                    c: register_of(*c),
-                    b: register_of(*b),
-                }),
-                FloatOp::Fmsub { a, c, b } => self.output.instructions.push(Instruction::FloatMultiplySubtractDouble {
-                    d,
-                    a: register_of(*a),
-                    c: register_of(*c),
-                    b: register_of(*b),
-                }),
+                FloatOp::Madd { a, c, b } => {
+                    self.output
+                        .instructions
+                        .push(Instruction::FloatMultiplyAddDouble {
+                            d,
+                            a: register_of(*a),
+                            c: register_of(*c),
+                            b: register_of(*b),
+                        })
+                }
+                FloatOp::Fnmsub { a, c, b } => self.output.instructions.push(
+                    Instruction::FloatNegativeMultiplySubtractDouble {
+                        d,
+                        a: register_of(*a),
+                        c: register_of(*c),
+                        b: register_of(*b),
+                    },
+                ),
+                FloatOp::Fmsub { a, c, b } => {
+                    self.output
+                        .instructions
+                        .push(Instruction::FloatMultiplySubtractDouble {
+                            d,
+                            a: register_of(*a),
+                            c: register_of(*c),
+                            b: register_of(*b),
+                        })
+                }
                 FloatOp::Mul { a, c } => {
                     // Measured fmul slots: a PARAM-only product keeps source
                     // order (fmul f0,f1,f2 for z*w); a pooled-CONSTANT factor
@@ -787,18 +1057,26 @@ impl Generator {
                     if !both_params && !const_a && rc > ra {
                         std::mem::swap(&mut ra, &mut rc);
                     }
-                    self.output.instructions.push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
+                    self.output
+                        .instructions
+                        .push(Instruction::FloatMultiplyDouble { d, a: ra, c: rc });
                 }
-                FloatOp::Add { a, b } => self.output.instructions.push(Instruction::FloatAddDouble {
-                    d,
-                    a: register_of(*a),
-                    b: register_of(*b),
-                }),
-                FloatOp::Sub { a, b } => self.output.instructions.push(Instruction::FloatSubtractDouble {
-                    d,
-                    a: register_of(*a),
-                    b: register_of(*b),
-                }),
+                FloatOp::Add { a, b } => {
+                    self.output.instructions.push(Instruction::FloatAddDouble {
+                        d,
+                        a: register_of(*a),
+                        b: register_of(*b),
+                    })
+                }
+                FloatOp::Sub { a, b } => {
+                    self.output
+                        .instructions
+                        .push(Instruction::FloatSubtractDouble {
+                            d,
+                            a: register_of(*a),
+                            b: register_of(*b),
+                        })
+                }
                 FloatOp::Sink => {}
             }
             if table_addi_pending && emitted == 1 {
@@ -808,14 +1086,22 @@ impl Generator {
                     RelocationKind::Addr16Lo,
                     table_name.as_deref().expect("pending implies a table"),
                 );
-                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 3,
+                    a: 3,
+                    immediate: 0,
+                });
                 table_addi_pending = false;
             }
             if table_pair_after_first && emitted == 1 {
                 let name = table_name.as_deref().expect("pair implies a table");
                 self.emit_address_high(3, name);
                 self.record_relocation(RelocationKind::Addr16Lo, name);
-                self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 3,
+                    a: 3,
+                    immediate: 0,
+                });
             }
         }
         let _ = table_addi_pending;

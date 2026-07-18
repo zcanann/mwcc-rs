@@ -22,7 +22,9 @@ mod operands;
 use encode::assemble_line;
 
 use mwcc_core::Compilation;
-use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget};
+use mwcc_machine_code::{
+    Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
+};
 use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function};
 use std::collections::HashMap;
 
@@ -37,7 +39,10 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     // An asm function WITHOUT a `nofralloc` directive that uses a stack frame gets an
     // mwcc-generated 16-byte frame wrapped around the verbatim body (BfBB's clang-format
     // runtime helpers). A frameless leaf (GetR2) has no `stwu`, so it stays verbatim.
-    let mnemonics = |name: &str| body.iter().any(|item| matches!(item, AsmItem::Instruction(line) if line.mnemonic == name));
+    let mnemonics = |name: &str| {
+        body.iter()
+            .any(|item| matches!(item, AsmItem::Instruction(line) if line.mnemonic == name))
+    };
     let auto_frame = !mnemonics("nofralloc") && mnemonics("stwu");
 
     // Pass 1: map each label to the index of the instruction it precedes (a label
@@ -121,7 +126,12 @@ pub(crate) fn assemble_asm_function(function: &Function) -> Compilation<MachineF
     // final target is a `blr` becomes the branch-to-link form.
     apply_branch_peepholes(&mut instructions);
     if auto_frame {
-        wrap_auto_frame(&mut instructions, &mut relocations, &mut entry_points, frfree_position)?;
+        wrap_auto_frame(
+            &mut instructions,
+            &mut relocations,
+            &mut entry_points,
+            frfree_position,
+        )?;
     }
 
     let mut output = MachineFunction::new(function.name.clone());
@@ -148,7 +158,12 @@ fn emits_word(line: &AsmInstruction) -> bool {
 /// `mr r10,r1; lwz r1,0(r1)` inserted at the `frfree` directive (`frfree_position`,
 /// the index it fell on) — the frame-teardown marker in BfBB's `…; addi; frfree; blr`.
 /// A body with no `frfree` puts the epilogue at the very end (after the return).
-fn wrap_auto_frame(instructions: &mut Vec<Instruction>, relocations: &mut [Relocation], entry_points: &mut [(String, usize)], frfree_position: Option<usize>) -> Compilation<()> {
+fn wrap_auto_frame(
+    instructions: &mut Vec<Instruction>,
+    relocations: &mut [Relocation],
+    entry_points: &mut [(String, usize)],
+    frfree_position: Option<usize>,
+) -> Compilation<()> {
     let insertion = frfree_position.unwrap_or(instructions.len());
     // The prologue prepends two instructions (all indices +2), and the epilogue inserts
     // two more at `insertion` (indices at or past it shift another +2).
@@ -167,11 +182,19 @@ fn wrap_auto_frame(instructions: &mut Vec<Instruction>, relocations: &mut [Reloc
         *index = shift(*index);
     }
     let mut framed = Vec::with_capacity(instructions.len() + 4);
-    framed.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 }); // stwu r1, -16(r1)
+    framed.push(Instruction::StoreWordWithUpdate {
+        s: 1,
+        a: 1,
+        offset: -16,
+    }); // stwu r1, -16(r1)
     framed.push(Instruction::move_register(31, 1)); // mr r31, r1
     framed.extend(instructions.drain(..insertion));
     framed.push(Instruction::move_register(10, 1)); // mr r10, r1
-    framed.push(Instruction::LoadWord { d: 1, a: 1, offset: 0 }); // lwz r1, 0(r1)
+    framed.push(Instruction::LoadWord {
+        d: 1,
+        a: 1,
+        offset: 0,
+    }); // lwz r1, 0(r1)
     framed.append(instructions);
     *instructions = framed;
     Ok(())
@@ -218,12 +241,23 @@ fn apply_branch_peepholes(instructions: &mut [Instruction]) {
                     *instruction = Instruction::Branch { target: landing };
                 }
             }
-            Instruction::BranchConditionalForward { options, condition_bit, target } => {
+            Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target,
+            } => {
                 let landing = chase(target);
                 if is_return.get(landing).copied().unwrap_or(false) {
-                    *instruction = Instruction::BranchConditionalToLinkRegister { options, condition_bit };
+                    *instruction = Instruction::BranchConditionalToLinkRegister {
+                        options,
+                        condition_bit,
+                    };
                 } else {
-                    *instruction = Instruction::BranchConditionalForward { options, condition_bit, target: landing };
+                    *instruction = Instruction::BranchConditionalForward {
+                        options,
+                        condition_bit,
+                        target: landing,
+                    };
                 }
             }
             _ => {}

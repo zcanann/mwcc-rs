@@ -2,10 +2,10 @@
 //! per-line label/entry/mnemonic/operand grammar, and the register-name lexer.
 //! Part of the `items` module. Split from items/mod.rs (behavior-identical).
 
+use crate::parser::Parser;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, Type};
 use mwcc_tokens::Token;
-use crate::parser::Parser;
 
 impl Parser {
     /// Parse a Metrowerks inline-`asm` function: the `asm` qualifier has been
@@ -13,7 +13,11 @@ impl Parser {
     /// loosely — asm codegen names fixed registers, so only the function NAME and
     /// a `void` return matter; parameter types are consumed and discarded. Returns
     /// `None` for a bodyless prototype (`asm void f(void);`).
-    pub(crate) fn parse_asm_function(&mut self, is_static: bool, is_weak: bool) -> Compilation<Option<Function>> {
+    pub(crate) fn parse_asm_function(
+        &mut self,
+        is_static: bool,
+        is_weak: bool,
+    ) -> Compilation<Option<Function>> {
         self.expect(Token::Asm)?;
         // The return type and name precede `(`; the last identifier is the name. A
         // `static`/`extern` qualifier may follow `asm` (mwcc allows `asm static void
@@ -35,11 +39,21 @@ impl Parser {
                     name = word.clone();
                     self.advance();
                 }
-                Token::EndOfFile => return Err(Diagnostic::error("unterminated asm function signature")),
+                Token::EndOfFile => {
+                    return Err(Diagnostic::error("unterminated asm function signature"))
+                }
                 other => {
                     // A non-`void` scalar return keeps the default `Void` type — it
                     // does not affect the emitted object for a bare asm function.
-                    if *other == Token::KeywordInt || matches!(other, Token::KeywordChar | Token::KeywordShort | Token::KeywordUnsigned | Token::KeywordFloat) {
+                    if *other == Token::KeywordInt
+                        || matches!(
+                            other,
+                            Token::KeywordChar
+                                | Token::KeywordShort
+                                | Token::KeywordUnsigned
+                                | Token::KeywordFloat
+                        )
+                    {
                         return_type = Type::Int;
                     }
                     self.advance();
@@ -69,7 +83,11 @@ impl Parser {
                     if depth == 0 {
                         if let Some(name) = parameter_name.take() {
                             if !parameter_is_float {
-                                parameters.push((name, 3 + parameters.len() as u8, parameter_tag.take()));
+                                parameters.push((
+                                    name,
+                                    3 + parameters.len() as u8,
+                                    parameter_tag.take(),
+                                ));
                             }
                         }
                         break;
@@ -87,7 +105,9 @@ impl Parser {
                     }
                     parameter_name = Some(word.clone());
                 }
-                Token::EndOfFile => return Err(Diagnostic::error("unterminated asm parameter list")),
+                Token::EndOfFile => {
+                    return Err(Diagnostic::error("unterminated asm parameter list"))
+                }
                 _ => {}
             }
             if end_of_parameter {
@@ -161,7 +181,11 @@ impl Parser {
             }
             let mut mnemonic = match self.advance() {
                 Token::Identifier(word) => word,
-                other => return Err(Diagnostic::error(format!("expected an asm mnemonic or label, found {other}"))),
+                other => {
+                    return Err(Diagnostic::error(format!(
+                        "expected an asm mnemonic or label, found {other}"
+                    )))
+                }
             };
             // `identifier :` is a label definition, not an instruction.
             if *self.peek() == Token::Colon {
@@ -173,7 +197,11 @@ impl Parser {
             if mnemonic == "entry" {
                 let name = match self.advance() {
                     Token::Identifier(word) => word,
-                    other => return Err(Diagnostic::error(format!("expected a name after asm `entry`, found {other}"))),
+                    other => {
+                        return Err(Diagnostic::error(format!(
+                            "expected a name after asm `entry`, found {other}"
+                        )))
+                    }
                 };
                 items.push(AsmItem::Entry(name));
                 continue;
@@ -200,7 +228,9 @@ impl Parser {
             let mut operands = Vec::new();
             loop {
                 match self.peek() {
-                    Token::Newline | Token::Semicolon | Token::BraceClose | Token::EndOfFile => break,
+                    Token::Newline | Token::Semicolon | Token::BraceClose | Token::EndOfFile => {
+                        break
+                    }
                     Token::Comma => {
                         self.advance();
                     }
@@ -229,9 +259,15 @@ impl Parser {
                     self.advance();
                     let part = match self.advance() {
                         Token::Identifier(s) if s == "h" => (value >> 16) & 0xffff,
-                        Token::Identifier(s) if s == "ha" => ((value >> 16) + ((value >> 15) & 1)) & 0xffff,
+                        Token::Identifier(s) if s == "ha" => {
+                            ((value >> 16) + ((value >> 15) & 1)) & 0xffff
+                        }
                         Token::Identifier(s) if s == "l" => value & 0xffff,
-                        other => return Err(Diagnostic::error(format!("unsupported asm numeric relocation suffix @{other}"))),
+                        other => {
+                            return Err(Diagnostic::error(format!(
+                                "unsupported asm numeric relocation suffix @{other}"
+                            )))
+                        }
                     };
                     return Ok(AsmOperand::Immediate(part));
                 }
@@ -250,8 +286,11 @@ impl Parser {
                         other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
                     };
                     self.expect(Token::ParenClose)?;
-                    let displacement = i16::try_from(value)
-                        .map_err(|_| Diagnostic::error(format!("asm memory displacement {value} does not fit in 16 bits")))?;
+                    let displacement = i16::try_from(value).map_err(|_| {
+                        Diagnostic::error(format!(
+                            "asm memory displacement {value} does not fit in 16 bits"
+                        ))
+                    })?;
                     return Ok(AsmOperand::Memory { displacement, base });
                 }
                 Ok(AsmOperand::Immediate(value))
@@ -271,14 +310,20 @@ impl Parser {
                     self.advance();
                     let field = match self.advance() {
                         Token::Identifier(field) => field,
-                        other => return Err(Diagnostic::error(format!("expected a field name after '{word}.', found {other}"))),
+                        other => {
+                            return Err(Diagnostic::error(format!(
+                                "expected a field name after '{word}.', found {other}"
+                            )))
+                        }
                     };
                     let offset = self
                         .structs
                         .get(&word)
                         .and_then(|layout| layout.fields.get(&field))
                         .map(|member| member.offset)
-                        .ok_or_else(|| Diagnostic::error(format!("no field '{field}' in struct '{word}'")))?;
+                        .ok_or_else(|| {
+                            Diagnostic::error(format!("no field '{field}' in struct '{word}'"))
+                        })?;
                     self.expect(Token::ParenOpen)?;
                     let base = match self.advance() {
                         Token::Identifier(register) => match parse_asm_register(&register) {
@@ -292,25 +337,44 @@ impl Parser {
                         other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
                     };
                     self.expect(Token::ParenClose)?;
-                    return Ok(AsmOperand::Memory { displacement: offset as i16, base });
+                    return Ok(AsmOperand::Memory {
+                        displacement: offset as i16,
+                        base,
+                    });
                 }
-                if let Some((_, gpr, tag)) = self.asm_parameters.iter().find(|(name, _, _)| *name == word).cloned() {
+                if let Some((_, gpr, tag)) = self
+                    .asm_parameters
+                    .iter()
+                    .find(|(name, _, _)| *name == word)
+                    .cloned()
+                {
                     if *self.peek() == Token::Arrow {
                         self.advance();
                         let field = match self.advance() {
                             Token::Identifier(field) => field,
-                            other => return Err(Diagnostic::error(format!("expected a field name after '{word}->', found {other}"))),
+                            other => {
+                                return Err(Diagnostic::error(format!(
+                                    "expected a field name after '{word}->', found {other}"
+                                )))
+                            }
                         };
                         let tag = tag.ok_or_else(|| {
-                            Diagnostic::error(format!("asm parameter '{word}' has no struct type for '->{field}'"))
+                            Diagnostic::error(format!(
+                                "asm parameter '{word}' has no struct type for '->{field}'"
+                            ))
                         })?;
                         let offset = self
                             .structs
                             .get(&tag)
                             .and_then(|layout| layout.fields.get(&field))
                             .map(|member| member.offset)
-                            .ok_or_else(|| Diagnostic::error(format!("no field '{field}' in struct '{tag}'")))?;
-                        return Ok(AsmOperand::Memory { displacement: offset as i16, base: gpr });
+                            .ok_or_else(|| {
+                                Diagnostic::error(format!("no field '{field}' in struct '{tag}'"))
+                            })?;
+                        return Ok(AsmOperand::Memory {
+                            displacement: offset as i16,
+                            base: gpr,
+                        });
                     }
                     return Ok(AsmOperand::Gpr(gpr));
                 }
@@ -320,7 +384,11 @@ impl Parser {
                         Token::Identifier(s) if s == "h" => AsmRelocSuffix::Hi,
                         Token::Identifier(s) if s == "ha" => AsmRelocSuffix::Ha,
                         Token::Identifier(s) if s == "l" => AsmRelocSuffix::Lo,
-                        other => return Err(Diagnostic::error(format!("unsupported asm relocation suffix @{other}"))),
+                        other => {
+                            return Err(Diagnostic::error(format!(
+                                "unsupported asm relocation suffix @{other}"
+                            )))
+                        }
                     };
                     return Ok(AsmOperand::Symbol { name: word, suffix });
                 }
@@ -328,7 +396,9 @@ impl Parser {
             }
             // A `@`-prefixed local label used as a branch target (`blt cr0, @exit`).
             Token::At => Ok(AsmOperand::Label(self.parse_asm_at_name()?)),
-            other => Err(Diagnostic::error(format!("unexpected asm operand token {other}"))),
+            other => Err(Diagnostic::error(format!(
+                "unexpected asm operand token {other}"
+            ))),
         }
     }
 
@@ -339,7 +409,9 @@ impl Parser {
         match self.advance() {
             Token::Identifier(word) => Ok(format!("@{word}")),
             Token::IntegerLiteral(value) => Ok(format!("@{value}")),
-            other => Err(Diagnostic::error(format!("expected a name after asm `@`, found {other}"))),
+            other => Err(Diagnostic::error(format!(
+                "expected a name after asm `@`, found {other}"
+            ))),
         }
     }
 }

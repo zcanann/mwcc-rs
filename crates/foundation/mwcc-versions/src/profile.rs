@@ -7,6 +7,159 @@
 //! existing one is "add a profile struct, override one method", never a fork of
 //! the whole code generator.
 
+/// Placement of the linkage area relative to stack-pointer adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameConvention {
+    /// 2.4.x: decrement SP first; save LR above the new frame.
+    Predecrement,
+    /// 2.3.3: save LR through the incoming SP, then decrement SP.
+    LinkageFirst,
+}
+
+/// Lowering used when an integer condition selects the canonical boolean
+/// constants `1` and `0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerSelectStyle {
+    /// 2.4.x materializes the value with arithmetic/bit-count idioms.
+    Branchless,
+    /// 2.3.3 retains the compare-and-branch diamond from the source select.
+    BranchPreserving,
+}
+
+/// Instruction family used when a relational/equality expression itself
+/// materializes an integer 0/1 result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerComparisonValueStyle {
+    /// 2.4.x bitwise/count-leading-zero idioms.
+    ModernBitwise,
+    /// 2.3.3 carry-chain idioms built from `subfc`/`subfe`/`addze`.
+    LegacyCarryChain,
+}
+
+/// Treatment of a computed integer expression returned from a narrow function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrowComputedReturnStyle {
+    /// 2.4.x emits the final sign/zero extension in the callee.
+    ExplicitNarrowing,
+    /// 2.3.3 leaves the computed word in r3; the narrow return convention makes
+    /// the low bits authoritative to the caller.
+    FullWidthResult,
+}
+
+/// Lowering used for signed division and remainder by a positive power of two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignedPowerOfTwoDivisionStyle {
+    /// 2.4.x uses its newer bias/mask idioms and range-optimizes promoted
+    /// unsigned narrow operands as logical shifts.
+    ModernRangeOptimized,
+    /// 2.3.3 derives the rounded quotient from `srawi`'s carry with `addze`.
+    /// Narrow operands are explicitly promoted into r0 first, including
+    /// unsigned char/short values whose integer promotion makes them signed int.
+    CarryCorrectedQuotient,
+}
+
+/// Address-materialization schedule for a switch jump table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JumpTableBaseStyle {
+    /// 2.4.x scales the index before finishing the address, copying the table
+    /// base into r3 for the indexed load.
+    LateCopyToResultRegister,
+    /// 2.3.3 finishes the address in its original register before scaling the
+    /// index, and uses that register directly as the indexed-load base.
+    EarlyInPlace,
+}
+
+/// Instruction shape used for a variable-indexed file-scope array element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalArrayIndexStyle {
+    /// 2.4.x keeps base and scaled index separate for indexed load/store opcodes.
+    Indexed,
+    /// 2.3.3 forms one element address, then uses displacement zero.
+    ExplicitAddress,
+}
+
+/// Frame and merge policy for type-punned floating parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PunnedFloatFrameConvention {
+    /// 2.4.x keeps the incoming FPR live across read-only guard merges.
+    CompactLiveParameter,
+    /// 2.3.3 reserves legacy top padding for materialized/writeback frames and
+    /// reloads read-only fall-through values from their spill slot.
+    LegacyReloading,
+}
+
+/// Encoding used for generation-specific integer value materializations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterializationCopyStyle {
+    /// 2.4.x uses the canonical `mr` alias (`or d,s,s`).
+    LogicalOr,
+    /// 2.3.3 copies straight-line values through `addi d,s,0`; control-flow
+    /// arm moves retain `mr`.
+    AddImmediateZero,
+}
+
+/// Scheduling of unequal constant words in a 64-bit add/subtract carry chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WideConstantAddSchedule {
+    /// Load low/high words into distinct registers before starting the chain.
+    PreloadDistinctWords,
+    /// Consume the low word from r0, then replace r0 with the high word before
+    /// the carry-consuming `adde`.
+    SerialScratchWords,
+}
+
+/// AST traversal used to assign external/data symbol indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolTraversalStyle {
+    /// Collect data references first, then call/function references.
+    GroupedByKind,
+    /// Preserve creation/evaluation order across symbol kinds; assignment
+    /// values precede targets and data-only subtraction visits right-first.
+    LegacyCreationOrder,
+}
+
+/// Ordering of file-scope LOCAL data symbols across initialized and zero-filled
+/// sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalDataSymbolOrder {
+    /// Emit initialized objects forward, then uninitialized objects according to
+    /// their reference/reverse-declaration rules.
+    GroupedByInitialization,
+    /// Preserve declaration order across `.sdata`/`.data` and `.sbss`/`.bss`.
+    DeclarationOrder,
+}
+
+/// Physical layout of small zero-initialized data (`.sbss`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmallZeroDataLayoutStyle {
+    /// Explicit-zero objects forward, followed by tentative definitions in
+    /// reverse declaration order (the 2.4.x convention).
+    ExplicitThenReverseTentative,
+    /// Exported explicit-zero objects first, then file-scope statics in
+    /// declaration order, then exported tentative definitions in reverse.
+    LegacyStaticDeclarationOrderFirst,
+}
+
+/// Relocation identity used for a shared base into a read-only coefficient
+/// table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoefficientTableRelocationStyle {
+    /// Bind the ADDR16 pair directly to the table's LOCAL object symbol.
+    NamedObject,
+    /// Bind complex DAGs (two kept locals or at least three table loads) to the
+    /// zero-offset `...rodata.0` section anchor.
+    SectionAnchorForComplexDag,
+}
+
+/// Symbol-table placement of the synthetic `...rodata.0` section anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnlySectionAnchorOrder {
+    /// Emit immediately after the first named `.rodata` object.
+    AfterFirstObject,
+    /// Emit before any named `.rodata` data symbol.
+    BeforeDataObjects,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -23,6 +176,13 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// scheduled before the bias load (`lfd f1,0(0)`). GC/2.0p1 alone does this —
     /// the first observed instruction-scheduling difference between builds.
     fn float_cast_value_store_first(&self) -> bool {
+        false
+    }
+
+    /// Build 163's older int-to-float schedule uses r0 for the biased signed
+    /// value and stores the low word before reusing r0 for 0x43300000. Its
+    /// unsigned form likewise stores the value before loading the bias pool.
+    fn legacy_float_cast_schedule(&self) -> bool {
         false
     }
 
@@ -52,6 +212,110 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn frexp_scale_before_eptr_store(&self) -> bool {
         false
     }
+
+    /// Stack-frame linkage convention used by non-leaf functions.
+    fn frame_convention(&self) -> FrameConvention {
+        FrameConvention::Predecrement
+    }
+
+    /// Whether a leaf function that only allocates stack scratch receives
+    /// extab/extabindex unwind metadata. The 2.4.x line catalogs these frames;
+    /// build 163 omits them unless the function is non-leaf.
+    fn emit_leaf_frame_unwind(&self) -> bool {
+        true
+    }
+
+    /// How integer `condition ? 1 : 0` (and its complement) is lowered.
+    fn integer_select_style(&self) -> IntegerSelectStyle {
+        IntegerSelectStyle::Branchless
+    }
+
+    fn integer_comparison_value_style(&self) -> IntegerComparisonValueStyle {
+        IntegerComparisonValueStyle::ModernBitwise
+    }
+
+    fn narrow_computed_return_style(&self) -> NarrowComputedReturnStyle {
+        NarrowComputedReturnStyle::ExplicitNarrowing
+    }
+
+    fn signed_power_of_two_division_style(&self) -> SignedPowerOfTwoDivisionStyle {
+        SignedPowerOfTwoDivisionStyle::ModernRangeOptimized
+    }
+
+    fn jump_table_base_style(&self) -> JumpTableBaseStyle {
+        JumpTableBaseStyle::LateCopyToResultRegister
+    }
+
+    fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
+        GlobalArrayIndexStyle::Indexed
+    }
+
+    /// Whether `value == 0` negates the value into r0 before `cntlzw`.
+    /// This preserves build 163's older equality idiom for both register
+    /// leaves and computed values.
+    fn negate_before_zero_equality(&self) -> bool {
+        false
+    }
+
+    fn punned_float_frame_convention(&self) -> PunnedFloatFrameConvention {
+        PunnedFloatFrameConvention::CompactLiveParameter
+    }
+
+    fn materialization_copy_style(&self) -> MaterializationCopyStyle {
+        MaterializationCopyStyle::LogicalOr
+    }
+
+    fn wide_constant_add_schedule(&self) -> WideConstantAddSchedule {
+        WideConstantAddSchedule::PreloadDistinctWords
+    }
+
+    fn symbol_traversal_style(&self) -> SymbolTraversalStyle {
+        SymbolTraversalStyle::GroupedByKind
+    }
+
+    fn local_data_symbol_order(&self) -> LocalDataSymbolOrder {
+        LocalDataSymbolOrder::GroupedByInitialization
+    }
+
+    fn small_zero_data_layout_style(&self) -> SmallZeroDataLayoutStyle {
+        SmallZeroDataLayoutStyle::ExplicitThenReverseTentative
+    }
+
+    fn coefficient_table_relocation_style(&self) -> CoefficientTableRelocationStyle {
+        CoefficientTableRelocationStyle::NamedObject
+    }
+
+    fn read_only_section_anchor_order(&self) -> ReadOnlySectionAnchorOrder {
+        ReadOnlySectionAnchorOrder::AfterFirstObject
+    }
+
+    /// `.comment` attribute flags attached to the `...rodata.0` symbol.
+    fn read_only_section_anchor_comment_flags(&self) -> u32 {
+        0x0010_0000
+    }
+
+    /// Whether unsaved single-precision use sets the extab FPU bit.
+    fn mark_single_precision_extab(&self) -> bool {
+        true
+    }
+
+    fn plain_inline_localstatic_base(&self) -> u8 {
+        3
+    }
+
+    /// Base anonymous-label cost of compiling and dropping a `static inline`
+    /// definition, before body-control-flow labels are counted.
+    fn skipped_static_inline_label_base(&self) -> u8 {
+        3
+    }
+
+    /// Whether an initialized array whose written length was inferred from `[]`
+    /// bypasses the small-data size threshold. Build 163 places writable forms
+    /// in `.data` and const forms in `.rodata`; the 2.4.x mainline uses the same
+    /// size-based routing as explicitly sized arrays.
+    fn inferred_array_uses_full_data_section(&self) -> bool {
+        false
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -67,6 +331,87 @@ pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
     fn char_is_signed(&self) -> bool {
         false
+    }
+}
+
+/// GC/1.2.5[n] — mwcceppc 2.3.3 build 163. Its first measured architectural
+/// difference is the linkage-first stack frame; additional scheduler differences
+/// remain under characterization, so this profile is experimental.
+#[derive(Debug)]
+pub struct Gc233Build163;
+impl CodegenProfile for Gc233Build163 {
+    fn frame_convention(&self) -> FrameConvention {
+        FrameConvention::LinkageFirst
+    }
+
+    fn emit_leaf_frame_unwind(&self) -> bool {
+        false
+    }
+
+    fn legacy_float_cast_schedule(&self) -> bool {
+        true
+    }
+
+    fn integer_select_style(&self) -> IntegerSelectStyle {
+        IntegerSelectStyle::BranchPreserving
+    }
+    fn integer_comparison_value_style(&self) -> IntegerComparisonValueStyle {
+        IntegerComparisonValueStyle::LegacyCarryChain
+    }
+    fn narrow_computed_return_style(&self) -> NarrowComputedReturnStyle {
+        NarrowComputedReturnStyle::FullWidthResult
+    }
+    fn signed_power_of_two_division_style(&self) -> SignedPowerOfTwoDivisionStyle {
+        SignedPowerOfTwoDivisionStyle::CarryCorrectedQuotient
+    }
+    fn jump_table_base_style(&self) -> JumpTableBaseStyle {
+        JumpTableBaseStyle::EarlyInPlace
+    }
+
+    fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
+        GlobalArrayIndexStyle::ExplicitAddress
+    }
+    fn negate_before_zero_equality(&self) -> bool {
+        true
+    }
+    fn punned_float_frame_convention(&self) -> PunnedFloatFrameConvention {
+        PunnedFloatFrameConvention::LegacyReloading
+    }
+    fn materialization_copy_style(&self) -> MaterializationCopyStyle {
+        MaterializationCopyStyle::AddImmediateZero
+    }
+    fn wide_constant_add_schedule(&self) -> WideConstantAddSchedule {
+        WideConstantAddSchedule::SerialScratchWords
+    }
+    fn symbol_traversal_style(&self) -> SymbolTraversalStyle {
+        SymbolTraversalStyle::LegacyCreationOrder
+    }
+    fn local_data_symbol_order(&self) -> LocalDataSymbolOrder {
+        LocalDataSymbolOrder::DeclarationOrder
+    }
+    fn small_zero_data_layout_style(&self) -> SmallZeroDataLayoutStyle {
+        SmallZeroDataLayoutStyle::LegacyStaticDeclarationOrderFirst
+    }
+    fn coefficient_table_relocation_style(&self) -> CoefficientTableRelocationStyle {
+        CoefficientTableRelocationStyle::SectionAnchorForComplexDag
+    }
+    fn read_only_section_anchor_order(&self) -> ReadOnlySectionAnchorOrder {
+        ReadOnlySectionAnchorOrder::BeforeDataObjects
+    }
+    fn read_only_section_anchor_comment_flags(&self) -> u32 {
+        0
+    }
+    fn mark_single_precision_extab(&self) -> bool {
+        false
+    }
+    fn plain_inline_localstatic_base(&self) -> u8 {
+        0
+    }
+    fn skipped_static_inline_label_base(&self) -> u8 {
+        0
+    }
+    fn inferred_array_uses_full_data_section(&self) -> bool {
+        true
     }
 }
 

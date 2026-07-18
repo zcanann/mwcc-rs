@@ -11,9 +11,18 @@ impl Generator {
     /// register; a memory-loaded left operand loads into a free register (avoiding
     /// the `reserved` select-value registers), the right into the scratch; a float
     /// constant loads into the scratch.
-    pub(crate) fn place_float_comparison_operands(&mut self, left: &Expression, right: &Expression, reserved: &[u8]) -> Compilation<(u8, u8)> {
+    pub(crate) fn place_float_comparison_operands(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        reserved: &[u8],
+    ) -> Compilation<(u8, u8)> {
         let left_register = if self.is_float_located(left) {
-            let newly: Vec<u8> = reserved.iter().copied().filter(|register| self.reserved.insert(*register)).collect();
+            let newly: Vec<u8> = reserved
+                .iter()
+                .copied()
+                .filter(|register| self.reserved.insert(*register))
+                .collect();
             let register = self.lowest_free_float();
             for register in &newly {
                 self.reserved.remove(register);
@@ -57,11 +66,20 @@ impl Generator {
         destination: u8,
         tail: bool,
     ) -> Compilation<()> {
-        let Expression::Binary { operator, left, right } = condition else {
-            return Err(Diagnostic::error("float conditional needs a comparison condition"));
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = condition
+        else {
+            return Err(Diagnostic::error(
+                "float conditional needs a comparison condition",
+            ));
         };
         if !is_comparison(*operator) {
-            return Err(Diagnostic::error("float conditional needs a comparison condition"));
+            return Err(Diagnostic::error(
+                "float conditional needs a comparison condition",
+            ));
         }
         // A float conditional branch advances mwcc's anonymous-`@N` counter by 3.
         self.output.has_float_branch = true;
@@ -73,14 +91,25 @@ impl Generator {
         // The condition operands may be memory loads: a located left operand loads
         // into a free register (avoiding the select values), the right into the
         // scratch; leaf operands stay in place.
-        let (left_register, right_register) = self.place_float_comparison_operands(left, right, &[true_register, false_register])?;
+        let (left_register, right_register) =
+            self.place_float_comparison_operands(left, right, &[true_register, false_register])?;
 
         // Equality (`==`/`!=`) uses the QUIET compare `fcmpu` (IEEE equality does not signal on NaN);
         // the relational operators (`<`/`>`/`<=`/`>=`) use the signaling ordered compare `fcmpo`.
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-            self.output.instructions.push(Instruction::FloatCompareUnordered { a: left_register, b: right_register });
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareUnordered {
+                    a: left_register,
+                    b: right_register,
+                });
         } else {
-            self.output.instructions.push(Instruction::FloatCompareOrdered { a: left_register, b: right_register });
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareOrdered {
+                    a: left_register,
+                    b: right_register,
+                });
         }
         // `<=` / `>=` on FLOATS must be FALSE for unordered (NaN) operands. A direct `ble`/`bge`
         // (branch-if-not-gt / not-lt) would also take the branch when unordered, so mwcc instead OoRs
@@ -88,8 +117,18 @@ impl Generator {
         // keep the direct branch (no unordered case) and never reach this float path.
         let (positive_options, condition_bit) = match operator {
             BinaryOperator::LessEqual | BinaryOperator::GreaterEqual => {
-                let strict_bit = if *operator == BinaryOperator::LessEqual { 0 } else { 1 }; // lt / gt
-                self.output.instructions.push(Instruction::ConditionRegisterOr { d: 2, a: strict_bit, b: 2 });
+                let strict_bit = if *operator == BinaryOperator::LessEqual {
+                    0
+                } else {
+                    1
+                }; // lt / gt
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterOr {
+                        d: 2,
+                        a: strict_bit,
+                        b: 2,
+                    });
                 (12, 2) // branch-if-eq
             }
             _ => positive_branch(*operator),
@@ -99,12 +138,22 @@ impl Generator {
         // OTHER arm becomes the fall-through tail (`fmr` for a leaf, `fneg` for a negated one).
         if tail && !true_negate && true_register == destination {
             // true value already in the result: return on the true branch.
-            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: positive_options, condition_bit });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options: positive_options,
+                    condition_bit,
+                });
             self.emit_float_select_tail(destination, false_register, false_negate);
             return Ok(());
         }
         if tail && !false_negate && false_register == destination {
-            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: positive_options ^ 8, condition_bit });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options: positive_options ^ 8,
+                    condition_bit,
+                });
             self.emit_float_select_tail(destination, true_register, true_negate);
             return Ok(());
         }
@@ -114,7 +163,11 @@ impl Generator {
     /// Classify a float select arm: a plain leaf (`(register, false)`) or the negation of a leaf
     /// (`(base_register, true)` — the fabs family `cond ? -x : x`).
     fn float_select_arm(&self, arm: &Expression) -> Compilation<(u8, bool)> {
-        if let Expression::Unary { operator: UnaryOperator::Negate, operand } = arm {
+        if let Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } = arm
+        {
             Ok((self.float_register_of_leaf(operand)?, true))
         } else {
             Ok((self.float_register_of_leaf(arm)?, false))
@@ -125,10 +178,15 @@ impl Generator {
     /// is not already in the destination.
     fn emit_float_select_tail(&mut self, destination: u8, register: u8, negate: bool) {
         if negate {
-            self.output.instructions.push(Instruction::FloatNegate { d: destination, b: register });
+            self.output.instructions.push(Instruction::FloatNegate {
+                d: destination,
+                b: register,
+            });
         } else if destination != register {
-            self.output.instructions.push(Instruction::FloatMove { d: destination, b: register });
+            self.output.instructions.push(Instruction::FloatMove {
+                d: destination,
+                b: register,
+            });
         }
     }
-
 }

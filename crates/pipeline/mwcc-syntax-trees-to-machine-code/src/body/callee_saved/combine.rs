@@ -11,12 +11,17 @@ impl Generator {
     /// value is a decayed ADDRESS), and float/narrow globals are not.
     fn materializes_in_one(&self, argument: &Expression) -> bool {
         match argument {
-            Expression::IntegerLiteral(value) => *value >= i16::MIN as i64 && *value <= i16::MAX as i64,
+            Expression::IntegerLiteral(value) => {
+                *value >= i16::MIN as i64 && *value <= i16::MAX as i64
+            }
             Expression::Variable(name) => {
                 self.behavior.global_addressing == GlobalAddressing::SmallData
                     && !self.locations.contains_key(name.as_str())
                     && !self.global_array_sizes.contains_key(name.as_str())
-                    && matches!(self.globals.get(name.as_str()), Some(Type::Int | Type::UnsignedInt))
+                    && matches!(
+                        self.globals.get(name.as_str()),
+                        Some(Type::Int | Type::UnsignedInt)
+                    )
             }
             _ => false,
         }
@@ -26,7 +31,11 @@ impl Generator {
     fn materialize_slot(&mut self, argument: &Expression, slot: usize) -> Compilation<()> {
         match argument {
             Expression::IntegerLiteral(value) => {
-                self.output.instructions.push(Instruction::AddImmediate { d: 3 + slot as u8, a: 0, immediate: *value as i16 });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 3 + slot as u8,
+                    a: 0,
+                    immediate: *value as i16,
+                });
                 Ok(())
             }
             Expression::Variable(name) => self.emit_global_load_value(name, 3 + slot as u8),
@@ -42,10 +51,15 @@ impl Generator {
     /// the incoming argument registers directly (no moves), and each later call restores
     /// them. One of the most common real shapes (a state handed to several functions).
     pub(crate) fn try_callee_saved_call_args(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
-        if function.parameters.is_empty() || matches!(function.return_type, Type::Float | Type::Double) {
+        if function.parameters.is_empty()
+            || matches!(function.return_type, Type::Float | Type::Double)
+        {
             return Ok(false);
         }
         // A non-void function returns one of the parameters (or a register-only expression
@@ -69,18 +83,19 @@ impl Generator {
         // unaffected. Defer the deeper ones. (Mirrors the guards in try_callee_saved and
         // try_callee_saved_call_result.)
         if let Some(return_expression) = function.return_expression.as_ref() {
-            if function
-                .parameters
-                .iter()
-                .any(|parameter| name_nesting_depth(return_expression, &parameter.name).is_some_and(|depth| depth >= 2))
-            {
+            if function.parameters.iter().any(|parameter| {
+                name_nesting_depth(return_expression, &parameter.name)
+                    .is_some_and(|depth| depth >= 2)
+            }) {
                 return Ok(false);
             }
         }
         // Every statement must be a call whose arguments are exactly the parameters in
         // order, so the first call needs no moves and the live set is all the parameters.
         for statement in &function.statements {
-            let Statement::Expression(Expression::Call { arguments, .. }) = statement else { return Ok(false) };
+            let Statement::Expression(Expression::Call { arguments, .. }) = statement else {
+                return Ok(false);
+            };
             if arguments.len() != function.parameters.len() {
                 return Ok(false);
             }
@@ -94,7 +109,9 @@ impl Generator {
         let mut incoming = Vec::new();
         for parameter in &function.parameters {
             match self.locations.get(&parameter.name) {
-                Some(location) if location.class == ValueClass::General => incoming.push((parameter.name.clone(), location.register)),
+                Some(location) if location.class == ValueClass::General => {
+                    incoming.push((parameter.name.clone(), location.register))
+                }
                 _ => return Ok(false),
             }
         }
@@ -108,8 +125,14 @@ impl Generator {
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        let incoming_ordered: Vec<u8> = incoming.iter().rev().map(|(_, register)| *register).collect();
-        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+        let incoming_ordered: Vec<u8> = incoming
+            .iter()
+            .rev()
+            .map(|(_, register)| *register)
+            .collect();
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&incoming_ordered));
         // The first call finds the parameters still in their incoming registers (no
         // moves); afterward they live only in their callee-saved registers.
         self.emit_statement(&function.statements[0])?;
@@ -120,7 +143,11 @@ impl Generator {
             }
         }
         for statement in &function.statements[1..] {
+            let materialization_start = self.output.instructions.len();
             self.emit_statement(statement)?;
+            if count >= 2 {
+                self.normalize_legacy_materialization_copies(materialization_start, &homes);
+            }
         }
         // A non-void return reads the parameters from their callee-saved registers; the
         // epilogue scheduler hoists the LR reload ahead of this move, matching mwcc.
@@ -142,8 +169,15 @@ impl Generator {
     /// Handles the low-latency ops `+ | & ^` (commutative — `OP r3,r31,r3` on either source side) and
     /// `-` (its `subf` operands chosen by the call's side); heavier ops (e.g. `*`) and multi-parameter
     /// shapes are follow-ups.
-    pub(crate) fn try_callee_saved_call_combine(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() || !function.statements.is_empty() {
+    pub(crate) fn try_callee_saved_call_combine(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || !function.statements.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -160,7 +194,12 @@ impl Generator {
         if class != ValueClass::General {
             return Ok(false);
         }
-        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator,
+            left,
+            right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
         // Low-latency ops mwcc issues as a single register op combining the saved parameter (r31)
@@ -168,13 +207,25 @@ impl Generator {
         // source side; the non-commutative `-` picks its `subf` operands by which side the call is on.
         // `*` combines to a single `mullw r3,r31,r3`; mwcc issues it BEFORE the LR reload (overlapping
         // the multiply latency with the load), which the LR-reload hoist now models.
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        if !matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::Multiply
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitXor
+        ) {
             return Ok(false);
         }
         let is_param = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == &param.name);
         let (call_name, call_arguments, call_on_left) = match (left.as_ref(), right.as_ref()) {
-            (Expression::Call { name, arguments }, other) if is_param(other) => (name, arguments, true),
-            (other, Expression::Call { name, arguments }) if is_param(other) => (name, arguments, false),
+            (Expression::Call { name, arguments }, other) if is_param(other) => {
+                (name, arguments, true)
+            }
+            (other, Expression::Call { name, arguments }) if is_param(other) => {
+                (name, arguments, false)
+            }
             _ => return Ok(false),
         };
         // The call takes no arguments, forwards exactly the parameter (already in its incoming
@@ -183,8 +234,12 @@ impl Generator {
         // register right before the call (`mr r31,r3; li r3,C; bl`) — the schedule mwcc emits.
         // A COMPUTED argument uses the parameter's register mid-computation and schedules
         // differently, so it still defers.
-        let single_constant_arg = call_arguments.len() == 1 && constant_value(&call_arguments[0]).is_some();
-        if !(call_arguments.is_empty() || (call_arguments.len() == 1 && is_param(&call_arguments[0])) || single_constant_arg) {
+        let single_constant_arg =
+            call_arguments.len() == 1 && constant_value(&call_arguments[0]).is_some();
+        if !(call_arguments.is_empty()
+            || (call_arguments.len() == 1 && is_param(&call_arguments[0]))
+            || single_constant_arg)
+        {
             return Ok(false);
         }
         // Prologue: a 16-byte frame saving the link register and the saved parameter.
@@ -194,22 +249,56 @@ impl Generator {
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
         // The canonical single-save frame, from the FRAME BUILDER.
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // Save the live parameter before the call clobbers its incoming register.
-        self.output.instructions.push(Instruction::Or { a: saved, s: param_register, b: param_register });
+        self.output.instructions.push(Instruction::Or {
+            a: saved,
+            s: param_register,
+            b: param_register,
+        });
         self.emit_call(call_name, call_arguments, None, false)?;
         // Combine the saved parameter with the call result (r3) — the saved value first.
         let result = Eabi::general_result().number;
         self.output.instructions.push(match operator {
-            BinaryOperator::Add => Instruction::Add { d: result, a: saved, b: result },
-            BinaryOperator::BitOr => Instruction::Or { a: result, s: saved, b: result },
-            BinaryOperator::BitAnd => Instruction::And { a: result, s: saved, b: result },
-            BinaryOperator::BitXor => Instruction::Xor { a: result, s: saved, b: result },
+            BinaryOperator::Add => Instruction::Add {
+                d: result,
+                a: saved,
+                b: result,
+            },
+            BinaryOperator::BitOr => Instruction::Or {
+                a: result,
+                s: saved,
+                b: result,
+            },
+            BinaryOperator::BitAnd => Instruction::And {
+                a: result,
+                s: saved,
+                b: result,
+            },
+            BinaryOperator::BitXor => Instruction::Xor {
+                a: result,
+                s: saved,
+                b: result,
+            },
             // `subf d,a,b` computes `b - a`. `f()-x` (call left) is result-param -> `subf r3,r31,r3`;
             // `x-f()` (call right) is param-result -> `subf r3,r3,r31`.
-            BinaryOperator::Subtract if call_on_left => Instruction::SubtractFrom { d: result, a: saved, b: result },
-            BinaryOperator::Subtract => Instruction::SubtractFrom { d: result, a: result, b: saved },
-            BinaryOperator::Multiply => Instruction::MultiplyLow { d: result, a: saved, b: result },
+            BinaryOperator::Subtract if call_on_left => Instruction::SubtractFrom {
+                d: result,
+                a: saved,
+                b: result,
+            },
+            BinaryOperator::Subtract => Instruction::SubtractFrom {
+                d: result,
+                a: result,
+                b: saved,
+            },
+            BinaryOperator::Multiply => Instruction::MultiplyLow {
+                d: result,
+                a: saved,
+                b: result,
+            },
             _ => unreachable!("operator restricted above"),
         });
         self.emit_epilogue_and_return();
@@ -222,8 +311,14 @@ impl Generator {
     /// moves the saved second parameter into place for the second call (`mr r3,r31; bl`). The epilogue
     /// reloads LR (hoisted right after the last call) then restores r31. Exactly two parameters/two
     /// calls for now — longer sequences assign further callee-saved registers and are a follow-up.
-    pub(crate) fn try_callee_saved_call_sequence(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+    pub(crate) fn try_callee_saved_call_sequence(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
         if function.return_type != Type::Void || function.return_expression.is_some() {
@@ -232,20 +327,31 @@ impl Generator {
         if function.parameters.len() != 2 {
             return Ok(false);
         }
-        let [Statement::Expression(Expression::Call { name: name0, arguments: args0 }), Statement::Expression(Expression::Call { name: name1, arguments: args1 })] =
-            function.statements.as_slice()
+        let [Statement::Expression(Expression::Call {
+            name: name0,
+            arguments: args0,
+        }), Statement::Expression(Expression::Call {
+            name: name1,
+            arguments: args1,
+        })] = function.statements.as_slice()
         else {
             return Ok(false);
         };
         let is_param = |expression: &Expression, index: usize| matches!(expression, Expression::Variable(name) if name == &function.parameters[index].name);
-        if args0.len() != 1 || !is_param(&args0[0], 0) || args1.len() != 1 || !is_param(&args1[0], 1) {
+        if args0.len() != 1
+            || !is_param(&args0[0], 0)
+            || args1.len() != 1
+            || !is_param(&args1[0], 1)
+        {
             return Ok(false);
         }
         // Both parameters must be general-class (a float parameter is passed/saved differently).
         let mut param_registers = Vec::new();
         for parameter in &function.parameters {
             match self.locations.get(&parameter.name) {
-                Some(location) if location.class == ValueClass::General => param_registers.push(location.register),
+                Some(location) if location.class == ValueClass::General => {
+                    param_registers.push(location.register)
+                }
                 _ => return Ok(false),
             }
         }
@@ -256,10 +362,16 @@ impl Generator {
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
         // The canonical single-save frame, from the FRAME BUILDER.
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // Save the second parameter (live across the first call), and record it there so
         // the second call materializes its argument from the saved home (`mr r3,r31`).
-        self.output.instructions.push(Instruction::Or { a: saved, s: param_registers[1], b: param_registers[1] });
+        self.output.instructions.push(Instruction::Or {
+            a: saved,
+            s: param_registers[1],
+            b: param_registers[1],
+        });
         if let Some(location) = self.locations.get_mut(&function.parameters[1].name) {
             location.register = saved;
         }
@@ -277,7 +389,10 @@ impl Generator {
     /// move); the second consumer materializes from the home (`mr r3,r31`). Measured:
     /// `bl f; mr r31,r3; bl g; mr r3,r31; bl h` with the canonical single-save frame.
     /// Exactly two consumers (a third's materialization schedule is unmeasured — defer).
-    pub(crate) fn try_callee_saved_result_call_sequence(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_callee_saved_result_call_sequence(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() {
             return Ok(false);
         }
@@ -291,31 +406,52 @@ impl Generator {
         let [local] = function.locals.as_slice() else {
             return Ok(false);
         };
-        if local.is_static || local.array_length.is_some() || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+        if local.is_static
+            || local.array_length.is_some()
+            || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+        {
             return Ok(false);
         }
-        let Some(Expression::Call { name: producer_name, arguments: producer_arguments }) = local.initializer.as_ref() else {
+        let Some(Expression::Call {
+            name: producer_name,
+            arguments: producer_arguments,
+        }) = local.initializer.as_ref()
+        else {
             return Ok(false);
         };
         if !producer_arguments.is_empty() {
             return Ok(false);
         }
         // Exactly two consuming statements, each a direct call whose single argument is x.
-        let [Statement::Expression(Expression::Call { name: first_name, arguments: first_arguments }), Statement::Expression(Expression::Call { name: second_name, arguments: second_arguments })] =
-            function.statements.as_slice()
+        let [Statement::Expression(Expression::Call {
+            name: first_name,
+            arguments: first_arguments,
+        }), Statement::Expression(Expression::Call {
+            name: second_name,
+            arguments: second_arguments,
+        })] = function.statements.as_slice()
         else {
             return Ok(false);
         };
-        for (name, arguments) in [(first_name, first_arguments), (second_name, second_arguments)] {
-            if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(v) if v == &local.name) {
+        for (name, arguments) in [
+            (first_name, first_arguments),
+            (second_name, second_arguments),
+        ] {
+            if arguments.len() != 1
+                || !matches!(&arguments[0], Expression::Variable(v) if v == &local.name)
+            {
                 return Ok(false);
             }
             // An indirect callee (function-pointer variable/global) materializes differently.
-            if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+            if self.locations.contains_key(name.as_str())
+                || self.globals.contains_key(name.as_str())
+            {
                 return Ok(false);
             }
         }
-        if self.locations.contains_key(producer_name.as_str()) || self.globals.contains_key(producer_name.as_str()) {
+        if self.locations.contains_key(producer_name.as_str())
+            || self.globals.contains_key(producer_name.as_str())
+        {
             return Ok(false);
         }
 
@@ -324,15 +460,28 @@ impl Generator {
         self.frame_size = 16;
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // The producing call, then the save.
         self.emit_call(producer_name, producer_arguments, None, false)?;
-        self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+        self.output.instructions.push(Instruction::Or {
+            a: saved,
+            s: 3,
+            b: 3,
+        });
         // x reads from r3 for the first consumer (still live), from the home after.
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: 3, signed, width: 32, pointee: None, stride: None },
+            Location {
+                class: ValueClass::General,
+                register: 3,
+                signed,
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
         );
         self.emit_call(first_name, first_arguments, None, false)?;
         if let Some(location) = self.locations.get_mut(&local.name) {
@@ -350,8 +499,14 @@ impl Generator {
     /// scheduler fills the first li's latency slot with the save). The return move
     /// interleaves into the epilogue between the two reloads (`lwz r0,20; mr r3,r31;
     /// lwz r31,12; mtlr; addi; blr`).
-    pub(crate) fn try_callee_saved_result_across_call_return(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.parameters.is_empty() {
+    pub(crate) fn try_callee_saved_result_across_call_return(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.parameters.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -361,23 +516,33 @@ impl Generator {
         let [local] = function.locals.as_slice() else {
             return Ok(false);
         };
-        if local.is_static || local.array_length.is_some() || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+        if local.is_static
+            || local.array_length.is_some()
+            || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+        {
             return Ok(false);
         }
-        let Some(Expression::Call { name: producer_name, arguments: producer_arguments }) = local.initializer.as_ref() else {
+        let Some(Expression::Call {
+            name: producer_name,
+            arguments: producer_arguments,
+        }) = local.initializer.as_ref()
+        else {
             return Ok(false);
         };
         if !producer_arguments.is_empty() {
             return Ok(false);
         }
-        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name) {
+        if !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name)
+        {
             return Ok(false);
         }
         // One consuming statement: a direct call whose arguments are ALL integer literals
         // — or `x` itself as the FIRST argument followed by literals (`g(x, 5)`). Any
         // other argument shape interleaves on an unmeasured schedule.
-        let [Statement::Expression(Expression::Call { name: consumer_name, arguments: consumer_arguments })] =
-            function.statements.as_slice()
+        let [Statement::Expression(Expression::Call {
+            name: consumer_name,
+            arguments: consumer_arguments,
+        })] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -404,9 +569,15 @@ impl Generator {
         {
             return Ok(false);
         }
-        let literal_tail: &[Expression] = if passes_x_first { &consumer_arguments[1..] } else { consumer_arguments };
+        let literal_tail: &[Expression] = if passes_x_first {
+            &consumer_arguments[1..]
+        } else {
+            consumer_arguments
+        };
         for name in [producer_name, consumer_name] {
-            if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+            if self.locations.contains_key(name.as_str())
+                || self.globals.contains_key(name.as_str())
+            {
                 return Ok(false);
             }
         }
@@ -416,22 +587,30 @@ impl Generator {
         self.frame_size = 16;
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // Producer, then the measured save schedule.
         self.record_relocation(RelocationKind::Rel24, producer_name);
-        self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: producer_name.to_string(),
+        });
         // Split the non-x slots: LOADS (SDA globals) batch AHEAD of the `li`s in mwcc's
         // schedule (measured `g(5,G)`: lwz r4 first). Each group keeps slot order.
         let load_slots: Vec<usize> = consumer_arguments
             .iter()
             .enumerate()
-            .filter(|&(slot, argument)| Some(slot) != x_slot && matches!(argument, Expression::Variable(_)))
+            .filter(|&(slot, argument)| {
+                Some(slot) != x_slot && matches!(argument, Expression::Variable(_))
+            })
             .map(|(slot, _)| slot)
             .collect();
         let li_slots: Vec<usize> = consumer_arguments
             .iter()
             .enumerate()
-            .filter(|&(slot, argument)| Some(slot) != x_slot && matches!(argument, Expression::IntegerLiteral(_)))
+            .filter(|&(slot, argument)| {
+                Some(slot) != x_slot && matches!(argument, Expression::IntegerLiteral(_))
+            })
             .map(|(slot, _)| slot)
             .collect();
         // Measured boundaries: at most TWO loads, and two only when slot 0 is a load
@@ -463,28 +642,50 @@ impl Generator {
             for (index, argument) in literal_tail.iter().enumerate() {
                 self.materialize_slot(argument, index + 1)?;
                 if index == 0 {
-                    self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+                    self.output.instructions.push(Instruction::Or {
+                        a: saved,
+                        s: 3,
+                        b: 3,
+                    });
                 }
             }
             if literal_tail.is_empty() {
-                self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+                self.output.instructions.push(Instruction::Or {
+                    a: saved,
+                    s: 3,
+                    b: 3,
+                });
             }
         } else if consumer_arguments.is_empty() {
-            self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+            self.output.instructions.push(Instruction::Or {
+                a: saved,
+                s: 3,
+                b: 3,
+            });
         } else if load_slots.first() == Some(&0) {
             // Slot 0 is a LOAD — it clobbers r3, so the save THREADS THE SCRATCH:
             // mr r0,r3; the loads batch in slot order; `mr r31,r0` follows the batch
             // (measured g(G): 1 load — g(G,H): save after BOTH loads); then the lis.
-            self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 0, s: 3, b: 3 });
             for &slot in &load_slots {
                 self.materialize_slot(&consumer_arguments[slot], slot)?;
             }
-            self.output.instructions.push(Instruction::Or { a: saved, s: 0, b: 0 });
+            self.output.instructions.push(Instruction::Or {
+                a: saved,
+                s: 0,
+                b: 0,
+            });
             for &slot in &li_slots {
                 self.materialize_slot(&consumer_arguments[slot], slot)?;
             }
             if let Some(x_slot) = x_slot {
-                self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: saved, b: saved });
+                self.output.instructions.push(Instruction::Or {
+                    a: 3 + x_slot as u8,
+                    s: saved,
+                    b: saved,
+                });
             }
         } else if let Some(&load_slot) = load_slots.first() {
             // A LOAD exists but slot 0 is a literal — the load issues FIRST and does
@@ -492,40 +693,80 @@ impl Generator {
             // in the load's latency slot; the lis follow (measured g(5,G): lwz r4;
             // mr r31,r3; li r3,5).
             self.materialize_slot(&consumer_arguments[load_slot], load_slot)?;
-            self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+            self.output.instructions.push(Instruction::Or {
+                a: saved,
+                s: 3,
+                b: 3,
+            });
             for &slot in &li_slots {
                 self.materialize_slot(&consumer_arguments[slot], slot)?;
             }
             if let Some(x_slot) = x_slot {
-                self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: saved, b: saved });
+                self.output.instructions.push(Instruction::Or {
+                    a: 3 + x_slot as u8,
+                    s: saved,
+                    b: saved,
+                });
             }
         } else {
             // All-`li` tail: the first li clobbers r3, so the save THREADS THE SCRATCH —
             // mr r0,r3; lis in slot order with `mr r31,r0` in the FIRST one's latency
             // slot. When x occupies a later argument slot (`g(5,x,7); return x`), its
             // slot materializes from the saved home LAST, right before the call.
-            self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 0, s: 3, b: 3 });
             let mut saved_emitted = false;
             for &slot in &li_slots {
                 self.materialize_slot(&consumer_arguments[slot], slot)?;
                 if !saved_emitted {
-                    self.output.instructions.push(Instruction::Or { a: saved, s: 0, b: 0 });
+                    self.output.instructions.push(Instruction::Or {
+                        a: saved,
+                        s: 0,
+                        b: 0,
+                    });
                     saved_emitted = true;
                 }
             }
             if let Some(x_slot) = x_slot {
-                self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: saved, b: saved });
+                self.output.instructions.push(Instruction::Or {
+                    a: 3 + x_slot as u8,
+                    s: saved,
+                    b: saved,
+                });
             }
         }
         self.record_relocation(RelocationKind::Rel24, consumer_name);
-        self.output.instructions.push(Instruction::BranchAndLink { target: consumer_name.to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: consumer_name.to_string(),
+        });
         // The measured interleaved epilogue: LR reload, return move, GPR reload.
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
-        self.output.instructions.push(Instruction::Or { a: 3, s: saved, b: saved });
-        self.output.instructions.push(Instruction::LoadWord { d: saved, a: 1, offset: self.frame_size - 4 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        });
+        self.output.instructions.push(Instruction::Or {
+            a: 3,
+            s: saved,
+            b: saved,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: saved,
+            a: 1,
+            offset: self.frame_size - 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: self.frame_size,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 
@@ -536,7 +777,10 @@ impl Generator {
     /// (`mr r0,r3`), the literal arguments materialize in slot order, and x's slot
     /// fills from r0 LAST (measured: `bl f; mr r0,r3; li r3,5; mr r4,r0; bl g`).
     pub(crate) fn try_result_feeds_call(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.parameters.is_empty() {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.parameters.is_empty()
+        {
             return Ok(false);
         }
         if function.return_type != Type::Void || function.return_expression.is_some() {
@@ -545,17 +789,26 @@ impl Generator {
         let [local] = function.locals.as_slice() else {
             return Ok(false);
         };
-        if local.is_static || local.array_length.is_some() || !matches!(local.declared_type, Type::Int | Type::UnsignedInt) {
+        if local.is_static
+            || local.array_length.is_some()
+            || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+        {
             return Ok(false);
         }
-        let Some(Expression::Call { name: producer_name, arguments: producer_arguments }) = local.initializer.as_ref() else {
+        let Some(Expression::Call {
+            name: producer_name,
+            arguments: producer_arguments,
+        }) = local.initializer.as_ref()
+        else {
             return Ok(false);
         };
         if !producer_arguments.is_empty() {
             return Ok(false);
         }
-        let [Statement::Expression(Expression::Call { name: consumer_name, arguments: consumer_arguments })] =
-            function.statements.as_slice()
+        let [Statement::Expression(Expression::Call {
+            name: consumer_name,
+            arguments: consumer_arguments,
+        })] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -580,7 +833,9 @@ impl Generator {
             return Ok(false);
         }
         for name in [producer_name, consumer_name] {
-            if self.locations.contains_key(name.as_str()) || self.globals.contains_key(name.as_str()) {
+            if self.locations.contains_key(name.as_str())
+                || self.globals.contains_key(name.as_str())
+            {
                 return Ok(false);
             }
         }
@@ -590,20 +845,38 @@ impl Generator {
         let void_load_slots: Vec<usize> = consumer_arguments
             .iter()
             .enumerate()
-            .filter(|&(slot, argument)| slot != x_slot && matches!(argument, Expression::Variable(_)))
+            .filter(|&(slot, argument)| {
+                slot != x_slot && matches!(argument, Expression::Variable(_))
+            })
             .map(|(slot, _)| slot)
             .collect();
-        if void_load_slots.len() > 1 || (void_load_slots.len() == 1 && x_slot != 0 && void_load_slots[0] != 0) {
+        if void_load_slots.len() > 1
+            || (void_load_slots.len() == 1 && x_slot != 0 && void_load_slots[0] != 0)
+        {
             return Ok(false);
         }
         // LR-only frame: nothing survives a call.
         self.non_leaf = true;
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.record_relocation(RelocationKind::Rel24, producer_name);
-        self.output.instructions.push(Instruction::BranchAndLink { target: producer_name.to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: producer_name.to_string(),
+        });
         if x_slot == 0 {
             // `g(x[, K…])`: x is already in r3 — no thread, no move; the tail
             // arguments (if any) materialize in slot order (measured g(x,5), g(x,5,9)).
@@ -618,7 +891,9 @@ impl Generator {
             // li r3,5; mr r5,r0; li r4,7 — g(G,x): lwz r3,G; mr r4,r0. Same position
             // the r31 save takes in the return form; the scheduler treats both as
             // "the r0 consumer".)
-            self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 0, s: 3, b: 3 });
             let mut x_move_emitted = false;
             for (slot, argument) in consumer_arguments.iter().enumerate() {
                 if slot == x_slot {
@@ -626,13 +901,19 @@ impl Generator {
                 }
                 self.materialize_slot(argument, slot)?;
                 if !x_move_emitted {
-                    self.output.instructions.push(Instruction::Or { a: 3 + x_slot as u8, s: 0, b: 0 });
+                    self.output.instructions.push(Instruction::Or {
+                        a: 3 + x_slot as u8,
+                        s: 0,
+                        b: 0,
+                    });
                     x_move_emitted = true;
                 }
             }
         }
         self.record_relocation(RelocationKind::Rel24, consumer_name);
-        self.output.instructions.push(Instruction::BranchAndLink { target: consumer_name.to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: consumer_name.to_string(),
+        });
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -643,8 +924,15 @@ impl Generator {
     /// Only `-` for now: a COMMUTATIVE op evaluates its operands right-first in mwcc, reordering the
     /// symbol table, which the left-first `symbol_order` does not reproduce (a `referenced_names`
     /// change — deferred). Argument-bearing calls are a follow-up.
-    pub(crate) fn try_callee_saved_two_call_combine(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() || !function.statements.is_empty() {
+    pub(crate) fn try_callee_saved_two_call_combine(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || !function.statements.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -653,12 +941,27 @@ impl Generator {
         // Only `-` for now. A commutative `+`/`|`/… evaluates its operands RIGHT-first in mwcc (so the
         // symbol/relocation order is right-then-left), which our left-first `symbol_order` does not
         // reproduce — that needs a `referenced_names` change and defers. `-` is natural left-then-right.
-        let Some(Expression::Binary { operator: BinaryOperator::Subtract, left, right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left,
+            right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
         // Both operands are argument-free calls (an argument would interleave its materialization with
         // the saves on a schedule not modeled here).
-        let (Expression::Call { name: first_name, arguments: first_arguments }, Expression::Call { name: second_name, arguments: second_arguments }) = (left.as_ref(), right.as_ref()) else {
+        let (
+            Expression::Call {
+                name: first_name,
+                arguments: first_arguments,
+            },
+            Expression::Call {
+                name: second_name,
+                arguments: second_arguments,
+            },
+        ) = (left.as_ref(), right.as_ref())
+        else {
             return Ok(false);
         };
         if !first_arguments.is_empty() || !second_arguments.is_empty() {
@@ -671,15 +974,25 @@ impl Generator {
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
         // The canonical single-save frame, from the FRAME BUILDER.
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // First call; its result is saved across the second call.
         self.emit_call(first_name, first_arguments, None, false)?;
-        self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+        self.output.instructions.push(Instruction::Or {
+            a: saved,
+            s: 3,
+            b: 3,
+        });
         // Second call; its result lands in r3.
         self.emit_call(second_name, second_arguments, None, false)?;
         // `subf d,a,b` = `b - a`; first result saved, second in r3, so `subf r3,r3,<saved>` =
         // first - second (`f() - g()`).
-        self.output.instructions.push(Instruction::SubtractFrom { d: 3, a: 3, b: saved });
+        self.output.instructions.push(Instruction::SubtractFrom {
+            d: 3,
+            a: 3,
+            b: saved,
+        });
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -691,8 +1004,14 @@ impl Generator {
     /// saving them interleaved up front (`stw r31; mr r31,y; stw r30; mr r30,x`); the return combines
     /// from the saved registers (`add r3,r30,r31`). The call may pass EITHER parameter: the first stays
     /// in its incoming register (no move); the second is materialized from its saved r31 (`mr r3,r31`).
-    pub(crate) fn try_callee_saved_param_pair_combine(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+    pub(crate) fn try_callee_saved_param_pair_combine(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -701,12 +1020,16 @@ impl Generator {
         if function.parameters.len() != 2 {
             return Ok(false);
         }
-        let [Statement::Expression(Expression::Call { name, arguments })] = function.statements.as_slice() else {
+        let [Statement::Expression(Expression::Call { name, arguments })] =
+            function.statements.as_slice()
+        else {
             return Ok(false);
         };
         // The call passes exactly one of the two parameters (the first stays in its incoming register;
         // the second is materialized from its callee-saved register — see the save/location logic).
-        if arguments.len() != 1 || !matches!(&arguments[0], Expression::Variable(argument) if argument == &function.parameters[0].name || argument == &function.parameters[1].name) {
+        if arguments.len() != 1
+            || !matches!(&arguments[0], Expression::Variable(argument) if argument == &function.parameters[0].name || argument == &function.parameters[1].name)
+        {
             return Ok(false);
         }
         // The return is `p OP q` reading both parameters, combined by a low-latency op whose operand
@@ -714,21 +1037,36 @@ impl Generator {
         // for `-`). `*` is excluded here: with TWO saved GPRs mwcc interleaves the LR reload between
         // the register restores (`mullw; lwz r31; lwz r0; lwz r30`), a register-death epilogue schedule
         // this path does not model — the single-saved-GPR combine handles multiply.
-        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator,
+            left,
+            right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        if !matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitXor
+        ) {
             return Ok(false);
         }
         let is_param = |expression: &Expression, index: usize| matches!(expression, Expression::Variable(name) if name == &function.parameters[index].name);
-        if !((is_param(left, 0) && is_param(right, 1)) || (is_param(left, 1) && is_param(right, 0))) {
+        if !((is_param(left, 0) && is_param(right, 1)) || (is_param(left, 1) && is_param(right, 0)))
+        {
             return Ok(false);
         }
         // Both parameters general-class; keep them in incoming (parameter) order for the save loop.
         let mut incoming = Vec::new();
         for parameter in &function.parameters {
             match self.locations.get(&parameter.name) {
-                Some(location) if location.class == ValueClass::General => incoming.push((parameter.name.clone(), location.register)),
+                Some(location) if location.class == ValueClass::General => {
+                    incoming.push((parameter.name.clone(), location.register))
+                }
                 _ => return Ok(false),
             }
         }
@@ -738,24 +1076,38 @@ impl Generator {
         self.frame_size = frame_size;
         // Phase D: virtual homes, highest-rank first (id order -> r31, r30); the
         // interleaved save+move prologue comes from the FRAME BUILDER.
-        let homes: Vec<u8> = (0..incoming.len()).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u8> = (0..incoming.len())
+            .map(|_| self.fresh_virtual_general())
+            .collect();
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        let incoming_ordered: Vec<u8> = incoming.iter().rev().map(|(_, register)| *register).collect();
-        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+        let incoming_ordered: Vec<u8> = incoming
+            .iter()
+            .rev()
+            .map(|(_, register)| *register)
+            .collect();
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&incoming_ordered));
         // The second parameter is now read from its callee-saved home (its incoming register
         // is dead), so a call passing it materializes `mr r3,r31`. The first parameter stays in its
         // incoming register for the call (no move) and moves to its home only afterward.
         if let Some(location) = self.locations.get_mut(&function.parameters[1].name) {
             location.register = homes[0];
         }
+        let materialization_start = self.output.instructions.len();
         self.emit_call(name, arguments, None, false)?;
+        self.normalize_legacy_materialization_copies(materialization_start, &homes);
         if let Some(location) = self.locations.get_mut(&function.parameters[0].name) {
             location.register = homes[1];
         }
         let result = Eabi::general_result().number;
-        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
+        self.evaluate_tail(
+            function.return_expression.as_ref().unwrap(),
+            function.return_type,
+            result,
+        )?;
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -768,8 +1120,14 @@ impl Generator {
     /// parameter from r31 (`mr r3,r31`); the return combines from the saved registers (`add r3,r30,
     /// r31`). `*` is excluded (its latency reschedules the two-GPR epilogue restores, per the
     /// param-pair combine); the calls may target the same or different functions.
-    pub(crate) fn try_callee_saved_call_sequence_combine(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+    pub(crate) fn try_callee_saved_call_sequence_combine(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -779,31 +1137,55 @@ impl Generator {
             return Ok(false);
         }
         // Two call statements, each passing exactly the correspondingly-indexed parameter.
-        let [Statement::Expression(Expression::Call { name: name0, arguments: args0 }), Statement::Expression(Expression::Call { name: name1, arguments: args1 })] =
-            function.statements.as_slice()
+        let [Statement::Expression(Expression::Call {
+            name: name0,
+            arguments: args0,
+        }), Statement::Expression(Expression::Call {
+            name: name1,
+            arguments: args1,
+        })] = function.statements.as_slice()
         else {
             return Ok(false);
         };
         let is_param = |expression: &Expression, index: usize| matches!(expression, Expression::Variable(name) if name == &function.parameters[index].name);
-        if args0.len() != 1 || !is_param(&args0[0], 0) || args1.len() != 1 || !is_param(&args1[0], 1) {
+        if args0.len() != 1
+            || !is_param(&args0[0], 0)
+            || args1.len() != 1
+            || !is_param(&args1[0], 1)
+        {
             return Ok(false);
         }
         // The return combines both parameters with one low-latency op (either operand order;
         // evaluate_tail reproduces it). `*` is excluded — see the doc comment.
-        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator,
+            left,
+            right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        if !matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitXor
+        ) {
             return Ok(false);
         }
-        if !((is_param(left, 0) && is_param(right, 1)) || (is_param(left, 1) && is_param(right, 0))) {
+        if !((is_param(left, 0) && is_param(right, 1)) || (is_param(left, 1) && is_param(right, 0)))
+        {
             return Ok(false);
         }
         // Both parameters general-class; keep incoming (parameter) order for the save loop.
         let mut incoming = Vec::new();
         for parameter in &function.parameters {
             match self.locations.get(&parameter.name) {
-                Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                Some(location) if location.class == ValueClass::General => {
+                    incoming.push(location.register)
+                }
                 _ => return Ok(false),
             }
         }
@@ -817,7 +1199,9 @@ impl Generator {
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
         let incoming_ordered: Vec<u8> = incoming.iter().rev().copied().collect();
-        self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&incoming_ordered));
         // The second parameter now lives in its callee-saved home (r31); the second call materializes
         // it (`mr r3,r31`). The first parameter stays in its incoming register for the first call and
         // moves to its home (r30) only afterward (its incoming register dies at the first call).
@@ -830,7 +1214,11 @@ impl Generator {
         }
         self.emit_call(name1, args1, None, false)?;
         let result = Eabi::general_result().number;
-        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
+        self.evaluate_tail(
+            function.return_expression.as_ref().unwrap(),
+            function.return_type,
+            result,
+        )?;
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -849,7 +1237,10 @@ impl Generator {
     /// must be used across the calls (an unused one would not be saved). A parameter passed twice in
     /// one call, a non-constant extra argument, a leading call touching a parameter, or a body whose
     /// first parameter use is not preceded by a call all defer.
-    pub(crate) fn try_callee_saved_param_across_calls(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_callee_saved_param_across_calls(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if function.return_type != Type::Void
             || function.return_expression.is_some()
             || !function.guards.is_empty()
@@ -860,18 +1251,30 @@ impl Generator {
         {
             return Ok(false);
         }
-        if function.parameters.iter().any(|parameter| !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)) {
+        if function
+            .parameters
+            .iter()
+            .any(|parameter| !matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt))
+        {
             return Ok(false);
         }
-        let parameter_index = |name: &str| function.parameters.iter().position(|parameter| parameter.name == name);
+        let parameter_index = |name: &str| {
+            function
+                .parameters
+                .iter()
+                .position(|parameter| parameter.name == name)
+        };
         if function.statements.len() < 2 || function.statements.len() > 6 {
             return Ok(false);
         }
         // Every statement must be a call expression.
-        let mut calls: Vec<(&String, &Vec<Expression>)> = Vec::with_capacity(function.statements.len());
+        let mut calls: Vec<(&String, &Vec<Expression>)> =
+            Vec::with_capacity(function.statements.len());
         for statement in &function.statements {
             match statement {
-                Statement::Expression(Expression::Call { name, arguments }) => calls.push((name, arguments)),
+                Statement::Expression(Expression::Call { name, arguments }) => {
+                    calls.push((name, arguments))
+                }
                 _ => return Ok(false),
             }
         }
@@ -899,8 +1302,13 @@ impl Generator {
                         seen[index] = true;
                         slots.push(Slot::Parameter { index, register });
                     }
-                    Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
-                        slots.push(Slot::Constant { register, value: *value as i16 });
+                    Expression::IntegerLiteral(value)
+                        if (i16::MIN as i64..=i16::MAX as i64).contains(value) =>
+                    {
+                        slots.push(Slot::Constant {
+                            register,
+                            value: *value as i16,
+                        });
                     }
                     _ => return None,
                 }
@@ -909,7 +1317,10 @@ impl Generator {
         };
         // The leading run is the maximal prefix of bare (argument-free) calls; the rest must all
         // pass a parameter. At least one leading and one trailing call are required.
-        let leading_count = calls.iter().take_while(|(_, arguments)| arguments.is_empty()).count();
+        let leading_count = calls
+            .iter()
+            .take_while(|(_, arguments)| arguments.is_empty())
+            .count();
         if leading_count == 0 || leading_count == calls.len() {
             return Ok(false);
         }
@@ -936,7 +1347,9 @@ impl Generator {
         let mut incoming = Vec::with_capacity(function.parameters.len());
         for parameter in &function.parameters {
             match self.locations.get(&parameter.name) {
-                Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                Some(location) if location.class == ValueClass::General => {
+                    incoming.push(location.register)
+                }
                 _ => return Ok(false),
             }
         }
@@ -944,12 +1357,16 @@ impl Generator {
         // A 16-byte frame saving the link register and the callee-saved homes; the `mr home,param`
         // stashes interleave into the prologue in REVERSE parameter order (last param -> r31).
         self.non_leaf = true;
-        let homes: Vec<u8> = (0..function.parameters.len()).map(|_| self.fresh_virtual_general()).collect();
+        let homes: Vec<u8> = (0..function.parameters.len())
+            .map(|_| self.fresh_virtual_general())
+            .collect();
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.frame_size = plan.frame_size;
         let incoming_reversed: Vec<u8> = incoming.iter().rev().copied().collect();
-        self.output.instructions.extend(plan.prologue_interleaved(&incoming_reversed));
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&incoming_reversed));
         // Parameter `index` lives in `homes[nparams - 1 - index]` (the reverse-order interleave).
         let parameter_home = |index: usize| homes[function.parameters.len() - 1 - index];
         for (name, arguments) in &calls[..leading_count] {
@@ -960,16 +1377,25 @@ impl Generator {
         for (name, slots) in &trailing {
             for slot in slots {
                 if let Slot::Parameter { index, register } = slot {
-                    self.output.instructions.push(Instruction::move_register(*register, parameter_home(*index)));
+                    self.output.instructions.push(Instruction::move_register(
+                        *register,
+                        parameter_home(*index),
+                    ));
                 }
             }
             for slot in slots {
                 if let Slot::Constant { register, value } = slot {
-                    self.output.instructions.push(Instruction::AddImmediate { d: *register, a: 0, immediate: *value });
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: *register,
+                        a: 0,
+                        immediate: *value,
+                    });
                 }
             }
             self.record_relocation(RelocationKind::Rel24, name);
-            self.output.instructions.push(Instruction::BranchAndLink { target: (*name).clone() });
+            self.output.instructions.push(Instruction::BranchAndLink {
+                target: (*name).clone(),
+            });
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -981,24 +1407,43 @@ impl Generator {
     /// first argument), materializes the saved parameter into the second argument register
     /// (`mr r4,r31`), then calls the outer function; the outer call's result (if any) is left in r3.
     /// This is MSL alloc.c's `free`: `__pool_free(get_malloc_pool(), ptr)`.
-    pub(crate) fn try_callee_saved_nested_call_arg(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.locals.is_empty() {
+    pub(crate) fn try_callee_saved_nested_call_arg(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
             return Ok(false);
         }
-        if function.parameters.len() != 1 || matches!(function.return_type, Type::Float | Type::Double) {
+        if function.parameters.len() != 1
+            || matches!(function.return_type, Type::Float | Type::Double)
+        {
             return Ok(false);
         }
         // The whole body is a single outer call — a void expression statement, or the return value.
-        let outer = match (function.statements.as_slice(), function.return_expression.as_ref()) {
+        let outer = match (
+            function.statements.as_slice(),
+            function.return_expression.as_ref(),
+        ) {
             ([Statement::Expression(call)], None) if function.return_type == Type::Void => call,
             ([], Some(call)) => call,
             _ => return Ok(false),
         };
-        let Expression::Call { name: outer_name, arguments: outer_arguments } = outer else {
+        let Expression::Call {
+            name: outer_name,
+            arguments: outer_arguments,
+        } = outer
+        else {
             return Ok(false);
         };
         // Exactly two arguments: a nested argument-free call, then the (sole) parameter.
-        let [Expression::Call { arguments: nested_arguments, .. }, Expression::Variable(passed)] = outer_arguments.as_slice() else {
+        let [Expression::Call {
+            arguments: nested_arguments,
+            ..
+        }, Expression::Variable(passed)] = outer_arguments.as_slice()
+        else {
             return Ok(false);
         };
         if !nested_arguments.is_empty() || passed != &function.parameters[0].name {
@@ -1014,8 +1459,14 @@ impl Generator {
         self.frame_size = 16;
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
-        self.output.instructions.push(Instruction::Or { a: saved, s: incoming, b: incoming });
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output.instructions.push(Instruction::Or {
+            a: saved,
+            s: incoming,
+            b: incoming,
+        });
         if let Some(location) = self.locations.get_mut(passed) {
             location.register = saved;
         }
@@ -1032,8 +1483,14 @@ impl Generator {
     /// it in r31 (interleaved save+move prologue), the call reads the STILL-LIVE
     /// incoming register (no argument move), and the combine reads the result
     /// from r3 and the parameter from r31 (measured: the fire-498 probe).
-    pub(crate) fn try_callee_saved_result_param_combine(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+    pub(crate) fn try_callee_saved_result_param_combine(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.statements.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -1060,10 +1517,22 @@ impl Generator {
         // The return combines the local and the parameter with one low-latency op
         // (either operand order; evaluate_tail reproduces it). Multiply is excluded:
         // its latency reschedules the epilogue restores.
-        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator,
+            left,
+            right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        if !matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitXor
+        ) {
             return Ok(false);
         }
         let reads = |expression: &Expression, name: &str| matches!(expression, Expression::Variable(variable) if variable == name);
@@ -1085,7 +1554,9 @@ impl Generator {
         self.callee_saved = homes.clone();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
-        self.output.instructions.extend(plan.prologue_interleaved(&[incoming]));
+        self.output
+            .instructions
+            .extend(plan.prologue_interleaved(&[incoming]));
         // The call reads the parameter from its STILL-LIVE incoming register (no
         // move); only afterwards does the parameter read from its saved home.
         self.emit_call(name, arguments, None, false)?;
@@ -1096,10 +1567,21 @@ impl Generator {
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: 3, signed, width: 32, pointee: None, stride: None },
+            Location {
+                class: ValueClass::General,
+                register: 3,
+                signed,
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
         );
         let result = Eabi::general_result().number;
-        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, result)?;
+        self.evaluate_tail(
+            function.return_expression.as_ref().unwrap(),
+            function.return_type,
+            result,
+        )?;
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -1112,22 +1594,45 @@ impl Generator {
     /// callee-saved homes combine first (`add r3,r30,r31` — creation order), and
     /// the parked value adds last. Adds only — the reassociation is unmeasured
     /// for the other operators.
-    pub(crate) fn try_callee_saved_result_park_combine(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+    pub(crate) fn try_callee_saved_result_park_combine(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.statements.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
             return Ok(false);
         }
         // The return is ((result + saved1) + saved2), left-associated adds.
-        let Some(Expression::Binary { operator: BinaryOperator::Add, left: outer_left, right: outer_right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: outer_left,
+            right: outer_right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
-        let Expression::Binary { operator: BinaryOperator::Add, left: inner_left, right: inner_right } = outer_left.as_ref() else {
+        let Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: inner_left,
+            right: inner_right,
+        } = outer_left.as_ref()
+        else {
             return Ok(false);
         };
-        let (Expression::Variable(result_name), Expression::Variable(saved1), Expression::Variable(saved2)) =
-            (inner_left.as_ref(), inner_right.as_ref(), outer_right.as_ref())
+        let (
+            Expression::Variable(result_name),
+            Expression::Variable(saved1),
+            Expression::Variable(saved2),
+        ) = (
+            inner_left.as_ref(),
+            inner_right.as_ref(),
+            outer_right.as_ref(),
+        )
         else {
             return Ok(false);
         };
@@ -1149,13 +1654,16 @@ impl Generator {
                 };
                 match arguments.as_slice() {
                     [] => {}
-                    [Expression::Variable(argument)] if argument == &function.parameters[0].name => {}
+                    [Expression::Variable(argument)]
+                        if argument == &function.parameters[0].name => {}
                     _ => return Ok(false),
                 }
                 let mut incoming = Vec::new();
                 for parameter in &function.parameters {
                     match self.locations.get(&parameter.name) {
-                        Some(location) if location.class == ValueClass::General => incoming.push(location.register),
+                        Some(location) if location.class == ValueClass::General => {
+                            incoming.push(location.register)
+                        }
                         _ => return Ok(false),
                     }
                 }
@@ -1168,7 +1676,9 @@ impl Generator {
                 debug_assert_eq!(plan.frame_size, 16);
                 // Interleaved save+fill pairs, r31 (param 1) first.
                 let incoming_ordered: Vec<u8> = incoming.iter().rev().copied().collect();
-                self.output.instructions.extend(plan.prologue_interleaved(&incoming_ordered));
+                self.output
+                    .instructions
+                    .extend(plan.prologue_interleaved(&incoming_ordered));
                 // The call reads the STILL-LIVE incoming register (no move).
                 self.emit_call(name, arguments, None, false)?;
                 self.emit_park_and_combine(homes[1], homes[0]);
@@ -1187,20 +1697,30 @@ impl Generator {
                 {
                     return Ok(false);
                 }
-                let Some(Expression::Call { name: call1, arguments: arguments1 }) = first.initializer.as_ref() else {
+                let Some(Expression::Call {
+                    name: call1,
+                    arguments: arguments1,
+                }) = first.initializer.as_ref()
+                else {
                     return Ok(false);
                 };
-                let Some(Expression::Call { name: call2, arguments: arguments2 }) = second.initializer.as_ref() else {
+                let Some(Expression::Call {
+                    name: call2,
+                    arguments: arguments2,
+                }) = second.initializer.as_ref()
+                else {
                     return Ok(false);
                 };
                 // Call 1 forwards the parameter (or nothing); call 2 passes the
                 // FRESH first result — both read a still-live r3, no moves.
                 match arguments1.as_slice() {
                     [] => {}
-                    [Expression::Variable(argument)] if argument == &function.parameters[0].name => {}
+                    [Expression::Variable(argument)]
+                        if argument == &function.parameters[0].name => {}
                     _ => return Ok(false),
                 }
-                if !matches!(arguments2.as_slice(), [Expression::Variable(argument)] if argument == &first.name) {
+                if !matches!(arguments2.as_slice(), [Expression::Variable(argument)] if argument == &first.name)
+                {
                     return Ok(false);
                 }
                 let incoming = match self.locations.get(&function.parameters[0].name) {
@@ -1216,15 +1736,30 @@ impl Generator {
                 // Batched saves; the parameter's fill follows (its def is the
                 // prologue), the first result's fill lands after its call.
                 self.output.instructions.extend(plan.prologue());
-                self.output.instructions.push(Instruction::Or { a: homes[1], s: incoming, b: incoming });
+                self.output.instructions.push(Instruction::Or {
+                    a: homes[1],
+                    s: incoming,
+                    b: incoming,
+                });
                 self.emit_call(call1, arguments1, None, false)?;
-                self.output.instructions.push(Instruction::Or { a: homes[0], s: 3, b: 3 });
+                self.output.instructions.push(Instruction::Or {
+                    a: homes[0],
+                    s: 3,
+                    b: 3,
+                });
                 // The second call reads the first result from the STILL-LIVE r3
                 // (its home copy exists but no argument move is emitted).
                 let signed = !matches!(first.declared_type, Type::UnsignedInt);
                 self.locations.insert(
                     first.name.clone(),
-                    Location { class: ValueClass::General, register: 3, signed, width: 32, pointee: None, stride: None },
+                    Location {
+                        class: ValueClass::General,
+                        register: 3,
+                        signed,
+                        width: 32,
+                        pointee: None,
+                        stride: None,
+                    },
                 );
                 self.emit_call(call2, arguments2, None, false)?;
                 self.emit_park_and_combine(homes[1], homes[0]);
@@ -1241,8 +1776,14 @@ impl Generator {
     /// home (intermediates in place, the scheduler hoists them into the
     /// prologue's latency gaps), the argument move `mr r3,r31` IS emitted (the
     /// home is not the argument register), and the combine reads r3 and r31.
-    pub(crate) fn try_callee_saved_computed_then_call(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+    pub(crate) fn try_callee_saved_computed_then_call(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.statements.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -1267,15 +1808,28 @@ impl Generator {
         let Some(Expression::Call { name, arguments }) = result.initializer.as_ref() else {
             return Ok(false);
         };
-        if !matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == &computed.name) {
+        if !matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == &computed.name)
+        {
             return Ok(false);
         }
         // The return combines the result and the computed local with one
         // low-latency op, either order (evaluate_tail reproduces it).
-        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator,
+            left,
+            right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
-        if !matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::BitOr | BinaryOperator::BitAnd | BinaryOperator::BitXor) {
+        if !matches!(
+            operator,
+            BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitXor
+        ) {
             return Ok(false);
         }
         let reads = |expression: &Expression, name: &str| matches!(expression, Expression::Variable(variable) if variable == name);
@@ -1296,8 +1850,14 @@ impl Generator {
         // `<single-param subexpression> + <i16 literal>` — is emitted; other
         // roots decline to the honest defer.
         let (sub, literal) = match initializer {
-            Expression::Binary { operator: BinaryOperator::Add, left, right } => match right.as_ref() {
-                Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok() => (left.as_ref(), *value as i16),
+            Expression::Binary {
+                operator: BinaryOperator::Add,
+                left,
+                right,
+            } => match right.as_ref() {
+                Expression::IntegerLiteral(value) if i16::try_from(*value).is_ok() => {
+                    (left.as_ref(), *value as i16)
+                }
                 _ => return Ok(false),
             },
             _ => return Ok(false),
@@ -1306,13 +1866,25 @@ impl Generator {
         // (`param * literal` -> mulli): the scheduler slot it fills — between
         // mflr and the LR store — is only measured for a single instruction.
         let (in_place_source, factor) = match sub {
-            Expression::Binary { operator: BinaryOperator::Multiply, left, right } => match (left.as_ref(), right.as_ref()) {
-                (Expression::Variable(source), Expression::IntegerLiteral(value)) if i16::try_from(*value).is_ok() => (source, *value as i16),
+            Expression::Binary {
+                operator: BinaryOperator::Multiply,
+                left,
+                right,
+            } => match (left.as_ref(), right.as_ref()) {
+                (Expression::Variable(source), Expression::IntegerLiteral(value))
+                    if i16::try_from(*value).is_ok() =>
+                {
+                    (source, *value as i16)
+                }
                 _ => return Ok(false),
             },
             _ => return Ok(false),
         };
-        if !function.parameters.iter().any(|parameter| &parameter.name == in_place_source) {
+        if !function
+            .parameters
+            .iter()
+            .any(|parameter| &parameter.name == in_place_source)
+        {
             return Ok(false);
         }
         let in_place = match self.locations.get(in_place_source.as_str()) {
@@ -1323,23 +1895,57 @@ impl Generator {
         // gap (measured: stwu; mflr; MULLI; stw r0; stw r31), then the root op
         // landing in the home.
         let prologue = mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue();
-        self.output.instructions.extend(prologue[..2].iter().cloned());
-        self.output.instructions.push(Instruction::MultiplyImmediate { d: in_place, a: in_place, immediate: factor });
-        self.output.instructions.extend(prologue[2..].iter().cloned());
-        self.output.instructions.push(Instruction::AddImmediate { d: saved, a: in_place, immediate: literal });
+        self.output
+            .instructions
+            .extend(prologue[..2].iter().cloned());
+        self.output
+            .instructions
+            .push(Instruction::MultiplyImmediate {
+                d: in_place,
+                a: in_place,
+                immediate: factor,
+            });
+        self.output
+            .instructions
+            .extend(prologue[2..].iter().cloned());
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: saved,
+            a: in_place,
+            immediate: literal,
+        });
         let signed = !matches!(computed.declared_type, Type::UnsignedInt);
         self.locations.insert(
             computed.name.clone(),
-            Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+            Location {
+                class: ValueClass::General,
+                register: saved,
+                signed,
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
         );
+        let materialization_start = self.output.instructions.len();
         self.emit_call(name, arguments, None, false)?;
+        self.normalize_legacy_materialization_copies(materialization_start, &[saved]);
         let result_signed = !matches!(result.declared_type, Type::UnsignedInt);
         self.locations.insert(
             result.name.clone(),
-            Location { class: ValueClass::General, register: 3, signed: result_signed, width: 32, pointee: None, stride: None },
+            Location {
+                class: ValueClass::General,
+                register: 3,
+                signed: result_signed,
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
         );
         let destination = Eabi::general_result().number;
-        self.evaluate_tail(function.return_expression.as_ref().unwrap(), function.return_type, destination)?;
+        self.evaluate_tail(
+            function.return_expression.as_ref().unwrap(),
+            function.return_type,
+            destination,
+        )?;
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -1348,9 +1954,17 @@ impl Generator {
     /// combine the two callee-saved homes (creation order: lower home first),
     /// then add the parked value into the return register.
     pub(crate) fn emit_park_and_combine(&mut self, home_low: u8, home_high: u8) {
-        self.output.instructions.push(Instruction::Or { a: 0, s: 3, b: 3 });
-        self.output.instructions.push(Instruction::Add { d: 3, a: home_low, b: home_high });
-        self.output.instructions.push(Instruction::Add { d: 3, a: 0, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::Or { a: 0, s: 3, b: 3 });
+        self.output.instructions.push(Instruction::Add {
+            d: 3,
+            a: home_low,
+            b: home_high,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 3, a: 0, b: 3 });
     }
 
     /// One or two locals that are CALL RESULTS, live across later calls, then returned:
@@ -1360,7 +1974,10 @@ impl Generator {
     /// single-local return may post-process z (`z + 1`); the two-local return must be a
     /// single low-latency op of both (`a + b`), as in [`Self::try_callee_saved`].
     /// (Parameters live across calls go through that path.) Narrowly shaped.
-    pub(crate) fn try_callee_saved_call_result(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_callee_saved_call_result(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() {
             return Ok(false);
         }
@@ -1399,6 +2016,7 @@ impl Generator {
         // regular epilogue is unchanged. `const_head` records that call's index so the
         // emission below splices the `li`s into the prologue and emits only the `bl`.
         let mut const_head: Option<usize> = None;
+        let mut forwards_entry_parameters = false;
         for (index, (init_name, arguments)) in init_calls.iter().enumerate() {
             if arguments.is_empty() {
                 continue;
@@ -1422,6 +2040,7 @@ impl Generator {
                     .get(init_name)
                     .map_or(true, |types| types.iter().all(|parameter_type| parameter_type.width() >= 32));
             if forwards_parameters {
+                forwards_entry_parameters = true;
                 continue;
             } else if li_constants {
                 const_head = Some(index);
@@ -1436,10 +2055,18 @@ impl Generator {
         let Some(return_expr) = function.return_expression.as_ref() else {
             return Ok(false);
         };
-        if function.parameters.iter().any(|parameter| expression_reads_name(return_expr, &parameter.name)) {
+        if function
+            .parameters
+            .iter()
+            .any(|parameter| expression_reads_name(return_expr, &parameter.name))
+        {
             return Ok(false);
         }
-        if self.globals.keys().any(|name| expression_reads_name(return_expr, name)) {
+        if self
+            .globals
+            .keys()
+            .any(|name| expression_reads_name(return_expr, name))
+        {
             return Ok(false);
         }
         if count == 1 {
@@ -1452,7 +2079,9 @@ impl Generator {
             // register-death) — a schedule this all-restores-at-end epilogue does not
             // model, so it would miscompile. Defer. Single-op post-processing (`a`, `a+1`,
             // `a&C`; depth <= 1) is unaffected. (Mirrors the try_callee_saved guard.)
-            if name_nesting_depth(return_expr, &function.locals[0].name).is_some_and(|depth| depth >= 2) {
+            if name_nesting_depth(return_expr, &function.locals[0].name)
+                .is_some_and(|depth| depth >= 2)
+            {
                 return Ok(false);
             }
         } else {
@@ -1461,7 +2090,12 @@ impl Generator {
                     | BinaryOperator::BitAnd | BinaryOperator::BitOr | BinaryOperator::BitXor)
                     && matches!(left.as_ref(), Expression::Variable(_))
                     && matches!(right.as_ref(), Expression::Variable(_)));
-            if !single_op || !function.locals.iter().all(|local| expression_reads_name(return_expr, &local.name)) {
+            if !single_op
+                || !function
+                    .locals
+                    .iter()
+                    .all(|local| expression_reads_name(return_expr, &local.name))
+            {
                 return Ok(false);
             }
         }
@@ -1484,6 +2118,10 @@ impl Generator {
         let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
+        if forwards_entry_parameters {
+            self.legacy_callee_saved_frame_layout =
+                LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
+        }
         // Phase D: virtual homes, created highest-rank first (id order -> r31, r30, …),
         // framed by the FRAME BUILDER (all saves consecutive — the canonical schedule).
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
@@ -1498,7 +2136,9 @@ impl Generator {
             let mark = self.output.instructions.len();
             self.emit_arguments(arguments, init_name)?;
             let head: Vec<Instruction> = self.output.instructions.drain(mark..).collect();
-            self.output.instructions.extend(plan.prologue_with_setup(head));
+            self.output
+                .instructions
+                .extend(plan.prologue_with_setup(head));
         } else {
             self.output.instructions.extend(plan.prologue());
         }
@@ -1510,15 +2150,30 @@ impl Generator {
             let (init_name, init_arguments) = &init_calls[index];
             // The const-head call's arguments are already materialized in the prologue;
             // emit only its `bl` (empty argument list) so they are not re-emitted.
-            let call_arguments: &[Expression] = if const_head == Some(index) { &[] } else { init_arguments };
+            let call_arguments: &[Expression] = if const_head == Some(index) {
+                &[]
+            } else {
+                init_arguments
+            };
             self.emit_call(init_name, call_arguments, None, false)?;
             // The first local takes the LOWEST home (homes are highest-first).
             let register = homes[count - 1 - index];
-            self.output.instructions.push(Instruction::Or { a: register, s: 3, b: 3 });
+            self.output.instructions.push(Instruction::Or {
+                a: register,
+                s: 3,
+                b: 3,
+            });
             let signed = !matches!(local.declared_type, Type::UnsignedInt);
             self.locations.insert(
                 local.name.clone(),
-                Location { class: ValueClass::General, register, signed, width: 32, pointee: None, stride: None },
+                Location {
+                    class: ValueClass::General,
+                    register,
+                    signed,
+                    width: 32,
+                    pointee: None,
+                    stride: None,
+                },
             );
         }
 
@@ -1545,8 +2200,14 @@ impl Generator {
     /// does a reversed operand order. Same or different callees both work — the calls
     /// run in statement order, so the relocation order is natural (no commutative
     /// right-first reorder like the direct `return f()+g();` form).
-    pub(crate) fn try_callee_saved_two_call_result_combine(&mut self, function: &Function) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() || !function.statements.is_empty() {
+    pub(crate) fn try_callee_saved_two_call_result_combine(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !function.statements.is_empty()
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -1570,10 +2231,17 @@ impl Generator {
             init_names.push(name.clone());
         }
         // The return combines the two locals in declaration order with one low-latency op.
-        let Some(Expression::Binary { operator, left, right }) = function.return_expression.as_ref() else {
+        let Some(Expression::Binary {
+            operator,
+            left,
+            right,
+        }) = function.return_expression.as_ref()
+        else {
             return Ok(false);
         };
-        let (Expression::Variable(left_name), Expression::Variable(right_name)) = (left.as_ref(), right.as_ref()) else {
+        let (Expression::Variable(left_name), Expression::Variable(right_name)) =
+            (left.as_ref(), right.as_ref())
+        else {
             return Ok(false);
         };
         if left_name != &function.locals[0].name || right_name != &function.locals[1].name {
@@ -1582,11 +2250,31 @@ impl Generator {
         // `x OP y` from x in the saved register and y in r3. `subf d,a,b` = b - a, so
         // `subf r3,r3,saved` = saved - r3 = x - y (order-preserving).
         let combine = |saved: u8| match operator {
-            BinaryOperator::Add => Some(Instruction::Add { d: 3, a: saved, b: 3 }),
-            BinaryOperator::Subtract => Some(Instruction::SubtractFrom { d: 3, a: 3, b: saved }),
-            BinaryOperator::BitOr => Some(Instruction::Or { a: 3, s: saved, b: 3 }),
-            BinaryOperator::BitAnd => Some(Instruction::And { a: 3, s: saved, b: 3 }),
-            BinaryOperator::BitXor => Some(Instruction::Xor { a: 3, s: saved, b: 3 }),
+            BinaryOperator::Add => Some(Instruction::Add {
+                d: 3,
+                a: saved,
+                b: 3,
+            }),
+            BinaryOperator::Subtract => Some(Instruction::SubtractFrom {
+                d: 3,
+                a: 3,
+                b: saved,
+            }),
+            BinaryOperator::BitOr => Some(Instruction::Or {
+                a: 3,
+                s: saved,
+                b: 3,
+            }),
+            BinaryOperator::BitAnd => Some(Instruction::And {
+                a: 3,
+                s: saved,
+                b: 3,
+            }),
+            BinaryOperator::BitXor => Some(Instruction::Xor {
+                a: 3,
+                s: saved,
+                b: 3,
+            }),
             _ => None,
         };
         if combine(0).is_none() {
@@ -1597,13 +2285,21 @@ impl Generator {
         self.frame_size = 16;
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         // First call; its result parks in the callee-saved register (live across the 2nd call).
         self.emit_call(&init_names[0], &[], None, false)?;
-        self.output.instructions.push(Instruction::Or { a: saved, s: 3, b: 3 });
+        self.output.instructions.push(Instruction::Or {
+            a: saved,
+            s: 3,
+            b: 3,
+        });
         // Second call; its result stays in r3, then the combine and return.
         self.emit_call(&init_names[1], &[], None, false)?;
-        self.output.instructions.push(combine(saved).expect("operator checked above"));
+        self.output
+            .instructions
+            .push(combine(saved).expect("operator checked above"));
         self.emit_epilogue_and_return();
         Ok(true)
     }
@@ -1613,7 +2309,10 @@ impl Generator {
     /// `int z = x + 1; g(z); return z;`. z is computed into r31 before the call, used
     /// from r31 (as a call argument and/or the return), then reloaded. Argument calls may
     /// pass only z and constants (a parameter would be call-clobbered).
-    pub(crate) fn try_callee_saved_computed_local(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_callee_saved_computed_local(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if !self.frame_slots.is_empty() || !function.guards.is_empty() {
             return Ok(false);
         }
@@ -1635,7 +2334,11 @@ impl Generator {
         if matches!(initializer, Expression::Variable(_)) || expression_has_call(initializer) {
             return Ok(false);
         }
-        if self.globals.keys().any(|name| expression_reads_name(initializer, name)) {
+        if self
+            .globals
+            .keys()
+            .any(|name| expression_reads_name(initializer, name))
+        {
             return Ok(false);
         }
         // One or more argument calls whose arguments read only z (preserved in r31) and
@@ -1645,21 +2348,32 @@ impl Generator {
             return Ok(false);
         }
         let reads_param_or_global = |this: &Self, expression: &Expression| {
-            function.parameters.iter().any(|parameter| expression_reads_name(expression, &parameter.name))
-                || this.globals.keys().any(|name| expression_reads_name(expression, name))
+            function
+                .parameters
+                .iter()
+                .any(|parameter| expression_reads_name(expression, &parameter.name))
+                || this
+                    .globals
+                    .keys()
+                    .any(|name| expression_reads_name(expression, name))
         };
         for statement in &function.statements {
             let Statement::Expression(Expression::Call { arguments, .. }) = statement else {
                 return Ok(false);
             };
-            if arguments.iter().any(|argument| reads_param_or_global(self, argument)) {
+            if arguments
+                .iter()
+                .any(|argument| reads_param_or_global(self, argument))
+            {
                 return Ok(false);
             }
         }
         let Some(return_expr) = function.return_expression.as_ref() else {
             return Ok(false);
         };
-        if !expression_reads_name(return_expr, &local.name) || reads_param_or_global(self, return_expr) {
+        if !expression_reads_name(return_expr, &local.name)
+            || reads_param_or_global(self, return_expr)
+        {
             return Ok(false);
         }
 
@@ -1670,14 +2384,26 @@ impl Generator {
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
         // The canonical single-save frame, from the FRAME BUILDER.
-        self.output.instructions.extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
+        self.output
+            .instructions
+            .extend(mwcc_vreg::FramePlan::sized_for(vec![saved]).prologue());
         self.evaluate_general(initializer, saved)?;
         let signed = !matches!(local.declared_type, Type::UnsignedInt);
         self.locations.insert(
             local.name.clone(),
-            Location { class: ValueClass::General, register: saved, signed, width: 32, pointee: None, stride: None },
+            Location {
+                class: ValueClass::General,
+                register: saved,
+                signed,
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
         );
-        for statement in &function.statements {
+        let materialization_start = self.output.instructions.len();
+        self.emit_statement(&function.statements[0])?;
+        self.normalize_legacy_materialization_copies(materialization_start, &[saved]);
+        for statement in &function.statements[1..] {
             self.emit_statement(statement)?;
         }
         let result = Eabi::general_result().number;
@@ -1685,5 +2411,4 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
-
 }

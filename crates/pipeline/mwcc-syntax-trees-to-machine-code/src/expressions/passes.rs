@@ -3,7 +3,6 @@
 #[allow(unused_imports)]
 use super::*;
 
-
 /// The base variable a memory load addresses through — `a` for `a[i]`, `s` for
 /// `s->x`, `p` for `*p`. Used to recognize two loads that share a base register.
 pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
@@ -15,9 +14,16 @@ pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
 }
 
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
-pub(crate) fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> Compilation<Instruction> {
+pub(crate) fn displacement_load(
+    pointee: Pointee,
+    d: u8,
+    a: u8,
+    offset: i16,
+) -> Compilation<Instruction> {
     Ok(match pointee {
-        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => Instruction::LoadWord { d, a, offset },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => {
+            Instruction::LoadWord { d, a, offset }
+        }
         Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZero { d, a, offset },
         Pointee::Short => Instruction::LoadHalfwordAlgebraic { d, a, offset },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZero { d, a, offset },
@@ -25,7 +31,9 @@ pub(crate) fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> 
         Pointee::Double => Instruction::LoadFloatDouble { d, a, offset },
         // An 8-byte register pair has no single load — the pair path is not built yet.
         Pointee::LongLong | Pointee::UnsignedLongLong => {
-            return Err(Diagnostic::error("a long long load through a pointer is not supported yet (roadmap)"))
+            return Err(Diagnostic::error(
+                "a long long load through a pointer is not supported yet (roadmap)",
+            ))
         }
     })
 }
@@ -33,14 +41,18 @@ pub(crate) fn displacement_load(pointee: Pointee, d: u8, a: u8, offset: i16) -> 
 /// The indexed load for a pointee type (`lwzx`/`lbzx`/`lhax`/`lhzx`/`lfsx`).
 pub(crate) fn indexed_load(pointee: Pointee, d: u8, a: u8, b: u8) -> Compilation<Instruction> {
     Ok(match pointee {
-        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => Instruction::LoadWordIndexed { d, a, b },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => {
+            Instruction::LoadWordIndexed { d, a, b }
+        }
         Pointee::Char | Pointee::UnsignedChar => Instruction::LoadByteZeroIndexed { d, a, b },
         Pointee::Short => Instruction::LoadHalfwordAlgebraicIndexed { d, a, b },
         Pointee::UnsignedShort => Instruction::LoadHalfwordZeroIndexed { d, a, b },
         Pointee::Float => Instruction::LoadFloatSingleIndexed { d, a, b },
         Pointee::Double => Instruction::LoadFloatDoubleIndexed { d, a, b },
         Pointee::LongLong | Pointee::UnsignedLongLong => {
-            return Err(Diagnostic::error("a long long load through a pointer is not supported yet (roadmap)"))
+            return Err(Diagnostic::error(
+                "a long long load through a pointer is not supported yet (roadmap)",
+            ))
         }
     })
 }
@@ -77,15 +89,24 @@ pub(crate) fn pointer_stride(value_type: Type) -> Option<u16> {
 }
 
 /// The displacement store for a pointee type (`stw`/`stb`/`sth`/`stfs`).
-pub(crate) fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) -> Compilation<Instruction> {
+pub(crate) fn displacement_store(
+    pointee: Pointee,
+    s: u8,
+    a: u8,
+    offset: i16,
+) -> Compilation<Instruction> {
     Ok(match pointee {
-        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => Instruction::StoreWord { s, a, offset },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => {
+            Instruction::StoreWord { s, a, offset }
+        }
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByte { s, a, offset },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfword { s, a, offset },
         Pointee::Float => Instruction::StoreFloatSingle { s, a, offset },
         Pointee::Double => Instruction::StoreFloatDouble { s, a, offset },
         Pointee::LongLong | Pointee::UnsignedLongLong => {
-            return Err(Diagnostic::error("a long long store through a pointer is not supported yet (roadmap)"))
+            return Err(Diagnostic::error(
+                "a long long store through a pointer is not supported yet (roadmap)",
+            ))
         }
     })
 }
@@ -93,7 +114,11 @@ pub(crate) fn displacement_store(pointee: Pointee, s: u8, a: u8, offset: i16) ->
 /// `*(T *)0xADDR` — a dereference through a constant-address pointer cast (memory-mapped
 /// hardware registers, the GX FIFO). Returns the pointee and the absolute address.
 pub(crate) fn const_address_pointer(pointer: &Expression) -> Option<(Pointee, u32)> {
-    if let Expression::Cast { target_type: Type::Pointer(pointee), operand } = pointer {
+    if let Expression::Cast {
+        target_type: Type::Pointer(pointee),
+        operand,
+    } = pointer
+    {
         // Integer/char/short pointees only — a float/double const-address access needs an
         // FPR destination and a separate path, so leave those to defer.
         if !matches!(pointee, Pointee::Float | Pointee::Double) {
@@ -117,7 +142,11 @@ pub(crate) fn split_address(address: u32) -> (i16, i16) {
 /// `(union U *)C` — used as a member base (`(*(struct S *)C).field`) where the access width
 /// comes from the member, not the cast. Returns `None` for non-constant or non-pointer casts.
 pub(crate) fn const_address_of(pointer: &Expression) -> Option<u32> {
-    if let Expression::Cast { target_type, operand } = pointer {
+    if let Expression::Cast {
+        target_type,
+        operand,
+    } = pointer
+    {
         if matches!(target_type, Type::Pointer(_) | Type::StructPointer { .. }) {
             return constant_value(operand).map(|address| address as u32);
         }
@@ -128,14 +157,17 @@ pub(crate) fn const_address_of(pointer: &Expression) -> Option<u32> {
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).
 pub(crate) fn indexed_store(pointee: Pointee, s: u8, a: u8, b: u8) -> Compilation<Instruction> {
     Ok(match pointee {
-        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => Instruction::StoreWordIndexed { s, a, b },
+        Pointee::Int | Pointee::UnsignedInt | Pointee::Pointer | Pointee::WordPointer => {
+            Instruction::StoreWordIndexed { s, a, b }
+        }
         Pointee::Char | Pointee::UnsignedChar => Instruction::StoreByteIndexed { s, a, b },
         Pointee::Short | Pointee::UnsignedShort => Instruction::StoreHalfwordIndexed { s, a, b },
         Pointee::Float => Instruction::StoreFloatSingleIndexed { s, a, b },
         Pointee::Double => Instruction::StoreFloatDoubleIndexed { s, a, b },
         Pointee::LongLong | Pointee::UnsignedLongLong => {
-            return Err(Diagnostic::error("a long long store through a pointer is not supported yet (roadmap)"))
+            return Err(Diagnostic::error(
+                "a long long store through a pointer is not supported yet (roadmap)",
+            ))
         }
     })
 }
-

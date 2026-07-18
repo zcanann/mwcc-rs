@@ -37,40 +37,95 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [8, 14, 18] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.record_relocation(RelocationKind::Rel24, "OSDisableInterrupts");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSDisableInterrupts".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSDisableInterrupts".to_string(),
+        });
         self.record_relocation(RelocationKind::Addr16Ha, "WaitingQueue");
-        self.output.instructions.push(Instruction::load_immediate_shifted(4, 0));
-        self.output.instructions.push(Instruction::load_immediate(0, 4));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(4, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 4));
         self.record_relocation(RelocationKind::Addr16Lo, "WaitingQueue");
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 0 });
         self.bind_label(labels[&8]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 4, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 4,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: 4 });
         self.emit_branch_conditional_to(12, 2, labels[&14]); // beq
         self.record_relocation(RelocationKind::Rel24, "OSRestoreInterrupts");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSRestoreInterrupts".to_string() });
-        self.output.instructions.push(Instruction::load_immediate(3, 1));
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSRestoreInterrupts".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 1));
         self.emit_branch_to(labels[&18]); // b
         self.bind_label(labels[&14]);
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: 8 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: 8,
+        });
         self.emit_branch_conditional_to(16, 0, labels[&8]); // bdnz
         self.record_relocation(RelocationKind::Rel24, "OSRestoreInterrupts");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSRestoreInterrupts".to_string() });
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSRestoreInterrupts".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.bind_label(labels[&18]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

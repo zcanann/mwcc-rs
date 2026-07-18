@@ -31,13 +31,35 @@ impl Generator {
         // that shares the runtime source (measured: ww, strikers, mp4, AC, p2, sms, pik).
         // -- emit (leaf, no frame) --
         self.record_relocation(RelocationKind::EmbSda21, "__global_destructor_chain");
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 0, offset: 0 }); // node->next = head
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 5, offset: 4 }); // node->destructor
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 5, offset: 8 }); // node->object
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 0,
+            offset: 0,
+        }); // node->next = head
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 5,
+            offset: 4,
+        }); // node->destructor
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 5,
+            offset: 8,
+        }); // node->object
         self.record_relocation(RelocationKind::EmbSda21, "__global_destructor_chain");
-        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 0, offset: 0 }); // head = node (r5 DIRECT)
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 5,
+            a: 0,
+            offset: 0,
+        }); // head = node (r5 DIRECT)
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 }

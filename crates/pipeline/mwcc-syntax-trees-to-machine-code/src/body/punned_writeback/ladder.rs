@@ -75,8 +75,11 @@ impl Generator {
         let i0 = local_index(guard.source).expect("checked");
         let i1 = 1 - i0;
         // The outer ladder + stores.
-        let [Statement::If { condition: ladder1, then_body: low_arm, else_body: high_arm }, store_statements @ ..] =
-            function.statements.as_slice()
+        let [Statement::If {
+            condition: ladder1,
+            then_body: low_arm,
+            else_body: high_arm,
+        }, store_statements @ ..] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -94,18 +97,32 @@ impl Generator {
             }
         }
         // ladder1: j0 < K1.
-        let parse_guard_compare = |condition: &Expression, operator: BinaryOperator| -> Option<i16> {
-            let Expression::Binary { operator: op, left, right } = condition else { return None };
-            if *op != operator || !matches!(left.as_ref(), Expression::Variable(v) if v == guard.name) {
-                return None;
-            }
-            crate::analysis::constant_value(right).and_then(|k| i16::try_from(k).ok())
-        };
+        let parse_guard_compare =
+            |condition: &Expression, operator: BinaryOperator| -> Option<i16> {
+                let Expression::Binary {
+                    operator: op,
+                    left,
+                    right,
+                } = condition
+                else {
+                    return None;
+                };
+                if *op != operator
+                    || !matches!(left.as_ref(), Expression::Variable(v) if v == guard.name)
+                {
+                    return None;
+                }
+                crate::analysis::constant_value(right).and_then(|k| i16::try_from(k).ok())
+            };
         let Some(k1) = parse_guard_compare(ladder1, BinaryOperator::Less) else {
             return Ok(false);
         };
         // low_arm = [If{j0<0, arm1, arm2}].
-        let [Statement::If { condition: split, then_body: arm1, else_body: arm2 }] = low_arm.as_slice()
+        let [Statement::If {
+            condition: split,
+            then_body: arm1,
+            else_body: arm2,
+        }] = low_arm.as_slice()
         else {
             return Ok(false);
         };
@@ -113,7 +130,11 @@ impl Generator {
             return Ok(false);
         }
         // high_arm = [If{j0>K2, mid, arm3}].
-        let [Statement::If { condition: ladder2, then_body: mid, else_body: arm3 }] = high_arm.as_slice()
+        let [Statement::If {
+            condition: ladder2,
+            then_body: mid,
+            else_body: arm3,
+        }] = high_arm.as_slice()
         else {
             return Ok(false);
         };
@@ -121,8 +142,11 @@ impl Generator {
             return Ok(false);
         };
         // mid = [If{j0==K3, [Return x+x], [Return x]}].
-        let [Statement::If { condition: mid_cond, then_body: mid_then, else_body: mid_else }] =
-            mid.as_slice()
+        let [Statement::If {
+            condition: mid_cond,
+            then_body: mid_then,
+            else_body: mid_else,
+        }] = mid.as_slice()
         else {
             return Ok(false);
         };
@@ -139,8 +163,11 @@ impl Generator {
             return Ok(false);
         }
         // ARM1 (G3): If{huge+x>0, [If{i0>=0, [i0=i1=0], [If{((i0&M)|i1)!=0, [i0=HIGH, i1=0]}]}]}.
-        let [Statement::If { condition: guard1_cond, then_body: guard1_body, else_body: guard1_else }] =
-            arm1.as_slice()
+        let [Statement::If {
+            condition: guard1_cond,
+            then_body: guard1_body,
+            else_body: guard1_else,
+        }] = arm1.as_slice()
         else {
             return Ok(false);
         };
@@ -150,15 +177,23 @@ impl Generator {
         if !guard1_else.is_empty() {
             return Ok(false);
         }
-        let [Statement::If { condition: sign1, then_body: sign1_then, else_body: sign1_else }] =
-            guard1_body.as_slice()
+        let [Statement::If {
+            condition: sign1,
+            then_body: sign1_then,
+            else_body: sign1_else,
+        }] = guard1_body.as_slice()
         else {
             return Ok(false);
         };
         // The sign comparison: `i0 >= 0` (s_floor) or `i0 < 0` (s_ceil) —
         // the emitted branch is the inverted sense to the else arm either
         // way.
-        let Expression::Binary { operator: sign1_op, left: sign1_l, right: sign1_r } = sign1 else {
+        let Expression::Binary {
+            operator: sign1_op,
+            left: sign1_l,
+            right: sign1_r,
+        } = sign1
+        else {
             return Ok(false);
         };
         let sign1_branch = match sign1_op {
@@ -179,10 +214,12 @@ impl Generator {
         }
         let parse_pair = |body: &[Statement]| -> Option<ConstPair> {
             match body {
-                [Statement::Assign { name, value: Expression::Assign { target, value } }]
-                    if local_index(name) == Some(i0)
-                        && matches!(target.as_ref(), Expression::Variable(v) if local_index(v) == Some(i1))
-                        && crate::analysis::constant_value(value) == Some(0) =>
+                [Statement::Assign {
+                    name,
+                    value: Expression::Assign { target, value },
+                }] if local_index(name) == Some(i0)
+                    && matches!(target.as_ref(), Expression::Variable(v) if local_index(v) == Some(i1))
+                    && crate::analysis::constant_value(value) == Some(0) =>
                 {
                     Some(ConstPair::Chained0)
                 }
@@ -191,9 +228,8 @@ impl Generator {
                 {
                     let first = crate::analysis::constant_value(av)? as u32 as i32 as i64;
                     let second = crate::analysis::constant_value(bv)? as u32 as i32 as i64;
-                    let representable = |constant: i64| {
-                        i16::try_from(constant).is_ok() || constant & 0xffff == 0
-                    };
+                    let representable =
+                        |constant: i64| i16::try_from(constant).is_ok() || constant & 0xffff == 0;
                     (representable(first) && representable(second))
                         .then_some(ConstPair::Pair { first, second })
                 }
@@ -205,8 +241,11 @@ impl Generator {
         };
         // else: If{((i0 [& M]) | i1) != 0, [pair]} — the mask is optional
         // (s_ceil's plain `(i0 | i1) != 0`).
-        let [Statement::If { condition: mag_cond, then_body: mag_then, else_body: mag_else }] =
-            sign1_else.as_slice()
+        let [Statement::If {
+            condition: mag_cond,
+            then_body: mag_then,
+            else_body: mag_else,
+        }] = sign1_else.as_slice()
         else {
             return Ok(false);
         };
@@ -214,15 +253,22 @@ impl Generator {
             return Ok(false);
         }
         let Some(mag_mask) = (|| {
-            let Expression::Binary { operator: BinaryOperator::NotEqual, left, right } = mag_cond
+            let Expression::Binary {
+                operator: BinaryOperator::NotEqual,
+                left,
+                right,
+            } = mag_cond
             else {
                 return None;
             };
             if crate::analysis::constant_value(right) != Some(0) {
                 return None;
             }
-            let Expression::Binary { operator: BinaryOperator::BitOr, left: or_l, right: or_r } =
-                left.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::BitOr,
+                left: or_l,
+                right: or_r,
+            } = left.as_ref()
             else {
                 return None;
             };
@@ -231,8 +277,11 @@ impl Generator {
             }
             match or_l.as_ref() {
                 Expression::Variable(v) if local_index(v) == Some(i0) => Some(None),
-                Expression::Binary { operator: BinaryOperator::BitAnd, left: and_l, right: and_r }
-                    if matches!(and_l.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0)) =>
+                Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left: and_l,
+                    right: and_r,
+                } if matches!(and_l.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0)) =>
                 {
                     let mask = crate::analysis::constant_value(and_r)?;
                     let (begin, end) = crate::analysis::rlwinm_mask(mask)?;
@@ -243,13 +292,26 @@ impl Generator {
         })() else {
             return Ok(false);
         };
-        let Some(ConstPair::Pair { first: mag_first, second: mag_second }) = parse_pair(mag_then)
+        let Some(ConstPair::Pair {
+            first: mag_first,
+            second: mag_second,
+        }) = parse_pair(mag_then)
         else {
             return Ok(false);
         };
         // ARM2 (fire 399): [i = C >> j0, If{test, [Ret x]}, If{huge, [If{i0<0, [i0 += C2>>j0]}, i0 &= ~i, i1 = 0]}].
-        let [Statement::Assign { name: a2_shift_name, value: a2_shift_value }, Statement::If { condition: a2_test, then_body: a2_ret, else_body: a2_test_else }, Statement::If { condition: a2_guard, then_body: a2_guard_body, else_body: a2_guard_else }] =
-            arm2.as_slice()
+        let [Statement::Assign {
+            name: a2_shift_name,
+            value: a2_shift_value,
+        }, Statement::If {
+            condition: a2_test,
+            then_body: a2_ret,
+            else_body: a2_test_else,
+        }, Statement::If {
+            condition: a2_guard,
+            then_body: a2_guard_body,
+            else_body: a2_guard_else,
+        }] = arm2.as_slice()
         else {
             return Ok(false);
         };
@@ -264,19 +326,28 @@ impl Generator {
             return Ok(false);
         }
         let a2_lis = ((a2_mask + 0x8000) >> 16) << 16;
-        if !matches!(a2_ret.as_slice(), [Statement::Return(Some(Expression::Variable(v)))] if v == x) {
+        if !matches!(a2_ret.as_slice(), [Statement::Return(Some(Expression::Variable(v)))] if v == x)
+        {
             return Ok(false);
         }
         // test: ((i0 & i) | i1) == 0
         let a2_test_ok = (|| {
-            let Expression::Binary { operator: BinaryOperator::Equal, left, right } = a2_test else {
+            let Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left,
+                right,
+            } = a2_test
+            else {
                 return false;
             };
             if crate::analysis::constant_value(right) != Some(0) {
                 return false;
             }
-            let Expression::Binary { operator: BinaryOperator::BitOr, left: or_l, right: or_r } =
-                left.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::BitOr,
+                left: or_l,
+                right: or_r,
+            } = left.as_ref()
             else {
                 return false;
             };
@@ -289,13 +360,29 @@ impl Generator {
         if !a2_test_ok || float_guard_condition(a2_guard) != Some((huge_bits, zero_bits)) {
             return Ok(false);
         }
-        let [Statement::If { condition: a2_sign, then_body: a2_add, else_body: a2_sign_else }, Statement::Assign { name: a2_andc_name, value: a2_andc_value }, Statement::Assign { name: a2_rw_name, value: a2_rw_value }] =
-            a2_guard_body.as_slice()
+        let [Statement::If {
+            condition: a2_sign,
+            then_body: a2_add,
+            else_body: a2_sign_else,
+        }, Statement::Assign {
+            name: a2_andc_name,
+            value: a2_andc_value,
+        }, Statement::Assign {
+            name: a2_rw_name,
+            value: a2_rw_value,
+        }] = a2_guard_body.as_slice()
         else {
             return Ok(false);
         };
         let parse_sign = |condition: &Expression| -> Option<(u8, u8)> {
-            let Expression::Binary { operator, left, right } = condition else { return None };
+            let Expression::Binary {
+                operator,
+                left,
+                right,
+            } = condition
+            else {
+                return None;
+            };
             if !matches!(left.as_ref(), Expression::Variable(v) if local_index(v) == Some(i0))
                 || crate::analysis::constant_value(right) != Some(0)
             {
@@ -331,8 +418,18 @@ impl Generator {
         }
         // ARM3 (fire 400): [i = (unsigned)C >> (j0-K4), If{(i1&i)==0, [Ret x]},
         //   If{huge, [If{i0<0, [If{j0==K5, [i0+=1], [carry]}]}, i1 &= ~i]}].
-        let [Statement::Assign { name: a3_shift_name, value: a3_shift_value }, Statement::If { condition: a3_test, then_body: a3_ret, else_body: a3_test_else }, Statement::If { condition: a3_guard, then_body: a3_guard_body, else_body: a3_guard_else }] =
-            arm3.as_slice()
+        let [Statement::Assign {
+            name: a3_shift_name,
+            value: a3_shift_value,
+        }, Statement::If {
+            condition: a3_test,
+            then_body: a3_ret,
+            else_body: a3_test_else,
+        }, Statement::If {
+            condition: a3_guard,
+            then_body: a3_guard_body,
+            else_body: a3_guard_else,
+        }] = arm3.as_slice()
         else {
             return Ok(false);
         };
@@ -344,14 +441,16 @@ impl Generator {
             return Ok(false);
         };
         let a3_mask = a3_mask as u32 as i32 as i64;
-        let (Ok(a3_mask_small), Ok(a3_offset_neg)) = (i16::try_from(a3_mask), i16::try_from(-a3_offset))
+        let (Ok(a3_mask_small), Ok(a3_offset_neg)) =
+            (i16::try_from(a3_mask), i16::try_from(-a3_offset))
         else {
             return Ok(false);
         };
         if !a3_logical || a3_offset == 0 {
             return Ok(false);
         }
-        if !matches!(a3_ret.as_slice(), [Statement::Return(Some(Expression::Variable(v)))] if v == x) {
+        if !matches!(a3_ret.as_slice(), [Statement::Return(Some(Expression::Variable(v)))] if v == x)
+        {
             return Ok(false);
         }
         let a3_test_ok = matches!(a3_test, Expression::Binary { operator: BinaryOperator::Equal, left, right }
@@ -362,8 +461,14 @@ impl Generator {
         if !a3_test_ok || float_guard_condition(a3_guard) != Some((huge_bits, zero_bits)) {
             return Ok(false);
         }
-        let [Statement::If { condition: a3_sign, then_body: a3_diamond, else_body: a3_sign_else }, Statement::Assign { name: a3_andc_name, value: a3_andc_value }] =
-            a3_guard_body.as_slice()
+        let [Statement::If {
+            condition: a3_sign,
+            then_body: a3_diamond,
+            else_body: a3_sign_else,
+        }, Statement::Assign {
+            name: a3_andc_name,
+            value: a3_andc_value,
+        }] = a3_guard_body.as_slice()
         else {
             return Ok(false);
         };
@@ -379,8 +484,11 @@ impl Generator {
         if !a3_frame_ok {
             return Ok(false);
         }
-        let [Statement::If { condition: eq_cond, then_body: eq_then, else_body: eq_else }] =
-            a3_diamond.as_slice()
+        let [Statement::If {
+            condition: eq_cond,
+            then_body: eq_then,
+            else_body: eq_else,
+        }] = a3_diamond.as_slice()
         else {
             return Ok(false);
         };
@@ -397,8 +505,17 @@ impl Generator {
         if !inc_ok(eq_then) {
             return Ok(false);
         }
-        let [Statement::Assign { name: j_name, value: j_value }, Statement::If { condition: carry_cond, then_body: carry_then, else_body: carry_else }, Statement::Assign { name: copy_name, value: copy_value }] =
-            eq_else.as_slice()
+        let [Statement::Assign {
+            name: j_name,
+            value: j_value,
+        }, Statement::If {
+            condition: carry_cond,
+            then_body: carry_then,
+            else_body: carry_else,
+        }, Statement::Assign {
+            name: copy_name,
+            value: copy_value,
+        }] = eq_else.as_slice()
         else {
             return Ok(false);
         };
@@ -406,24 +523,33 @@ impl Generator {
             if j_name != carry {
                 return None;
             }
-            let Expression::Binary { operator: BinaryOperator::Add, left: base, right: one_shift } =
-                j_value
+            let Expression::Binary {
+                operator: BinaryOperator::Add,
+                left: base,
+                right: one_shift,
+            } = j_value
             else {
                 return None;
             };
             if !matches!(base.as_ref(), Expression::Variable(v) if local_index(v) == Some(i1)) {
                 return None;
             }
-            let Expression::Binary { operator: BinaryOperator::ShiftLeft, left: one, right: amount } =
-                one_shift.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::ShiftLeft,
+                left: one,
+                right: amount,
+            } = one_shift.as_ref()
             else {
                 return None;
             };
             if crate::analysis::constant_value(one) != Some(1) {
                 return None;
             }
-            let Expression::Binary { operator: BinaryOperator::Subtract, left: k6, right: by } =
-                amount.as_ref()
+            let Expression::Binary {
+                operator: BinaryOperator::Subtract,
+                left: k6,
+                right: by,
+            } = amount.as_ref()
             else {
                 return None;
             };
@@ -459,15 +585,51 @@ impl Generator {
         let arm3_base = ladder2 + 6;
         let join_at = arm3_base + 26;
         let values = [
-            Value { class: Class::Temp, def: 4, last: 5 },
-            Value { class: Class::Temp, def: arm2_base, last: arm2_base + 14 }, // lis..sraw2 (CSE)
-            Value { class: Class::Mask, def: arm3_base + 1, last: arm3_base + 2 },
-            Value { class: Class::Mask, def: arm3_base + 18, last: arm3_base + 19 }, // the ONE
-            Value { class: Class::Scrutinee, def: 5, last: arm3_base + 17 },   // ..subfic
-            Value { class: Class::LoadSurviving, def: 2, last: join_at },
-            Value { class: Class::LoadSurviving, def: 3, last: join_at + 1 },
-            Value { class: Class::ArmShift, def: arm2_base + 2, last: arm2_base + 16 },
-            Value { class: Class::ArmShift, def: arm3_base + 2, last: arm3_base + 25 },
+            Value {
+                class: Class::Temp,
+                def: 4,
+                last: 5,
+            },
+            Value {
+                class: Class::Temp,
+                def: arm2_base,
+                last: arm2_base + 14,
+            }, // lis..sraw2 (CSE)
+            Value {
+                class: Class::Mask,
+                def: arm3_base + 1,
+                last: arm3_base + 2,
+            },
+            Value {
+                class: Class::Mask,
+                def: arm3_base + 18,
+                last: arm3_base + 19,
+            }, // the ONE
+            Value {
+                class: Class::Scrutinee,
+                def: 5,
+                last: arm3_base + 17,
+            }, // ..subfic
+            Value {
+                class: Class::LoadSurviving,
+                def: 2,
+                last: join_at,
+            },
+            Value {
+                class: Class::LoadSurviving,
+                def: 3,
+                last: join_at + 1,
+            },
+            Value {
+                class: Class::ArmShift,
+                def: arm2_base + 2,
+                last: arm2_base + 16,
+            },
+            Value {
+                class: Class::ArmShift,
+                def: arm3_base + 2,
+                last: arm3_base + 25,
+            },
         ];
         let registers = allocate(&values);
         let extract_temp = registers[0];
@@ -485,10 +647,30 @@ impl Generator {
         let load1 = registers[6];
         // -- emit --
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::StoreFloatDouble { s: 1, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::LoadWord { d: load0, a: 1, offset: 8 + locals[0].1 });
-        self.output.instructions.push(Instruction::LoadWord { d: load1, a: 1, offset: 8 + locals[1].1 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: load0,
+            a: 1,
+            offset: 8 + locals[0].1,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: load1,
+            a: 1,
+            offset: 8 + locals[1].1,
+        });
         match guard.mask {
             Some(mask) => {
                 let rotated = ((32 - guard.shift as u32) % 32) as u8;
@@ -504,11 +686,13 @@ impl Generator {
                 });
             }
             None => {
-                self.output.instructions.push(Instruction::ShiftRightAlgebraicImmediate {
-                    a: extract_temp,
-                    s: i0_reg,
-                    shift: guard.shift,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftRightAlgebraicImmediate {
+                        a: extract_temp,
+                        s: i0_reg,
+                        shift: guard.shift,
+                    });
             }
         }
         self.output.instructions.push(Instruction::AddImmediate {
@@ -522,34 +706,63 @@ impl Generator {
         let arm2_at = self.fresh_label();
         let arm3_at = self.fresh_label();
         // The ladder.
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: k1 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: j0_reg,
+                immediate: k1,
+            });
         self.emit_branch_conditional_to(4, 0, ladder2_at); // bge
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: j0_reg,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(4, 0, arm2_at); // bge
-        // ARM1.
+                                                        // ARM1.
         self.load_double_constant(2, huge_bits);
         self.load_double_constant(0, zero_bits);
-        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
-        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
         self.emit_branch_conditional_to(4, 1, join); // ble
         let arm1_else = self.fresh_label();
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: i0_reg, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: i0_reg,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(sign1_branch.0, sign1_branch.1, arm1_else);
         let emit_constant = |generator: &mut Self, register: u8, constant: i64| {
             if let Ok(small) = i16::try_from(constant) {
-                generator.output.instructions.push(Instruction::load_immediate(register, small));
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::load_immediate(register, small));
             } else {
                 generator
                     .output
                     .instructions
-                    .push(Instruction::load_immediate_shifted(register, (constant >> 16) as i16));
+                    .push(Instruction::load_immediate_shifted(
+                        register,
+                        (constant >> 16) as i16,
+                    ));
             }
         };
         match &sign1_pair {
             ConstPair::Chained0 => {
                 // The chained `i0 = i1 = 0` assigns inner-first.
-                self.output.instructions.push(Instruction::load_immediate(i1_reg, 0));
-                self.output.instructions.push(Instruction::load_immediate(i0_reg, 0));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(i1_reg, 0));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(i0_reg, 0));
             }
             ConstPair::Pair { first, second } => {
                 emit_constant(self, i0_reg, *first);
@@ -566,9 +779,17 @@ impl Generator {
                 begin,
                 end,
             });
-            self.output.instructions.push(Instruction::OrRecord { a: 0, s: 0, b: i1_reg });
+            self.output.instructions.push(Instruction::OrRecord {
+                a: 0,
+                s: 0,
+                b: i1_reg,
+            });
         } else {
-            self.output.instructions.push(Instruction::OrRecord { a: 0, s: i0_reg, b: i1_reg });
+            self.output.instructions.push(Instruction::OrRecord {
+                a: 0,
+                s: i0_reg,
+                b: i1_reg,
+            });
         }
         self.emit_branch_conditional_to(12, 2, join); // beq
         emit_constant(self, i0_reg, mag_first);
@@ -576,89 +797,222 @@ impl Generator {
         self.emit_branch_to(join);
         // ARM2.
         self.bind_label(arm2_at);
-        self.output.instructions.push(Instruction::load_immediate_shifted(a2_temp, (a2_lis >> 16) as i16));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(
+                a2_temp,
+                (a2_lis >> 16) as i16,
+            ));
         self.output.instructions.push(Instruction::AddImmediate {
             d: 0,
             a: a2_temp,
             immediate: a2_mask as i16,
         });
-        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: a2_i, s: 0, b: j0_reg });
-        self.output.instructions.push(Instruction::And { a: 0, s: i0_reg, b: a2_i });
-        self.output.instructions.push(Instruction::OrRecord { a: 0, s: i1_reg, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightAlgebraicWord {
+                a: a2_i,
+                s: 0,
+                b: j0_reg,
+            });
+        self.output.instructions.push(Instruction::And {
+            a: 0,
+            s: i0_reg,
+            b: a2_i,
+        });
+        self.output.instructions.push(Instruction::OrRecord {
+            a: 0,
+            s: i1_reg,
+            b: 0,
+        });
         let a2_cont = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, a2_cont); // bne
         self.emit_branch_to(epilogue);
         self.bind_label(a2_cont);
         self.load_double_constant(2, huge_bits);
         self.load_double_constant(0, zero_bits);
-        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
-        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
         self.emit_branch_conditional_to(4, 1, join); // ble
         let a2_skip = self.fresh_label();
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: i0_reg, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: i0_reg,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(a2_sign_branch.0, a2_sign_branch.1, a2_skip);
-        self.output.instructions.push(Instruction::ShiftRightAlgebraicWord { a: 0, s: a2_temp, b: j0_reg });
-        self.output.instructions.push(Instruction::Add { d: i0_reg, a: i0_reg, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightAlgebraicWord {
+                a: 0,
+                s: a2_temp,
+                b: j0_reg,
+            });
+        self.output.instructions.push(Instruction::Add {
+            d: i0_reg,
+            a: i0_reg,
+            b: 0,
+        });
         self.bind_label(a2_skip);
-        self.output.instructions.push(Instruction::AndComplement { a: i0_reg, s: i0_reg, b: a2_i });
-        self.output.instructions.push(Instruction::load_immediate(i1_reg, 0));
+        self.output.instructions.push(Instruction::AndComplement {
+            a: i0_reg,
+            s: i0_reg,
+            b: a2_i,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(i1_reg, 0));
         self.emit_branch_to(join);
         // LADDER 2 + MID.
         self.bind_label(ladder2_at);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: k2 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: j0_reg,
+                immediate: k2,
+            });
         self.emit_branch_conditional_to(4, 1, arm3_at); // ble
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: k3 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: j0_reg,
+                immediate: k3,
+            });
         self.emit_branch_conditional_to(4, 2, epilogue); // bne — return x
-        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 1, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatAddDouble { d: 1, a: 1, b: 1 });
         self.emit_branch_to(epilogue);
         // ARM3.
         self.bind_label(arm3_at);
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: j0_reg, immediate: a3_offset_neg });
-        self.output.instructions.push(Instruction::load_immediate(a3_mask_reg, a3_mask_small));
-        self.output.instructions.push(Instruction::ShiftRightWord { a: a3_i, s: a3_mask_reg, b: 0 });
-        self.output.instructions.push(Instruction::AndRecord { a: 0, s: i1_reg, b: a3_i });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: j0_reg,
+            immediate: a3_offset_neg,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(a3_mask_reg, a3_mask_small));
+        self.output.instructions.push(Instruction::ShiftRightWord {
+            a: a3_i,
+            s: a3_mask_reg,
+            b: 0,
+        });
+        self.output.instructions.push(Instruction::AndRecord {
+            a: 0,
+            s: i1_reg,
+            b: a3_i,
+        });
         let a3_cont = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, a3_cont); // bne
         self.emit_branch_to(epilogue);
         self.bind_label(a3_cont);
         self.load_double_constant(2, huge_bits);
         self.load_double_constant(0, zero_bits);
-        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
-        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
+        self.output
+            .instructions
+            .push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
         self.emit_branch_conditional_to(4, 1, join); // ble
         let a3_andc = self.fresh_label();
         let a3_carry = self.fresh_label();
         let a3_no_carry = self.fresh_label();
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: i0_reg, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: i0_reg,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(a3_sign_branch.0, a3_sign_branch.1, a3_andc);
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: j0_reg, immediate: k5 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: j0_reg,
+                immediate: k5,
+            });
         self.emit_branch_conditional_to(4, 2, a3_carry); // bne
-        self.output.instructions.push(Instruction::AddImmediate { d: i0_reg, a: i0_reg, immediate: 1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: i0_reg,
+            a: i0_reg,
+            immediate: 1,
+        });
         self.emit_branch_to(a3_andc);
         self.bind_label(a3_carry);
-        self.output.instructions.push(Instruction::SubtractFromImmediate { d: 0, a: j0_reg, immediate: k6 });
-        self.output.instructions.push(Instruction::load_immediate(one_reg, 1));
-        self.output.instructions.push(Instruction::ShiftLeftWord { a: 0, s: one_reg, b: 0 });
-        self.output.instructions.push(Instruction::Add { d: 0, a: i1_reg, b: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 0, b: i1_reg });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFromImmediate {
+                d: 0,
+                a: j0_reg,
+                immediate: k6,
+            });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(one_reg, 1));
+        self.output.instructions.push(Instruction::ShiftLeftWord {
+            a: 0,
+            s: one_reg,
+            b: 0,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: 0,
+            a: i1_reg,
+            b: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 0, b: i1_reg });
         self.emit_branch_conditional_to(4, 0, a3_no_carry); // bge
-        self.output.instructions.push(Instruction::AddImmediate { d: i0_reg, a: i0_reg, immediate: 1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: i0_reg,
+            a: i0_reg,
+            immediate: 1,
+        });
         self.bind_label(a3_no_carry);
-        self.output.instructions.push(Instruction::move_register(i1_reg, 0));
+        self.output
+            .instructions
+            .push(Instruction::move_register(i1_reg, 0));
         self.bind_label(a3_andc);
-        self.output.instructions.push(Instruction::AndComplement { a: i1_reg, s: i1_reg, b: a3_i });
+        self.output.instructions.push(Instruction::AndComplement {
+            a: i1_reg,
+            s: i1_reg,
+            b: a3_i,
+        });
         // JOIN + EPI.
         self.bind_label(join);
-        self.output.instructions.push(Instruction::StoreWord { s: load0, a: 1, offset: 8 + locals[0].1 });
-        self.output.instructions.push(Instruction::StoreWord { s: load1, a: 1, offset: 8 + locals[1].1 });
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: 1, a: 1, offset: 8 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: load0,
+            a: 1,
+            offset: 8 + locals[0].1,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: load1,
+            a: 1,
+            offset: 8 + locals[1].1,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 1,
+            a: 1,
+            offset: 8,
+        });
         self.bind_label(epilogue);
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         // Pre-pool labels (measured on the full s_floor object: real @45
         // vs the +0 base's @5).
         self.output.anonymous_label_bump += 40;
         Ok(true)
     }
-
 }

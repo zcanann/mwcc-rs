@@ -1,13 +1,16 @@
 //! The `Generator` — codegen state — plus its small accessors. The emit
 //! logic lives in the sibling theme modules, each a further `impl Generator`.
 
-use std::collections::{HashMap, HashSet};
+use crate::analysis::*;
+use crate::InlineSummaries;
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::{Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget};
+use mwcc_machine_code::{
+    Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
+};
 use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::Behavior;
 use mwcc_vreg::{Reg, RegisterConstraints};
-use crate::analysis::*;
+use std::collections::{HashMap, HashSet};
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
 pub(crate) const GENERAL_SCRATCH: u8 = 0; // r0
@@ -99,6 +102,17 @@ pub(crate) struct FrameSlot {
     pub(crate) is_array: bool,
 }
 
+/// Build 163 callee-saved frame bookkeeping that cannot be recovered from the
+/// allocated home alone. Most layouts follow the home's value origin. A
+/// producing call that directly consumes entry parameters reserves one extra
+/// lane even though its saved home is first defined by the call result.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum LegacyCalleeSavedFrameLayout {
+    #[default]
+    InferFromValueOrigin,
+    ReserveForwardedParameterLane,
+}
+
 pub(crate) struct Generator {
     /// This function is a VARIADIC definition — only a capture may emit it
     /// (the register-save prologue is unmodeled in general codegen).
@@ -186,6 +200,9 @@ pub(crate) struct Generator {
     /// register its parameter requires (a float parameter takes f1.., an integer
     /// takes r3..) and a type mismatch is detected rather than silently mis-passed.
     pub(crate) call_parameter_types: HashMap<String, Vec<Type>>,
+    /// Semantically verified summaries of other definitions in this translation
+    /// unit. Exact inline compositions consult these instead of callee names.
+    pub(crate) inline_summaries: InlineSummaries,
     /// A global just stored, with the register holding the stored value and the
     /// instruction count at the moment of the store. A subsequent read of the
     /// global reuses that register instead of reloading — but only while no
@@ -223,6 +240,9 @@ pub(crate) struct Generator {
     /// here — otherwise the value is still live in the incoming register
     /// (measured: `x *= c` reloads, an untouched x does not).
     pub(crate) written_slots: HashSet<i16>,
+    /// A register local initialized from a frame-resident pun was substituted
+    /// before the frame owner ran. Preserve its legacy frame-layout effect.
+    pub(crate) frame_feeding_local_pressure: Option<(usize, usize)>,
     /// When set, a constant store value reuses the scratch register if it already
     /// holds that constant (`scratch_constant`). Enabled only by the
     /// constant-store-fill path, which guarantees nothing clobbers the scratch
@@ -239,6 +259,7 @@ pub(crate) struct Generator {
     /// hold values live across a call. They are saved high-to-low in the prologue
     /// and reloaded in the epilogue, and drive the unwind table's saved-GPR count.
     pub(crate) callee_saved: Vec<u8>,
+    pub(crate) legacy_callee_saved_frame_layout: LegacyCalleeSavedFrameLayout,
     /// Emit the saved-LR reload BEFORE the callee-saved GPR reloads in the epilogue. mwcc
     /// orders it this way for a callee-saved STORE sink (`foo(); gi = a;` — the saved value
     /// is stored after the call, then `lwz r0,20; lwz r31,12; mtlr`), as opposed to the
@@ -305,16 +326,29 @@ impl Generator {
     }
 
     /// Emit a conditional branch to `label` (target written at resolution).
-    pub(crate) fn emit_branch_conditional_to(&mut self, options: u8, condition_bit: u8, label: mwcc_vreg::Label) {
+    pub(crate) fn emit_branch_conditional_to(
+        &mut self,
+        options: u8,
+        condition_bit: u8,
+        label: mwcc_vreg::Label,
+    ) {
         self.labels.use_at(self.output.instructions.len(), label);
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
     }
 
     /// Emit an unconditional branch to `label` (target written at resolution).
     #[allow(dead_code)]
     pub(crate) fn emit_branch_to(&mut self, label: mwcc_vreg::Label) {
         self.labels.use_at(self.output.instructions.len(), label);
-        self.output.instructions.push(Instruction::Branch { target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::Branch { target: 0 });
     }
 
     /// A fresh floating-point virtual register. The allocator draws float homes
@@ -355,8 +389,15 @@ impl Generator {
     /// semantic no-op mwcc emits nothing for (`(double)dbl_call()`, `(double)dbl_x`).
     /// Peels every such layer, returning the innermost double operand. A `(float)`
     /// cast (a real narrowing) and a `(double)` of a non-double value are left intact.
-    pub(crate) fn peel_redundant_double_cast<'a>(&self, mut expression: &'a Expression) -> &'a Expression {
-        while let Expression::Cast { target_type: Type::Double, operand } = expression {
+    pub(crate) fn peel_redundant_double_cast<'a>(
+        &self,
+        mut expression: &'a Expression,
+    ) -> &'a Expression {
+        while let Expression::Cast {
+            target_type: Type::Double,
+            operand,
+        } = expression
+        {
             if self.is_double_value(operand) {
                 expression = operand;
             } else {
@@ -372,11 +413,18 @@ impl Generator {
     pub(crate) fn is_float_operand(&self, expression: &Expression) -> bool {
         match expression {
             Expression::Variable(name) => {
-                self.locations.get(name.as_str()).is_some_and(|location| location.class == ValueClass::Float)
+                self.locations
+                    .get(name.as_str())
+                    .is_some_and(|location| location.class == ValueClass::Float)
                     || (!self.locations.contains_key(name.as_str())
-                        && matches!(self.globals.get(name.as_str()), Some(Type::Float | Type::Double)))
+                        && matches!(
+                            self.globals.get(name.as_str()),
+                            Some(Type::Float | Type::Double)
+                        ))
             }
-            Expression::Member { member_type, .. } => matches!(member_type, Type::Float | Type::Double),
+            Expression::Member { member_type, .. } => {
+                matches!(member_type, Type::Float | Type::Double)
+            }
             _ => false,
         }
     }
@@ -387,15 +435,27 @@ impl Generator {
     }
     /// Like [`Self::record_relocation`] but with a byte ADDEND — an SDA21
     /// load reading INTO a pooled object (strtold's `lbz r0, @53+0x4`).
-    pub(crate) fn record_relocation_with_addend(&mut self, kind: RelocationKind, symbol: &str, addend: i32) {
-        self.record_target(kind, RelocationTarget::ExternalWithAddend(symbol.to_string(), addend));
+    pub(crate) fn record_relocation_with_addend(
+        &mut self,
+        kind: RelocationKind,
+        symbol: &str,
+        addend: i32,
+    ) {
+        self.record_target(
+            kind,
+            RelocationTarget::ExternalWithAddend(symbol.to_string(), addend),
+        );
     }
 
     /// Record a relocation with an explicit target (external symbol or pooled
     /// constant) against the instruction about to be pushed.
     pub(crate) fn record_target(&mut self, kind: RelocationKind, target: RelocationTarget) {
         let instruction_index = self.output.instructions.len();
-        self.output.relocations.push(Relocation { instruction_index, kind, target });
+        self.output.relocations.push(Relocation {
+            instruction_index,
+            kind,
+            target,
+        });
     }
 
     /// Emit a load of a single-precision constant from `.sdata2`: `lfs fD, 0(r0)`
@@ -403,7 +463,11 @@ impl Generator {
     pub(crate) fn load_float_constant(&mut self, destination: u8, value: f32) {
         let index = self.output.intern_constant(value.to_bits() as u64, 4);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
-        self.output.instructions.push(Instruction::LoadFloatSingle { d: destination, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadFloatSingle {
+            d: destination,
+            a: 0,
+            offset: 0,
+        });
     }
 
     /// Emit a load of an auto-array's pooled WORD IMAGE: like
@@ -412,7 +476,11 @@ impl Generator {
     pub(crate) fn load_word_constant_static_slot(&mut self, destination: u8, bits: u32) {
         let index = self.output.intern_constant_static_slot(bits as u64, 4);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
-        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: destination,
+            a: 0,
+            offset: 0,
+        });
     }
 
     /// Emit an auto-array image load that numbers in the POOL BLOCK but whose
@@ -420,7 +488,11 @@ impl Generator {
     pub(crate) fn load_word_constant_image(&mut self, destination: u8, bits: u32) {
         let index = self.output.intern_constant_image(bits as u64, 4);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
-        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: destination,
+            a: 0,
+            offset: 0,
+        });
     }
 
     /// Emit a load of a pooled WORD constant from `.sdata2`: `lwz rD, 0(r0)`
@@ -429,7 +501,11 @@ impl Generator {
     pub(crate) fn load_word_constant(&mut self, destination: u8, bits: u32) {
         let index = self.output.intern_constant(bits as u64, 4);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
-        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: destination,
+            a: 0,
+            offset: 0,
+        });
     }
 
     /// Emit a load of a double-precision constant from `.sdata2`: `lfd fD, 0(r0)`
@@ -437,14 +513,22 @@ impl Generator {
     pub(crate) fn load_double_constant(&mut self, destination: u8, bits: u64) {
         let index = self.output.intern_constant(bits, 8);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: destination,
+            a: 0,
+            offset: 0,
+        });
     }
 
     /// Emit a pooled-double load against a SPECIFIC pool slot (a capture that
     /// interned twin slots for one value — strtold's zero doubles @296/@297).
     pub(crate) fn load_double_constant_at(&mut self, destination: u8, index: usize) {
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(index));
-        self.output.instructions.push(Instruction::LoadFloatDouble { d: destination, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: destination,
+            a: 0,
+            offset: 0,
+        });
     }
 
     /// Load a float-literal operand, choosing 8-byte `lfd` in a double context and
@@ -458,7 +542,10 @@ impl Generator {
     }
 
     pub(crate) fn lookup_general(&self, name: &str) -> Option<u8> {
-        self.locations.get(name).filter(|location| location.class == ValueClass::General).map(|location| location.register)
+        self.locations
+            .get(name)
+            .filter(|location| location.class == ValueClass::General)
+            .map(|location| location.register)
     }
 
     /// The register of a full-width, non-pointer integer leaf variable — the
@@ -468,8 +555,10 @@ impl Generator {
     pub(crate) fn plain_integer_leaf_register(&self, expression: &Expression) -> Option<u8> {
         let name = leaf_name(expression)?;
         let location = self.locations.get(name)?;
-        (location.class == ValueClass::General && location.width == 32 && location.pointee.is_none())
-            .then_some(location.register)
+        (location.class == ValueClass::General
+            && location.width == 32
+            && location.pointee.is_none())
+        .then_some(location.register)
     }
 
     /// Whether `expression` is a narrow (sub-32-bit) integer variable. Such an
@@ -492,7 +581,9 @@ impl Generator {
             // An indirect call's return type is unknown — signed by default,
             // like an unprototyped direct call.
             Expression::CallThrough { .. } => Ok(true),
-            Expression::AggregateLiteral(_) => Err(Diagnostic::error("an aggregate initializer is not supported here (captures only)")),
+            Expression::AggregateLiteral(_) => Err(Diagnostic::error(
+                "an aggregate initializer is not supported here (captures only)",
+            )),
             Expression::PostStep { target, .. } => self.signedness_of(target),
             Expression::IntegerLiteral(_) => Ok(true),
             Expression::FloatLiteral(_) => Ok(true),
@@ -507,7 +598,11 @@ impl Generator {
                     Err(Diagnostic::error(format!("unknown variable '{name}'")))
                 }
             }
-            Expression::Binary { operator, left, right } => {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
                 if is_comparison(*operator) {
                     Ok(true) // a comparison yields an int (signed)
                 } else {
@@ -518,12 +613,16 @@ impl Generator {
                 UnaryOperator::LogicalNot => Ok(true),
                 _ => self.signedness_of(operand),
             },
-            Expression::Conditional { when_true, when_false, .. } => {
-                Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?)
-            }
+            Expression::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => Ok(self.signedness_of(when_true)? && self.signedness_of(when_false)?),
             Expression::Cast { target_type, .. } => Ok(self.signed_of(*target_type)),
             // `*p` and `p[i]` have the signedness of the pointee.
-            Expression::Dereference { pointer } => Ok(self.pointee_of(pointer)?.element().is_signed()),
+            Expression::Dereference { pointer } => {
+                Ok(self.pointee_of(pointer)?.element().is_signed())
+            }
             Expression::Index { base, .. } => Ok(self.pointee_of(base)?.element().is_signed()),
             // `p->field` has the signedness of the member type.
             Expression::Member { member_type, .. } => Ok(self.signed_of(*member_type)),
@@ -545,12 +644,20 @@ impl Generator {
     }
 
     /// The pointee type of a pointer leaf variable.
-    pub(crate) fn pointee_of(&self, pointer: &Expression) -> Compilation<mwcc_syntax_trees::Pointee> {
+    pub(crate) fn pointee_of(
+        &self,
+        pointer: &Expression,
+    ) -> Compilation<mwcc_syntax_trees::Pointee> {
         // `*(p + i)` / `p[i]` of a pointer-plus-index dereferences the pointer operand's
         // pointee (the integer offset does not change the element type). `+` commutes. This
         // gives `signedness_of(*(p + i))` the element signedness, so `is_signed_byte_load`
         // recognizes a narrow `*(char* p + i)`.
-        if let Expression::Binary { operator: mwcc_syntax_trees::BinaryOperator::Add, left, right } = pointer {
+        if let Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::Add,
+            left,
+            right,
+        } = pointer
+        {
             if let Ok(pointee) = self.pointee_of(left) {
                 return Ok(pointee);
             }
@@ -561,18 +668,33 @@ impl Generator {
         // `*(T*)p` — a pointer cast reinterprets the address: the pointee is the cast's
         // target regardless of what `p` is (mirrors `resolve_pointer`, so value tracking
         // classifies a punned `*(int*)&x` the same way the direct evaluator emits it).
-        if let Expression::Cast { target_type: Type::Pointer(pointee), .. } = pointer {
+        if let Expression::Cast {
+            target_type: Type::Pointer(pointee),
+            ..
+        } = pointer
+        {
             return Ok(*pointee);
         }
-        let name = leaf_name(pointer).ok_or_else(|| Diagnostic::error("pointer access needs a pointer variable (roadmap)"))?;
-        if let Some(pointee) = self.locations.get(name).and_then(|location| location.pointee) {
+        let name = leaf_name(pointer).ok_or_else(|| {
+            Diagnostic::error("pointer access needs a pointer variable (roadmap)")
+        })?;
+        if let Some(pointee) = self
+            .locations
+            .get(name)
+            .and_then(|location| location.pointee)
+        {
             return Ok(pointee);
         }
         // A global ARRAY's name classifies by its element type (`map[i]` over
         // `unsigned char map[256]` reads a byte) — the subscript emitters carry
         // the addressing; this is only the width/signedness classification.
         if self.global_array_sizes.contains_key(name) {
-            if let Some(pointee) = self.globals.get(name).copied().and_then(crate::expressions::pointee_of_type) {
+            if let Some(pointee) = self
+                .globals
+                .get(name)
+                .copied()
+                .and_then(crate::expressions::pointee_of_type)
+            {
                 return Ok(pointee);
             }
         }
@@ -592,7 +714,10 @@ impl Generator {
     }
 
     pub(crate) fn general_register_of(&self, name: &str) -> Compilation<u8> {
-        let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        let location = self
+            .locations
+            .get(name)
+            .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         if location.class != ValueClass::General {
             return Err(Diagnostic::error(format!("'{name}' is not an integer")));
         }
@@ -600,7 +725,10 @@ impl Generator {
     }
 
     pub(crate) fn float_register_of(&self, name: &str) -> Compilation<u8> {
-        let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        let location = self
+            .locations
+            .get(name)
+            .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
         if location.class != ValueClass::Float {
             return Err(Diagnostic::error(format!("'{name}' is not a float")));
         }
@@ -610,14 +738,18 @@ impl Generator {
     pub(crate) fn general_register_of_leaf(&self, expression: &Expression) -> Compilation<u8> {
         match expression {
             Expression::Variable(name) => self.general_register_of(name),
-            _ => Err(Diagnostic::error("v0: a leaf operand must be a variable (constants in trees: roadmap M3)")),
+            _ => Err(Diagnostic::error(
+                "v0: a leaf operand must be a variable (constants in trees: roadmap M3)",
+            )),
         }
     }
 
     pub(crate) fn float_register_of_leaf(&self, expression: &Expression) -> Compilation<u8> {
         match expression {
             Expression::Variable(name) => self.float_register_of(name),
-            _ => Err(Diagnostic::error("v0: a float leaf operand must be a variable")),
+            _ => Err(Diagnostic::error(
+                "v0: a float leaf operand must be a variable",
+            )),
         }
     }
 
@@ -626,7 +758,9 @@ impl Generator {
     pub(crate) fn load_integer_constant(&mut self, destination: u8, value: i64) {
         let value = value as i32;
         if (-0x8000..=0x7fff).contains(&value) {
-            self.output.instructions.push(Instruction::load_immediate(destination, value as i16));
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(destination, value as i16));
         } else {
             let low = (value as u32 & 0xffff) as i16;
             let high_adjusted = ((value - low as i32) >> 16) as i16;
@@ -637,14 +771,29 @@ impl Generator {
             // folds in place.
             if destination == GENERAL_SCRATCH && low != 0 {
                 let temp = self.fresh_virtual_general();
-                self.output.instructions.push(Instruction::load_immediate_shifted(temp, high_adjusted));
-                self.output.instructions.push(Instruction::AddImmediate { d: destination, a: temp, immediate: low });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(temp, high_adjusted));
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: temp,
+                    immediate: low,
+                });
             } else {
-                self.output.instructions.push(Instruction::load_immediate_shifted(destination, high_adjusted));
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(
+                        destination,
+                        high_adjusted,
+                    ));
                 // A constant whose low half is zero (`0x10000`, `0x80000000`) is a
                 // single `lis`; mwcc omits the redundant `addi d,d,0`.
                 if low != 0 {
-                    self.output.instructions.push(Instruction::AddImmediate { d: destination, a: destination, immediate: low });
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: destination,
+                        a: destination,
+                        immediate: low,
+                    });
                 }
             }
         }

@@ -22,35 +22,98 @@ impl Generator {
             return Ok(false);
         }
         use mwcc_machine_code::Instruction;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [6, 8, 11, 15, 17] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 4, b: 3 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 4, b: 3 });
         self.emit_branch_conditional_to(12, 0, labels[&11]); // blt
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 4, immediate: -1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 6, a: 3, immediate: -1 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 5, immediate: 1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: -1,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 6,
+            a: 3,
+            immediate: -1,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: 1,
+        });
         self.emit_branch_to(labels[&8]); // b
         self.bind_label(labels[&6]);
-        self.output.instructions.push(Instruction::LoadByteZeroWithUpdate { d: 0, a: 4, offset: 1 });
-        self.output.instructions.push(Instruction::StoreByteWithUpdate { s: 0, a: 6, offset: 1 });
+        self.output
+            .instructions
+            .push(Instruction::LoadByteZeroWithUpdate {
+                d: 0,
+                a: 4,
+                offset: 1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreByteWithUpdate {
+                s: 0,
+                a: 6,
+                offset: 1,
+            });
         self.bind_label(labels[&8]);
-        self.output.instructions.push(Instruction::AddImmediateCarryingRecord { d: 5, a: 5, immediate: -1 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateCarryingRecord {
+                d: 5,
+                a: 5,
+                immediate: -1,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&6]); // bne
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(labels[&11]);
-        self.output.instructions.push(Instruction::Add { d: 4, a: 4, b: 5 });
-        self.output.instructions.push(Instruction::Add { d: 6, a: 3, b: 5 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 5, immediate: 1 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 4, a: 4, b: 5 });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 6, a: 3, b: 5 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: 1,
+        });
         self.emit_branch_to(labels[&17]); // b
         self.bind_label(labels[&15]);
-        self.output.instructions.push(Instruction::LoadByteZeroWithUpdate { d: 0, a: 4, offset: -1 });
-        self.output.instructions.push(Instruction::StoreByteWithUpdate { s: 0, a: 6, offset: -1 });
+        self.output
+            .instructions
+            .push(Instruction::LoadByteZeroWithUpdate {
+                d: 0,
+                a: 4,
+                offset: -1,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreByteWithUpdate {
+                s: 0,
+                a: 6,
+                offset: -1,
+            });
         self.bind_label(labels[&17]);
-        self.output.instructions.push(Instruction::AddImmediateCarryingRecord { d: 5, a: 5, immediate: -1 });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateCarryingRecord {
+                d: 5,
+                a: 5,
+                immediate: -1,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&15]); // bne
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 }

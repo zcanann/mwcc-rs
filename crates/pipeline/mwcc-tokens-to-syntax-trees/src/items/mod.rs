@@ -4,14 +4,16 @@
 //!
 //! Split from the former single items.rs (fire 536); behavior-identical.
 
-mod statements;
 mod asm;
 mod initializers;
+mod statements;
 mod types;
 
-
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type};
+use mwcc_syntax_trees::{
+    Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter,
+    Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
+};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructField, StructLayout};
@@ -28,9 +30,16 @@ struct SkippedStaticLocal {
     byte_size: u16,
 }
 
-fn store_or_assign(target: Expression, value: Expression, local_names: &std::collections::HashSet<String>) -> Statement {
+fn store_or_assign(
+    target: Expression,
+    value: Expression,
+    local_names: &std::collections::HashSet<String>,
+) -> Statement {
     match &target {
-        Expression::Variable(name) if local_names.contains(name.as_str()) => Statement::Assign { name: name.clone(), value },
+        Expression::Variable(name) if local_names.contains(name.as_str()) => Statement::Assign {
+            name: name.clone(),
+            value,
+        },
         _ => Statement::Store { target, value },
     }
 }
@@ -53,7 +62,9 @@ fn pointee_of(base: Type) -> Compilation<Pointee> {
         // (dereferencing or indexing it is not valid C), so the pointee width is
         // never used. Model it as a word pointer.
         Type::Void => Ok(Pointee::Int),
-        other => Err(Diagnostic::error(format!("pointer to {other:?} is not supported yet"))),
+        other => Err(Diagnostic::error(format!(
+            "pointer to {other:?} is not supported yet"
+        ))),
     }
 }
 
@@ -88,74 +99,111 @@ fn type_alignment(declared: Type) -> u16 {
 
 /// Whether an expression tree contains a call to any of `names`
 /// (the inline-materialization and skipped-inline checks share this walk).
-    pub(crate) fn expression_calls(expression: &Expression, names: &std::collections::HashSet<String>) -> bool {
-        match expression {
-            Expression::Call { name, arguments } => {
-                names.contains(name) || arguments.iter().any(|argument| expression_calls(argument, names))
-            }
-            Expression::Binary { left, right, .. } => {
-                expression_calls(left, names) || expression_calls(right, names)
-            }
-            Expression::Unary { operand, .. }
-            | Expression::Cast { operand, .. }
-            | Expression::AddressOf { operand } => expression_calls(operand, names),
-            Expression::Dereference { pointer } => expression_calls(pointer, names),
-            Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => expression_calls(base, names),
-            Expression::Index { base, index } => {
-                expression_calls(base, names) || expression_calls(index, names)
-            }
-            Expression::Assign { target, value } => {
-                expression_calls(target, names) || expression_calls(value, names)
-            }
-            Expression::Conditional { condition, when_true, when_false } => {
-                expression_calls(condition, names)
-                    || expression_calls(when_true, names)
-                    || expression_calls(when_false, names)
-            }
-            _ => false,
+pub(crate) fn expression_calls(
+    expression: &Expression,
+    names: &std::collections::HashSet<String>,
+) -> bool {
+    match expression {
+        Expression::Call { name, arguments } => {
+            names.contains(name)
+                || arguments
+                    .iter()
+                    .any(|argument| expression_calls(argument, names))
         }
-    }
-    pub(crate) fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
-        match statement {
-            Statement::Store { target, value } => {
-                expression_calls(target, names) || expression_calls(value, names)
-            }
-            Statement::Assign { value, .. } => expression_calls(value, names),
-            Statement::Expression(expression) => expression_calls(expression, names),
-            Statement::If { condition, then_body, else_body } => {
-                expression_calls(condition, names)
-                    || then_body.iter().any(|inner| statement_calls(inner, names))
-                    || else_body.iter().any(|inner| statement_calls(inner, names))
-            }
-            Statement::Switch { scrutinee, arms, default } => {
-                expression_calls(scrutinee, names)
-                    || arms.iter().any(|arm| match &arm.body {
-                mwcc_syntax_trees::ArmBody::Return(result) => expression_calls(result, names),
-                mwcc_syntax_trees::ArmBody::Statements(statements) => {
-                    statements.iter().any(|statement| statement_calls(statement, names))
-                }
-            })
-                    || default.as_ref().is_some_and(|body| match body {
-                        mwcc_syntax_trees::ArmBody::Return(expression) => expression_calls(expression, names),
-                        mwcc_syntax_trees::ArmBody::Statements(statements) => {
-                            statements.iter().any(|statement| statement_calls(statement, names))
-                        }
-                    })
-            }
-            Statement::Return(Some(expression)) => expression_calls(expression, names),
-            Statement::Loop { initializer, condition, step, body, .. } => {
-                initializer.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                    || condition.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                    || step.as_ref().is_some_and(|expression| expression_calls(expression, names))
-                    || body.iter().any(|inner| statement_calls(inner, names))
-            }
-            _ => false,
+        Expression::Binary { left, right, .. } => {
+            expression_calls(left, names) || expression_calls(right, names)
         }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::AddressOf { operand } => expression_calls(operand, names),
+        Expression::Dereference { pointer } => expression_calls(pointer, names),
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            expression_calls(base, names)
+        }
+        Expression::Index { base, index } => {
+            expression_calls(base, names) || expression_calls(index, names)
+        }
+        Expression::Assign { target, value } => {
+            expression_calls(target, names) || expression_calls(value, names)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+        } => {
+            expression_calls(condition, names)
+                || expression_calls(when_true, names)
+                || expression_calls(when_false, names)
+        }
+        _ => false,
     }
-    // A call to a skipped inline is recorded on the unit — codegen
-    // defers such functions AFTER the exact-match templates get a
-    // claim (a whole-function capture already has the inline
-    // flattened into its body).
+}
+pub(crate) fn statement_calls(
+    statement: &Statement,
+    names: &std::collections::HashSet<String>,
+) -> bool {
+    match statement {
+        Statement::Store { target, value } => {
+            expression_calls(target, names) || expression_calls(value, names)
+        }
+        Statement::Assign { value, .. } => expression_calls(value, names),
+        Statement::Expression(expression) => expression_calls(expression, names),
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expression_calls(condition, names)
+                || then_body.iter().any(|inner| statement_calls(inner, names))
+                || else_body.iter().any(|inner| statement_calls(inner, names))
+        }
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_calls(scrutinee, names)
+                || arms.iter().any(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(result) => expression_calls(result, names),
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+                        .iter()
+                        .any(|statement| statement_calls(statement, names)),
+                })
+                || default.as_ref().is_some_and(|body| match body {
+                    mwcc_syntax_trees::ArmBody::Return(expression) => {
+                        expression_calls(expression, names)
+                    }
+                    mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+                        .iter()
+                        .any(|statement| statement_calls(statement, names)),
+                })
+        }
+        Statement::Return(Some(expression)) => expression_calls(expression, names),
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .as_ref()
+                .is_some_and(|expression| expression_calls(expression, names))
+                || condition
+                    .as_ref()
+                    .is_some_and(|expression| expression_calls(expression, names))
+                || step
+                    .as_ref()
+                    .is_some_and(|expression| expression_calls(expression, names))
+                || body.iter().any(|inner| statement_calls(inner, names))
+        }
+        _ => false,
+    }
+}
+// A call to a skipped inline is recorded on the unit — codegen
+// defers such functions AFTER the exact-match templates get a
+// claim (a whole-function capture already has the inline
+// flattened into its body).
 
 impl Parser {
     /// Consume an identifier token if it matches `word` (used for the `long` and
@@ -187,7 +235,11 @@ impl Parser {
         let mut next = 0i64;
         while *self.peek() != Token::BraceClose {
             let name = self.parse_identifier()?;
-            let value = if self.eat_keyword(Token::Equals) { self.parse_enum_value()? } else { next };
+            let value = if self.eat_keyword(Token::Equals) {
+                self.parse_enum_value()?
+            } else {
+                next
+            };
             self.enum_constants.insert(name, value);
             next = value + 1;
             if *self.peek() == Token::Comma {
@@ -206,14 +258,38 @@ impl Parser {
         let mut value = self.parse_enum_primary()?;
         loop {
             value = match self.peek() {
-                Token::Plus => { self.advance(); value + self.parse_enum_primary()? }
-                Token::Minus => { self.advance(); value - self.parse_enum_primary()? }
-                Token::Star => { self.advance(); value * self.parse_enum_primary()? }
-                Token::Ampersand => { self.advance(); value & self.parse_enum_primary()? }
-                Token::Pipe => { self.advance(); value | self.parse_enum_primary()? }
-                Token::Caret => { self.advance(); value ^ self.parse_enum_primary()? }
-                Token::ShiftLeft => { self.advance(); value << self.parse_enum_primary()? }
-                Token::ShiftRight => { self.advance(); value >> self.parse_enum_primary()? }
+                Token::Plus => {
+                    self.advance();
+                    value + self.parse_enum_primary()?
+                }
+                Token::Minus => {
+                    self.advance();
+                    value - self.parse_enum_primary()?
+                }
+                Token::Star => {
+                    self.advance();
+                    value * self.parse_enum_primary()?
+                }
+                Token::Ampersand => {
+                    self.advance();
+                    value & self.parse_enum_primary()?
+                }
+                Token::Pipe => {
+                    self.advance();
+                    value | self.parse_enum_primary()?
+                }
+                Token::Caret => {
+                    self.advance();
+                    value ^ self.parse_enum_primary()?
+                }
+                Token::ShiftLeft => {
+                    self.advance();
+                    value << self.parse_enum_primary()?
+                }
+                Token::ShiftRight => {
+                    self.advance();
+                    value >> self.parse_enum_primary()?
+                }
                 _ => break,
             };
         }
@@ -224,16 +300,19 @@ impl Parser {
         let negative = self.eat_keyword(Token::Minus);
         let value = match self.advance() {
             Token::IntegerLiteral(value) => value,
-            Token::Identifier(name) => *self
-                .enum_constants
-                .get(&name)
-                .ok_or_else(|| Diagnostic::error(format!("non-constant enumerator value '{name}'")))?,
+            Token::Identifier(name) => *self.enum_constants.get(&name).ok_or_else(|| {
+                Diagnostic::error(format!("non-constant enumerator value '{name}'"))
+            })?,
             Token::ParenOpen => {
                 let value = self.parse_enum_value()?;
                 self.expect(Token::ParenClose)?;
                 value
             }
-            other => return Err(Diagnostic::error(format!("expected an enumerator value, found {other}"))),
+            other => {
+                return Err(Diagnostic::error(format!(
+                    "expected an enumerator value, found {other}"
+                )))
+            }
         };
         Ok(if negative { -value } else { value })
     }
@@ -249,7 +328,11 @@ impl Parser {
     /// Parse `switch (scrutinee) { case <int>: return E; ... default: return E; }`.
     /// The subset requires every arm to be a single `return`; fall-through, blocks,
     /// and non-constant case labels are not supported yet.
-    pub(crate) fn parse_switch(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<Statement> {
+    pub(crate) fn parse_switch(
+        &mut self,
+        local_names: &mut std::collections::HashSet<String>,
+        block_locals: &mut Vec<LocalDeclaration>,
+    ) -> Compilation<Statement> {
         self.eat_word("switch");
         self.expect(Token::ParenOpen)?;
         let scrutinee = self.expression()?;
@@ -261,29 +344,47 @@ impl Parser {
             if self.eat_word("case") {
                 let value = self.parse_integer_constant()?;
                 self.expect(Token::Colon)?;
-                let (body, falls_through) = self.parse_switch_arm_body(local_names, block_locals)?;
-                arms.push(SwitchArm { value, body, falls_through });
+                let (body, falls_through) =
+                    self.parse_switch_arm_body(local_names, block_locals)?;
+                arms.push(SwitchArm {
+                    value,
+                    body,
+                    falls_through,
+                });
             } else if self.eat_word("default") {
                 self.expect(Token::Colon)?;
-                let (body, _falls_through) = self.parse_switch_arm_body(local_names, block_locals)?;
+                let (body, _falls_through) =
+                    self.parse_switch_arm_body(local_names, block_locals)?;
                 default = Some(body);
-            } else if matches!(self.peek(), Token::Identifier(_)) && *self.peek_at(1) == Token::Colon {
+            } else if matches!(self.peek(), Token::Identifier(_))
+                && *self.peek_at(1) == Token::Colon
+            {
                 // A goto LABEL between arms (scanf's `signed_int:`) — control
                 // reaches it by falling through the previous arm or by goto, so
                 // the label and its statements continue that arm's body.
                 let name = self.parse_identifier()?;
                 self.advance(); // the colon
-                let (continuation, falls_through) = self.parse_switch_arm_body(local_names, block_locals)?;
+                let (continuation, falls_through) =
+                    self.parse_switch_arm_body(local_names, block_locals)?;
                 let Some(last) = arms.last_mut() else {
-                    return Err(Diagnostic::error("a goto label before the first switch arm is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a goto label before the first switch arm is not supported yet (roadmap)",
+                    ));
                 };
-                let mut statements = match std::mem::replace(&mut last.body, mwcc_syntax_trees::ArmBody::Statements(Vec::new())) {
-                    mwcc_syntax_trees::ArmBody::Return(expression) => vec![Statement::Return(Some(expression))],
+                let mut statements = match std::mem::replace(
+                    &mut last.body,
+                    mwcc_syntax_trees::ArmBody::Statements(Vec::new()),
+                ) {
+                    mwcc_syntax_trees::ArmBody::Return(expression) => {
+                        vec![Statement::Return(Some(expression))]
+                    }
                     mwcc_syntax_trees::ArmBody::Statements(statements) => statements,
                 };
                 statements.push(Statement::Label(name));
                 match continuation {
-                    mwcc_syntax_trees::ArmBody::Return(expression) => statements.push(Statement::Return(Some(expression))),
+                    mwcc_syntax_trees::ArmBody::Return(expression) => {
+                        statements.push(Statement::Return(Some(expression)))
+                    }
                     mwcc_syntax_trees::ArmBody::Statements(inner) => statements.extend(inner),
                 }
                 last.body = mwcc_syntax_trees::ArmBody::Statements(statements);
@@ -293,14 +394,22 @@ impl Parser {
             }
         }
         self.expect(Token::BraceClose)?;
-        Ok(Statement::Switch { scrutinee, arms, default })
+        Ok(Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        })
     }
 
     /// A switch arm's body: the common `return E;` (optionally braced, with
     /// dead trailing `break;`s), or a braced STATEMENT body ending at its
     /// `break;` — represented faithfully (mwcc branches these; a ternary
     /// lowering is byte-different).
-    pub(crate) fn parse_switch_arm_body(&mut self, local_names: &mut std::collections::HashSet<String>, block_locals: &mut Vec<LocalDeclaration>) -> Compilation<(mwcc_syntax_trees::ArmBody, bool)> {
+    pub(crate) fn parse_switch_arm_body(
+        &mut self,
+        local_names: &mut std::collections::HashSet<String>,
+        block_locals: &mut Vec<LocalDeclaration>,
+    ) -> Compilation<(mwcc_syntax_trees::ArmBody, bool)> {
         use mwcc_syntax_trees::ArmBody;
         let braced = self.eat_keyword(Token::BraceOpen);
         if *self.peek() == Token::KeywordReturn {
@@ -377,7 +486,10 @@ impl Parser {
                 statements.push(self.parse_return_statement()?);
                 continue;
             }
-            if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
+            if matches!(
+                self.peek(),
+                Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor
+            ) {
                 statements.push(self.parse_loop_statement(local_names, block_locals)?);
                 continue;
             }
@@ -395,14 +507,20 @@ impl Parser {
             // A declaration inside a braced arm (`case 'N': { double result;
             // u64* ll = (u64*)&result; … }` — bfbb ansi_fp's __dec2num) hoists
             // exactly like one in a nested block.
-            if self.peek_is_type() || self.peek_is_local_array_typedef() || matches!(self.peek(), Token::Identifier(word) if word == "static") {
+            if self.peek_is_type()
+                || self.peek_is_local_array_typedef()
+                || matches!(self.peek(), Token::Identifier(word) if word == "static")
+            {
                 self.parse_block_declaration(local_names, block_locals, &mut statements)?;
                 continue;
             }
             statements.push(self.parse_simple_statement(local_names, block_locals)?);
         }
-        let falls_through =
-            !saw_break && !matches!(statements.last(), Some(Statement::Return(_) | Statement::Goto(_)));
+        let falls_through = !saw_break
+            && !matches!(
+                statements.last(),
+                Some(Statement::Return(_) | Statement::Goto(_))
+            );
         Ok((ArmBody::Statements(statements), falls_through))
     }
 
@@ -425,7 +543,9 @@ impl Parser {
             let functions_before = functions.len();
             let globals_before = globals.len();
             let bump_before_item = self.skipped_inline_functions;
-            if let Err(error) = self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes) {
+            if let Err(error) =
+                self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
+            {
                 // A declaration we can't parse (a typedef/struct/extern prototype or
                 // qualified type from a preprocessed header) is skipped so the
                 // function definitions can still be compiled; a function definition we
@@ -469,25 +589,38 @@ impl Parser {
                 // skipped_inline_names check) — the called materialization is
                 // unmodeled.
                 if self.inline_function_has_static_local() {
-                    let (function_name, is_static_inline, statics) = self.parse_skipped_inline_statics()?;
+                    let (function_name, is_static_inline, statics) =
+                        self.parse_skipped_inline_statics()?;
                     if is_static_inline {
                         // Positional numbering: sample the running bump BEFORE this
                         // inline's own counts apply — the static declares inside it.
                         for local in &statics {
-                            self.static_local_prebumps.insert(local.name.clone(), self.skipped_inline_functions);
+                            self.static_local_prebumps
+                                .insert(local.name.clone(), self.skipped_inline_functions);
                         }
                         self.skipped_inline_functions += statics.len();
                     } else {
                         for (slot, local) in statics.into_iter().enumerate() {
-                            let mangled = format!("{}$localstatic{}${}", local.name, slot + 3, function_name);
-                            self.global_sizes.insert(mangled.clone(), (local.byte_size as u32, None));
+                            let mangled = format!(
+                                "{}$localstatic{}${}",
+                                local.name,
+                                slot + usize::from(self.plain_inline_localstatic_base),
+                                function_name
+                            );
+                            self.global_sizes
+                                .insert(mangled.clone(), (local.byte_size as u32, None));
                             globals.push(GlobalDeclaration {
-                                non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(),
+                                non_static_functions_before: functions
+                                    .iter()
+                                    .filter(|function| !function.is_static)
+                                    .count(),
+                                functions_before: functions.len(),
                                 declared_type: local.declared_type,
                                 name: mangled,
                                 is_extern: false,
                                 is_static: false,
                                 array_length: None,
+                                array_length_inferred: false,
                                 initializer: None,
                                 is_const: local.is_const,
                                 address_initializer: None,
@@ -532,7 +665,8 @@ impl Parser {
                 // at the definition covers every declaration inside it.
                 for function in &functions[functions_before..] {
                     for local in function.locals.iter().filter(|local| local.is_static) {
-                        self.static_local_prebumps.insert(local.name.clone(), bump_before_item);
+                        self.static_local_prebumps
+                            .insert(local.name.clone(), bump_before_item);
                     }
                 }
             }
@@ -545,7 +679,6 @@ impl Parser {
             // or without pools, and tail declarations (main.rs clamps those) all go
             // byte-exact. So no defer is needed here.
             let _ = seen_function;
-
         }
         // Non-constant float-array globals synthesize a startup initializer:
         // `__sinit_ctx_c` (named for the TU) assigns each unfolded element,
@@ -568,7 +701,8 @@ impl Parser {
                 return_type: Type::Void,
                 name: "__sinit_ctx_c".to_string(),
                 is_static: true,
-                is_weak: false, text_deferred: false,
+                is_weak: false,
+                text_deferred: false,
                 parameters: Vec::new(),
                 locals: Vec::new(),
                 statements,
@@ -587,9 +721,12 @@ impl Parser {
                 non_static_functions_before: functions.iter().filter(|f| !f.is_static).count(),
                 functions_before: functions.len(),
                 array_length: None,
+                array_length_inferred: false,
                 initializer: None,
                 is_const: true,
-                address_initializer: Some(vec![PointerElement::Symbol("__sinit_ctx_c".to_string())]),
+                address_initializer: Some(vec![PointerElement::Symbol(
+                    "__sinit_ctx_c".to_string(),
+                )]),
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 section: Some(".ctors".to_string()),
@@ -622,7 +759,8 @@ impl Parser {
     pub(crate) fn try_record_inline_body(&mut self) {
         let saved = self.position;
         let recorded = (|| -> Option<(String, Vec<String>, Expression)> {
-            while matches!(self.peek(), Token::Identifier(word) if word == "static" || word == "inline" || word == "__inline") {
+            while matches!(self.peek(), Token::Identifier(word) if word == "static" || word == "inline" || word == "__inline")
+            {
                 self.advance();
             }
             self.parse_type().ok()?;
@@ -640,7 +778,9 @@ impl Parser {
             }
             self.advance();
             let mut parameters = Vec::new();
-            if *self.peek() == Token::KeywordVoid && self.tokens.get(self.position + 1) == Some(&Token::ParenClose) {
+            if *self.peek() == Token::KeywordVoid
+                && self.tokens.get(self.position + 1) == Some(&Token::ParenClose)
+            {
                 self.advance();
             } else if *self.peek() != Token::ParenClose {
                 loop {
@@ -695,7 +835,10 @@ impl Parser {
         while let Some(token) = self.tokens.get(index) {
             match token {
                 Token::Identifier(word)
-                    if word != "inline" && word != "__inline" && word != "static" && word != "extern" =>
+                    if word != "inline"
+                        && word != "__inline"
+                        && word != "static"
+                        && word != "extern" =>
                 {
                     name = Some(word.clone());
                 }
@@ -737,7 +880,9 @@ impl Parser {
         // identifier before the `(` (the function name).
         while let Some(token) = self.tokens.get(index) {
             match token {
-                Token::Identifier(word) if word == "inline" || word == "__inline" => is_inline = true,
+                Token::Identifier(word) if word == "inline" || word == "__inline" => {
+                    is_inline = true
+                }
                 Token::Identifier(word) if word == "static" => is_static = true,
                 Token::Identifier(word) => name = Some(word.clone()),
                 Token::ParenOpen => break,
@@ -808,7 +953,9 @@ impl Parser {
     /// Parse the skipped inline definition's `static` locals: the function
     /// name, whether the inline itself is `static`, and each local's type,
     /// const-ness, and byte image (`None` bytes = zero-initialized .sbss).
-    pub(crate) fn parse_skipped_inline_statics(&self) -> Compilation<(String, bool, Vec<SkippedStaticLocal>)> {
+    pub(crate) fn parse_skipped_inline_statics(
+        &self,
+    ) -> Compilation<(String, bool, Vec<SkippedStaticLocal>)> {
         let mut index = self.position;
         let mut is_static_inline = false;
         let mut name = String::new();
@@ -839,14 +986,22 @@ impl Parser {
                     }
                 }
                 Token::KeywordFloat => param_codes.push('f'),
-                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Float) => param_codes.push('f'),
+                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Float) => {
+                    param_codes.push('f')
+                }
                 Token::Identifier(word) if word == "double" => param_codes.push('d'),
-                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Double) => param_codes.push('d'),
+                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Double) => {
+                    param_codes.push('d')
+                }
                 Token::KeywordInt => param_codes.push('i'),
-                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Int) => param_codes.push('i'),
+                Token::Identifier(word) if self.typedefs.get(word) == Some(&Type::Int) => {
+                    param_codes.push('i')
+                }
                 Token::KeywordVoid => param_codes.push('v'),
                 Token::Star => {
-                    return Err(Diagnostic::error("a pointer parameter in a mangled inline is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a pointer parameter in a mangled inline is not supported yet (roadmap)",
+                    ));
                 }
                 _ => {}
             }
@@ -872,8 +1027,10 @@ impl Parser {
                 Token::Identifier(word) if word == "static" && braces >= 1 => {
                     index += 1;
                     let mut is_const = false;
-                    while matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "const" || word == "volatile") {
-                        if matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "const") {
+                    while matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "const" || word == "volatile")
+                    {
+                        if matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "const")
+                        {
                             is_const = true;
                         }
                         index += 1;
@@ -881,7 +1038,10 @@ impl Parser {
                     // The type: one keyword/typedef token (compound int forms defer),
                     // plus the `unsigned char`/`unsigned int` pairs.
                     if matches!(self.tokens.get(index), Some(Token::KeywordUnsigned))
-                        && matches!(self.tokens.get(index + 1), Some(Token::KeywordChar | Token::KeywordInt))
+                        && matches!(
+                            self.tokens.get(index + 1),
+                            Some(Token::KeywordChar | Token::KeywordInt)
+                        )
                     {
                         index += 1;
                     }
@@ -968,7 +1128,13 @@ impl Parser {
                         Type::Struct { size, .. } => size,
                         _ => 4,
                     };
-                    statics.push(SkippedStaticLocal { name: local_name, declared_type, is_const, bytes, byte_size });
+                    statics.push(SkippedStaticLocal {
+                        name: local_name,
+                        declared_type,
+                        is_const,
+                        bytes,
+                        byte_size,
+                    });
                     continue;
                 }
                 Token::EndOfFile => break,
@@ -986,7 +1152,9 @@ impl Parser {
         // may precede it). A `;`/`{`/EOF before the `(` means this is not a function.
         while let Some(token) = self.tokens.get(index) {
             match token {
-                Token::Identifier(word) if word == "inline" || word == "__inline" => is_inline = true,
+                Token::Identifier(word) if word == "inline" || word == "__inline" => {
+                    is_inline = true
+                }
                 Token::ParenOpen => break,
                 Token::Semicolon | Token::BraceOpen | Token::EndOfFile => return false,
                 _ => {}
@@ -1095,12 +1263,17 @@ impl Parser {
                                 Token::ParenOpen => depth += 1,
                                 Token::ParenClose => depth -= 1,
                                 Token::Identifier(inner) if inner == "weak" => weak_inside = true,
-                                Token::Identifier(inner) if inner == "section" => saw_section_kw = true,
+                                Token::Identifier(inner) if inner == "section" => {
+                                    saw_section_kw = true
+                                }
                                 Token::StringLiteral(bytes) if saw_section_kw => {
-                                    declspec_section = Some(String::from_utf8_lossy(&bytes).into_owned());
+                                    declspec_section =
+                                        Some(String::from_utf8_lossy(&bytes).into_owned());
                                     saw_section_kw = false;
                                 }
-                                Token::EndOfFile => return Err(Diagnostic::error("unterminated __declspec")),
+                                Token::EndOfFile => {
+                                    return Err(Diagnostic::error("unterminated __declspec"))
+                                }
                                 _ => {}
                             }
                         }
@@ -1143,8 +1316,16 @@ impl Parser {
                         || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen));
                 if tagged {
                     self.advance(); // `struct` or `union`
-                    let tag = if matches!(self.peek(), Token::Identifier(_)) { self.parse_identifier()? } else { String::new() };
-                    let layout = if is_union_kw { self.parse_union_body()? } else { self.parse_struct_body()? };
+                    let tag = if matches!(self.peek(), Token::Identifier(_)) {
+                        self.parse_identifier()?
+                    } else {
+                        String::new()
+                    };
+                    let layout = if is_union_kw {
+                        self.parse_union_body()?
+                    } else {
+                        self.parse_struct_body()?
+                    };
                     // One or more comma-separated declarators: a value alias `Vec`
                     // or a pointer alias `*VecPtr`. The first value alias names an
                     // anonymous struct's tag.
@@ -1180,11 +1361,18 @@ impl Parser {
                 // the layout arrives when `struct Tag { ... }` is defined) or
                 // `typedef struct Tag* AliasPtr;` registers the alias->TAG map
                 // directly; member lookups resolve through the tag at use time.
-                let is_union_forward = matches!(self.peek(), Token::Identifier(word) if word == "union");
+                let is_union_forward =
+                    matches!(self.peek(), Token::Identifier(word) if word == "union");
                 if (*self.peek() == Token::KeywordStruct || is_union_forward)
-                    && matches!(self.tokens.get(self.position + 1), Some(Token::Identifier(_)))
                     && matches!(
-                        (self.tokens.get(self.position + 2), self.tokens.get(self.position + 3)),
+                        self.tokens.get(self.position + 1),
+                        Some(Token::Identifier(_))
+                    )
+                    && matches!(
+                        (
+                            self.tokens.get(self.position + 2),
+                            self.tokens.get(self.position + 3)
+                        ),
                         (Some(Token::Identifier(_)), Some(Token::Semicolon))
                             | (Some(Token::Identifier(_)), Some(Token::Comma))
                             | (Some(Token::Star), Some(Token::Identifier(_)))
@@ -1213,9 +1401,15 @@ impl Parser {
                 // struct-pointer, or array typedef COPIES the original registration
                 // (`typedef __va_list va_list;` — parse_type's scalar model would
                 // lose the struct identity).
-                if let (Token::Identifier(existing), Some(Token::Identifier(_)), Some(Token::Semicolon | Token::BracketOpen)) =
-                    (self.peek(), self.tokens.get(self.position + 1), self.tokens.get(self.position + 2))
-                {
+                if let (
+                    Token::Identifier(existing),
+                    Some(Token::Identifier(_)),
+                    Some(Token::Semicolon | Token::BracketOpen),
+                ) = (
+                    self.peek(),
+                    self.tokens.get(self.position + 1),
+                    self.tokens.get(self.position + 2),
+                ) {
                     let existing = existing.clone();
                     let struct_tag = self.struct_typedefs.get(&existing).cloned();
                     let pointer_tag = self.struct_pointer_typedefs.get(&existing).cloned();
@@ -1249,7 +1443,9 @@ impl Parser {
                 // `typedef RET (*name)(params);` (function pointer, a 4-byte word
                 // pointer) or `typedef T (*name)[N];` (pointer to array — a ROW
                 // pointer whose subscript strides by N elements).
-                if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                if *self.peek() == Token::ParenOpen
+                    && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                {
                     self.advance(); // `(`
                     self.advance(); // `*`
                     let alias = self.parse_identifier()?;
@@ -1268,7 +1464,11 @@ impl Parser {
                         match self.advance() {
                             Token::ParenOpen => depth += 1,
                             Token::ParenClose => depth -= 1,
-                            Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer typedef")),
+                            Token::EndOfFile => {
+                                return Err(Diagnostic::error(
+                                    "unterminated function-pointer typedef",
+                                ))
+                            }
                             _ => {}
                         }
                     }
@@ -1312,7 +1512,9 @@ impl Parser {
             // struct with every member at offset 0; register the layout under the tag so a
             // later `union Tag*` use resolves. A trailing union-value declarator is rare and
             // defers.
-            if matches!(self.peek(), Token::Identifier(word) if word == "union") && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
+            if matches!(self.peek(), Token::Identifier(word) if word == "union")
+                && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen)
+            {
                 self.advance(); // `union`
                 let tag = self.parse_identifier()?;
                 let layout = self.parse_union_body()?;
@@ -1321,9 +1523,13 @@ impl Parser {
                     self.advance();
                     return Ok(());
                 }
-                return Err(Diagnostic::error("a union-definition global value is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a union-definition global value is not supported yet (roadmap)",
+                ));
             }
-            if *self.peek() == Token::KeywordStruct && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen) {
+            if *self.peek() == Token::KeywordStruct
+                && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen)
+            {
                 self.expect(Token::KeywordStruct)?;
                 let tag = self.parse_identifier()?;
                 let layout = self.parse_struct_body()?;
@@ -1332,9 +1538,9 @@ impl Parser {
                     self.advance();
                     return Ok(());
                 }
-                let struct_type = self
-                    .struct_value_type(&tag)
-                    .ok_or_else(|| Diagnostic::error("struct values are not supported yet — use a struct pointer"))?;
+                let struct_type = self.struct_value_type(&tag).ok_or_else(|| {
+                    Diagnostic::error("struct values are not supported yet — use a struct pointer")
+                })?;
                 loop {
                     let name = self.parse_identifier()?;
                     // Only a scalar, uninitialized struct global is in the subset; an
@@ -1343,7 +1549,27 @@ impl Parser {
                         return Err(Diagnostic::error("an initialized or array struct-definition global is not supported yet (roadmap)"));
                     }
                     self.variable_structs.insert(name.clone(), tag.clone());
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: struct_type, name, is_extern, is_static, array_length: None, initializer: None, is_const: false, address_initializer: None, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone(), attribute_alignment: None });
+                    globals.push(GlobalDeclaration {
+                        is_weak: false,
+                        non_static_functions_before: functions
+                            .iter()
+                            .filter(|function| !function.is_static)
+                            .count(),
+                        functions_before: functions.len(),
+                        declared_type: struct_type,
+                        name,
+                        is_extern,
+                        is_static,
+                        array_length: None,
+                        array_length_inferred: false,
+                        initializer: None,
+                        is_const: false,
+                        address_initializer: None,
+                        data_bytes: None,
+                        data_relocations: Vec::new(),
+                        section: declspec_section.clone(),
+                        attribute_alignment: None,
+                    });
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {
@@ -1412,7 +1638,11 @@ impl Parser {
                     match self.advance() {
                         Token::ParenOpen => depth += 1,
                         Token::ParenClose => depth -= 1,
-                        Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer declarator")),
+                        Token::EndOfFile => {
+                            return Err(Diagnostic::error(
+                                "unterminated function-pointer declarator",
+                            ))
+                        }
                         _ => {}
                     }
                 }
@@ -1436,10 +1666,34 @@ impl Parser {
                         // keeps its pre-existing None length (abort_exit.c is byte-exact
                         // with it — do not disturb).
                         None if is_extern => {}
-                        None => return Err(Diagnostic::error("a function-pointer array needs an explicit length (roadmap)")),
+                        None => {
+                            return Err(Diagnostic::error(
+                                "a function-pointer array needs an explicit length (roadmap)",
+                            ))
+                        }
                     }
                 }
-                globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: Type::StructPointer { element_size: 0 }, name: pointer_name, is_extern, is_static, array_length: pointer_array_length, initializer: None, is_const: false, address_initializer, data_bytes: None, data_relocations: Vec::new(), section: declspec_section.clone(), attribute_alignment: None });
+                globals.push(GlobalDeclaration {
+                    is_weak: false,
+                    non_static_functions_before: functions
+                        .iter()
+                        .filter(|function| !function.is_static)
+                        .count(),
+                    functions_before: functions.len(),
+                    declared_type: Type::StructPointer { element_size: 0 },
+                    name: pointer_name,
+                    is_extern,
+                    is_static,
+                    array_length: pointer_array_length,
+                    array_length_inferred: pointer_array_unsized,
+                    initializer: None,
+                    is_const: false,
+                    address_initializer,
+                    data_bytes: None,
+                    data_relocations: Vec::new(),
+                    section: declspec_section.clone(),
+                    attribute_alignment: None,
+                });
                 return Ok(());
             }
             let name = self.parse_identifier()?;
@@ -1453,7 +1707,8 @@ impl Parser {
             // return tag so `name()->field` resolves the returned pointee's layout.
             if *self.peek() == Token::ParenOpen {
                 if let Some(tag) = &return_struct_tag {
-                    self.function_return_structs.insert(name.clone(), tag.clone());
+                    self.function_return_structs
+                        .insert(name.clone(), tag.clone());
                 }
             }
             // `type name [N]… : addr;` — a FIXED-ADDRESS global (mwcc's `AT_ADDRESS(a)` = `: (a)`; the
@@ -1476,7 +1731,9 @@ impl Parser {
                 // A fixed-address declaration through an array typedef would record the
                 // decayed pointer as the element type (wrong stride) — defer.
                 if array_typedef_marker.is_some() {
-                    return Err(Diagnostic::error("a fixed-address array-typedef global is not supported yet (roadmap)"));
+                    return Err(Diagnostic::error(
+                        "a fixed-address array-typedef global is not supported yet (roadmap)",
+                    ));
                 }
                 let mut is_array = false;
                 while *self.peek() == Token::BracketOpen {
@@ -1496,7 +1753,8 @@ impl Parser {
                 };
                 self.expect(Token::Semicolon)?;
                 if is_array {
-                    self.fixed_address_arrays.insert(name.clone(), (address, return_type));
+                    self.fixed_address_arrays
+                        .insert(name.clone(), (address, return_type));
                 } else {
                     let tag = self.last_struct_tag.clone();
                     // An aggregate casts to a struct pointer (member access via the const-address
@@ -1504,13 +1762,18 @@ impl Parser {
                     // An unsupported scalar type is not recorded — it defers.
                     let cast_target = match &tag {
                         Some(tag) => {
-                            let size = self.structs.get(tag).map(|layout| layout.size).unwrap_or_else(|| type_size(return_type));
+                            let size = self
+                                .structs
+                                .get(tag)
+                                .map(|layout| layout.size)
+                                .unwrap_or_else(|| type_size(return_type));
                             Some(Type::StructPointer { element_size: size })
                         }
                         None => pointee_of(return_type).ok().map(Type::Pointer),
                     };
                     if let Some(cast_target) = cast_target {
-                        self.fixed_address_globals.insert(name.clone(), (address, cast_target, tag));
+                        self.fixed_address_globals
+                            .insert(name.clone(), (address, cast_target, tag));
                     }
                 }
                 return Ok(());
@@ -1519,7 +1782,10 @@ impl Parser {
             // global variable declaration. A `(` instead begins a function. (An
             // initialized global `type name = …;` is not in the subset yet and
             // falls through to the function path, which reports it.)
-            if matches!(self.peek(), Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals) {
+            if matches!(
+                self.peek(),
+                Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals
+            ) {
                 // An array-typedef global (`Mtx g;`) is the whole ARRAY object — as if
                 // `float g[12];` had been written: the declared type becomes the element
                 // and the typedef's total element count seeds the dimensions (explicit
@@ -1571,31 +1837,41 @@ impl Parser {
                     // ATTRIBUTE_ALIGN(32);` — the common dolphin DMA-buffer form). Combine
                     // with any post-name attribute; the larger requested alignment wins.
                     let attribute_alignment_dims = self.skip_attributes()?;
-                    let attribute_alignment = match (attribute_alignment_name, attribute_alignment_dims) {
-                        (Some(a), Some(b)) => Some(a.max(b)),
-                        (a, b) => a.or(b),
-                    };
+                    let attribute_alignment =
+                        match (attribute_alignment_name, attribute_alignment_dims) {
+                            (Some(a), Some(b)) => Some(a.max(b)),
+                            (a, b) => a.or(b),
+                        };
                     // A pointer global initialized with addresses (`int *p = &g;` or
                     // a `{&a, &b}` array) is a set of data relocations, not constants.
                     // An array of word-field structs with a pointer field (a
                     // `{ "name", id }` table) flattens to the same address-initializer
                     // (pointer slots relocate, scalar slots are literal bytes).
-                    let table_fields = if !dimensions.is_empty() && matches!(return_type, Type::Struct { .. }) {
-                        global_struct_tag.as_deref().and_then(|tag| self.struct_pointer_table_fields(tag))
-                    } else {
-                        None
-                    };
+                    let table_fields =
+                        if !dimensions.is_empty() && matches!(return_type, Type::Struct { .. }) {
+                            global_struct_tag
+                                .as_deref()
+                                .and_then(|tag| self.struct_pointer_table_fields(tag))
+                        } else {
+                            None
+                        };
                     let mut address_initializer = None;
                     let mut initializer = None;
                     let mut data_relocations: Vec<(u32, String, i32)> = Vec::new();
                     let mut data_bytes: Option<Vec<u8>> = None;
-                    if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) && *self.peek() == Token::Equals {
+                    if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. })
+                        && *self.peek() == Token::Equals
+                    {
                         self.advance();
                         address_initializer = Some(self.parse_address_initializer()?);
                     } else if table_fields.is_some() && *self.peek() == Token::Equals {
                         self.advance();
-                        address_initializer = Some(self.parse_struct_pointer_table(table_fields.as_ref().unwrap())?);
-                    } else if matches!(return_type, Type::Struct { .. }) && global_struct_tag.is_some() && *self.peek() == Token::Equals {
+                        address_initializer =
+                            Some(self.parse_struct_pointer_table(table_fields.as_ref().unwrap())?);
+                    } else if matches!(return_type, Type::Struct { .. })
+                        && global_struct_tag.is_some()
+                        && *self.peek() == Token::Equals
+                    {
                         // A struct value/array initializer serializes each field at its
                         // own offset/width into the object's byte image — float, sub-word,
                         // and nested-struct fields all land correctly.
@@ -1630,11 +1906,19 @@ impl Parser {
                         self.expect(Token::Semicolon)?;
                         return Ok(());
                     }
+                    let array_length_inferred = dimensions.iter().any(Option::is_none);
                     let array_length = if dimensions.is_empty() {
                         None
-                    } else if let Some(explicit) = dimensions.iter().copied().collect::<Option<Vec<u16>>>() {
+                    } else if let Some(explicit) =
+                        dimensions.iter().copied().collect::<Option<Vec<u16>>>()
+                    {
                         // Every dimension is explicit: the length is their product.
-                        Some(explicit.iter().map(|&dimension| dimension as u32).product::<u32>() as u16)
+                        Some(
+                            explicit
+                                .iter()
+                                .map(|&dimension| dimension as u32)
+                                .product::<u32>() as u16,
+                        )
                     } else if let Some(bytes) = &data_bytes {
                         // A struct array's inferred length is its byte image divided by
                         // the element (struct) size.
@@ -1646,7 +1930,11 @@ impl Parser {
                     } else {
                         // An inferred dimension takes its length from the flat
                         // initializer (constant values or address elements).
-                        match initializer.as_ref().map(Vec::len).or(address_initializer.as_ref().map(Vec::len)) {
+                        match initializer
+                            .as_ref()
+                            .map(Vec::len)
+                            .or(address_initializer.as_ref().map(Vec::len))
+                        {
                             Some(length) => Some(length as u16),
                             // `extern T name[];` — an UNSIZED extern array (Runtime's
                             // `extern __eti_init_info _eti_init_info[];`). Its size is
@@ -1655,11 +1943,16 @@ impl Parser {
                             // array absolutely (lis/addi, measured), so register it with
                             // a huge sentinel length. No data is emitted for an extern.
                             None if is_extern => Some(u16::MAX),
-                            None => return Err(Diagnostic::error("an array with no length needs an initializer")),
+                            None => {
+                                return Err(Diagnostic::error(
+                                    "an array with no length needs an initializer",
+                                ))
+                            }
                         }
                     };
                     if let Some(tag) = &global_struct_tag {
-                        self.variable_structs.insert(declarator_name.clone(), tag.clone());
+                        self.variable_structs
+                            .insert(declarator_name.clone(), tag.clone());
                     }
                     // mwcc INLINES a `const` scalar-int global's value at each read (`return g` ->
                     // `li r3,VALUE`) while still emitting g's read-only `.sdata2` storage. Fold reads
@@ -1669,11 +1962,26 @@ impl Parser {
                     // storage keeps the raw byte — so fold the value reduced to the declared width.
                     // (extern has no initializer; `&g` then folds to AddressOf{literal} and defers —
                     // safe, not a wrong load.)
-                    if is_const && !is_extern && dimensions.is_empty()
-                        && matches!(return_type, Type::Int | Type::UnsignedInt | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
-                        && initializer.as_ref().map_or(false, |values| values.len() == 1)
+                    if is_const
+                        && !is_extern
+                        && dimensions.is_empty()
+                        && matches!(
+                            return_type,
+                            Type::Int
+                                | Type::UnsignedInt
+                                | Type::Char
+                                | Type::UnsignedChar
+                                | Type::Short
+                                | Type::UnsignedShort
+                        )
+                        && initializer
+                            .as_ref()
+                            .map_or(false, |values| values.len() == 1)
                     {
-                        let folded = crate::expressions::truncate_to_integer(initializer.as_ref().unwrap()[0], return_type);
+                        let folded = crate::expressions::truncate_to_integer(
+                            initializer.as_ref().unwrap()[0],
+                            return_type,
+                        );
                         self.enum_constants.insert(declarator_name.clone(), folded);
                     }
                     // Record the global's total byte size so `sizeof(g)` folds to a constant, plus its
@@ -1686,7 +1994,8 @@ impl Parser {
                     };
                     let total_bytes = element_bytes * array_length.map_or(1, u32::from);
                     let array_element = array_length.map(|_| element_bytes);
-                    self.global_sizes.insert(declarator_name.clone(), (total_bytes, array_element));
+                    self.global_sizes
+                        .insert(declarator_name.clone(), (total_bytes, array_element));
                     // For a POINTER declarator, a LEADING `const` binds the
                     // POINTEE (`const char* dummy = "C"` is a WRITABLE pointer
                     // in `.sdata` — measured: locale) — the object itself is
@@ -1694,12 +2003,33 @@ impl Parser {
                     // A pointer global is object-const only when the `const` TRAILS the
                     // star (`void* const`); a leading `const void*` is pointee-const and
                     // stays writable. A non-pointer keeps the plain leading-const rule.
-                    let object_is_const = if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) {
-                        pointer_object_const
-                    } else {
-                        is_const
-                    };
-                    globals.push(GlobalDeclaration { is_weak: false, non_static_functions_before: functions.iter().filter(|function| !function.is_static).count(), functions_before: functions.len(), declared_type: return_type, name: declarator_name, is_extern, is_static, array_length, initializer, is_const: object_is_const, address_initializer, data_bytes, data_relocations: std::mem::take(&mut data_relocations), section: declspec_section.clone(), attribute_alignment });
+                    let object_is_const =
+                        if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                            pointer_object_const
+                        } else {
+                            is_const
+                        };
+                    globals.push(GlobalDeclaration {
+                        is_weak: false,
+                        non_static_functions_before: functions
+                            .iter()
+                            .filter(|function| !function.is_static)
+                            .count(),
+                        functions_before: functions.len(),
+                        declared_type: return_type,
+                        name: declarator_name,
+                        is_extern,
+                        is_static,
+                        array_length,
+                        array_length_inferred,
+                        initializer,
+                        is_const: object_is_const,
+                        address_initializer,
+                        data_bytes,
+                        data_relocations: std::mem::take(&mut data_relocations),
+                        section: declspec_section.clone(),
+                        attribute_alignment,
+                    });
                     if *self.peek() == Token::Comma {
                         self.advance();
                         // A later pointer declarator carries its own `*` (`int *a, *b;`): the base type
@@ -1707,7 +2037,8 @@ impl Parser {
                         // and reuse it. A MIXED list (`int *a, b;`) or a MULTI-LEVEL one (`int *a, **b;`)
                         // needs a per-declarator type, so defer rather than mis-type a declarator.
                         if *self.peek() == Token::Star {
-                            if !matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                            if !matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. })
+                            {
                                 return Err(Diagnostic::error("a mixed pointer/non-pointer global declarator list is not supported yet (roadmap)"));
                             }
                             self.advance();
@@ -1732,7 +2063,9 @@ impl Parser {
             self.decayed_row_pointers.clear();
             // `(void)` is an empty parameter list — but only when the `void` is the
             // whole list; `void *p` / `void (*f)()` are real first parameters.
-            if *self.peek() == Token::KeywordVoid && self.tokens.get(self.position + 1) == Some(&Token::ParenClose) {
+            if *self.peek() == Token::KeywordVoid
+                && self.tokens.get(self.position + 1) == Some(&Token::ParenClose)
+            {
                 self.advance();
             } else if *self.peek() != Token::ParenClose {
                 loop {
@@ -1762,10 +2095,16 @@ impl Parser {
                     let struct_tag = self.last_struct_tag.take();
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.
-                    if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                    if *self.peek() == Token::ParenOpen
+                        && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                    {
                         self.advance(); // `(`
                         self.advance(); // `*`
-                        let name = if matches!(self.peek(), Token::Identifier(_)) { self.parse_identifier()? } else { String::new() };
+                        let name = if matches!(self.peek(), Token::Identifier(_)) {
+                            self.parse_identifier()?
+                        } else {
+                            String::new()
+                        };
                         self.expect(Token::ParenClose)?;
                         self.expect(Token::ParenOpen)?;
                         let mut depth = 1;
@@ -1773,11 +2112,18 @@ impl Parser {
                             match self.advance() {
                                 Token::ParenOpen => depth += 1,
                                 Token::ParenClose => depth -= 1,
-                                Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer parameter")),
+                                Token::EndOfFile => {
+                                    return Err(Diagnostic::error(
+                                        "unterminated function-pointer parameter",
+                                    ))
+                                }
                                 _ => {}
                             }
                         }
-                        parameters.push(Parameter { parameter_type: Type::StructPointer { element_size: 0 }, name });
+                        parameters.push(Parameter {
+                            parameter_type: Type::StructPointer { element_size: 0 },
+                            name,
+                        });
                     } else {
                         // The name is optional (a prototype may write just the type).
                         let name = if matches!(self.peek(), Token::Identifier(_)) {
@@ -1799,7 +2145,9 @@ impl Parser {
                             }
                             self.expect(Token::BracketClose)?;
                             match parameter_type {
-                                Type::Struct { size, .. } => Type::StructPointer { element_size: size },
+                                Type::Struct { size, .. } => {
+                                    Type::StructPointer { element_size: size }
+                                }
                                 scalar => Type::Pointer(pointee_of(scalar)?),
                             }
                         } else {
@@ -1815,10 +2163,14 @@ impl Parser {
                         if let Some((element, _total, inner)) = array_typedef_marker {
                             if !name.is_empty() {
                                 let stride = inner.max(1) as u32 * (element.width() as u32 / 8);
-                                self.decayed_row_pointers.insert(name.clone(), (element, stride as u16));
+                                self.decayed_row_pointers
+                                    .insert(name.clone(), (element, stride as u16));
                             }
                         }
-                        parameters.push(Parameter { parameter_type, name });
+                        parameters.push(Parameter {
+                            parameter_type,
+                            name,
+                        });
                     }
                     if *self.peek() == Token::Comma {
                         self.advance();
@@ -1831,9 +2183,15 @@ impl Parser {
 
             if *self.peek() == Token::Semicolon {
                 self.advance(); // a prototype — record its return + parameter types, keep looking
-                let parameter_types = parameters.iter().map(|parameter| parameter.parameter_type).collect();
+                let parameter_types = parameters
+                    .iter()
+                    .map(|parameter| parameter.parameter_type)
+                    .collect();
                 if is_weak {
                     self.weak_functions.insert(name.clone());
+                }
+                if is_static {
+                    self.static_functions.insert(name.clone());
                 }
                 if let Some(section) = &declspec_section {
                     self.section_functions.insert(name.clone(), section.clone());
@@ -1858,12 +2216,24 @@ impl Parser {
                 // Referenced EARLIER (a prototype, or a call already parsed into a
                 // previous function — uart_8's IMPLICIT-declaration shape) means the
                 // call sites precede the body: mwcc cannot inline and MATERIALIZES.
-                let name_set: std::collections::HashSet<String> = std::iter::once(name.clone()).collect();
-                let had_prototype = prototypes.iter().any(|(prototype_name, _, _)| *prototype_name == name);
+                let name_set: std::collections::HashSet<String> =
+                    std::iter::once(name.clone()).collect();
+                let had_prototype = prototypes
+                    .iter()
+                    .any(|(prototype_name, _, _)| *prototype_name == name);
                 let had_call = functions.iter().any(|earlier| {
-                    earlier.statements.iter().any(|statement| statement_calls(statement, &name_set))
-                        || earlier.guards.iter().any(|guard| expression_calls(&guard.condition, &name_set))
-                        || earlier.return_expression.as_ref().is_some_and(|expression| expression_calls(expression, &name_set))
+                    earlier
+                        .statements
+                        .iter()
+                        .any(|statement| statement_calls(statement, &name_set))
+                        || earlier
+                            .guards
+                            .iter()
+                            .any(|guard| expression_calls(&guard.condition, &name_set))
+                        || earlier
+                            .return_expression
+                            .as_ref()
+                            .is_some_and(|expression| expression_calls(expression, &name_set))
                 });
                 // The trigger is a CALL compiled before the definition — a
                 // prototype alone does NOT materialize (p2's wctomb: prototyped,
@@ -1878,11 +2248,17 @@ impl Parser {
                 // inlines only. Merely-PROTOTYPED names (extern OSReport in the
                 // dolphin headers) are EXTERNAL — excluded, so a heap-init inline
                 // calling only OS* helpers (GCN InitDefaultHeap) stays inlinable.
-                let mut tu_local: std::collections::HashSet<String> = self.skipped_inline_names.clone();
-                for function in functions.iter() { tu_local.insert(function.name.clone()); }
-                materialize_by_calls = !had_call && is_static && self.body_local_statement_call_count(&tu_local) >= 2;
+                let mut tu_local: std::collections::HashSet<String> =
+                    self.skipped_inline_names.clone();
+                for function in functions.iter() {
+                    tu_local.insert(function.name.clone());
+                }
+                materialize_by_calls =
+                    !had_call && is_static && self.body_local_statement_call_count(&tu_local) >= 2;
                 if !had_call && !materialize_by_calls {
-                    return Err(Diagnostic::error("an inline function definition is skipped (inlined at call sites)"));
+                    return Err(Diagnostic::error(
+                        "an inline function definition is skipped (inlined at call sites)",
+                    ));
                 }
                 if is_static {
                     // Implicit-declaration materialization (no prototype): the call
@@ -1902,13 +2278,15 @@ impl Parser {
                 }
             }
             let function_is_weak = is_weak || self.weak_functions.contains(&name);
+            let function_is_static = is_static || self.static_functions.contains(&name);
             // The section may sit on the definition (mp4) or on an earlier prototype
             // (pikmin's DECL_SECT on the memcpy proto) — prefer the definition's.
             let proto_section = self.section_functions.get(&name).cloned();
             if self.defer_codegen {
                 self.deferred_function_names.push(name.clone());
             }
-            let mut function = self.function_body(return_type, name, is_static, parameters)?;
+            let mut function =
+                self.function_body(return_type, name, function_is_static, parameters)?;
             function.is_weak = function_is_weak;
             function.section = declspec_section.clone().or(proto_section);
             function.text_deferred = materialize_by_calls;
@@ -1926,10 +2304,16 @@ impl Parser {
     /// to EXTERNALS (GCN InitDefaultHeap's OSReport/OSGetArenaLo) and
     /// expression-buried calls (fpclassify's `__HI(x)`, `return f()`) do NOT
     /// count — those stay inlinable. Pure lookahead.
-    pub(crate) fn body_local_statement_call_count(&self, local_names: &std::collections::HashSet<String>) -> usize {
+    pub(crate) fn body_local_statement_call_count(
+        &self,
+        local_names: &std::collections::HashSet<String>,
+    ) -> usize {
         let mut index = self.position;
         // Find the body's opening brace.
-        while !matches!(self.tokens.get(index), Some(Token::BraceOpen) | Some(Token::EndOfFile) | None) {
+        while !matches!(
+            self.tokens.get(index),
+            Some(Token::BraceOpen) | Some(Token::EndOfFile) | None
+        ) {
             index += 1;
         }
         let mut braces = 0i32;
@@ -1967,7 +2351,10 @@ impl Parser {
                             Token::ParenClose => {
                                 parens -= 1;
                                 if parens == 0 {
-                                    is_statement_call = matches!(self.tokens.get(cursor + 1), Some(Token::Semicolon));
+                                    is_statement_call = matches!(
+                                        self.tokens.get(cursor + 1),
+                                        Some(Token::Semicolon)
+                                    );
                                     break;
                                 }
                             }
@@ -2001,7 +2388,9 @@ impl Parser {
             let top_level = brace == 0 && paren == 0 && bracket == 0;
             match token {
                 // A typedef never defines data, even with an `=` (none occur).
-                Token::Identifier(word) if index == self.position && word == "typedef" => return false,
+                Token::Identifier(word) if index == self.position && word == "typedef" => {
+                    return false
+                }
                 // A top-level `=` before any body brace is an initializer: data.
                 Token::Equals if top_level => return true,
                 // A top-level `{` reached first is a function or aggregate body (no
@@ -2033,7 +2422,14 @@ impl Parser {
         // `extern`-led declaration emits no tentative data symbol, so those stay skippable.
         if !matches!(
             self.tokens.get(self.position),
-            Some(Token::KeywordInt | Token::KeywordChar | Token::KeywordShort | Token::KeywordUnsigned | Token::KeywordFloat | Token::KeywordVoid)
+            Some(
+                Token::KeywordInt
+                    | Token::KeywordChar
+                    | Token::KeywordShort
+                    | Token::KeywordUnsigned
+                    | Token::KeywordFloat
+                    | Token::KeywordVoid
+            )
         ) {
             return false;
         }
@@ -2062,7 +2458,7 @@ impl Parser {
     /// definitions that check deliberately skips.
     /// If the item at the cursor is a skipped INLINE function definition,
     /// the @N labels mwcc consumes compiling (then dropping) it — measured per
-    /// construct: a STATIC definition has base 3, a plain one 0; each `if`
+    /// construct: a STATIC definition has the generation's configured base, a plain one 0; each `if`
     /// adds 2; `else`/`switch`/`case`/`default`/`||`/`&&` add 1; `while` adds
     /// 4, `for` 5; a ternary adds 0. Unmeasured control constructs (`do`,
     /// `goto`) return an Err so the unit defers rather than mis-bump.
@@ -2076,7 +2472,9 @@ impl Parser {
             match token {
                 Token::Identifier(word) if word == "typedef" => return Ok(None),
                 Token::Identifier(word) if word == "static" => saw_static = true,
-                Token::Identifier(word) if word == "inline" || word == "__inline" => saw_inline = true,
+                Token::Identifier(word) if word == "inline" || word == "__inline" => {
+                    saw_inline = true
+                }
                 Token::ParenOpen => paren_depth += 1,
                 Token::ParenClose => {
                     paren_depth -= 1;
@@ -2090,7 +2488,11 @@ impl Parser {
                         return Ok(None);
                     }
                     // Scan the body braces, summing the measured label weights.
-                    let mut bump = if saw_static { 3usize } else { 0 };
+                    let mut bump = if saw_static {
+                        usize::from(self.skipped_static_inline_label_base)
+                    } else {
+                        0
+                    };
                     let mut brace_depth = 0i32;
                     // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
                     // value-position short-circuits add nothing).
@@ -2124,7 +2526,9 @@ impl Parser {
                             Token::Identifier(word) if word == "switch" => bump += 1,
                             Token::Identifier(word) if word == "case" => bump += 1,
                             Token::Identifier(word) if word == "default" => bump += 1,
-                            Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => bump += 1,
+                            Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => {
+                                bump += 1
+                            }
                             Token::KeywordWhile => {
                                 bump += 4;
                                 condition_pending = true;
@@ -2162,7 +2566,11 @@ impl Parser {
                 // A typedef is never a function definition. An `inline` definition
                 // is an SDK header helper mwcc only emits when used — skip it rather
                 // than compile it as a standalone symbol.
-                Token::Identifier(word) if word == "typedef" || word == "inline" || word == "__inline" => return false,
+                Token::Identifier(word)
+                    if word == "typedef" || word == "inline" || word == "__inline" =>
+                {
+                    return false
+                }
                 Token::ParenOpen => paren_depth += 1,
                 Token::ParenClose => {
                     paren_depth -= 1;
@@ -2195,7 +2603,8 @@ impl Parser {
     /// bodies that use the type as a pointer (`FILE *fp`, `OSThread *t`) parse
     /// instead of failing the whole translation unit on an "unknown type".
     pub(crate) fn capture_skipped_typedef(&mut self) {
-        if !matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if word == "typedef") {
+        if !matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if word == "typedef")
+        {
             return;
         }
         let mut index = self.position + 1;
@@ -2210,7 +2619,9 @@ impl Parser {
                 Token::BracketOpen => bracket += 1,
                 Token::BracketClose => bracket -= 1,
                 Token::Semicolon if brace == 0 && paren == 0 => break,
-                Token::Identifier(word) if brace == 0 && paren == 0 && bracket == 0 => alias = Some(word.clone()),
+                Token::Identifier(word) if brace == 0 && paren == 0 && bracket == 0 => {
+                    alias = Some(word.clone())
+                }
                 Token::EndOfFile => break,
                 _ => {}
             }
@@ -2275,7 +2686,13 @@ impl Parser {
         false
     }
 
-    pub(crate) fn function_body(&mut self, return_type: Type, name: String, is_static: bool, parameters: Vec<Parameter>) -> Compilation<Function> {
+    pub(crate) fn function_body(
+        &mut self,
+        return_type: Type,
+        name: String,
+        is_static: bool,
+        parameters: Vec<Parameter>,
+    ) -> Compilation<Function> {
         self.expect(Token::BraceOpen)?;
         // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro
         // artifact — the MSL ctype shape) is transparent: consume the inner
@@ -2291,7 +2708,8 @@ impl Parser {
         self.variable_types.clear();
         self.variable_array_bytes.clear();
         for parameter in &parameters {
-            self.variable_types.insert(parameter.name.clone(), parameter.parameter_type);
+            self.variable_types
+                .insert(parameter.name.clone(), parameter.parameter_type);
         }
 
         // Zero or more local declarations precede the return statement. A
@@ -2320,7 +2738,9 @@ impl Parser {
             // line/value-tracking paths would, e.g. `volatile int x = 5; return x;` ->
             // `li r3,5` instead of mwcc's store-then-load). Defer until that is modeled.
             if self.last_type_was_volatile {
-                return Err(Diagnostic::error("a volatile local is not supported yet (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a volatile local is not supported yet (roadmap)",
+                ));
             }
             // An array-typedef local (`Mtx proj;`) is exactly the flat local array
             // `f32 proj[12];` — reuse that machinery (frame codegen still defers it;
@@ -2331,12 +2751,25 @@ impl Parser {
                 }
                 loop {
                     let name = self.parse_identifier()?;
-                    if matches!(self.peek(), Token::BracketOpen | Token::Equals | Token::Star) {
+                    if matches!(
+                        self.peek(),
+                        Token::BracketOpen | Token::Equals | Token::Star
+                    ) {
                         return Err(Diagnostic::error("an array-typedef local with brackets/initializer is not supported yet (roadmap)"));
                     }
-                    locals.push(LocalDeclaration { declared_type: element, name: name.clone(), initializer: None, array_length: Some(total), is_static: false, data_bytes: None, is_const: false, row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)) });
+                    locals.push(LocalDeclaration {
+                        declared_type: element,
+                        name: name.clone(),
+                        initializer: None,
+                        array_length: Some(total),
+                        is_static: false,
+                        data_bytes: None,
+                        is_const: false,
+                        row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)),
+                    });
                     self.variable_types.insert(name.clone(), element);
-                    self.variable_array_bytes.insert(name.clone(), element.width() as u32 / 8 * total as u32);
+                    self.variable_array_bytes
+                        .insert(name.clone(), element.width() as u32 / 8 * total as u32);
                     if !self.eat_keyword(Token::Comma) {
                         break;
                     }
@@ -2350,7 +2783,9 @@ impl Parser {
                 // `RET (*name)(params)` / `RET (**name)(params)` — a function-
                 // pointer (or pointer to one) LOCAL: a 4-byte word; the signature
                 // is skipped (abort_exit's `void (**var_r31)(void);`).
-                if *self.peek() == Token::ParenOpen && self.tokens.get(self.position + 1) == Some(&Token::Star) {
+                if *self.peek() == Token::ParenOpen
+                    && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                {
                     self.advance(); // `(`
                     self.advance(); // `*`
                     self.eat_keyword(Token::Star);
@@ -2362,12 +2797,29 @@ impl Parser {
                         match self.advance() {
                             Token::ParenOpen => depth += 1,
                             Token::ParenClose => depth -= 1,
-                            Token::EndOfFile => return Err(Diagnostic::error("unterminated function-pointer local")),
+                            Token::EndOfFile => {
+                                return Err(Diagnostic::error(
+                                    "unterminated function-pointer local",
+                                ))
+                            }
                             _ => {}
                         }
                     }
-                    let initializer = if self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
-                    locals.push(LocalDeclaration { declared_type: Type::Pointer(Pointee::Pointer), name, initializer, array_length: None, is_static: false, data_bytes: None, is_const: false , row_bytes: None});
+                    let initializer = if self.eat_keyword(Token::Equals) {
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
+                    locals.push(LocalDeclaration {
+                        declared_type: Type::Pointer(Pointee::Pointer),
+                        name,
+                        initializer,
+                        array_length: None,
+                        is_static: false,
+                        data_bytes: None,
+                        is_const: false,
+                        row_bytes: None,
+                    });
                     if self.eat_keyword(Token::Comma) {
                         continue;
                     }
@@ -2384,7 +2836,9 @@ impl Parser {
                     }
                     self.advance();
                     if *self.peek() == Token::Star {
-                        return Err(Diagnostic::error("a multi-level pointer declarator list is not supported yet (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "a multi-level pointer declarator list is not supported yet (roadmap)",
+                        ));
                     }
                 }
                 let name = self.parse_identifier()?;
@@ -2395,7 +2849,7 @@ impl Parser {
                 // STATIC local array (`static const f32 c[] = {...};`) captures its
                 // byte image instead (it is static storage, not a frame slot).
                 let mut data_relocations: Vec<(u32, String, i32)> = Vec::new();
-                    let mut data_bytes: Option<Vec<u8>> = None;
+                let mut data_bytes: Option<Vec<u8>> = None;
                 let mut inner_elements: u16 = 1;
                 let array_length = if *self.peek() == Token::BracketOpen {
                     self.advance();
@@ -2441,10 +2895,13 @@ impl Parser {
                             // read; any other element is a CONSTANT EXPRESSION — enums,
                             // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
                             let is_float = matches!(self.peek(), Token::FloatLiteral(_))
-                                || (*self.peek() == Token::Minus && matches!(self.peek_at(1), Token::FloatLiteral(_)));
+                                || (*self.peek() == Token::Minus
+                                    && matches!(self.peek_at(1), Token::FloatLiteral(_)));
                             if is_float {
                                 let negative = self.eat_keyword(Token::Minus);
-                                let Token::FloatLiteral(value) = self.advance().clone() else { unreachable!() };
+                                let Token::FloatLiteral(value) = self.advance().clone() else {
+                                    unreachable!()
+                                };
                                 let value = if negative { -value } else { value };
                                 match declared_type {
                                     Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
@@ -2473,7 +2930,11 @@ impl Parser {
                     } else {
                         match explicit {
                             Some(length) => Some(length),
-                            None => return Err(Diagnostic::error("an array with no length needs an initializer")),
+                            None => {
+                                return Err(Diagnostic::error(
+                                    "an array with no length needs an initializer",
+                                ))
+                            }
                         }
                     }
                 } else {
@@ -2489,13 +2950,18 @@ impl Parser {
                         // committed handling flows through it); a relocated element
                         // (`{&g, 0}`) is not an image — defer.
                         let small_struct_tag = match (declared_type, struct_tag.as_ref()) {
-                            (Type::Struct { size, .. }, Some(tag)) if matches!(size, 4 | 8 | 12 | 16) => Some(tag.clone()),
+                            (Type::Struct { size, .. }, Some(tag))
+                                if matches!(size, 4 | 8 | 12 | 16) =>
+                            {
+                                Some(tag.clone())
+                            }
                             _ => None,
                         };
                         if let Some(tag) = small_struct_tag {
                             let tag = &tag;
                             let mut relocations = Vec::new();
-                            let image = self.parse_one_struct_relocated(tag, 0, &mut relocations)?;
+                            let image =
+                                self.parse_one_struct_relocated(tag, 0, &mut relocations)?;
                             if !relocations.is_empty() {
                                 return Err(Diagnostic::error("a relocated struct-local initializer is not supported yet (roadmap)"));
                             }
@@ -2520,9 +2986,20 @@ impl Parser {
                         Type::Pointer(_) | Type::StructPointer { .. } => 4,
                         other => other.width() as u32 / 8,
                     };
-                    self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
+                    self.variable_array_bytes
+                        .insert(name.clone(), element_bytes * length as u32);
                 }
-                locals.push(LocalDeclaration { declared_type, name, initializer, array_length, is_static, data_bytes, is_const: self.last_type_was_const, row_bytes: (inner_elements > 1).then(|| inner_elements * (declared_type.width() as u16 / 8)) });
+                locals.push(LocalDeclaration {
+                    declared_type,
+                    name,
+                    initializer,
+                    array_length,
+                    is_static,
+                    data_bytes,
+                    is_const: self.last_type_was_const,
+                    row_bytes: (inner_elements > 1)
+                        .then(|| inner_elements * (declared_type.width() as u16 / 8)),
+                });
                 if *self.peek() == Token::Comma {
                     self.advance();
                 } else {
@@ -2538,7 +3015,8 @@ impl Parser {
         // parameter `a` is a reassignment (an Assign the value tracker can inline), NOT a memory
         // store. Without this, `int f(int a){ a += 5; return a; }` lowered to a Store{Variable(a)}
         // the codegen rejected. Globals are not in this set, so they stay Stores (observable).
-        let mut local_names: std::collections::HashSet<String> = locals.iter().map(|local| local.name.clone()).collect();
+        let mut local_names: std::collections::HashSet<String> =
+            locals.iter().map(|local| local.name.clone()).collect();
         local_names.extend(parameters.iter().map(|parameter| parameter.name.clone()));
         // Block-scoped declarations hoist here (their initializations stay as
         // positioned Assign statements inside their blocks).
@@ -2580,14 +3058,19 @@ impl Parser {
                 // `if (c) return ...` is a guard, handled after the statement list.
                 if *self.peek() == Token::KeywordIf {
                     if self.block_if_ahead() {
-                        let statement = self.parse_if_statement(&mut local_names, &mut block_locals)?;
+                        let statement =
+                            self.parse_if_statement(&mut local_names, &mut block_locals)?;
                         statements.push(statement);
                         continue;
                     }
                     break;
                 }
-                if matches!(self.peek(), Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor) {
-                    statements.push(self.parse_loop_statement(&mut local_names, &mut block_locals)?);
+                if matches!(
+                    self.peek(),
+                    Token::KeywordWhile | Token::KeywordDo | Token::KeywordFor
+                ) {
+                    statements
+                        .push(self.parse_loop_statement(&mut local_names, &mut block_locals)?);
                     continue;
                 }
                 if let Some(statement) = self.parse_jump_statement()? {
@@ -2644,7 +3127,8 @@ impl Parser {
                     // list, splice the else body's statements, and resume the statement
                     // loop for whatever follows the block.
                     let else_returns = *self.peek() == Token::KeywordReturn
-                        || (*self.peek() == Token::BraceOpen && *self.peek_at(1) == Token::KeywordReturn);
+                        || (*self.peek() == Token::BraceOpen
+                            && *self.peek_at(1) == Token::KeywordReturn);
                     if !else_returns {
                         for guard in guards.drain(..) {
                             statements.push(Statement::If {
@@ -2658,7 +3142,9 @@ impl Parser {
                             then_body: vec![Statement::Return(Some(value))],
                             else_body: Vec::new(),
                         });
-                        statements.extend(self.parse_block_or_statement(&mut local_names, &mut block_locals)?);
+                        statements.extend(
+                            self.parse_block_or_statement(&mut local_names, &mut block_locals)?,
+                        );
                         continue 'body;
                     }
                     // `if (c) return v; else return d;` is the guard `if (c) return v;`
@@ -2666,7 +3152,9 @@ impl Parser {
                     // normalizes a negated `!c` to keep `v` as the in-place default, as
                     // mwcc does) rather than emitted as a bare `(c) ? v : d` ternary.
                     let Some(otherwise) = self.parse_guard_return()? else {
-                        return Err(Diagnostic::error("a bare `return;` in an else branch is not supported yet (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "a bare `return;` in an else branch is not supported yet (roadmap)",
+                        ));
                     };
                     // The body CONTINUES past the full-return diamond (a goto
                     // label follows — melee string.c's `adjust:`): migrate the
@@ -2750,7 +3238,21 @@ impl Parser {
 
         let mut locals = locals;
         locals.extend(block_locals);
-        Ok(Function { return_type, name, is_static, is_weak: false, text_deferred: false, parameters, locals, statements, guards, return_expression, section: None, asm_body: None, force_active: self.force_active })
+        Ok(Function {
+            return_type,
+            name,
+            is_static,
+            is_weak: false,
+            text_deferred: false,
+            parameters,
+            locals,
+            statements,
+            guards,
+            return_expression,
+            section: None,
+            asm_body: None,
+            force_active: self.force_active,
+        })
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {
@@ -2782,8 +3284,10 @@ impl Parser {
             // The `long`/`signed`/`double` specifier words, the `const`/`volatile`/
             // `register` qualifiers, and any typedef name.
             Token::Identifier(word) => {
-                matches!(word.as_str(), "long" | "signed" | "double" | "const" | "volatile" | "register" | "enum")
-                    || self.typedefs.contains_key(word)
+                matches!(
+                    word.as_str(),
+                    "long" | "signed" | "double" | "const" | "volatile" | "register" | "enum"
+                ) || self.typedefs.contains_key(word)
                     || self.struct_typedefs.contains_key(word)
                     || self.struct_pointer_typedefs.contains_key(word)
             }
@@ -2821,7 +3325,6 @@ impl Parser {
     }
 }
 
-
 /// Collapse a trailing `if (c) { return X; } return Y;` into `return (c ? X : Y)`,
 /// repeatedly, so nested if-return chains fold into nested ternaries — matching
 /// mwcc, which lowers an if-return immediately followed by a return to a select.
@@ -2836,9 +3339,20 @@ fn collapse_if_return_chain(statements: &mut Vec<Statement>) {
         if !collapsible {
             break;
         }
-        let Some(Statement::Return(Some(when_false))) = statements.pop() else { unreachable!() };
-        let Some(Statement::If { condition, then_body, .. }) = statements.pop() else { unreachable!() };
-        let Some(Statement::Return(Some(when_true))) = then_body.into_iter().next() else { unreachable!() };
+        let Some(Statement::Return(Some(when_false))) = statements.pop() else {
+            unreachable!()
+        };
+        let Some(Statement::If {
+            condition,
+            then_body,
+            ..
+        }) = statements.pop()
+        else {
+            unreachable!()
+        };
+        let Some(Statement::Return(Some(when_true))) = then_body.into_iter().next() else {
+            unreachable!()
+        };
         statements.push(Statement::Return(Some(Expression::Conditional {
             condition: Box::new(condition),
             when_true: Box::new(when_true),
@@ -2867,4 +3381,3 @@ fn lower_discarded_post_step(expression: Expression) -> Expression {
         other => other,
     }
 }
-

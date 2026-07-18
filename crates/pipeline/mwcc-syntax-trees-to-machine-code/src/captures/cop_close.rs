@@ -37,36 +37,100 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        self.output.symbol_order = ["__CARDGetControlBlock", "__CARDPutControlBlock"].into_iter().map(String::from).collect();
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        self.output.symbol_order = ["__CARDGetControlBlock", "__CARDPutControlBlock"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [11, 16] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 1, immediate: 8 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 28 });
-        self.output.instructions.push(Instruction::move_register(31, 3));
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 3, offset: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 1,
+            immediate: 8,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 28,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(31, 3));
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 3,
+            offset: 0,
+        });
         self.record_relocation(RelocationKind::Rel24, "__CARDGetControlBlock");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__CARDGetControlBlock".to_string() });
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__CARDGetControlBlock".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(4, 0, labels[&11]); // bge
         self.emit_branch_to(labels[&16]); // b
         self.bind_label(labels[&11]);
-        self.output.instructions.push(Instruction::load_immediate(0, -1));
-        self.output.instructions.push(Instruction::load_immediate(4, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 31, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 1, offset: 8 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, -1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(4, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 31,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 1,
+            offset: 8,
+        });
         self.record_relocation(RelocationKind::Rel24, "__CARDPutControlBlock");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__CARDPutControlBlock".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__CARDPutControlBlock".to_string(),
+        });
         self.bind_label(labels[&16]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 28 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 28,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

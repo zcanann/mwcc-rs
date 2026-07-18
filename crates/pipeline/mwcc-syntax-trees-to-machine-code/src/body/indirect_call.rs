@@ -20,7 +20,10 @@ impl Generator {
     ///
     /// Only a single pointer parameter as the base and all-constant arguments are modeled; a
     /// computed/parameter argument, a non-parameter base, or a returned result defers (unmeasured).
-    pub(crate) fn try_indirect_call_with_constant_args(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_indirect_call_with_constant_args(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         if function.return_type != Type::Void
             || function.return_expression.is_some()
             || !function.guards.is_empty()
@@ -31,7 +34,9 @@ impl Generator {
             return Ok(false);
         }
         // The body is exactly one bare indirect call.
-        let [Statement::Expression(Expression::CallThrough { target, arguments })] = function.statements.as_slice() else {
+        let [Statement::Expression(Expression::CallThrough { target, arguments })] =
+            function.statements.as_slice()
+        else {
             return Ok(false);
         };
         if arguments.is_empty() || arguments.len() > 8 {
@@ -54,7 +59,9 @@ impl Generator {
         let mut constants = Vec::with_capacity(arguments.len());
         for argument in arguments {
             match argument {
-                Expression::IntegerLiteral(value) if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                Expression::IntegerLiteral(value)
+                    if (i16::MIN as i64..=i16::MAX as i64).contains(value) =>
+                {
                     constants.push(*value as i16);
                 }
                 _ => return Ok(false),
@@ -72,17 +79,47 @@ impl Generator {
         // is not immediately followed by the save, so the link-register scheduler leaves it be.
         self.non_leaf = true;
         self.frame_size = 16;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::move_register(4, 3)); // mr r4,r3
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 0, immediate: constants[0] }); // li r3,c0
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 }); // stw r0,20
-        self.output.instructions.push(Instruction::LoadWord { d: 12, a: 4, offset }); // lwz r12,off(r4)
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::move_register(4, 3)); // mr r4,r3
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 0,
+            immediate: constants[0],
+        }); // li r3,c0
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        }); // stw r0,20
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: 4,
+            offset,
+        }); // lwz r12,off(r4)
         for (index, &value) in constants.iter().enumerate().skip(1) {
-            self.output.instructions.push(Instruction::AddImmediate { d: 3 + index as u8, a: 0, immediate: value });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3 + index as u8,
+                a: 0,
+                immediate: value,
+            });
         }
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
-        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegisterAndLink);
         self.emit_epilogue_and_return();
         Ok(true)
     }

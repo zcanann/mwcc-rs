@@ -10,7 +10,11 @@ impl Generator {
     /// means literal zero — so the Add/Subtract path keeps the value in the destination via
     /// place_operand instead.) Returns None for a non-signed-byte operand or a scratch destination,
     /// so the caller falls back to its normal place_operand/place_operand_or_scratch path.
-    pub(crate) fn signed_byte_scratch_source(&mut self, operand: &Expression, destination: u8) -> Compilation<Option<u8>> {
+    pub(crate) fn signed_byte_scratch_source(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<Option<u8>> {
         if destination != GENERAL_SCRATCH && self.is_signed_byte_load(operand)? {
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
@@ -20,12 +24,21 @@ impl Generator {
         }
     }
 
-    pub(crate) fn place_operand(&mut self, operand: &Expression, destination: u8, prefer_destination: bool) -> Compilation<Option<u8>> {
+    pub(crate) fn place_operand(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+        prefer_destination: bool,
+    ) -> Compilation<Option<u8>> {
         // A same-width 32-bit integer cast (`(unsigned)x` / `(int)u`) is a bit-exact
         // reinterpretation — place its operand directly rather than copying it
         // through the scratch. The consumer takes the signedness from the cast, so
         // e.g. `(unsigned)x >> n` stays a single `srwi`.
-        if let Expression::Cast { target_type, operand: inner } = operand {
+        if let Expression::Cast {
+            target_type,
+            operand: inner,
+        } = operand
+        {
             if target_type.width() == 32 && self.plain_integer_leaf_register(inner).is_some() {
                 return self.place_operand(inner, destination, prefer_destination);
             }
@@ -42,7 +55,9 @@ impl Generator {
         // different mwcc layout, so it still defers there.
         if !self.narrow_truncation_context && self.is_signed_byte_load(operand)? {
             if destination == GENERAL_SCRATCH {
-                return Err(Diagnostic::error("a signed char load operand needs a sign-extension (roadmap)"));
+                return Err(Diagnostic::error(
+                    "a signed char load operand needs a sign-extension (roadmap)",
+                ));
             }
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             self.emit_widen(destination, GENERAL_SCRATCH, 8, true);
@@ -57,11 +72,18 @@ impl Generator {
                 if let Some(register) = self.live_global_register(name, prefer_destination) {
                     return Ok(Some(register));
                 }
-                let target = if prefer_destination { destination } else { GENERAL_SCRATCH };
+                let target = if prefer_destination {
+                    destination
+                } else {
+                    GENERAL_SCRATCH
+                };
                 self.emit_global_load(name, target)?;
                 return Ok(Some(target));
             }
-            let location = self.locations.get(name).ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+            let location = self
+                .locations
+                .get(name)
+                .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
             let (register, width, signed) = (location.register, location.width, location.signed);
             if width == 32 {
                 return Ok(Some(register));
@@ -76,7 +98,11 @@ impl Generator {
             // extension lands in the consumer's working register: the destination
             // for addi-family consumers that keep their operand in place, otherwise
             // the scratch (mwcc routes `extsb r0,rX` ahead of an `rlwinm`/`mulli`).
-            let target = if prefer_destination { destination } else { GENERAL_SCRATCH };
+            let target = if prefer_destination {
+                destination
+            } else {
+                GENERAL_SCRATCH
+            };
             self.emit_widen(target, register, width, signed);
             return Ok(Some(target));
         }
@@ -108,7 +134,11 @@ impl Generator {
     /// inner sub-expressions emit virtuals), so the operand simply evaluates into
     /// the scratch like mwcc does (`mullw r0,...; neg r3,r0`). Used by the unary
     /// operators and the compare-against-zero idioms.
-    pub(crate) fn place_operand_or_scratch(&mut self, operand: &Expression, destination: u8) -> Compilation<u8> {
+    pub(crate) fn place_operand_or_scratch(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<u8> {
         match self.place_operand(operand, destination, false)? {
             Some(source) => Ok(source),
             None => {
@@ -117,5 +147,4 @@ impl Generator {
             }
         }
     }
-
 }

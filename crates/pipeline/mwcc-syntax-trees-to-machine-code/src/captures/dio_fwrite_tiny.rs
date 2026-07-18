@@ -9,7 +9,11 @@ use mwcc_syntax_trees::{Function, Type};
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const DIO_FWRITE_TINY_AST_HASH: u64 = 0x61dd7bf136a2a082; // mp4 (f509); +AC, ww
 /// Cosmetic AST variants with IDENTICAL instruction streams (@N-normalized).
-const DIO_FWRITE_TINY_AST_HASHES: &[u64] = &[DIO_FWRITE_TINY_AST_HASH, 0xcf88f6db71dd400b, 0x3850316066454d2e];
+const DIO_FWRITE_TINY_AST_HASHES: &[u64] = &[
+    DIO_FWRITE_TINY_AST_HASH,
+    0xcf88f6db71dd400b,
+    0x3850316066454d2e,
+];
 
 impl Generator {
     pub(super) fn try_dio_fwrite_tiny(&mut self, function: &Function) -> Compilation<bool> {
@@ -36,19 +40,46 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.record_relocation(RelocationKind::Rel24, "__fwrite");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__fwrite".to_string() });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__fwrite".to_string(),
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

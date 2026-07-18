@@ -244,7 +244,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         }
         // No register fields: branches, the call, and the barrier/system ops
         // (their ABI/system registers are implicit).
-        BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | BranchToLinkRegister
+        BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | BranchToLinkRegister | BranchToLinkRegisterAndLink
         | Branch { .. } | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. }
         | InstructionSynchronize | Synchronize | EnforceInOrderIo | ReturnFromInterrupt | SystemCall => {}
     }

@@ -311,6 +311,8 @@ pub enum Instruction {
     BranchConditionalToLinkRegister { options: u8, condition_bit: u8 },
     /// `blr` — return to link register.
     BranchToLinkRegister,
+    /// `blrl` — branch through the link register and link (legacy indirect call).
+    BranchToLinkRegisterAndLink,
     /// `bl target` — branch and link (call). The 24-bit displacement is filled by
     /// an `R_PPC_REL24` relocation to `target`, so the `.text` word is the
     /// placeholder `0x48000001`.

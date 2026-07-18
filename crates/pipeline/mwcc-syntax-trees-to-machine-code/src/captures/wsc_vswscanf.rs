@@ -37,29 +37,80 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::move_register(6, 5));
-        self.output.instructions.push(Instruction::move_register(5, 4));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::move_register(6, 5));
+        self.output
+            .instructions
+            .push(Instruction::move_register(5, 4));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
         self.record_relocation(RelocationKind::Addr16Ha, "__wStringRead");
-        self.output.instructions.push(Instruction::load_immediate_shifted(7, 0));
-        self.output.instructions.push(Instruction::AddImmediate { d: 4, a: 1, immediate: 8 });
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 1, offset: 8 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(7, 0));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 1,
+            immediate: 8,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 1,
+            offset: 8,
+        });
         self.record_relocation(RelocationKind::Addr16Lo, "__wStringRead");
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 7, immediate: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 12 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 7,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 12,
+        });
         self.record_relocation(RelocationKind::Rel24, "__wsformatter");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__wsformatter".to_string() });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__wsformatter".to_string(),
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

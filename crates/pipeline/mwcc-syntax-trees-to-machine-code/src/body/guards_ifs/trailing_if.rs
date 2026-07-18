@@ -10,7 +10,13 @@ impl Generator {
     /// then-body (and its `blr`) to the else, which is either a single statement
     /// or a nested trailing if (an `else if` chain). Each then-body is a single
     /// statement — multiple statements need the scheduler.
-    pub(crate) fn emit_trailing_if(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement], nested: bool) -> Compilation<()> {
+    pub(crate) fn emit_trailing_if(
+        &mut self,
+        condition: &Expression,
+        then_body: &[Statement],
+        else_body: &[Statement],
+        nested: bool,
+    ) -> Compilation<()> {
         // The top-level condition always sets cr0 with a fresh compare.
         self.emit_trailing_if_inner(condition, then_body, else_body, nested, false)
     }
@@ -19,13 +25,20 @@ impl Generator {
     /// condition is false. Normally this emits the compare (`emit_condition_test`);
     /// when `reuse_cr0`, the compare already sits in cr0 from a same-operand parent
     /// test, so read the shared branch table instead of re-testing.
-    fn condition_branch(&mut self, condition: &Expression, reuse_cr0: bool) -> Compilation<(u8, u8)> {
+    fn condition_branch(
+        &mut self,
+        condition: &Expression,
+        reuse_cr0: bool,
+    ) -> Compilation<(u8, u8)> {
         if reuse_cr0 {
             let Expression::Binary { operator, .. } = condition else {
-                return Err(Diagnostic::error("cr0 reuse expects a comparison (roadmap)"));
+                return Err(Diagnostic::error(
+                    "cr0 reuse expects a comparison (roadmap)",
+                ));
             };
-            return false_branch_bo_bi(*operator)
-                .ok_or_else(|| Diagnostic::error("cr0 reuse expects a relational comparison (roadmap)"));
+            return false_branch_bo_bi(*operator).ok_or_else(|| {
+                Diagnostic::error("cr0 reuse expects a relational comparison (roadmap)")
+            });
         }
         self.emit_condition_test(condition)
     }
@@ -47,7 +60,14 @@ impl Generator {
     /// exact. Only a SIGNED comparison qualifies: an unsigned operand-vs-zero test folds
     /// to an equality idiom in `emit_condition_test`, which the raw reuse table would not
     /// match, so that case stays deferred.
-    fn emit_trailing_if_inner(&mut self, condition: &Expression, then_body: &[Statement], else_body: &[Statement], nested: bool, reuse_cr0: bool) -> Compilation<()> {
+    fn emit_trailing_if_inner(
+        &mut self,
+        condition: &Expression,
+        then_body: &[Statement],
+        else_body: &[Statement],
+        nested: bool,
+        reuse_cr0: bool,
+    ) -> Compilation<()> {
         // `if (cond) g = X; else g = Y;` — both arms a single store to the same GLOBAL — is
         // byte-identical to the select `g = cond ? X : Y;`: mwcc coalesces to ONE store,
         // speculating one value and conditionally overwriting it (constants branchless-ify;
@@ -64,8 +84,16 @@ impl Generator {
         // else-if chain (`if(c) g=1; else if(d) g=2; else g=3;` stays full nested branches,
         // one store per level). When `nested` (this is the recursive else-if tail) both are
         // suppressed so the two-exit branch form is used per level.
-        if let ([Statement::Store { target: then_target, value: then_value }],
-                [Statement::Store { target: else_target, value: else_value }]) = (then_body, else_body)
+        if let (
+            [Statement::Store {
+                target: then_target,
+                value: then_value,
+            }],
+            [Statement::Store {
+                target: else_target,
+                value: else_value,
+            }],
+        ) = (then_body, else_body)
         {
             if !nested
                 && same_operand(then_target, else_target)
@@ -96,7 +124,9 @@ impl Generator {
             return Ok(());
         }
         if then_body.len() != 1 {
-            return Err(Diagnostic::error("a multi-statement if-body needs the scheduler (roadmap)"));
+            return Err(Diagnostic::error(
+                "a multi-statement if-body needs the scheduler (roadmap)",
+            ));
         }
         // A nested else-if whose comparison REUSES this comparison's condition register
         // (same operand against the same value — `if(c>0) … else if(c<0) …`, which mwcc
@@ -106,7 +136,11 @@ impl Generator {
         // table would not match, so that stays deferred. A different operand or value
         // re-tests normally and is unaffected.
         let mut child_reuses_cr0 = false;
-        if let [Statement::If { condition: else_condition, .. }] = else_body {
+        if let [Statement::If {
+            condition: else_condition,
+            ..
+        }] = else_body
+        {
             if shares_condition_register(condition, else_condition) {
                 if self.comparison_operands_signed(condition) {
                     child_reuses_cr0 = true;
@@ -117,24 +151,52 @@ impl Generator {
         }
         let (options, condition_bit) = self.condition_branch(condition, reuse_cr0)?;
         if else_body.is_empty() {
-            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options, condition_bit });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options,
+                    condition_bit,
+                });
             return self.emit_statement(&then_body[0]);
         }
         // An `else if` chain keeps the two-exit form: the then-arm returns (`blr`), then
         // the nested trailing `if` — reusing this cr0 when the child shares the operand.
-        if let [Statement::If { condition: else_condition, then_body: else_then, else_body: else_else }] = else_body {
+        if let [Statement::If {
+            condition: else_condition,
+            then_body: else_then,
+            else_body: else_else,
+        }] = else_body
+        {
             let branch_index = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
             self.emit_statement(&then_body[0])?;
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             let label = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_index]
+            {
                 *target = label;
             }
-            return self.emit_trailing_if_inner(else_condition, else_then, else_else, true, child_reuses_cr0);
+            return self.emit_trailing_if_inner(
+                else_condition,
+                else_then,
+                else_else,
+                true,
+                child_reuses_cr0,
+            );
         }
         if else_body.len() != 1 {
-            return Err(Diagnostic::error("a multi-statement else-body needs the scheduler (roadmap)"));
+            return Err(Diagnostic::error(
+                "a multi-statement else-body needs the scheduler (roadmap)",
+            ));
         }
         // For a truthy condition (a bare register compare) with global-store arms, mwcc
         // uses the re-test idiom: the then-arm falls through to a *re-test* of the
@@ -145,25 +207,40 @@ impl Generator {
         let truthy = !nested
             && (matches!(condition, Expression::Variable(_))
                 || matches!(condition, Expression::Unary { operator: UnaryOperator::LogicalNot, operand } if matches!(operand.as_ref(), Expression::Variable(_))));
-        let is_global_store = |statement: &Statement| {
-            matches!(statement, Statement::Store { target: Expression::Variable(name), .. } if self.globals.contains_key(name.as_str()))
-        };
+        let is_global_store = |statement: &Statement| matches!(statement, Statement::Store { target: Expression::Variable(name), .. } if self.globals.contains_key(name.as_str()));
         let use_retest = truthy && is_global_store(&then_body[0]) && is_global_store(&else_body[0]);
         let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
         self.emit_statement(&then_body[0])?;
         if use_retest {
             let label = self.output.instructions.len();
             let (retest_options, retest_bit) = self.emit_condition_test(condition)?;
-            self.output.instructions.push(Instruction::BranchConditionalToLinkRegister { options: retest_options ^ 8, condition_bit: retest_bit });
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options: retest_options ^ 8,
+                    condition_bit: retest_bit,
+                });
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_index]
+            {
                 *target = label;
             }
         } else {
             // Two-exit form: the then-arm returns, the conditional branch lands on the else.
-            self.output.instructions.push(Instruction::BranchToLinkRegister);
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegister);
             let label = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_index]
+            {
                 *target = label;
             }
         }
@@ -173,15 +250,27 @@ impl Generator {
 
     /// A non-trailing `if (c) { body }`: the false path branches forward over the
     /// body to the code that follows.
-    pub(crate) fn emit_if_forward(&mut self, condition: &Expression, then_body: &[Statement]) -> Compilation<()> {
+    pub(crate) fn emit_if_forward(
+        &mut self,
+        condition: &Expression,
+        then_body: &[Statement],
+    ) -> Compilation<()> {
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
         for statement in then_body {
             self.emit_statement(statement)?;
         }
         let label = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[branch_index]
+        {
             *target = label;
         }
         Ok(())
@@ -192,10 +281,21 @@ impl Generator {
     /// (the `return` materializes the value and runs the epilogue — `blr` for a
     /// leaf), then patch the branch to land on the continuation (the rest of the
     /// function, which supplies the other exit).
-    pub(crate) fn emit_if_early_return(&mut self, condition: &Expression, then_body: &[Statement], return_type: Type) -> Compilation<()> {
+    pub(crate) fn emit_if_early_return(
+        &mut self,
+        condition: &Expression,
+        then_body: &[Statement],
+        return_type: Type,
+    ) -> Compilation<()> {
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         let branch_index = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
         for statement in then_body {
             if let Statement::Return(value) = statement {
                 if let Some(value) = value {
@@ -211,7 +311,9 @@ impl Generator {
             }
         }
         let label = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[branch_index] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[branch_index]
+        {
             *target = label;
         }
         Ok(())
@@ -223,11 +325,19 @@ impl Generator {
     /// prologue (between `mflr` and the LR store), the early return materializes X
     /// and branches to a SHARED epilogue, and the continuation falls into that same
     /// epilogue. Returns whether this path took over the whole body.
-    pub(crate) fn try_non_leaf_if_first_early_return(&mut self, function: &Function) -> Compilation<bool> {
+    pub(crate) fn try_non_leaf_if_first_early_return(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
         // Shape: `if (c) { body…; return; } continuation…`, the if first, non-leaf,
         // no guards/locals, no else. The general/void return type only (a float
         // early return adds the FP result register — deferred).
-        let [Statement::If { condition, then_body, else_body }, rest @ ..] = function.statements.as_slice() else {
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }, rest @ ..] = function.statements.as_slice()
+        else {
             return Ok(false);
         };
         if !function_makes_call(function)
@@ -261,7 +371,9 @@ impl Generator {
         // the other exit through the trailing `return` expression. The early
         // return's value-ness must match (both void or both a value).
         let returns_value = function.return_type != Type::Void;
-        if returns_value != early_value.is_some() || returns_value != function.return_expression.is_some() {
+        if returns_value != early_value.is_some()
+            || returns_value != function.return_expression.is_some()
+        {
             return Ok(false);
         }
         // The condition test must be schedulable into the prologue: it cannot itself
@@ -278,10 +390,19 @@ impl Generator {
         // follows the continuation's calls (the false path skipped the then-body).
         let then_calls = leading.iter().any(statement_has_call);
         let rest_calls = rest.iter().any(statement_has_call);
-        if then_calls && early_value.as_ref().is_some_and(|value| constant_value(value).is_none()) {
+        if then_calls
+            && early_value
+                .as_ref()
+                .is_some_and(|value| constant_value(value).is_none())
+        {
             return Ok(false);
         }
-        if rest_calls && function.return_expression.as_ref().is_some_and(|value| constant_value(value).is_none()) {
+        if rest_calls
+            && function
+                .return_expression
+                .as_ref()
+                .is_some_and(|value| constant_value(value).is_none())
+        {
             return Ok(false);
         }
 
@@ -290,26 +411,42 @@ impl Generator {
         self.frame_size = 16;
         // The if's branch labels advance mwcc's anonymous-`@N` counter by 2.
         self.output.anonymous_label_bump = 2;
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
         let (options, condition_bit) = self.emit_condition_test(condition)?;
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         // A BARE void early return (`if (a) return; g();`) has no then-body at all:
         // mwcc folds it to a single INVERTED conditional branch straight to the shared
         // epilogue — `bne EPILOGUE; bl g; EPILOGUE:` — rather than a skip over an
         // unconditional branch.
         if leading.is_empty() && early_value.is_none() {
             let epilogue_branch = self.output.instructions.len();
-            self.output.instructions.push(Instruction::BranchConditionalForward {
-                options: options ^ 8,
-                condition_bit,
-                target: 0,
-            });
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: options ^ 8,
+                    condition_bit,
+                    target: 0,
+                });
             for statement in rest {
                 self.emit_statement(statement)?;
             }
             let epilogue_label = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[epilogue_branch] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[epilogue_branch]
+            {
                 *target = epilogue_label;
             }
             self.emit_epilogue_and_return();
@@ -317,7 +454,13 @@ impl Generator {
         }
         // False path skips the then-body to the continuation.
         let continuation_branch = self.output.instructions.len();
-        self.output.instructions.push(Instruction::BranchConditionalForward { options, condition_bit, target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target: 0,
+            });
         // The then-body: the leading calls/stores, then the early return's value.
         for statement in leading {
             self.emit_statement(statement)?;
@@ -330,7 +473,9 @@ impl Generator {
         // already in the result register), mwcc lets the early return fall through
         // to the epilogue rather than branch, so the slot is dropped below.
         let branch_slot = self.output.instructions.len();
-        self.output.instructions.push(Instruction::Branch { target: 0 });
+        self.output
+            .instructions
+            .push(Instruction::Branch { target: 0 });
         let continuation_label = self.output.instructions.len();
         for statement in rest {
             self.emit_statement(statement)?;
@@ -344,13 +489,17 @@ impl Generator {
             // epilogue directly. Drop the unnecessary branch.
             self.output.instructions.remove(branch_slot);
             let epilogue_label = self.output.instructions.len();
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[continuation_branch] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[continuation_branch]
+            {
                 *target = epilogue_label;
             }
         } else {
             // A non-empty continuation: the false path lands on it, and the early
             // return branches over it to the shared epilogue.
-            if let Instruction::BranchConditionalForward { target, .. } = &mut self.output.instructions[continuation_branch] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[continuation_branch]
+            {
                 *target = continuation_label;
             }
             let epilogue_label = self.output.instructions.len();
@@ -361,5 +510,4 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
-
 }

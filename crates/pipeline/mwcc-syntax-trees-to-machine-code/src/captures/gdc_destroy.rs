@@ -13,7 +13,8 @@ use mwcc_syntax_trees::{Function, Type};
 /// The Debug-AST hash of the captured function. Byte-identical across projects,
 /// but the AST repr differs (the DTORCALL macro expands differently): wind_waker
 /// vs super_mario_strikers.
-const GDC_DESTROY_AST_HASHES: &[u64] = &[0xb098beb92da52f1e, 0x5b61039f58ec9861, 0x30b2ff32239360ce];
+const GDC_DESTROY_AST_HASHES: &[u64] =
+    &[0xb098beb92da52f1e, 0x5b61039f58ec9861, 0x30b2ff32239360ce];
 
 impl Generator {
     pub(super) fn try_gdc_destroy(&mut self, function: &Function) -> Compilation<bool> {
@@ -35,32 +36,85 @@ impl Generator {
         // -- emit (non-leaf, 16-byte frame, only LR saved) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [4, 11] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
         self.emit_branch_to(labels[&11]); // b <test>
         self.bind_label(labels[&4]); // loop body: iter is in r3
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 3, offset: 0 }); // iter->next
-        self.output.instructions.push(Instruction::load_immediate(4, -1)); // li r4,-1
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 0,
+        }); // iter->next
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(4, -1)); // li r4,-1
         self.record_relocation(RelocationKind::EmbSda21, "__global_destructor_chain");
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 0, offset: 0 }); // head = iter->next
-        self.output.instructions.push(Instruction::LoadWord { d: 12, a: 3, offset: 4 }); // iter->destructor
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 3, offset: 8 }); // iter->object
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
-        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink); // (*destructor)(object, -1)
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 0,
+            offset: 0,
+        }); // head = iter->next
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: 3,
+            offset: 4,
+        }); // iter->destructor
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 3,
+            offset: 8,
+        }); // iter->object
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegisterAndLink); // (*destructor)(object, -1)
         self.bind_label(labels[&11]); // test: iter = head
         self.record_relocation(RelocationKind::EmbSda21, "__global_destructor_chain");
-        self.output.instructions.push(Instruction::LoadWord { d: 3, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 }); // cmplwi r3,0
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 3,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 }); // cmplwi r3,0
         self.emit_branch_conditional_to(4, 2, labels[&4]); // bne <body>
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 }

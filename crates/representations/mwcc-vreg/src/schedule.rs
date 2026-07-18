@@ -41,7 +41,7 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | FloatCompareOrdered { .. } | CompareWord { .. } | CompareWordImmediate { .. } | CompareWordImmediateField { .. }
             | CompareLogicalWord { .. } | CompareLogicalWordImmediate { .. }
             | BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | Branch { .. }
-            | BranchToLinkRegister | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. }
+            | BranchToLinkRegister | BranchToLinkRegisterAndLink | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. }
             | MoveFromLinkRegister { .. } | MoveToLinkRegister { .. } | MoveToCountRegister { .. }
     )
 }
@@ -89,7 +89,7 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
         return identity;
     }
     let Some(call) = instructions[..reload].iter().rposition(|instruction| {
-        matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToCountRegisterAndLink)
+        matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink)
     }) else {
         return identity;
     };
@@ -269,7 +269,7 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
         // loads regardless, so require only that a call (`bl`, or an indirect `bctrl`
         // through a global function pointer's `lwz r12`) follows the run, not that it is
         // the very next instruction. (Only the run is moved; the trailing work stays.)
-        if run == 0 || !instructions[next..].iter().any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToCountRegisterAndLink)) {
+        if run == 0 || !instructions[next..].iter().any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink)) {
             return identity;
         }
         run.min(2)

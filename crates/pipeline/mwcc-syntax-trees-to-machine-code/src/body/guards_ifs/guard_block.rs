@@ -12,7 +12,10 @@ impl Generator {
     /// cmpwi; beq J; li; li; J: or; blr — and the nested form re-tests each
     /// guard to the same join).
     pub(crate) fn try_guard_block_mutations(&mut self, function: &Function) -> Compilation<bool> {
-        if !function.guards.is_empty() || !function.locals.is_empty() || function_makes_call(function) {
+        if !function.guards.is_empty()
+            || !function.locals.is_empty()
+            || function_makes_call(function)
+        {
             return Ok(false);
         }
         if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
@@ -26,7 +29,11 @@ impl Generator {
         let mut body: &[Statement] = &function.statements;
         loop {
             match body {
-                [Statement::If { condition, then_body, else_body }] if else_body.is_empty() => {
+                [Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                }] if else_body.is_empty() => {
                     conditions.push(condition);
                     body = then_body;
                 }
@@ -40,7 +47,12 @@ impl Generator {
         // `if ((i0|i1)==0) return 7;` = the record-form test, bne PAST the
         // inline return to the mutations).
         let mut early_return: Option<(&Expression, &Expression)> = None;
-        if let [Statement::If { condition, then_body, else_body }, rest @ ..] = body {
+        if let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }, rest @ ..] = body
+        {
             if else_body.is_empty() {
                 if let [Statement::Return(Some(value))] = then_body.as_slice() {
                     early_return = Some((condition, value));
@@ -81,7 +93,12 @@ impl Generator {
             } else {
                 // Self-masking (`i0 &= C`, desugared): the in-place rlwinm
                 // (measured: clrlwi r3,r3,21 in source order).
-                if let Expression::Binary { operator: BinaryOperator::BitAnd, left, right } = value {
+                if let Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left,
+                    right,
+                } = value
+                {
                     if let Expression::Variable(read) = left.as_ref() {
                         if read == name {
                             if let Some(mask) = crate::analysis::constant_value(right) {
@@ -100,7 +117,11 @@ impl Generator {
                 // leaf ± i16 (Add with a possibly-negative constant).
                 let (leaf, offset) = match value {
                     Expression::Variable(read) => (read, 0i64),
-                    Expression::Binary { operator: BinaryOperator::Add, left, right } => {
+                    Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left,
+                        right,
+                    } => {
                         let Expression::Variable(read) = left.as_ref() else {
                             return Ok(false);
                         };
@@ -109,7 +130,11 @@ impl Generator {
                         };
                         (read, offset)
                     }
-                    Expression::Binary { operator: BinaryOperator::Subtract, left, right } => {
+                    Expression::Binary {
+                        operator: BinaryOperator::Subtract,
+                        left,
+                        right,
+                    } => {
                         let Expression::Variable(read) = left.as_ref() else {
                             return Ok(false);
                         };
@@ -137,7 +162,9 @@ impl Generator {
                 // a SELF-read (i0 = i0 + 5) reorders in mwcc (the
                 // independent li hoists above the self-addi; probed) — defer.
                 if read_location.register == target
-                    || assigns.iter().any(|&(written, _)| written == read_location.register)
+                    || assigns
+                        .iter()
+                        .any(|&(written, _)| written == read_location.register)
                 {
                     return Ok(false);
                 }
@@ -177,17 +204,23 @@ impl Generator {
             if let Expression::Variable(name) = value {
                 if self.lookup_general(name) == Some(result) {
                     let (options, condition_bit) = self.emit_condition_test(condition)?;
-                    self.output.instructions.push(Instruction::BranchConditionalToLinkRegister {
-                        options: options ^ 8,
-                        condition_bit,
-                    });
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalToLinkRegister {
+                            options: options ^ 8,
+                            condition_bit,
+                        });
                     for (register, block_value) in &assigns {
                         match block_value {
                             BlockValue::Small(constant) => {
-                                self.output.instructions.push(Instruction::load_immediate(*register, *constant));
+                                self.output
+                                    .instructions
+                                    .push(Instruction::load_immediate(*register, *constant));
                             }
                             BlockValue::High(high) => {
-                                self.output.instructions.push(Instruction::load_immediate_shifted(*register, *high));
+                                self.output
+                                    .instructions
+                                    .push(Instruction::load_immediate_shifted(*register, *high));
                             }
                             BlockValue::LeafAdd(source, offset) => {
                                 self.output.instructions.push(Instruction::AddImmediate {
@@ -220,9 +253,15 @@ impl Generator {
             self.emit_branch_conditional_to(options, condition_bit, mutations);
             match crate::analysis::constant_value(value) {
                 Some(constant) if i16::try_from(constant).is_ok() => {
-                    self.output.instructions.push(Instruction::load_immediate(result, constant as i16));
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(result, constant as i16));
                 }
-                Some(_) => return Err(Diagnostic::error("early-return constant beyond i16 (roadmap)")),
+                Some(_) => {
+                    return Err(Diagnostic::error(
+                        "early-return constant beyond i16 (roadmap)",
+                    ))
+                }
                 None => {
                     self.evaluate_tail(value, function.return_type, result)?;
                 }
@@ -233,10 +272,14 @@ impl Generator {
         for (register, value) in &assigns {
             match value {
                 BlockValue::Small(constant) => {
-                    self.output.instructions.push(Instruction::load_immediate(*register, *constant));
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate(*register, *constant));
                 }
                 BlockValue::High(high) => {
-                    self.output.instructions.push(Instruction::load_immediate_shifted(*register, *high));
+                    self.output
+                        .instructions
+                        .push(Instruction::load_immediate_shifted(*register, *high));
                 }
                 BlockValue::LeafAdd(source, offset) => {
                     self.output.instructions.push(Instruction::AddImmediate {
@@ -262,5 +305,4 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
-
 }

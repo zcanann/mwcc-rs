@@ -12,7 +12,10 @@ const DQ_POPPRIO_AST_HASH: u64 = 0x9065e9bc42b8b4b8;
 impl Generator {
     pub(super) fn try_dq_popprio(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "PopWaitingQueuePrio"
-            || !matches!(function.return_type, Type::Pointer(_) | Type::StructPointer { .. })
+            || !matches!(
+                function.return_type,
+                Type::Pointer(_) | Type::StructPointer { .. }
+            )
             || function.parameters.len() != 1
             || !self.frame_slots.is_empty()
         {
@@ -37,39 +40,124 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::move_register(31, 3));
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 12,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(31, 3));
         self.record_relocation(RelocationKind::Rel24, "OSDisableInterrupts");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSDisableInterrupts".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSDisableInterrupts".to_string(),
+        });
         self.record_relocation(RelocationKind::Addr16Ha, "WaitingQueue");
-        self.output.instructions.push(Instruction::load_immediate_shifted(4, 0));
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 5, s: 31, shift: 3 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(4, 0));
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 5,
+                s: 31,
+                shift: 3,
+            });
         self.record_relocation(RelocationKind::Addr16Lo, "WaitingQueue");
-        self.output.instructions.push(Instruction::AddImmediate { d: 0, a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::Add { d: 5, a: 0, b: 5 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 31, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 31, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 4, offset: 4 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 4,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 5, a: 0, b: 5 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 5,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 31,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 5,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 4,
+            a: 31,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 5,
+            a: 4,
+            offset: 4,
+        });
         self.record_relocation(RelocationKind::Rel24, "OSRestoreInterrupts");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "OSRestoreInterrupts".to_string() });
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
-        self.output.instructions.push(Instruction::move_register(3, 31));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 31, offset: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 31, offset: 4 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "OSRestoreInterrupts".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
+        self.output
+            .instructions
+            .push(Instruction::move_register(3, 31));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 31,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 31,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

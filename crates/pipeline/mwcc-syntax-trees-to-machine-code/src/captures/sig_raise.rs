@@ -37,70 +37,200 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
         self.non_leaf = true;
-        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> = std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
+            std::collections::HashMap::new();
         for target in [10, 12, 23, 31, 33, 37, 42] {
             labels.insert(target, self.fresh_label());
         }
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::StoreWord { s: 30, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::move_register(30, 3));
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 30, immediate: 1 });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 30,
+            a: 1,
+            offset: 8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(30, 3));
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: 30,
+                immediate: 1,
+            });
         self.emit_branch_conditional_to(12, 0, labels[&10]); // blt
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 30, immediate: 6 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: 30,
+                immediate: 6,
+            });
         self.emit_branch_conditional_to(4, 1, labels[&12]); // ble
         self.bind_label(labels[&10]);
-        self.output.instructions.push(Instruction::load_immediate(3, -1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, -1));
         self.emit_branch_to(labels[&42]); // b
         self.bind_label(labels[&12]);
-        self.output.instructions.push(Instruction::load_immediate(3, 4));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 4));
         self.record_relocation(RelocationKind::Rel24, "__begin_critical_region");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__begin_critical_region".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__begin_critical_region".to_string(),
+        });
         self.record_relocation(RelocationKind::Addr16Ha, "signal_funcs");
-        self.output.instructions.push(Instruction::load_immediate_shifted(3, 0));
-        self.output.instructions.push(Instruction::ShiftLeftImmediate { a: 0, s: 30, shift: 2 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 30,
+                shift: 2,
+            });
         self.record_relocation(RelocationKind::Addr16Lo, "signal_funcs");
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 3, immediate: 0 });
-        self.output.instructions.push(Instruction::Add { d: 3, a: 3, b: 0 });
-        self.output.instructions.push(Instruction::LoadWordWithUpdate { d: 31, a: 3, offset: -4 });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 31, immediate: 1 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::Add { d: 3, a: 3, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::LoadWordWithUpdate {
+                d: 31,
+                a: 3,
+                offset: -4,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 1,
+            });
         self.emit_branch_conditional_to(12, 2, labels[&23]); // beq
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: 0 });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: 0,
+        });
         self.bind_label(labels[&23]);
-        self.output.instructions.push(Instruction::load_immediate(3, 4));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 4));
         self.record_relocation(RelocationKind::Rel24, "__end_critical_region");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "__end_critical_region".to_string() });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 31, immediate: 1 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "__end_critical_region".to_string(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 1,
+            });
         self.emit_branch_conditional_to(12, 2, labels[&31]); // beq
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 31, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&33]); // bne
-        self.output.instructions.push(Instruction::CompareWordImmediate { a: 30, immediate: 1 });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: 30,
+                immediate: 1,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&33]); // bne
         self.bind_label(labels[&31]);
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.emit_branch_to(labels[&42]); // b
         self.bind_label(labels[&33]);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 31, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(4, 2, labels[&37]); // bne
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.record_relocation(RelocationKind::Rel24, "exit");
-        self.output.instructions.push(Instruction::BranchAndLink { target: "exit".to_string() });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: "exit".to_string(),
+        });
         self.bind_label(labels[&37]);
-        self.output.instructions.push(Instruction::move_register(12, 31));
-        self.output.instructions.push(Instruction::move_register(3, 30));
-        self.output.instructions.push(Instruction::MoveToCountRegister { s: 12 });
-        self.output.instructions.push(Instruction::BranchToCountRegisterAndLink);
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::move_register(12, 31));
+        self.output
+            .instructions
+            .push(Instruction::move_register(3, 30));
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegisterAndLink);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.bind_label(labels[&42]);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 12 });
-        self.output.instructions.push(Instruction::LoadWord { d: 30, a: 1, offset: 8 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 16 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 12,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 30,
+            a: 1,
+            offset: 8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
         Ok(true)
     }

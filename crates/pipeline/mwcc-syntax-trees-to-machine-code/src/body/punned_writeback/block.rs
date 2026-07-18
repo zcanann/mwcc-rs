@@ -29,31 +29,52 @@ impl Generator {
                     // The chain `i0 = i1 = C` assigns right-to-left: the
                     // inner local first, then the outer from the same
                     // constant (measured G1: li r5,0; li r4,0).
-                    if let Expression::Assign { target, value: inner_value } = value {
+                    if let Expression::Assign {
+                        target,
+                        value: inner_value,
+                    } = value
+                    {
                         let Expression::Variable(inner) = target.as_ref() else {
-                            return Err(Diagnostic::error("chained store target beyond the walker (roadmap)"));
+                            return Err(Diagnostic::error(
+                                "chained store target beyond the walker (roadmap)",
+                            ));
                         };
                         let inner_register = bindings
                             .iter()
                             .find(|(local, _)| local == inner)
                             .map(|&(_, register)| register)
                             .expect("validated");
-                        let constant = crate::analysis::constant_value(inner_value).expect("validated");
+                        let constant =
+                            crate::analysis::constant_value(inner_value).expect("validated");
                         let small = i16::try_from(constant).expect("validated");
-                        self.output.instructions.push(Instruction::load_immediate(inner_register, small));
-                        self.output.instructions.push(Instruction::load_immediate(register, small));
+                        self.output
+                            .instructions
+                            .push(Instruction::load_immediate(inner_register, small));
+                        self.output
+                            .instructions
+                            .push(Instruction::load_immediate(register, small));
                         index += 1;
                         continue;
                     }
                     if let Some(constant) = crate::analysis::constant_value(value) {
                         if let Ok(small) = i16::try_from(constant) {
-                            self.output.instructions.push(Instruction::load_immediate(register, small));
+                            self.output
+                                .instructions
+                                .push(Instruction::load_immediate(register, small));
                         } else {
                             self.output
                                 .instructions
-                                .push(Instruction::load_immediate_shifted(register, (constant >> 16) as i16));
+                                .push(Instruction::load_immediate_shifted(
+                                    register,
+                                    (constant >> 16) as i16,
+                                ));
                         }
-                    } else if let Expression::Binary { operator: BinaryOperator::BitAnd, right, .. } = value {
+                    } else if let Expression::Binary {
+                        operator: BinaryOperator::BitAnd,
+                        right,
+                        ..
+                    } = value
+                    {
                         let mask = crate::analysis::constant_value(right).expect("validated");
                         let (begin, end) = crate::analysis::rlwinm_mask(mask).expect("validated");
                         self.output.instructions.push(Instruction::RotateAndMask {
@@ -64,7 +85,9 @@ impl Generator {
                             end,
                         });
                     } else {
-                        return Err(Diagnostic::error("writeback mutation beyond the walker (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "writeback mutation beyond the walker (roadmap)",
+                        ));
                     }
                 }
                 Statement::Return(Some(value)) => {
@@ -72,16 +95,29 @@ impl Generator {
                     // epilogue (measured M1: fadd f1,f1,f1; b epi); f1 is
                     // never clobbered on walker paths, so a plain return
                     // is the bare branch.
-                    if let Expression::Binary { operator: BinaryOperator::Add, left, right } = value {
+                    if let Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left,
+                        right,
+                    } = value
+                    {
                         if matches!((left.as_ref(), right.as_ref()),
                             (Expression::Variable(a), Expression::Variable(b)) if a == b)
                         {
-                            self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 1, b: 1 });
+                            self.output.instructions.push(Instruction::FloatAddDouble {
+                                d: 1,
+                                a: 1,
+                                b: 1,
+                            });
                         }
                     }
                     self.emit_branch_to(epilogue);
                 }
-                Statement::If { condition, then_body, else_body } => {
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
                     if let Some((huge, zero)) = float_guard_condition(condition) {
                         // The NESTED inexact guard (measured G2): huge and
                         // 0.0 pool-load back-to-back into f2/f0, the fadd
@@ -94,8 +130,14 @@ impl Generator {
                         }
                         self.load_double_constant(2, huge);
                         self.load_double_constant(0, zero);
-                        self.output.instructions.push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
-                        self.output.instructions.push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
+                        self.output.instructions.push(Instruction::FloatAddDouble {
+                            d: 1,
+                            a: 2,
+                            b: 1,
+                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::FloatCompareOrdered { a: 1, b: 0 });
                         self.emit_branch_conditional_to(4, 1, join);
                         self.emit_writeback_block(then_body, bindings, join, epilogue)?;
                         index += 1;
@@ -131,7 +173,11 @@ impl Generator {
                         fn block_leaves(block: &[Statement]) -> bool {
                             match block.last() {
                                 Some(Statement::Return(_)) => true,
-                                Some(Statement::If { then_body, else_body, .. }) => {
+                                Some(Statement::If {
+                                    then_body,
+                                    else_body,
+                                    ..
+                                }) => {
                                     !else_body.is_empty()
                                         && block_leaves(then_body)
                                         && block_leaves(else_body)
@@ -160,10 +206,16 @@ impl Generator {
                         self.emit_branch_conditional_to(options, condition_bit, join);
                         self.emit_writeback_block(then_body, bindings, join, epilogue)?;
                     } else {
-                        return Err(Diagnostic::error("a non-tail guard in the writeback (roadmap)"));
+                        return Err(Diagnostic::error(
+                            "a non-tail guard in the writeback (roadmap)",
+                        ));
                     }
                 }
-                _ => return Err(Diagnostic::error("writeback statement beyond the walker (roadmap)")),
+                _ => {
+                    return Err(Diagnostic::error(
+                        "writeback statement beyond the walker (roadmap)",
+                    ))
+                }
             }
             index += 1;
         }

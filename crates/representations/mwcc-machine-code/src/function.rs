@@ -139,6 +139,10 @@ pub struct MachineFunction {
     /// Extra `@N` numbers consumed AFTER this function's pooled constants
     /// and before its extab pair (the nested punned-guard's inner block).
     pub post_constant_label_bump: u32,
+    /// Override the build-wide anonymous-counter gap after this function.
+    /// Most functions use the ABI generation's default; semantically inlined
+    /// helper families can retain additional compiler bookkeeping slots.
+    pub post_function_anonymous_bump: Option<u8>,
     /// Emitted by the DAG emitter: the order IS the schedule — the legacy
     /// post-allocation scheduling passes must not touch it.
     pub pre_scheduled: bool,
@@ -166,6 +170,15 @@ pub struct MachineFunction {
     /// function's external/global symbol indices in this order (see the codegen's
     /// `symbol_order`), falling back to relocation order for anything not listed.
     pub symbol_order: Vec<String>,
+    /// Referenced names known to designate functions (direct callees or
+    /// address-taken function symbols). The object writer uses this type channel
+    /// to distinguish an absolute function address from absolute data.
+    pub referenced_function_symbols: Vec<String>,
+    /// Capture-only pin for the translation unit's interleaved LOCAL data/function
+    /// symbol creation order. Most units use the writer's general policy; rare
+    /// legacy TUs create zero statics and static functions in a first-reference /
+    /// definition timeline that an exact capture records explicitly.
+    pub local_symbol_order: Vec<String>,
     /// Callee names this function references that were IMPLICITLY declared (called with
     /// no prior prototype — K&R style). mwcc creates an implicit callee's symbol at its
     /// first call site, INSIDE the function body, so it is emitted AFTER the function's
@@ -215,6 +228,7 @@ impl MachineFunction {
             has_float_branch: false,
             anonymous_label_bump: 0,
             post_constant_label_bump: 0,
+            post_function_anonymous_bump: None,
             pre_scheduled: false,
             frame: None,
             jump_tables: Vec::new(),
@@ -222,6 +236,8 @@ impl MachineFunction {
             strings_are_const: false,
             local_undefined_callees: Vec::new(),
             symbol_order: Vec::new(),
+            referenced_function_symbols: Vec::new(),
+            local_symbol_order: Vec::new(),
             implicit_external_callees: Vec::new(),
             is_asm: false,
             entry_points: Vec::new(),
@@ -250,13 +266,35 @@ impl MachineFunction {
     /// Intern a FRESH pool slot even when an equal constant already exists
     /// (mwcc's occasional twin slots for one value — strtold's zero doubles).
     pub fn intern_constant_new(&mut self, bits: u64, byte_width: u8) -> usize {
-        self.constants.push(PoolConstant { bits, byte_width, static_slot: false, image: false, force_new: true });
+        self.constants.push(PoolConstant {
+            bits,
+            byte_width,
+            static_slot: false,
+            image: false,
+            force_new: true,
+        });
         self.constants.len() - 1
     }
 
-    fn intern_constant_slotted(&mut self, bits: u64, byte_width: u8, static_slot: bool, image: bool) -> usize {
-        let constant = PoolConstant { bits, byte_width, static_slot, image, force_new: false };
-        if let Some(index) = self.constants.iter().position(|existing| *existing == constant) {
+    fn intern_constant_slotted(
+        &mut self,
+        bits: u64,
+        byte_width: u8,
+        static_slot: bool,
+        image: bool,
+    ) -> usize {
+        let constant = PoolConstant {
+            bits,
+            byte_width,
+            static_slot,
+            image,
+            force_new: false,
+        };
+        if let Some(index) = self
+            .constants
+            .iter()
+            .position(|existing| *existing == constant)
+        {
             return index;
         }
         self.constants.push(constant);
@@ -269,9 +307,16 @@ impl MachineFunction {
         let mut bytes = Vec::with_capacity(self.instructions.len() * 4);
         for (index, instruction) in self.instructions.iter().enumerate() {
             let word = match *instruction {
-                Instruction::BranchConditionalForward { options, condition_bit, target } => {
+                Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target,
+                } => {
                     let offset = (target as i64 - index as i64) * 4;
-                    (16 << 26) | ((options as u32) << 21) | ((condition_bit as u32) << 16) | ((offset as u32) & 0xfffc)
+                    (16 << 26)
+                        | ((options as u32) << 21)
+                        | ((condition_bit as u32) << 16)
+                        | ((offset as u32) & 0xfffc)
                 }
                 Instruction::Branch { target } => {
                     let offset = (target as i64 - index as i64) * 4;

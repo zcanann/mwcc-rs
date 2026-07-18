@@ -9,16 +9,41 @@
 
 mod writer;
 
+/// The compiler-specific header fields of Metrowerks' `.comment` section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommentFormat {
+    pub marker: u8,
+    pub version: (u8, u8, u8),
+}
+
+/// Build-specific conventions affecting relocatable-object encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectFormat {
+    pub comment: CommentFormat,
+    pub emb_sda21_offset: u8,
+    pub function_symbol_before_references: bool,
+    /// Whether file-scope LOCAL data symbols preserve declaration order across
+    /// initialized and zero-filled sections.
+    pub local_data_symbols_in_declaration_order: bool,
+    /// Whether file-scope static `.sbss` objects form a declaration-order phase
+    /// between exported explicit-zero and tentative-definition objects.
+    pub small_zero_statics_in_declaration_order: bool,
+    /// Whether `...rodata.0` precedes named `.rodata` data symbols.
+    pub rodata_anchor_before_data_symbols: bool,
+    /// `.comment` attribute flags for `...rodata.0`.
+    pub rodata_anchor_comment_flags: u32,
+    pub initial_anonymous_counter: u8,
+    pub post_leaf_function_anonymous_bump: u8,
+    pub post_framed_function_anonymous_bump: u8,
+}
+
 /// The inputs for one translation unit's object: the source file name (for the
 /// `FILE` symbol), the compiler identity, and one [`FunctionObject`] per function
 /// definition in source order.
 pub struct ObjectInput<'a> {
     pub source_name: &'a str,
-    /// The compiler version being reproduced (e.g. `(2, 4, 2)`); stamped into the
-    /// Metrowerks `.comment` record.
-    pub version: (u8, u8, u8),
-    /// The compiler build number; a `.comment` format marker depends on it.
-    pub build: u16,
+    /// Compiler-specific `.comment` header fields.
+    pub object_format: ObjectFormat,
     /// One entry per function definition, in source order. They share one `.text`,
     /// one `.sdata2` constant pool, one `.mwcats.text` (a record each), and the
     /// `extab`/`extabindex` unwind sections.
@@ -40,6 +65,8 @@ pub struct ObjectInput<'a> {
     /// declaration, so they emit ahead of statics first seen at their definition
     /// (measured: OSAlarm's `DecrementerExceptionHandler`).
     pub forward_declared_statics: &'a [String],
+    /// Optional capture pin for interleaved LOCAL data/function symbols.
+    pub local_symbol_order: &'a [String],
 }
 
 /// A file-scope variable defined in this object: its name, byte size, natural
@@ -56,6 +83,9 @@ pub struct DataObject<'a> {
     pub alignment: u32,
     pub initial_bytes: Option<Vec<u8>>,
     pub is_const: bool,
+    /// Route initialized data to `.data`/`.rodata` even when it is at most eight
+    /// bytes, bypassing the ordinary small-data threshold.
+    pub force_full_data_section: bool,
     /// A `static` global is file-local: same section routing, but its symbol binds
     /// LOCAL (and is emitted among the local symbols, not the global run).
     pub is_static: bool,
@@ -149,6 +179,9 @@ pub struct FunctionObject<'a> {
     pub phantom_externals: Vec<String>,
     /// `@N` numbers consumed after the constants, before the extab pair.
     pub post_constant_bump: u32,
+    /// Function-specific override for the build-wide anonymous-counter gap
+    /// after this function's complete block.
+    pub post_function_anonymous_bump: Option<u8>,
     /// The count of NEW (non-reused) strings this function contributes to the unit's
     /// `@N` string pool. They are numbered at the FRONT of this function's `@N` block
     /// (before its constants and unwind entries), so the writer advances by this first.
@@ -178,6 +211,8 @@ pub struct FunctionObject<'a> {
     /// this function's external/global symbols in this order, with a relocation-
     /// order fallback for anything not listed.
     pub symbol_order: Vec<String>,
+    /// Function-designator subset of `symbol_order`.
+    pub referenced_function_symbols: Vec<String>,
     /// Callees this function references that were IMPLICITLY declared (K&R first-use, no
     /// prototype). mwcc creates their symbols at the call site inside the body, so the
     /// writer emits them AFTER this function's own symbol rather than before it.
