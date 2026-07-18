@@ -5,6 +5,7 @@
 mod absolute_value;
 mod branches;
 mod float;
+mod memory_select;
 mod passes;
 mod record_condition;
 mod select;

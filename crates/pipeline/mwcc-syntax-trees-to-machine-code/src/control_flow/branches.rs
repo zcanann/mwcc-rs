@@ -106,6 +106,15 @@ impl Generator {
         let simple_arm =
             |arm: &Expression| leaf_name(arm).is_some() || constant_value(arm).is_some();
         let integer_arms = !self.is_float_value(when_true) && !self.is_float_value(when_false);
+        if self.try_emit_legacy_memory_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            tail,
+        )? {
+            return Ok(());
+        }
         if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
             && tail
             && !self.non_leaf
