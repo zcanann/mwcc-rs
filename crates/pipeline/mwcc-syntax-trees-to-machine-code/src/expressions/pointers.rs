@@ -332,7 +332,32 @@ impl Generator {
                         // magic-number divide mwcc emits; defer rather than mis-scale.
                         return Ok(false);
                     }
-                    match size.trailing_zeros() {
+                    let shift = size.trailing_zeros();
+                    if shift > 0
+                        && self.behavior.signed_power_of_two_division_style
+                            == mwcc_versions::SignedPowerOfTwoDivisionStyle::CarryCorrectedQuotient
+                    {
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: GENERAL_SCRATCH,
+                            a: right_register,
+                            b: left_register,
+                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::ShiftRightAlgebraicImmediate {
+                                a: destination,
+                                s: GENERAL_SCRATCH,
+                                shift: shift as u8,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::AddToZeroExtended {
+                                d: destination,
+                                a: destination,
+                            });
+                        return Ok(true);
+                    }
+                    match shift {
                         // byte element: the difference is the element count.
                         0 => self.output.instructions.push(Instruction::SubtractFrom {
                             d: destination,
