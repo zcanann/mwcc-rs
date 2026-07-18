@@ -109,6 +109,16 @@ impl Generator {
         let simple_arm =
             |arm: &Expression| leaf_name(arm).is_some() || constant_value(arm).is_some();
         let integer_arms = !self.is_float_value(when_true) && !self.is_float_value(when_false);
+        if self.try_emit_legacy_framed_simple_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            tail,
+            origin,
+        )? {
+            return Ok(());
+        }
         if self.try_emit_legacy_phi_select(
             condition,
             when_true,
