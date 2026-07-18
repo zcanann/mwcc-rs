@@ -260,6 +260,9 @@ pub(crate) struct Generator {
     /// and reloaded in the epilogue, and drive the unwind table's saved-GPR count.
     pub(crate) callee_saved: Vec<u8>,
     pub(crate) legacy_callee_saved_frame_layout: LegacyCalleeSavedFrameLayout,
+    /// Dead call-initializer locals removed from the semantic body. Build 163
+    /// still counts their discarded values while sizing callee-saved frame lanes.
+    pub(crate) legacy_discarded_call_locals: usize,
     /// Emit the saved-LR reload BEFORE the callee-saved GPR reloads in the epilogue. mwcc
     /// orders it this way for a callee-saved STORE sink (`foo(); gi = a;` — the saved value
     /// is stored after the call, then `lwz r0,20; lwz r31,12; mtlr`), as opposed to the

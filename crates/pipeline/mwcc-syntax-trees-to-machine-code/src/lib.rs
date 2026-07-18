@@ -237,6 +237,7 @@ pub fn lower_function(
         callee_saved: Vec::new(),
         legacy_callee_saved_frame_layout:
             generator::LegacyCalleeSavedFrameLayout::InferFromValueOrigin,
+        legacy_discarded_call_locals: 0,
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
         narrow_truncation_context: false,

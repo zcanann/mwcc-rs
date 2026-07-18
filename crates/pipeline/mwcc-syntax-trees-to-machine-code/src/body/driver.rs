@@ -1129,6 +1129,7 @@ impl Generator {
         // so the call is emitted for effect rather than dropped (`int x=g(); return a+b;` → `g();
         // return a+b;`).
         if let Some(hoisted) = hoist_dead_trailing_call_local(function) {
+            self.legacy_discarded_call_locals += 1;
             return self.evaluate_body(&hoisted);
         }
         // A body that CONTINUES past an early-return guard parses the guard into the ordered

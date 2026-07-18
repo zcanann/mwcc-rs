@@ -113,10 +113,27 @@ impl Generator {
                                 | Instruction::LoadHalfwordAlgebraicIndexed { .. }
                         )
                 });
-        let reserve_extra_lane = materialized_home_before_call
+        let promoted_parameter_count = self.output.instructions[..first_call]
+            .iter()
+            .filter(|instruction| {
+                matches!(instruction, Instruction::Or { a, s, b }
+                    if s == b && physical_saved.contains(a))
+            })
+            .count();
+        let reserve_inferred_lane = materialized_home_before_call
             || self.legacy_callee_saved_frame_layout
                 == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
-        let new_size = old_size + if reserve_extra_lane { 8 } else { 0 };
+        // Build 163 keeps dead call-initializer results in its frame-pressure
+        // accounting even after eliminating the values. Only that erased-local
+        // case exposes the pairwise lane count; ordinary promoted values retain
+        // the established single inferred lane regardless of their count.
+        let extra_lane_count = if self.legacy_discarded_call_locals == 0 {
+            usize::from(reserve_inferred_lane)
+        } else {
+            let promoted_values = promoted_parameter_count.max(usize::from(reserve_inferred_lane));
+            (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
+        };
+        let new_size = old_size + i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX);
 
         if let Instruction::StoreWordWithUpdate { offset, .. } = &mut self.output.instructions[0] {
             *offset = -new_size;
@@ -163,13 +180,6 @@ impl Generator {
         // `addi rS,rA,0` in build 163. Count pre-call home copies rather than
         // saved registers: a later call result may occupy another saved home,
         // but does not change the lone parameter copy's `mr` encoding.
-        let promoted_parameter_count = self.output.instructions[..first_call]
-            .iter()
-            .filter(|instruction| {
-                matches!(instruction, Instruction::Or { a, s, b }
-                    if s == b && physical_saved.contains(a))
-            })
-            .count();
         for index in 0..first_call {
             let (destination, source) = match self.output.instructions[index] {
                 Instruction::Or { a, s, b } if s == b && physical_saved.contains(&a) => (a, s),
