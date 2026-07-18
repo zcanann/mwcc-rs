@@ -5,6 +5,7 @@
 mod absolute_value;
 mod branch_preserving_select;
 mod branches;
+mod common_offset_select;
 mod float;
 mod passes;
 mod record_condition;

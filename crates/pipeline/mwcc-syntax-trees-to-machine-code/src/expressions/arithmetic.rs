@@ -420,6 +420,16 @@ impl Generator {
         else {
             return Ok(false);
         };
+        if self.try_emit_constant_select_with_common_offset(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            delta,
+            *origin,
+        )? {
+            return Ok(true);
+        }
         let shifted_true = Expression::IntegerLiteral(constant_value(when_true).unwrap() + delta);
         let shifted_false = Expression::IntegerLiteral(constant_value(when_false).unwrap() + delta);
         self.emit_conditional(
