@@ -38,6 +38,17 @@ impl Generator {
             return Err(Diagnostic::error("a logical (&&/||) condition in a select/guard needs short-circuit lowering (roadmap #21)"));
         }
 
+        if self.try_emit_legacy_nested_phi_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            tail,
+            origin,
+        )? {
+            return Ok(());
+        }
+
         // `cond ? <leaf/const> : <nested select>` — a ternary chain like `a==1 ? 10 : (a==2 ? 20
         // : 0)`. In tail position mwcc tests the condition, returns the true arm early when it
         // holds, and emits the false arm (the next select) as the fall-through:

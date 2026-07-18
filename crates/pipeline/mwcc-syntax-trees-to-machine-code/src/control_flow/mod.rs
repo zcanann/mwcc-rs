@@ -7,6 +7,7 @@ mod branch_preserving_select;
 mod branches;
 mod common_offset_select;
 mod float;
+mod nested_phi_select;
 mod passes;
 mod record_condition;
 mod select;
