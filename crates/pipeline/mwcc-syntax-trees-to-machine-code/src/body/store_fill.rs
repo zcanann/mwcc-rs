@@ -128,6 +128,11 @@ impl Generator {
     ) -> Compilation<()> {
         match plan {
             ConstStoreRun::Distinct(assignments) => {
+                if self.behavior.constant_store_schedule_style
+                    == mwcc_versions::ConstantStoreScheduleStyle::InterleavedPairs
+                {
+                    return self.emit_legacy_distinct_constant_store_run(statements, &assignments);
+                }
                 for &(constant, register) in &assignments {
                     self.load_integer_constant(register, constant as i64);
                 }

@@ -11,6 +11,7 @@ mod guards_ifs;
 mod if_else;
 mod indirect_call;
 mod ladders;
+mod legacy_constant_store;
 mod loops;
 mod passes;
 mod punned_select;

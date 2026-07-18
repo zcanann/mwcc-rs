@@ -15,12 +15,12 @@ use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, CoefficientTableRelocationStyle,
-    FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle,
-    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
-    MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowStoreConversionStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
-    WideConstantAddSchedule,
+    ConstantStoreScheduleStyle, FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle,
+    IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder,
+    LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
+    NarrowComputedReturnStyle, NarrowStoreConversionStyle, PunnedFloatFrameConvention,
+    ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
+    SymbolTraversalStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -82,6 +82,7 @@ pub enum Quirk {
     LegacyFixedAddressRmw,
     LegacyNarrowCompoundShift,
     LegacyTrueFirstLogicalOr,
+    LegacyInterleavedConstantStores,
 }
 
 impl Quirk {
@@ -119,6 +120,7 @@ impl Quirk {
             Quirk::LegacyFixedAddressRmw => QuirkKind::Intentional,
             Quirk::LegacyNarrowCompoundShift => QuirkKind::Intentional,
             Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
+            Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
         }
     }
 
@@ -210,6 +212,9 @@ impl Quirk {
                 "narrow compound shifts materialize build 163's count register"
             }
             Quirk::LegacyTrueFirstLogicalOr => "logical OR values use build 163's true-first exits",
+            Quirk::LegacyInterleavedConstantStores => {
+                "distinct constant-store runs use build 163's interleaved pair schedule"
+            }
         }
     }
 }
@@ -255,6 +260,8 @@ pub struct Behavior {
     pub jump_table_base_style: JumpTableBaseStyle,
     /// Elimination policy for redundant signed narrow conversions before narrow stores.
     pub narrow_store_conversion_style: NarrowStoreConversionStyle,
+    /// Scheduling of distinct constant values consumed by consecutive stores.
+    pub constant_store_schedule_style: ConstantStoreScheduleStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Whether zero equality negates its value into r0 before `cntlzw`.
@@ -345,6 +352,7 @@ impl Behavior {
                 .signed_power_of_two_division_style(),
             jump_table_base_style: config.build.profile.jump_table_base_style(),
             narrow_store_conversion_style: config.build.profile.narrow_store_conversion_style(),
+            constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
@@ -420,6 +428,9 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(
                 Quirk::LegacyPartialNarrowStoreConversionElision,
             ));
+        }
+        if self.constant_store_schedule_style == ConstantStoreScheduleStyle::InterleavedPairs {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyInterleavedConstantStores));
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));

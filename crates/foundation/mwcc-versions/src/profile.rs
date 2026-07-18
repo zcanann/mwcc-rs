@@ -120,6 +120,16 @@ pub enum WideConstantAddSchedule {
     SerialScratchWords,
 }
 
+/// Scheduling of distinct constants consumed by a consecutive store run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstantStoreScheduleStyle {
+    /// 2.4.x materializes every distinct value before emitting the stores.
+    PreloadAll,
+    /// 2.3.3 interleaves pairs of materializations with the earliest pending
+    /// global store; pointer/member runs serialize through r0.
+    InterleavedPairs,
+}
+
 /// AST traversal used to assign external/data symbol indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolTraversalStyle {
@@ -314,6 +324,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         NarrowStoreConversionStyle::ElideRedundantConversion
     }
 
+    fn constant_store_schedule_style(&self) -> ConstantStoreScheduleStyle {
+        ConstantStoreScheduleStyle::PreloadAll
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -457,6 +471,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn narrow_store_conversion_style(&self) -> NarrowStoreConversionStyle {
         NarrowStoreConversionStyle::PreserveOutsideBinaryAlu
+    }
+    fn constant_store_schedule_style(&self) -> ConstantStoreScheduleStyle {
+        ConstantStoreScheduleStyle::InterleavedPairs
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
