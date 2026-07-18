@@ -15,11 +15,11 @@ use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, CoefficientTableRelocationStyle,
-    FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle, IntegerSelectStyle,
-    JumpTableBaseStyle, LocalDataSymbolOrder, MaterializationCopyStyle, NarrowComputedReturnStyle,
-    NarrowStoreCastStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle,
-    WideConstantAddSchedule,
+    FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle, IntegerComparisonValueStyle,
+    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, MaterializationCopyStyle,
+    NarrowComputedReturnStyle, NarrowStoreCastStyle, PunnedFloatFrameConvention,
+    ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
+    SymbolTraversalStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -78,6 +78,7 @@ pub enum Quirk {
     LegacyInferredArrayFullDataSection,
     LegacyPreservedAsmBranchTargets,
     LegacyVerbatimAsmFrames,
+    LegacyFixedAddressRmw,
 }
 
 impl Quirk {
@@ -112,6 +113,7 @@ impl Quirk {
             Quirk::LegacyInferredArrayFullDataSection => QuirkKind::Intentional,
             Quirk::LegacyPreservedAsmBranchTargets => QuirkKind::Intentional,
             Quirk::LegacyVerbatimAsmFrames => QuirkKind::Intentional,
+            Quirk::LegacyFixedAddressRmw => QuirkKind::Intentional,
         }
     }
 
@@ -196,6 +198,9 @@ impl Quirk {
             Quirk::LegacyVerbatimAsmFrames => {
                 "asm frames stay verbatim and receive build 163's terminal return"
             }
+            Quirk::LegacyFixedAddressRmw => {
+                "fixed-address halfword updates use build 163's page base and promoted mask"
+            }
         }
     }
 }
@@ -275,6 +280,8 @@ pub struct Behavior {
     pub asm_branch_optimization_style: AsmBranchOptimizationStyle,
     /// Frame wrapper and implicit-return policy for `asm` functions.
     pub asm_function_finalization_style: AsmFunctionFinalizationStyle,
+    /// Base and mask selection for fixed-address halfword RMW leaves.
+    pub fixed_address_rmw_style: FixedAddressRmwStyle,
     /// How file-scope globals are addressed — small-data (SDA21 off r13) or
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
@@ -354,6 +361,7 @@ impl Behavior {
                 .inferred_array_uses_full_data_section(),
             asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
             asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
+            fixed_address_rmw_style: config.build.profile.fixed_address_rmw_style(),
             global_addressing: config.flags.global_addressing,
         }
     }
@@ -454,6 +462,9 @@ impl Behavior {
         {
             quirks.push(ActiveQuirk::of(Quirk::LegacyVerbatimAsmFrames));
         }
+        if self.fixed_address_rmw_style == FixedAddressRmwStyle::MaterializedPageWithPromotedMask {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyFixedAddressRmw));
+        }
         quirks
     }
 }
@@ -540,6 +551,10 @@ mod tests {
         assert_eq!(
             behavior.asm_function_finalization_style,
             AsmFunctionFinalizationStyle::VerbatimFrameWithTerminalReturn
+        );
+        assert_eq!(
+            behavior.fixed_address_rmw_style,
+            FixedAddressRmwStyle::MaterializedPageWithPromotedMask
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
     }

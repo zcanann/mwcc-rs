@@ -3,6 +3,7 @@
 use super::fixed_rmw_recognize::{fixed_slot, peel_casts};
 #[allow(unused_imports)]
 use super::*;
+use mwcc_versions::FixedAddressRmwStyle;
 
 impl Generator {
     /// A one-node fixed-register update: `bank[k] |= C` or `bank[k] &= C`.
@@ -64,7 +65,13 @@ impl Generator {
             BinaryOperator::BitAnd => {
                 // The store narrows to a halfword: `~0x8000` arrives as signed
                 // -32769 but semantically masks the loaded u16 with 0x7fff.
-                let Some((begin, end)) = rlwinm_mask(constant as u16 as i64) else {
+                let mask_range = match self.behavior.fixed_address_rmw_style {
+                    FixedAddressRmwStyle::FoldedDisplacementWithNarrowMask => {
+                        rlwinm_mask(constant as u16 as i64).or_else(|| rlwinm_mask(constant))
+                    }
+                    FixedAddressRmwStyle::MaterializedPageWithPromotedMask => rlwinm_mask(constant),
+                };
+                let Some((begin, end)) = mask_range else {
                     return Ok(false);
                 };
                 if end == 31 {
@@ -89,11 +96,25 @@ impl Generator {
         let address = u32::try_from(base_address)
             .map_err(|_| Diagnostic::error("fixed-address register bank is out of range"))?;
         let (high, low) = crate::expressions::split_address(address);
-        let offset = i16::try_from(low as i64 + index * 2)
-            .map_err(|_| Diagnostic::error("fixed-address RMW displacement is out of range"))?;
+        let materialize_page = self.behavior.fixed_address_rmw_style
+            == FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+            && index != 0;
+        let offset = i16::try_from(if materialize_page {
+            index * 2
+        } else {
+            low as i64 + index * 2
+        })
+        .map_err(|_| Diagnostic::error("fixed-address RMW displacement is out of range"))?;
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(3, high));
+        if materialize_page {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: low,
+            });
+        }
         self.output
             .instructions
             .push(crate::expressions::displacement_load(
@@ -213,26 +234,48 @@ impl Generator {
         };
 
         let (high, low) = crate::expressions::split_address(base_address);
-        let offset = i16::try_from(low as i64 + index * 2).map_err(|_| {
-            Diagnostic::error("fixed-address local RMW displacement is out of range")
-        })?;
+        let materialize_page = self.behavior.fixed_address_rmw_style
+            == FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+            && index != 0;
+        let offset = i16::try_from(if materialize_page {
+            index * 2
+        } else {
+            low as i64 + index * 2
+        })
+        .map_err(|_| Diagnostic::error("fixed-address local RMW displacement is out of range"))?;
+        let (base_register, loaded_register) = if materialize_page { (3, 4) } else { (4, 3) };
         self.output
             .instructions
-            .push(Instruction::load_immediate_shifted(4, high));
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(0, preserve_mask));
+            .push(Instruction::load_immediate_shifted(base_register, high));
+        if materialize_page {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: base_register,
+                a: base_register,
+                immediate: low,
+            });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, preserve_mask));
+        }
         self.output
             .instructions
             .push(crate::expressions::displacement_load(
                 Pointee::UnsignedShort,
-                3,
-                4,
+                loaded_register,
+                base_register,
                 offset,
             )?);
-        self.output
-            .instructions
-            .push(Instruction::And { a: 0, s: 3, b: 0 });
+        if materialize_page {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, preserve_mask));
+        }
+        self.output.instructions.push(Instruction::And {
+            a: 0,
+            s: loaded_register,
+            b: 0,
+        });
         self.output.instructions.push(Instruction::OrImmediate {
             a: 0,
             s: 0,
@@ -243,7 +286,7 @@ impl Generator {
             .push(crate::expressions::displacement_store(
                 Pointee::UnsignedShort,
                 0,
-                4,
+                base_register,
                 offset,
             )?);
         self.emit_epilogue_and_return();

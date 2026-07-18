@@ -193,6 +193,17 @@ pub enum AsmFunctionFinalizationStyle {
     VerbatimFrameWithTerminalReturn,
 }
 
+/// Base materialization and mask width for fixed-address halfword RMW leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedAddressRmwStyle {
+    /// 2.4.x folds the bank low half into each displacement and range-narrows
+    /// representable masks to the loaded halfword.
+    FoldedDisplacementWithNarrowMask,
+    /// 2.3.3 materializes the bank page for nonzero indexes and selects masks
+    /// from the original promoted 32-bit expression.
+    MaterializedPageWithPromotedMask,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -361,6 +372,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     fn asm_function_finalization_style(&self) -> AsmFunctionFinalizationStyle {
         AsmFunctionFinalizationStyle::GeneratedFrame
     }
+
+    fn fixed_address_rmw_style(&self) -> FixedAddressRmwStyle {
+        FixedAddressRmwStyle::FoldedDisplacementWithNarrowMask
+    }
 }
 
 /// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
@@ -468,6 +483,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn asm_function_finalization_style(&self) -> AsmFunctionFinalizationStyle {
         AsmFunctionFinalizationStyle::VerbatimFrameWithTerminalReturn
+    }
+
+    fn fixed_address_rmw_style(&self) -> FixedAddressRmwStyle {
+        FixedAddressRmwStyle::MaterializedPageWithPromotedMask
     }
 }
 
