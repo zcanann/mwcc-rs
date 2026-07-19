@@ -579,9 +579,10 @@ impl Generator {
                         return Ok(false);
                     }
                     // One leading `*ptr = C;` through an int-pointer PARAMETER may precede
-                    // the guards (frexp's `*eptr = 0`): its li hoists into the prologue
-                    // ahead of the guard's lis, and the store lands between the guard
-                    // word's load and its compare (measured). Anything else defers.
+                    // the guards (frexp's `*eptr = 0`). Its value and the guard's high
+                    // half hoist into the prologue, while the resolved version policy
+                    // schedules the store around the first guard-data use. Anything else
+                    // defers.
                     match function.statements.as_slice() {
                         [] => {}
                         [Statement::Store {
@@ -753,8 +754,8 @@ impl Generator {
         } else {
             16
         };
-        let mut frame_size = (((offset as i32) + frame_alignment - 1) / frame_alignment
-            * frame_alignment) as i16;
+        let mut frame_size =
+            (((offset as i32) + frame_alignment - 1) / frame_alignment * frame_alignment) as i16;
         let non_leaf = function_makes_call(function);
         // Build 163's direct integer-return puns keep frame-resident slots at
         // the same r1+8 base as 2.4.x but reserve another eight bytes at the top.
@@ -793,9 +794,9 @@ impl Generator {
         self.frame_size = frame_size;
 
         // The leading store's pieces: the pointer parameter's register and a fresh
-        // virtual for its li'd value (materialized in the prologue, stored after
-        // the first guard word's load). Requires the first test to be the probed
-        // lis-compare shape.
+        // virtual for its li'd value. Both generations materialize it in the
+        // prologue; the frame-guard store policy chooses its later issue point.
+        // Requires the first test to be the probed lis-compare shape.
         let store_plan: Option<(u8, u8, i16)> =
             match (guard_plan.is_some(), function.statements.as_slice()) {
                 (
@@ -923,8 +924,8 @@ impl Generator {
         // Prologue: build 163 saves LR in the caller linkage area before
         // allocating its 8-byte-aligned frame. Mainline allocates first and
         // stores LR above the new frame.
-        let linkage_first_nonleaf = non_leaf
-            && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        let linkage_first_nonleaf =
+            non_leaf && self.behavior.frame_convention == FrameConvention::LinkageFirst;
         if linkage_first_nonleaf {
             self.output
                 .instructions
@@ -1011,15 +1012,30 @@ impl Generator {
         if store_plan.is_some() && !matches!(first_test, Some(GuardTest::LisCompare { .. })) {
             return Ok(false); // the store's schedule is only measured against a lis-compare
         }
-        if let Some((value_home, _, constant)) = store_plan {
-            self.output
-                .instructions
-                .push(Instruction::load_immediate(value_home, constant));
-        }
-        if let Some(GuardTest::LisCompare { high, .. }) = first_test {
-            self.output
-                .instructions
-                .push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *high));
+        let legacy_guard_store = self.behavior.leading_frame_guard_store_style
+            == mwcc_versions::LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse;
+        if legacy_guard_store {
+            if let Some(GuardTest::LisCompare { high, .. }) = first_test {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *high));
+            }
+            if let Some((value_home, _, constant)) = store_plan {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(value_home, constant));
+            }
+        } else {
+            if let Some((value_home, _, constant)) = store_plan {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(value_home, constant));
+            }
+            if let Some(GuardTest::LisCompare { high, .. }) = first_test {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *high));
+            }
         }
         if non_leaf && !linkage_first_nonleaf {
             self.output
@@ -1328,7 +1344,8 @@ impl Generator {
 
     /// Emit one single-test frame guard's compare, returning the skip branch's
     /// (options, condition bit). `loaded` is the chain's shared-word tracker;
-    /// `store_plan` is the leading `*ptr = C` store landing after the first load.
+    /// `store_plan` is the leading `*ptr = C` store scheduled around the first
+    /// guard-data use according to the compiler generation.
     fn emit_frame_guard_test(
         &mut self,
         test: GuardTest,
@@ -1364,9 +1381,12 @@ impl Generator {
                         word
                     }
                 };
-                // The leading store fills the load latency — BEFORE the mask
-                // (measured: lwz; stw; clrlwi; cmpw).
-                if index == 0 {
+                // Mainline fills the load latency with the leading store, before
+                // a mask (measured: lwz; stw; clrlwi; cmpw).
+                if index == 0
+                    && self.behavior.leading_frame_guard_store_style
+                        == mwcc_versions::LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
+                {
                     if let Some((value_home, pointer, _)) = store_plan {
                         self.output.instructions.push(Instruction::StoreWord {
                             s: value_home,
@@ -1393,10 +1413,36 @@ impl Generator {
                     *loaded = Some((offset, word));
                     word
                 };
+                if index == 0
+                    && mask_top_bit
+                    && self.behavior.leading_frame_guard_store_style
+                        == mwcc_versions::LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse
+                {
+                    if let Some((value_home, pointer, _)) = store_plan {
+                        self.output.instructions.push(Instruction::StoreWord {
+                            s: value_home,
+                            a: pointer,
+                            offset: 0,
+                        });
+                    }
+                }
                 self.output.instructions.push(Instruction::CompareWord {
                     a: word,
                     b: GENERAL_SCRATCH,
                 });
+                if index == 0
+                    && !mask_top_bit
+                    && self.behavior.leading_frame_guard_store_style
+                        == mwcc_versions::LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse
+                {
+                    if let Some((value_home, pointer, _)) = store_plan {
+                        self.output.instructions.push(Instruction::StoreWord {
+                            s: value_home,
+                            a: pointer,
+                            offset: 0,
+                        });
+                    }
+                }
                 (options, condition_bit)
             }
             GuardTest::AddisZero {

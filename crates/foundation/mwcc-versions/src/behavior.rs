@@ -19,12 +19,13 @@ use crate::profile::{
     ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle,
     FoldedFloatCompareLinkageStyle, FrameConvention, GlobalArrayIndexStyle,
     IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
-    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
-    MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
-    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
-    SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
+    IntegerSelectStyle, JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder,
+    LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
+    NarrowComputedReturnStyle, NarrowGuardScheduleStyle, NarrowStoreConversionStyle,
+    NegativePowerOfTwoMultiplyStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
+    ReturnRegisterStoreStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
+    StoredGlobalReadStyle, SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
+    WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -60,6 +61,7 @@ pub enum Quirk {
     /// r0 before materializing the high word in that same register.
     LegacyFloatCastSchedule,
     LegacyFoldedFloatCompareBeforeLinkage,
+    LegacyGuardHighBeforeLeadingFrameStore,
     LegacyIntCallResultConversion,
     /// Build 163 preserves a compare/branch diamond for canonical integer
     /// boolean ternaries instead of using the 2.4.x branchless idioms.
@@ -116,6 +118,7 @@ impl Quirk {
             Quirk::FloatCompareLoadsValueFirst => QuirkKind::Intentional,
             Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
             Quirk::LegacyFoldedFloatCompareBeforeLinkage => QuirkKind::Intentional,
+            Quirk::LegacyGuardHighBeforeLeadingFrameStore => QuirkKind::Intentional,
             Quirk::LegacyIntCallResultConversion => QuirkKind::Intentional,
             Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
             Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
@@ -177,6 +180,9 @@ impl Quirk {
             }
             Quirk::LegacyFoldedFloatCompareBeforeLinkage => {
                 "folded float comparisons precede build 163's linkage instructions"
+            }
+            Quirk::LegacyGuardHighBeforeLeadingFrameStore => {
+                "punned frame guards delay build 163's pointer store until the first guard-data use"
             }
             Quirk::LegacyIntCallResultConversion => {
                 "integer call results use build 163's bias-first conversion frame"
@@ -327,6 +333,8 @@ pub struct Behavior {
     /// Placement of a bare float comparison relative to non-leaf linkage when a
     /// following CR operation folds equality.
     pub folded_float_compare_linkage_style: FoldedFloatCompareLinkageStyle,
+    /// Scheduling of a leading pointer store around a punned frame guard.
+    pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// In a float `if`-condition against a pool constant, whether the loaded value
     /// operand (member/global) is emitted before the constant load.
     pub float_compare_value_before_const: bool,
@@ -459,6 +467,7 @@ impl Behavior {
                 .build
                 .profile
                 .folded_float_compare_linkage_style(),
+            leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             float_compare_value_before_const: config
                 .build
                 .profile
@@ -554,6 +563,13 @@ impl Behavior {
         if self.folded_float_compare_linkage_style == FoldedFloatCompareLinkageStyle::CompareFirst {
             quirks.push(ActiveQuirk::of(
                 Quirk::LegacyFoldedFloatCompareBeforeLinkage,
+            ));
+        }
+        if self.leading_frame_guard_store_style
+            == LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse
+        {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyGuardHighBeforeLeadingFrameStore,
             ));
         }
         if self.int_call_result_conversion_style == IntCallResultConversionStyle::LegacyBiasFirst {
@@ -855,6 +871,10 @@ mod tests {
         assert_eq!(
             behavior.folded_float_compare_linkage_style,
             FoldedFloatCompareLinkageStyle::CompareFirst
+        );
+        assert_eq!(
+            behavior.leading_frame_guard_store_style,
+            LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse
         );
         assert!(behavior.float_compare_value_before_const);
         assert_eq!(

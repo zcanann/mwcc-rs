@@ -27,6 +27,17 @@ pub enum FoldedFloatCompareLinkageStyle {
     CompareFirst,
 }
 
+/// Schedule of a leading `*pointer = constant` around a punned frame guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeadingFrameGuardStoreStyle {
+    /// 2.4.x materializes the store value before the guard high half and issues
+    /// the store immediately after loading the guarded word.
+    StoreValueFirstAfterLoad,
+    /// Build 163 materializes the guard high half first and delays the store
+    /// until the first guard-data operation has issued.
+    GuardHighFirstAfterDataUse,
+}
+
 /// Lowering used when an integer condition selects the canonical boolean
 /// constants `1` and `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -418,6 +429,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         FoldedFloatCompareLinkageStyle::LinkRegisterFirst
     }
 
+    fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
+        LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
+    }
+
     /// In a float `if`-condition comparing a LOADED value (member/global) against a
     /// pool CONSTANT, whether the value operand is loaded BEFORE the constant.
     /// GC/2.0p1 and build 163 use `lfs f1,(v); lfs f0,k`, while mainline uses
@@ -684,6 +699,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn folded_float_compare_linkage_style(&self) -> FoldedFloatCompareLinkageStyle {
         FoldedFloatCompareLinkageStyle::CompareFirst
+    }
+
+    fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
+        LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse
     }
 
     fn float_compare_value_before_const(&self) -> bool {
