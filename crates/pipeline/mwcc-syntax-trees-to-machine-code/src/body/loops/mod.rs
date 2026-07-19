@@ -9,3 +9,29 @@ mod fill_copy;
 pub(crate) mod policy;
 mod poll_search;
 mod walker;
+
+/// Signedness of a byte pointer's element. Plain `char *` has already been
+/// resolved by the frontend to one of these two types for the selected mwcc
+/// build, so loop lowering should follow the type instead of consulting the
+/// build number again.
+fn byte_pointer_signedness(value_type: Type) -> Option<bool> {
+    match value_type {
+        Type::Pointer(Pointee::Char) => Some(true),
+        Type::Pointer(Pointee::UnsignedChar) => Some(false),
+        _ => None,
+    }
+}
+
+/// Test a byte loaded by a pointer-walk loop for zero. A signed byte uses
+/// mwcc's `extsb.` fusion; an unsigned byte is already promoted by `lbz` and
+/// uses the unsigned compare-immediate form.
+fn byte_truth_test(register: u8, signed: bool) -> Instruction {
+    if signed {
+        Instruction::ExtendSignByteRecord { a: 0, s: register }
+    } else {
+        Instruction::CompareLogicalWordImmediate {
+            a: register,
+            immediate: 0,
+        }
+    }
+}

@@ -1138,11 +1138,15 @@ impl Generator {
         }
         // Homes: params in their registers.
         let mut homes: Vec<(String, u8)> = Vec::new();
-        let mut char_pointers: Vec<String> = Vec::new();
+        let mut char_pointers: Vec<(String, bool)> = Vec::new();
         for parameter in &function.parameters {
             match parameter.parameter_type {
                 Type::Int => {}
-                Type::Pointer(Pointee::Char) => char_pointers.push(parameter.name.clone()),
+                pointer_type @ Type::Pointer(Pointee::Char | Pointee::UnsignedChar) => {
+                    let signed =
+                        byte_pointer_signedness(pointer_type).expect("matched byte pointer");
+                    char_pointers.push((parameter.name.clone(), signed));
+                }
                 _ => return Ok(false),
             }
             let Some(register) = self.lookup_general(&parameter.name) else {
@@ -1287,6 +1291,7 @@ impl Generator {
             },
             CharLoad {
                 pointer: u8,
+                signed: bool,
             },
         }
         let (loop_test, back_branch) = match condition {
@@ -1338,13 +1343,19 @@ impl Generator {
                 let Expression::Variable(name) = pointer.as_ref() else {
                     return Ok(false);
                 };
-                if !char_pointers.iter().any(|p| p == name) {
+                let Some((_, signed)) = char_pointers.iter().find(|(p, _)| p == name) else {
                     return Ok(false);
-                }
+                };
                 let Some(register) = home_of(&homes, name) else {
                     return Ok(false);
                 };
-                (LoopTest::CharLoad { pointer: register }, (4u8, 2u8)) // bne
+                (
+                    LoopTest::CharLoad {
+                        pointer: register,
+                        signed: *signed,
+                    },
+                    (4u8, 2u8),
+                ) // bne
             }
             _ => return Ok(false),
         };
@@ -1497,8 +1508,12 @@ impl Generator {
         let has_carried_store = loop_ops
             .iter()
             .any(|op| matches!(op, LoopOp::CarriedStore { .. }));
-        // The carried char takes the next free register (S2: r5).
-        let carry_register = if has_carried_store {
+        // A signed walk tests with `extsb. r0,carry`, so a byte used by the body
+        // must survive in the next free register (S2: r5). An unsigned walk tests
+        // non-destructively with `cmplwi` and carries the byte directly in r0.
+        let needs_separate_carry =
+            has_carried_store && matches!(&loop_test, LoopTest::CharLoad { signed: true, .. });
+        let carry_register = if needs_separate_carry {
             let top = homes
                 .iter()
                 .map(|&(_, r)| r)
@@ -1630,10 +1645,10 @@ impl Generator {
                     b: *right,
                 });
             }
-            LoopTest::CharLoad { pointer } => {
-                // A carried store loads into its carry register; a bare
-                // walk uses r0.
-                let target = if has_carried_store { carry_register } else { 0 };
+            LoopTest::CharLoad { pointer, signed } => {
+                // Only a signed carried store needs a separate carry register;
+                // a bare or unsigned walk uses r0.
+                let target = carry_register;
                 self.output.instructions.push(Instruction::LoadByteZero {
                     d: target,
                     a: *pointer,
@@ -1641,7 +1656,7 @@ impl Generator {
                 });
                 self.output
                     .instructions
-                    .push(Instruction::ExtendSignByteRecord { a: 0, s: target });
+                    .push(byte_truth_test(target, *signed));
             }
         }
         self.emit_branch_conditional_to(back_branch.0, back_branch.1, body_at);

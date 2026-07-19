@@ -20,8 +20,10 @@ impl Generator {
     /// the carried char params_top+1 (r5); dst rides r3 to the return.
     pub(crate) fn try_pipelined_copy(&mut self, function: &Function) -> Compilation<bool> {
         use mwcc_syntax_trees::{LoopKind, Statement};
-        if function.return_type != Type::Pointer(Pointee::Char)
-            || !function.guards.is_empty()
+        let Some(signed_byte) = byte_pointer_signedness(function.return_type) else {
+            return Ok(false);
+        };
+        if !function.guards.is_empty()
             || !self.frame_slots.is_empty()
             || function_makes_call(function)
         {
@@ -30,8 +32,8 @@ impl Generator {
         let [dst_param, src_param] = function.parameters.as_slice() else {
             return Ok(false);
         };
-        if dst_param.parameter_type != Type::Pointer(Pointee::Char)
-            || src_param.parameter_type != Type::Pointer(Pointee::Char)
+        if byte_pointer_signedness(dst_param.parameter_type) != Some(signed_byte)
+            || byte_pointer_signedness(src_param.parameter_type) != Some(signed_byte)
         {
             return Ok(false);
         }
@@ -40,7 +42,7 @@ impl Generator {
         let [alias_local] = function.locals.as_slice() else {
             return Ok(false);
         };
-        if alias_local.declared_type != Type::Pointer(Pointee::Char)
+        if byte_pointer_signedness(alias_local.declared_type) != Some(signed_byte)
             || !matches!(&alias_local.initializer, Some(Expression::Variable(v)) if v == dst)
         {
             return Ok(false);
@@ -97,8 +99,11 @@ impl Generator {
             return Ok(false);
         };
         let top = dst_register.max(src_register);
-        let carry = top + 1;
-        let alias_register = top + 2;
+        // `extsb.` destroys r0 for a signed byte, so its store needs a separate
+        // carry register. The unsigned `cmplwi` test is non-destructive and keeps
+        // the byte in r0, leaving the next register available for the pointer alias.
+        let carry = if signed_byte { top + 1 } else { 0 };
+        let alias_register = if signed_byte { top + 2 } else { top + 1 };
         // -- emit --
         self.output
             .instructions
@@ -117,7 +122,7 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::ExtendSignByteRecord { a: 0, s: carry });
+            .push(byte_truth_test(carry, signed_byte));
         self.output.instructions.push(Instruction::StoreByte {
             s: carry,
             a: alias_register,
