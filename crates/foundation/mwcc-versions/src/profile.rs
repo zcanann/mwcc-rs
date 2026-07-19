@@ -205,6 +205,16 @@ pub enum ReturnRegisterStoreStyle {
     DelayLeadingResultStoreOneSlot,
 }
 
+/// Placement of register parameters that survive a comma operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommaValuePlacementStyle {
+    /// 2.4.x keeps the surviving value in its incoming register.
+    RegisterResident,
+    /// 2.3.3 gives the surviving value an argument-home stack slot and reloads
+    /// it at the consumer.
+    ParameterHome,
+}
+
 /// AST traversal used to assign external/data symbol indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolTraversalStyle {
@@ -468,6 +478,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         ReturnRegisterStoreStyle::SourceOrder
     }
 
+    fn comma_value_placement_style(&self) -> CommaValuePlacementStyle {
+        CommaValuePlacementStyle::RegisterResident
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -656,6 +670,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn return_register_store_style(&self) -> ReturnRegisterStoreStyle {
         ReturnRegisterStoreStyle::DelayLeadingResultStoreOneSlot
+    }
+    fn comma_value_placement_style(&self) -> CommaValuePlacementStyle {
+        CommaValuePlacementStyle::ParameterHome
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {

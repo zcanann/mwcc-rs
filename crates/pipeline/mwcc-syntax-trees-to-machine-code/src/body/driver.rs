@@ -1157,6 +1157,9 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        if self.try_legacy_comma_parameter_homes(function)? {
+            return Ok(());
+        }
         // A leaf `fixed_regs[k] |= C` / `&= C`: one shared materialized base,
         // load/update/store through r0. This is the single-node fixed-RMW schedule.
         if self.try_fixed_address_immediate_rmw(function)? {

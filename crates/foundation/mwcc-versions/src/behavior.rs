@@ -15,9 +15,9 @@ use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
-    CoefficientTableRelocationStyle, ComputedStoreIssueStyle, ConstantStoreScheduleStyle,
-    FieldMergeStyle, FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle,
-    IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
+    CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
+    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle, FrameConvention,
+    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
     NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
@@ -93,6 +93,7 @@ pub enum Quirk {
     LegacyInPlaceNegativePowerOfTwoMultiply,
     LegacyLeftBaseFieldMerge,
     LegacyDelayedLeadingResultStore,
+    LegacyCommaParameterHomes,
     LegacyInPlaceBitFieldExtraction,
     LegacyConstantJoinReturnBeforeLrReload,
     LegacyGuardStoreBeforeReturnValue,
@@ -142,6 +143,7 @@ impl Quirk {
             Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => QuirkKind::Intentional,
             Quirk::LegacyLeftBaseFieldMerge => QuirkKind::Intentional,
             Quirk::LegacyDelayedLeadingResultStore => QuirkKind::Intentional,
+            Quirk::LegacyCommaParameterHomes => QuirkKind::Intentional,
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
@@ -259,6 +261,9 @@ impl Quirk {
             Quirk::LegacyDelayedLeadingResultStore => {
                 "leaf store runs delay build 163's leading r3 result store by one slot"
             }
+            Quirk::LegacyCommaParameterHomes => {
+                "comma-operator values use build 163's parameter-home stack slots"
+            }
             Quirk::LegacyInPlaceBitFieldExtraction => {
                 "bit-field unit loads extract in place in build 163"
             }
@@ -341,6 +346,8 @@ pub struct Behavior {
     pub field_merge_style: FieldMergeStyle,
     /// Ordering of a leading store from the live r3 return value.
     pub return_register_store_style: ReturnRegisterStoreStyle,
+    /// Placement of register parameters that survive a comma operator.
+    pub comma_value_placement_style: CommaValuePlacementStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
@@ -453,6 +460,7 @@ impl Behavior {
                 .negative_power_of_two_multiply_style(),
             field_merge_style: config.build.profile.field_merge_style(),
             return_register_store_style: config.build.profile.return_register_store_style(),
+            comma_value_placement_style: config.build.profile.comma_value_placement_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -558,6 +566,9 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(
                 Quirk::LegacyDelayedLeadingResultStore,
             ));
+        }
+        if self.comma_value_placement_style == CommaValuePlacementStyle::ParameterHome {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyCommaParameterHomes));
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
@@ -778,6 +789,10 @@ mod tests {
         assert_eq!(
             behavior.return_register_store_style,
             ReturnRegisterStoreStyle::DelayLeadingResultStoreOneSlot
+        );
+        assert_eq!(
+            behavior.comma_value_placement_style,
+            CommaValuePlacementStyle::ParameterHome
         );
         assert!(behavior.lr_save_precedes_float_const);
         assert_eq!(

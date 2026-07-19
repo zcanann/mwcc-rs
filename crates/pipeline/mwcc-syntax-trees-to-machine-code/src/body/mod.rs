@@ -4,6 +4,7 @@
 
 mod call_prologue;
 mod callee_saved;
+mod comma_operator;
 mod conditional;
 mod dispatchers;
 mod driver;
