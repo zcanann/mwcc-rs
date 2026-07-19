@@ -15,12 +15,14 @@ use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
-    CoefficientTableRelocationStyle, ComputedStoreIssueStyle, ConstantStoreScheduleStyle, FieldMergeStyle,
-    FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
+    CoefficientTableRelocationStyle, ComputedStoreIssueStyle, ConstantStoreScheduleStyle,
+    FieldMergeStyle, FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle,
+    IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
     NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
-    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle,
+    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
+    SignedPowerOfTwoDivisionStyle,
     SmallZeroDataLayoutStyle, SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
     WideConstantAddSchedule,
 };
@@ -90,6 +92,7 @@ pub enum Quirk {
     LegacyInPlaceValueTrackedMutation,
     LegacyInPlaceNegativePowerOfTwoMultiply,
     LegacyLeftBaseFieldMerge,
+    LegacyDelayedLeadingResultStore,
     LegacyInPlaceBitFieldExtraction,
     LegacyConstantJoinReturnBeforeLrReload,
     LegacyGuardStoreBeforeReturnValue,
@@ -138,6 +141,7 @@ impl Quirk {
             Quirk::LegacyInPlaceValueTrackedMutation => QuirkKind::Intentional,
             Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => QuirkKind::Intentional,
             Quirk::LegacyLeftBaseFieldMerge => QuirkKind::Intentional,
+            Quirk::LegacyDelayedLeadingResultStore => QuirkKind::Intentional,
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
@@ -252,6 +256,9 @@ impl Quirk {
             Quirk::LegacyLeftBaseFieldMerge => {
                 "field merges preserve build 163's masked left-operand base"
             }
+            Quirk::LegacyDelayedLeadingResultStore => {
+                "leaf store runs delay build 163's leading r3 result store by one slot"
+            }
             Quirk::LegacyInPlaceBitFieldExtraction => {
                 "bit-field unit loads extract in place in build 163"
             }
@@ -332,6 +339,8 @@ pub struct Behavior {
     pub negative_power_of_two_multiply_style: NegativePowerOfTwoMultiplyStyle,
     /// Base orientation and redundant-mask policy for disjoint field merges.
     pub field_merge_style: FieldMergeStyle,
+    /// Ordering of a leading store from the live r3 return value.
+    pub return_register_store_style: ReturnRegisterStoreStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
@@ -443,6 +452,7 @@ impl Behavior {
                 .profile
                 .negative_power_of_two_multiply_style(),
             field_merge_style: config.build.profile.field_merge_style(),
+            return_register_store_style: config.build.profile.return_register_store_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -541,6 +551,13 @@ impl Behavior {
         }
         if self.field_merge_style == FieldMergeStyle::LeftBasePreserveMask {
             quirks.push(ActiveQuirk::of(Quirk::LegacyLeftBaseFieldMerge));
+        }
+        if self.return_register_store_style
+            == ReturnRegisterStoreStyle::DelayLeadingResultStoreOneSlot
+        {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyDelayedLeadingResultStore,
+            ));
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
@@ -757,6 +774,10 @@ mod tests {
         assert_eq!(
             behavior.field_merge_style,
             FieldMergeStyle::LeftBasePreserveMask
+        );
+        assert_eq!(
+            behavior.return_register_store_style,
+            ReturnRegisterStoreStyle::DelayLeadingResultStoreOneSlot
         );
         assert!(behavior.lr_save_precedes_float_const);
         assert_eq!(

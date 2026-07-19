@@ -194,6 +194,17 @@ pub enum FieldMergeStyle {
     LeftBasePreserveMask,
 }
 
+/// Ordering of a leaf global-store run when the first value is already the r3
+/// return value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReturnRegisterStoreStyle {
+    /// 2.4.x keeps the source statement order.
+    SourceOrder,
+    /// 2.3.3 fills the first store slot from the next ready register, then emits
+    /// the leading r3 store before continuing in source order.
+    DelayLeadingResultStoreOneSlot,
+}
+
 /// AST traversal used to assign external/data symbol indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolTraversalStyle {
@@ -453,6 +464,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         FieldMergeStyle::RightBaseElideCoveredMask
     }
 
+    fn return_register_store_style(&self) -> ReturnRegisterStoreStyle {
+        ReturnRegisterStoreStyle::SourceOrder
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -638,6 +653,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn field_merge_style(&self) -> FieldMergeStyle {
         FieldMergeStyle::LeftBasePreserveMask
+    }
+    fn return_register_store_style(&self) -> ReturnRegisterStoreStyle {
+        ReturnRegisterStoreStyle::DelayLeadingResultStoreOneSlot
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {

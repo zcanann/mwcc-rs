@@ -2265,6 +2265,9 @@ impl Generator {
         if self.try_leaf_constant_fill(function)? {
             return Ok(());
         }
+        if self.try_legacy_delayed_result_store_run(function)? {
+            return Ok(());
+        }
         // Leaf multi-store bodies of COMPUTED int values through the measured
         // models — the DAG emitter (linearize + assign_registers). Runs after
         // the proven store-fill arms, catching what they defer.

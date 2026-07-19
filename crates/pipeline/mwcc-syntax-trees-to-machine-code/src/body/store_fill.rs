@@ -4,6 +4,69 @@
 use super::*;
 
 impl Generator {
+    /// Build 163's leaf scheduler delays an initial global store from the live
+    /// r3 return value by one slot: `ga=a; gb=b; return a` becomes stores from
+    /// r4, then r3. A longer run continues in source order after that swap.
+    pub(crate) fn try_legacy_delayed_result_store_run(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if self.behavior.return_register_store_style
+            != mwcc_versions::ReturnRegisterStoreStyle::DelayLeadingResultStoreOneSlot
+            || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || function.statements.len() < 2
+            || self.behavior.global_addressing != GlobalAddressing::SmallData
+        {
+            return Ok(false);
+        }
+        let Some(return_expression) = function.return_expression.as_ref() else {
+            return Ok(false);
+        };
+        let result = Eabi::general_result().number;
+        if self.general_register_of_leaf(return_expression).ok() != Some(result) {
+            return Ok(false);
+        }
+
+        let mut stores = Vec::new();
+        for statement in &function.statements {
+            let Statement::Store {
+                target: Expression::Variable(target),
+                value,
+            } = statement
+            else {
+                return Ok(false);
+            };
+            if !matches!(self.globals.get(target.as_str()), Some(global_type) if !matches!(global_type, Type::Float | Type::Double))
+            {
+                return Ok(false);
+            }
+            let Ok(register) = self.general_register_of_leaf(value) else {
+                return Ok(false);
+            };
+            stores.push((statement, target, register));
+        }
+        if stores[0].2 != result || stores[1].2 == result {
+            return Ok(false);
+        }
+        let mut targets: Vec<String> = stores
+            .iter()
+            .map(|(_, target, _)| (*target).clone())
+            .collect();
+        targets.swap(0, 1);
+        self.output.symbol_order = targets;
+
+        self.emit_statement(stores[1].0)?;
+        self.emit_statement(stores[0].0)?;
+        for (statement, _, _) in &stores[2..] {
+            self.emit_statement(statement)?;
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     pub(crate) fn try_constant_store_fill(&mut self, function: &Function) -> Compilation<bool> {
         if function_makes_call(function)
             || function.return_type != Type::Void
