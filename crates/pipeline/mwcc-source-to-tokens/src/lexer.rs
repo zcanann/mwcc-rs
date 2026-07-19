@@ -4,7 +4,16 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_tokens::Token;
 
 pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
-    let bytes = source.as_bytes();
+    tokenize_bytes(source.as_bytes())
+}
+
+/// Tokenize a source file without imposing a Unicode encoding on it.
+///
+/// C's grammar is ASCII and Metrowerks' `-multibyte` inputs commonly carry
+/// Shift-JIS payloads in comments and string literals. Keeping the input as
+/// bytes preserves those literal payloads exactly; identifier and numeric
+/// slices are converted only after their ASCII scanners have accepted them.
+pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
     let mut position = 0;
     let mut tokens = Vec::new();
     // Inline-`asm` block tracking. `expect_asm_block` is armed when an `asm`
@@ -74,12 +83,13 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             // `#pragma cplusplus on/off` and the `push`/`pop` scoping around it
             // switch the LANGUAGE for the enclosed declarations (their symbol
             // names mangle) — surface those; every other directive is skipped.
-            let line = source[line_start..position].trim();
-            let directive = line.trim_start_matches('#').trim();
-            if let Some(rest) = directive.strip_prefix("pragma ") {
-                let rest = rest.trim();
-                if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset") {
-                    tokens.push(Token::Pragma(rest.to_string()));
+            if let Ok(line) = std::str::from_utf8(&bytes[line_start..position]) {
+                let directive = line.trim().trim_start_matches('#').trim();
+                if let Some(rest) = directive.strip_prefix("pragma ") {
+                    let rest = rest.trim();
+                    if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset") {
+                        tokens.push(Token::Pragma(rest.to_string()));
+                    }
                 }
             }
             continue;
@@ -138,28 +148,57 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             position += 1;
             continue;
         }
-        // character literal: `'c'` or an escape like `'\n'`, yielding the
-        // character's integer value (an `int`-typed constant in C).
+        // Character literal: one byte (`'c'`, `'\n'`) or a Metrowerks-style
+        // multi-character tag (`'fp00'`). mwcc packs up to four source bytes
+        // big-endian into the `int` value, matching the target byte order.
         if character == '\'' {
             position += 1;
-            let value = if peek(bytes, position) == Some(b'\\') {
-                position += 1;
-                let escaped = *bytes.get(position).ok_or_else(|| Diagnostic::error("unterminated character literal"))?;
-                position += 1;
-                match escaped {
-                    b'n' => 10, b't' => 9, b'r' => 13, b'0' => 0, b'a' => 7,
-                    b'b' => 8, b'f' => 12, b'v' => 11, other => other as i64,
+            let mut value = 0u32;
+            let mut count = 0u8;
+            loop {
+                let byte = match peek(bytes, position) {
+                    None | Some(b'\n' | b'\r') => {
+                        return Err(Diagnostic::error("unterminated character literal"));
+                    }
+                    Some(b'\'') if count == 0 => {
+                        return Err(Diagnostic::error("empty character literal"));
+                    }
+                    Some(b'\'') => {
+                        position += 1;
+                        break;
+                    }
+                    Some(b'\\') => {
+                        position += 1;
+                        let escaped = *bytes.get(position).ok_or_else(|| {
+                            Diagnostic::error("unterminated character literal")
+                        })?;
+                        position += 1;
+                        match escaped {
+                            b'n' => 10,
+                            b't' => 9,
+                            b'r' => 13,
+                            b'0' => 0,
+                            b'a' => 7,
+                            b'b' => 8,
+                            b'f' => 12,
+                            b'v' => 11,
+                            other => other,
+                        }
+                    }
+                    Some(byte) => {
+                        position += 1;
+                        byte
+                    }
+                };
+                count += 1;
+                if count > 4 {
+                    return Err(Diagnostic::error(
+                        "character literal contains more than four bytes",
+                    ));
                 }
-            } else {
-                let byte = *bytes.get(position).ok_or_else(|| Diagnostic::error("unterminated character literal"))?;
-                position += 1;
-                byte as i64
-            };
-            if peek(bytes, position) != Some(b'\'') {
-                return Err(Diagnostic::error("unterminated or multi-character literal"));
+                value = (value << 8) | u32::from(byte);
             }
-            position += 1;
-            tokens.push(Token::IntegerLiteral(value));
+            tokens.push(Token::IntegerLiteral(i64::from(value)));
             continue;
         }
         // identifier or keyword
@@ -168,7 +207,8 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             while position < bytes.len() && (bytes[position].is_ascii_alphanumeric() || bytes[position] == b'_') {
                 position += 1;
             }
-            let word = &source[start..position];
+            let word = std::str::from_utf8(&bytes[start..position])
+                .expect("the identifier scanner accepts only ASCII bytes");
             let token = match word {
                 "int" => Token::KeywordInt,
                 "char" => Token::KeywordChar,
@@ -220,7 +260,9 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
             }
             // Parse as u64 and wrap: a full-width literal (0xFFFFFFFFFFFFFFFF)
             // overflows i64 but is a valid C constant (its bits are the value).
-            let value = u64::from_str_radix(&source[start..position], 16)
+            let text = std::str::from_utf8(&bytes[start..position])
+                .expect("the hexadecimal scanner accepts only ASCII bytes");
+            let value = u64::from_str_radix(text, 16)
                 .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))? as i64;
             position = consume_integer_suffix(bytes, position);
             tokens.push(Token::IntegerLiteral(value));
@@ -259,7 +301,9 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
                     break;
                 }
             }
-            let text = source[start..position].trim_end_matches(['f', 'F']);
+            let text = std::str::from_utf8(&bytes[start..position])
+                .expect("the numeric scanner accepts only ASCII bytes")
+                .trim_end_matches(['f', 'F']);
             position = consume_integer_suffix(bytes, position);
             if is_float {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed float literal"))?;
@@ -347,4 +391,31 @@ fn consume_integer_suffix(bytes: &[u8], mut position: usize) -> usize {
         position += 1;
     }
     position
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tokenize_bytes;
+    use mwcc_tokens::Token;
+
+    #[test]
+    fn shift_jis_string_payload_is_preserved_byte_for_byte() {
+        let tokens = tokenize_bytes(b"char *s = \"\x83\x8a\x83\x93\x83N\";").unwrap();
+        assert!(tokens.contains(&Token::StringLiteral(vec![
+            0x83, 0x8a, 0x83, 0x93, 0x83, 0x4e,
+        ])));
+    }
+
+    #[test]
+    fn non_utf8_comment_bytes_do_not_affect_c_tokens() {
+        let tokens = tokenize_bytes(b"/* \x94g\x96\xe4 */ int f(void) { return 3; }").unwrap();
+        assert!(tokens.contains(&Token::Identifier("f".to_string())));
+        assert!(tokens.contains(&Token::IntegerLiteral(3)));
+    }
+
+    #[test]
+    fn multi_character_constants_pack_source_bytes_big_endian() {
+        let tokens = tokenize_bytes(b"int tag = 'fp00';").unwrap();
+        assert!(tokens.contains(&Token::IntegerLiteral(0x6670_3030)));
+    }
 }

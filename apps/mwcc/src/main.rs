@@ -191,7 +191,7 @@ fn main() -> ExitCode {
         None => mwcc_versions::DEFAULT,
     };
 
-    let source = match std::fs::read_to_string(&input) {
+    let source = match std::fs::read(&input) {
         Ok(source) => source,
         Err(error) => {
             eprintln!("mwcc: cannot read {input}: {error}");
@@ -230,12 +230,12 @@ fn main() -> ExitCode {
 
 /// Run the full pipeline, optionally dumping a per-phase artifact report.
 fn compile(
-    source: &str,
+    source: &[u8],
     source_name: &str,
     config: mwcc_versions::CompilerConfig,
     artifacts: Option<&str>,
 ) -> Compilation<Vec<u8>> {
-    let tokens = mwcc_source_to_tokens::tokenize(source)?;
+    let tokens = mwcc_source_to_tokens::tokenize_bytes(source)?;
     let behavior = mwcc_versions::Behavior::resolve(&config);
     let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(
         tokens.clone(),
