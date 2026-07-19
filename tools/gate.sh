@@ -8,11 +8,12 @@
 # 2.0p1 is INCLUDED deliberately: it is the ONLY build exercising the Gc20Patch1
 # float-scheduling knobs (lr_save_precedes_float_const, float_compare_value_before_const,
 # frexp_scale_before_eptr_store), so it is their sole regression protection — the
-# mainline oracle runs leave those knobs false. (2.5/2.7 are mainline-identical to 2.6;
-# GC/1.3 is intentionally omitted — its char-unsigned residuals are keystone-gated.)
+# mainline oracle runs leave those knobs false. (2.5/2.7 are mainline-identical to 2.6.)
+# GC/1.3.2r is deliberately excluded: it was a hacked Animal Crossing compiler
+# build used to disable rodata pooling, and is not a required parity target.
 #
 # Usage: tools/gate.sh          # full gate
-#        tools/gate.sh --quick  # skip the oracle (vreg + support only, ~1 min)
+#        tools/gate.sh --quick  # skip the oracle (vreg + reference gates, ~1 min)
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 cd "$here/.."
@@ -50,7 +51,8 @@ fi
 
 if [[ $quick -eq 0 ]]; then
   echo "== gate: differential oracle =="
-  for v in 1.3.2 2.0 2.0p1 2.6 2.7; do
+  run "oracle 1.2.5n" env MWCC_EXPERIMENTAL_BUILDS=1 cargo run --release -q -p mwcc-oracle -- 1.2.5n
+  for v in 1.3 1.3.2 2.0 2.0p1 2.6 2.7; do
     run "oracle $v" cargo run --release -q -p mwcc-oracle -- "$v"
   done
 fi
@@ -71,6 +73,23 @@ elif [[ -z "$spbyte" || "$spbyte" -lt "$SUPPORT_BYTE_FLOOR" ]]; then
   echo "  FAIL  support   $sptot  (BYTE coverage ${spbyte:-?} < floor $SUPPORT_BYTE_FLOOR — a BYTE->DEFER regression)"; fail=1
 else
   echo "  PASS  support   $sptot"
+fi
+
+echo "== gate: exact configured Runtime parity (GC/2.6) =="
+exact_out="$(python3 tools/reference_parity.py \
+  --write-inventory target/reference-parity/gate-inventory.json \
+  --compiler target/release/mwcc \
+  --project marioparty4 --version GC/2.6 --language c \
+  --source 'Runtime\.PPCEABI\.H/(GCN_Mem_Alloc|__mem|runtime|__va_arg|global_destructor_chain)\.c$' \
+  --rerun --cache target/reference-parity/gate-runtime.jsonl 2>&1)"
+exact_summary="$(grep -E '^== [0-9]+ configurations:' <<<"$exact_out" | tail -1)"
+if grep -qF '== 30 configurations: BYTE 30 / DIFF 0 / DEFER 0 / HARNESS 0 / UNSUPPORTED_BUILD 0' <<<"$exact_summary"; then
+  echo "  PASS  exact      $exact_summary"
+else
+  echo "  FAIL  exact      ${exact_summary:-<no summary — inventory/harness error>}"
+  grep -E '^\[[0-9]+/[0-9]+\] (DIFF|DEFER|HARNESS|UNSUPPORTED_BUILD)' <<<"$exact_out" \
+    | head -5 | sed 's/^/          /'
+  fail=1
 fi
 
 echo "-----------------------------------------------"
