@@ -22,7 +22,7 @@ use crate::profile::{
     IntegerDagStyle, IntegerSelectStyle, JumpTableBaseStyle, LeadingFrameGuardStoreStyle,
     LocalDataSymbolOrder, LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
     NarrowComputedReturnStyle, NarrowGuardScheduleStyle, NarrowStoreConversionStyle,
-    NegativePowerOfTwoMultiplyStyle, PunnedFloatFrameConvention, PunnedZeroSelectStyle,
+    NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle, PunnedFloatFrameConvention,
     RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
     SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
@@ -80,7 +80,7 @@ pub enum Quirk {
     LegacyReloadAfterGlobalStore,
     LegacyZeroEqualityNegate,
     LegacyReloadingPunnedFloatFrame,
-    LegacyBranchPunnedZeroSelect,
+    LegacyBranchPunnedConditionalWriteback,
     LegacyAddImmediateMaterializationCopy,
     LegacySerialWideConstantAdd,
     LegacySymbolCreationOrder,
@@ -140,7 +140,7 @@ impl Quirk {
             Quirk::LegacyReloadAfterGlobalStore => QuirkKind::Intentional,
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
             Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
-            Quirk::LegacyBranchPunnedZeroSelect => QuirkKind::Intentional,
+            Quirk::LegacyBranchPunnedConditionalWriteback => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
             Quirk::LegacySerialWideConstantAdd => QuirkKind::Intentional,
             Quirk::LegacySymbolCreationOrder => QuirkKind::Intentional,
@@ -242,8 +242,8 @@ impl Quirk {
             Quirk::LegacyReloadingPunnedFloatFrame => {
                 "punned float frames use build 163's padded, spill-reloading merge"
             }
-            Quirk::LegacyBranchPunnedZeroSelect => {
-                "punned zero-select writebacks preserve build 163's branch diamond"
+            Quirk::LegacyBranchPunnedConditionalWriteback => {
+                "conditional punned writebacks preserve build 163's branch diamond"
             }
             Quirk::LegacyAddImmediateMaterializationCopy => {
                 "integer value materializations use build 163's add-immediate-zero copy encoding"
@@ -424,8 +424,8 @@ pub struct Behavior {
     pub negate_before_zero_equality: bool,
     /// Frame/merge convention for type-punned floating parameters.
     pub punned_float_frame_convention: PunnedFloatFrameConvention,
-    /// Lowering of punned writebacks whose select has one zero arm.
-    pub punned_zero_select_style: PunnedZeroSelectStyle,
+    /// Lowering of conditional punned integer writebacks.
+    pub punned_conditional_writeback_style: PunnedConditionalWritebackStyle,
     /// Encoding of generation-specific integer value materializations.
     pub materialization_copy_style: MaterializationCopyStyle,
     /// Scheduling of unequal constant words in a 64-bit add/subtract.
@@ -549,7 +549,10 @@ impl Behavior {
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
-            punned_zero_select_style: config.build.profile.punned_zero_select_style(),
+            punned_conditional_writeback_style: config
+                .build
+                .profile
+                .punned_conditional_writeback_style(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
             symbol_traversal_style: config.build.profile.symbol_traversal_style(),
@@ -698,8 +701,11 @@ impl Behavior {
         if self.punned_float_frame_convention == PunnedFloatFrameConvention::LegacyReloading {
             quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingPunnedFloatFrame));
         }
-        if self.punned_zero_select_style == PunnedZeroSelectStyle::BranchDiamond {
-            quirks.push(ActiveQuirk::of(Quirk::LegacyBranchPunnedZeroSelect));
+        if self.punned_conditional_writeback_style == PunnedConditionalWritebackStyle::BranchDiamond
+        {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyBranchPunnedConditionalWriteback,
+            ));
         }
         if self.materialization_copy_style == MaterializationCopyStyle::AddImmediateZero {
             quirks.push(ActiveQuirk::of(
@@ -865,8 +871,8 @@ mod tests {
             PunnedFloatFrameConvention::LegacyReloading
         );
         assert_eq!(
-            behavior.punned_zero_select_style,
-            PunnedZeroSelectStyle::BranchDiamond
+            behavior.punned_conditional_writeback_style,
+            PunnedConditionalWritebackStyle::BranchDiamond
         );
         assert_eq!(
             behavior.materialization_copy_style,

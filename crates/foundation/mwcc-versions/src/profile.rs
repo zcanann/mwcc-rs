@@ -202,11 +202,11 @@ pub enum PunnedFloatFrameConvention {
     LegacyReloading,
 }
 
-/// Lowering used for punned integer writebacks with a zero-valued select arm.
+/// Lowering used for conditional punned integer writebacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PunnedZeroSelectStyle {
-    /// Mainline if-converts the diamond to carry/sign mask algebra.
-    MaskAlgebra,
+pub enum PunnedConditionalWritebackStyle {
+    /// Mainline optimizes constant diamonds through if-conversion or value hoisting.
+    Optimized,
     /// Build 163 preserves the source-level branch diamond.
     BranchDiamond,
 }
@@ -632,8 +632,8 @@ pub trait CodegenProfile: core::fmt::Debug {
         PunnedFloatFrameConvention::CompactLiveParameter
     }
 
-    fn punned_zero_select_style(&self) -> PunnedZeroSelectStyle {
-        PunnedZeroSelectStyle::MaskAlgebra
+    fn punned_conditional_writeback_style(&self) -> PunnedConditionalWritebackStyle {
+        PunnedConditionalWritebackStyle::Optimized
     }
 
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
@@ -857,8 +857,8 @@ impl CodegenProfile for Gc233Build163 {
     fn punned_float_frame_convention(&self) -> PunnedFloatFrameConvention {
         PunnedFloatFrameConvention::LegacyReloading
     }
-    fn punned_zero_select_style(&self) -> PunnedZeroSelectStyle {
-        PunnedZeroSelectStyle::BranchDiamond
+    fn punned_conditional_writeback_style(&self) -> PunnedConditionalWritebackStyle {
+        PunnedConditionalWritebackStyle::BranchDiamond
     }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::AddImmediateZero

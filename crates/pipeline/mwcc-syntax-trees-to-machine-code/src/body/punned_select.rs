@@ -4,7 +4,7 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-enum ZeroSelectArm {
+enum PunnedSelectArm {
     Constant(i16),
     SelfMask { begin: u8, end: u8 },
 }
@@ -102,7 +102,7 @@ impl Generator {
             let Ok(small) = i16::try_from(constant) else {
                 return Ok(false);
             };
-            ZeroSelectArm::Constant(small)
+            PunnedSelectArm::Constant(small)
         } else if let Expression::Binary {
             operator: BinaryOperator::BitAnd,
             left,
@@ -120,7 +120,7 @@ impl Generator {
             else {
                 return Ok(false);
             };
-            ZeroSelectArm::SelfMask { begin, end }
+            PunnedSelectArm::SelfMask { begin, end }
         } else {
             return Ok(false);
         };
@@ -139,16 +139,16 @@ impl Generator {
         } else {
             None
         };
-        if self.behavior.punned_zero_select_style
-            == mwcc_versions::PunnedZeroSelectStyle::BranchDiamond
+        if self.behavior.punned_conditional_writeback_style
+            == mwcc_versions::PunnedConditionalWritebackStyle::BranchDiamond
         {
-            let zero = ZeroSelectArm::Constant(0);
+            let zero = PunnedSelectArm::Constant(0);
             let (then_arm, else_arm) = if then_zero {
                 (zero, live_arm)
             } else {
                 (live_arm, zero)
             };
-            self.emit_branch_punned_zero_select(
+            self.emit_branch_punned_select(
                 operator,
                 bound,
                 offset,
@@ -160,7 +160,7 @@ impl Generator {
             return Ok(true);
         }
         // -- commit --
-        let self_mask_arm = matches!(live_arm, ZeroSelectArm::SelfMask { .. });
+        let self_mask_arm = matches!(live_arm, PunnedSelectArm::SelfMask { .. });
         let carry_form = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater);
         // Homes: the select value in r0; </> claim r3/r4 for K and its
         // sign; the load lands beyond them (r5) or shares r0 (self-mask).
@@ -207,7 +207,7 @@ impl Generator {
             }
             _ => {}
         }
-        if let ZeroSelectArm::Constant(constant) = live_arm {
+        if let PunnedSelectArm::Constant(constant) = live_arm {
             self.output
                 .instructions
                 .push(Instruction::load_immediate(0, constant));
@@ -248,7 +248,7 @@ impl Generator {
                     });
             }
         }
-        if let ZeroSelectArm::SelfMask { begin, end } = live_arm {
+        if let PunnedSelectArm::SelfMask { begin, end } = live_arm {
             // The arm rlwinm weaves between the guard extract and its addi
             // (measured L4).
             self.output.instructions.push(Instruction::RotateAndMask {
@@ -389,15 +389,15 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_branch_punned_zero_select(
+    fn emit_branch_punned_select(
         &mut self,
         operator: BinaryOperator,
         bound: i16,
         offset: i16,
         guard: &GuardLocal<'_>,
         offset_negative: Option<i16>,
-        then_arm: ZeroSelectArm,
-        else_arm: ZeroSelectArm,
+        then_arm: PunnedSelectArm,
+        else_arm: PunnedSelectArm,
     ) -> Compilation<()> {
         let inverted = match operator {
             BinaryOperator::Less => (4, 0),
@@ -405,17 +405,18 @@ impl Generator {
             BinaryOperator::Equal => (4, 2),
             BinaryOperator::NotEqual => (12, 2),
             BinaryOperator::LessEqual => (12, 1),
-            _ => unreachable!("zero-select operator gated by recognizer"),
+            BinaryOperator::GreaterEqual => (12, 0),
+            _ => unreachable!("punned select operator gated by recognizer"),
         };
-        let self_mask = matches!(then_arm, ZeroSelectArm::SelfMask { .. })
-            || matches!(else_arm, ZeroSelectArm::SelfMask { .. });
+        let self_mask = matches!(then_arm, PunnedSelectArm::SelfMask { .. })
+            || matches!(else_arm, PunnedSelectArm::SelfMask { .. });
         let load_register = if self_mask { 4 } else { 0 };
-        let emit_arm = |generator: &mut Generator, arm: ZeroSelectArm| match arm {
-            ZeroSelectArm::Constant(constant) => generator
+        let emit_arm = |generator: &mut Generator, arm: PunnedSelectArm| match arm {
+            PunnedSelectArm::Constant(constant) => generator
                 .output
                 .instructions
                 .push(Instruction::load_immediate(0, constant)),
-            ZeroSelectArm::SelfMask { begin, end } => {
+            PunnedSelectArm::SelfMask { begin, end } => {
                 generator
                     .output
                     .instructions
@@ -449,6 +450,7 @@ impl Generator {
             a: 1,
             offset: 8 + offset,
         });
+        let guard_register = if offset_negative.is_some() { 3 } else { 0 };
         match guard.mask {
             Some(mask) => {
                 let rotated = ((32 - guard.shift as u32) % 32) as u8;
@@ -456,7 +458,7 @@ impl Generator {
                     return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
                 };
                 self.output.instructions.push(Instruction::RotateAndMask {
-                    a: 3,
+                    a: guard_register,
                     s: load_register,
                     shift: rotated,
                     begin,
@@ -467,7 +469,7 @@ impl Generator {
                 .output
                 .instructions
                 .push(Instruction::ShiftRightAlgebraicImmediate {
-                    a: 3,
+                    a: guard_register,
                     s: load_register,
                     shift: guard.shift,
                 }),
@@ -475,7 +477,7 @@ impl Generator {
         if let Some(negative) = offset_negative {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: 0,
-                a: 3,
+                a: guard_register,
                 immediate: negative,
             });
         }
@@ -605,6 +607,20 @@ impl Generator {
         } else {
             None
         };
+        if self.behavior.punned_conditional_writeback_style
+            == mwcc_versions::PunnedConditionalWritebackStyle::BranchDiamond
+        {
+            self.emit_branch_punned_select(
+                *operator,
+                bound,
+                offset,
+                guard,
+                offset_negative,
+                PunnedSelectArm::Constant(then_constant),
+                PunnedSelectArm::Constant(else_constant),
+            )?;
+            return Ok(true);
+        }
         // -- commit --
         // With the -K0 fold the guard needs a home (r3) and the else value
         // lands beyond it (r4); without it the extract computes in place
