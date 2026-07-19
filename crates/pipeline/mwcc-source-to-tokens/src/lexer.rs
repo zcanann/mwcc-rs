@@ -1,10 +1,14 @@
 //! The lexer: source text -> a flat token stream for the C subset.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_tokens::Token;
+use mwcc_tokens::{LocatedToken, SourceLocation, Token};
 
 pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
     tokenize_bytes(source.as_bytes())
+}
+
+pub fn tokenize_located(source: &str) -> Compilation<Vec<LocatedToken>> {
+    tokenize_bytes_located(source.as_bytes())
 }
 
 /// Tokenize a source file without imposing a Unicode encoding on it.
@@ -14,8 +18,31 @@ pub fn tokenize(source: &str) -> Compilation<Vec<Token>> {
 /// bytes preserves those literal payloads exactly; identifier and numeric
 /// slices are converted only after their ASCII scanners have accepted them.
 pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
+    Ok(tokenize_bytes_located(bytes)?
+        .into_iter()
+        .map(|located| located.token)
+        .collect())
+}
+
+pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
     let mut position = 0;
     let mut tokens = Vec::new();
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(
+            bytes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, byte)| (*byte == b'\n').then_some(index + 1)),
+        )
+        .collect();
+    macro_rules! push_token {
+        ($token:expr, $offset:expr) => {
+            tokens.push(LocatedToken {
+                token: $token,
+                location: source_location(&line_starts, $offset),
+            })
+        };
+    }
     // Inline-`asm` block tracking. `expect_asm_block` is armed when an `asm`
     // keyword is seen; the NEXT `{` opens an asm block (or a `;` disarms it — an
     // `asm`-qualified prototype has no body). Inside a block (`asm_depth > 0`)
@@ -41,7 +68,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
         if expect_asm_block && character == '{' {
             expect_asm_block = false;
             asm_depth = 1;
-            tokens.push(Token::BraceOpen);
+            push_token!(Token::BraceOpen, position);
             position += 1;
             continue;
         }
@@ -56,13 +83,13 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
         // Inside an asm block: a newline separates instructions; a `}` closes it.
         if asm_depth > 0 {
             if character == '\n' {
-                tokens.push(Token::Newline);
+                push_token!(Token::Newline, position);
                 position += 1;
                 continue;
             }
             if character == '}' {
                 asm_depth -= 1;
-                tokens.push(Token::BraceClose);
+                push_token!(Token::BraceClose, position);
                 position += 1;
                 continue;
             }
@@ -88,7 +115,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
                 if let Some(rest) = directive.strip_prefix("pragma ") {
                     let rest = rest.trim();
                     if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset") {
-                        tokens.push(Token::Pragma(rest.to_string()));
+                        push_token!(Token::Pragma(rest.to_string()), line_start);
                     }
                 }
             }
@@ -113,6 +140,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
         // string literal: `"…"` with escapes, decoded to its bytes. (Codegen for
         // strings isn't in the subset; lexing lets the rest of the unit parse.)
         if character == '"' {
+            let token_start = position;
             position += 1;
             let mut content = Vec::new();
             loop {
@@ -137,7 +165,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
                     }
                 }
             }
-            tokens.push(Token::StringLiteral(content));
+            push_token!(Token::StringLiteral(content), token_start);
             continue;
         }
         // A wide literal's `L` prefix (`L'\0'`, `L"..."`) is transparent to the
@@ -152,6 +180,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
         // multi-character tag (`'fp00'`). mwcc packs up to four source bytes
         // big-endian into the `int` value, matching the target byte order.
         if character == '\'' {
+            let token_start = position;
             position += 1;
             let mut value = 0u32;
             let mut count = 0u8;
@@ -198,7 +227,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
                 }
                 value = (value << 8) | u32::from(byte);
             }
-            tokens.push(Token::IntegerLiteral(i64::from(value)));
+            push_token!(Token::IntegerLiteral(i64::from(value)), token_start);
             continue;
         }
         // identifier or keyword
@@ -239,20 +268,29 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
                     // synthetic `asm` token before that type so the parser dispatches
                     // to its asm path exactly as if the keyword were present.
                     && matches!(
-                        tokens.last(),
+                        tokens.last().map(|located| &located.token),
                         Some(Token::KeywordVoid | Token::KeywordInt | Token::KeywordChar | Token::KeywordShort | Token::KeywordUnsigned | Token::KeywordFloat)
                     )
                 {
-                    tokens.insert(tokens.len() - 1, Token::Asm);
+                    let insertion = tokens.len() - 1;
+                    let location = tokens[insertion].location;
+                    tokens.insert(
+                        insertion,
+                        LocatedToken {
+                            token: Token::Asm,
+                            location,
+                        },
+                    );
                     expect_asm_block = true;
                     pending_asm_name = Some(name.clone());
                 }
             }
-            tokens.push(token);
+            push_token!(token, start);
             continue;
         }
         // hexadecimal literal
         if character == '0' && matches!(peek(bytes, position + 1), Some(b'x') | Some(b'X')) {
+            let token_start = position;
             let start = position + 2;
             position += 2;
             while position < bytes.len() && bytes[position].is_ascii_hexdigit() {
@@ -265,7 +303,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
             let value = u64::from_str_radix(text, 16)
                 .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))? as i64;
             position = consume_integer_suffix(bytes, position);
-            tokens.push(Token::IntegerLiteral(value));
+            push_token!(Token::IntegerLiteral(value), token_start);
             continue;
         }
         // decimal integer or float literal (a leading-dot float `.5` counts:
@@ -307,10 +345,10 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
             position = consume_integer_suffix(bytes, position);
             if is_float {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed float literal"))?;
-                tokens.push(Token::FloatLiteral(value));
+                push_token!(Token::FloatLiteral(value), start);
             } else {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed integer literal"))?;
-                tokens.push(Token::IntegerLiteral(value));
+                push_token!(Token::IntegerLiteral(value), start);
             }
             continue;
         }
@@ -332,7 +370,7 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
             _ => None,
         };
         if let Some(token) = two_char {
-            tokens.push(token);
+            push_token!(token, position);
             position += 2;
             continue;
         }
@@ -370,12 +408,21 @@ pub fn tokenize_bytes(bytes: &[u8]) -> Compilation<Vec<Token>> {
             '@' => Token::At,
             other => return Err(Diagnostic::error(format!("unexpected character '{other}'"))),
         };
-        tokens.push(punctuation);
+        push_token!(punctuation, position);
         position += 1;
     }
 
-    tokens.push(Token::EndOfFile);
+    push_token!(Token::EndOfFile, bytes.len());
     Ok(tokens)
+}
+
+fn source_location(line_starts: &[usize], byte_offset: usize) -> SourceLocation {
+    let line_index = line_starts.partition_point(|start| *start <= byte_offset) - 1;
+    SourceLocation {
+        byte_offset: byte_offset as u32,
+        line: line_index as u32 + 1,
+        column: (byte_offset - line_starts[line_index]) as u32 + 1,
+    }
 }
 
 fn peek(bytes: &[u8], index: usize) -> Option<u8> {
@@ -395,7 +442,7 @@ fn consume_integer_suffix(bytes: &[u8], mut position: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::tokenize_bytes;
+    use super::{tokenize_bytes, tokenize_bytes_located};
     use mwcc_tokens::Token;
 
     #[test]
@@ -417,5 +464,17 @@ mod tests {
     fn multi_character_constants_pack_source_bytes_big_endian() {
         let tokens = tokenize_bytes(b"int tag = 'fp00';").unwrap();
         assert!(tokens.contains(&Token::IntegerLiteral(0x6670_3030)));
+    }
+
+    #[test]
+    fn located_tokens_retain_physical_lines_and_columns() {
+        let tokens = tokenize_bytes_located(b"int f(void) {\n  return 3;\n}\n").unwrap();
+        let return_token = tokens
+            .iter()
+            .find(|located| located.token == Token::KeywordReturn)
+            .unwrap();
+        assert_eq!(return_token.location.line, 2);
+        assert_eq!(return_token.location.column, 3);
+        assert_eq!(return_token.location.byte_offset, 16);
     }
 }

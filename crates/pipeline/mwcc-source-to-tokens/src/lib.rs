@@ -2,4 +2,4 @@
 
 mod lexer;
 
-pub use lexer::{tokenize, tokenize_bytes};
+pub use lexer::{tokenize, tokenize_bytes, tokenize_bytes_located, tokenize_located};

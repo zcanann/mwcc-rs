@@ -286,10 +286,14 @@ fn compile(
             "CodeWarrior debug-info emission requested by '-sym on' is not implemented (roadmap)",
         ));
     }
-    let tokens = mwcc_source_to_tokens::tokenize_bytes(source)?;
+    let located_tokens = mwcc_source_to_tokens::tokenize_bytes_located(source)?;
+    let tokens: Vec<mwcc_tokens::Token> = located_tokens
+        .iter()
+        .map(|located| located.token.clone())
+        .collect();
     let behavior = mwcc_versions::Behavior::resolve(&config);
-    let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(
-        tokens.clone(),
+    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+        located_tokens,
         matches!(
             std::path::Path::new(source_name)
                 .extension()

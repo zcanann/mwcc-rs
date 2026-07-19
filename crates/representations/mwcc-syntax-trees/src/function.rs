@@ -285,6 +285,19 @@ pub struct TranslationUnit {
     /// indexes it (`lis; addi; lwzx`), distinct from a pointer cast's high-adjusted fold — so codegen
     /// keeps the address rather than desugaring the name (which would compile as the wrong form).
     pub fixed_address_arrays: std::collections::HashMap<String, (i64, Type)>,
+    /// Physical source boundaries for parsed function definitions, aligned with
+    /// `functions`. Compiler-synthesized functions have no physical source.
+    pub function_sources: Vec<Option<FunctionSource>>,
+}
+
+/// Source coordinates needed for DWARF line programs. This stays on the
+/// translation unit rather than executable IR so ordinary optimization does not
+/// acquire a dependency on lexer details.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FunctionSource {
+    pub body_start_line: u32,
+    pub terminal_return_line: Option<u32>,
+    pub body_end_line: u32,
 }
 
 /// A function definition. Bodies are zero or more local declarations, then zero

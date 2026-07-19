@@ -6,7 +6,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Expression, Pointee, Statement, Type};
-use mwcc_tokens::Token;
+use mwcc_tokens::{LocatedToken, Token};
 
 use crate::items::{type_alignment, type_size};
 use crate::parser::{Parser, StructField, StructLayout};
@@ -38,22 +38,27 @@ pub(crate) struct BaseClass {
 /// in source order. `extern "C" { declarations }` becomes `declarations`, and
 /// `extern "C" declaration` keeps the `extern` storage class but drops the
 /// language string. The latter distinction matters for data declarations.
-pub(crate) fn normalize_linkage_specifications(mut tokens: Vec<Token>) -> Vec<Token> {
+pub(crate) fn normalize_linkage_specifications(
+    mut tokens: Vec<LocatedToken>,
+) -> Vec<LocatedToken> {
     let mut index = 0usize;
     while index + 1 < tokens.len() {
-        let starts_linkage = matches!(&tokens[index], Token::Identifier(word) if word == "extern")
-            && matches!(&tokens[index + 1], Token::StringLiteral(language) if language == b"C" || language == b"C++");
+        let starts_linkage = matches!(&tokens[index].token, Token::Identifier(word) if word == "extern")
+            && matches!(&tokens[index + 1].token, Token::StringLiteral(language) if language == b"C" || language == b"C++");
         if !starts_linkage {
             index += 1;
             continue;
         }
 
-        if tokens.get(index + 2) == Some(&Token::BraceOpen) {
+        if tokens
+            .get(index + 2)
+            .is_some_and(|located| located.token == Token::BraceOpen)
+        {
             let mut cursor = index + 2;
             let mut depth = 0i32;
             let mut close = None;
             while cursor < tokens.len() {
-                match tokens[cursor] {
+                match tokens[cursor].token {
                     Token::BraceOpen => depth += 1,
                     Token::BraceClose => {
                         depth -= 1;
@@ -85,23 +90,32 @@ pub(crate) fn normalize_linkage_specifications(mut tokens: Vec<Token>) -> Vec<To
 /// C++ constructors have no written return type. Insert the parser-internal
 /// `void` only for a top-level `Class::Class(` declarator, leaving class-body
 /// prototypes and expression-level qualified names untouched.
-pub(crate) fn normalize_constructor_declarators(mut tokens: Vec<Token>) -> Vec<Token> {
+pub(crate) fn normalize_constructor_declarators(
+    mut tokens: Vec<LocatedToken>,
+) -> Vec<LocatedToken> {
     let mut index = 0usize;
     let mut brace_depth = 0usize;
     while index + 4 < tokens.len() {
-        match tokens[index] {
+        match tokens[index].token {
             Token::BraceOpen => brace_depth += 1,
             Token::BraceClose => brace_depth = brace_depth.saturating_sub(1),
             _ => {}
         }
         let constructor = brace_depth == 0
-            && matches!((&tokens[index], &tokens[index + 3]),
+            && matches!((&tokens[index].token, &tokens[index + 3].token),
                 (Token::Identifier(scope), Token::Identifier(name)) if scope == name)
-            && tokens[index + 1] == Token::Colon
-            && tokens[index + 2] == Token::Colon
-            && tokens[index + 4] == Token::ParenOpen;
+            && tokens[index + 1].token == Token::Colon
+            && tokens[index + 2].token == Token::Colon
+            && tokens[index + 4].token == Token::ParenOpen;
         if constructor {
-            tokens.insert(index, Token::KeywordVoid);
+            let location = tokens[index].location;
+            tokens.insert(
+                index,
+                LocatedToken {
+                    token: Token::KeywordVoid,
+                    location,
+                },
+            );
             index += 6;
         } else {
             index += 1;
@@ -615,6 +629,26 @@ fn encode_pointee(pointee: Pointee) -> Compilation<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_tokens::SourceLocation;
+
+    fn locate(tokens: Vec<Token>) -> Vec<LocatedToken> {
+        tokens
+            .into_iter()
+            .enumerate()
+            .map(|(index, token)| LocatedToken {
+                token,
+                location: SourceLocation {
+                    byte_offset: index as u32,
+                    line: 1,
+                    column: index as u32 + 1,
+                },
+            })
+            .collect()
+    }
+
+    fn strip(tokens: Vec<LocatedToken>) -> Vec<Token> {
+        tokens.into_iter().map(|located| located.token).collect()
+    }
 
     #[test]
     fn strips_block_linkage_without_losing_declarations() {
@@ -629,7 +663,7 @@ mod tests {
             Token::EndOfFile,
         ];
         assert_eq!(
-            normalize_linkage_specifications(tokens),
+            strip(normalize_linkage_specifications(locate(tokens))),
             vec![
                 Token::KeywordInt,
                 Token::Identifier("value".to_string()),
@@ -688,7 +722,7 @@ mod tests {
             Token::BraceClose,
             Token::EndOfFile,
         ];
-        let normalized = normalize_constructor_declarators(tokens);
+        let normalized = strip(normalize_constructor_declarators(locate(tokens)));
         assert_eq!(
             normalized
                 .iter()

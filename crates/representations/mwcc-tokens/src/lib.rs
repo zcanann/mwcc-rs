@@ -1,5 +1,21 @@
 //! The token representation: the output of lexing, the input to parsing.
 
+/// Physical source position retained for diagnostics and debug information.
+/// Lines and columns are one-based; byte offsets are zero-based.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceLocation {
+    pub byte_offset: u32,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// A token paired with the position of its first source byte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocatedToken {
+    pub token: Token,
+    pub location: SourceLocation,
+}
+
 /// A single lexical token of the supported C subset.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {

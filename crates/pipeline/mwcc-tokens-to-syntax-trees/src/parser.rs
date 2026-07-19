@@ -2,7 +2,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Pointee, Type};
-use mwcc_tokens::Token;
+use mwcc_tokens::{SourceLocation, Token};
 use std::collections::HashMap;
 
 /// One resolved struct member: its type and byte offset within the struct, plus
@@ -45,6 +45,7 @@ pub(crate) struct StructTemplate {
 
 pub(crate) struct Parser {
     pub(crate) tokens: Vec<Token>,
+    pub(crate) locations: Vec<SourceLocation>,
     pub(crate) position: usize,
     /// Whether plain (unqualified) `char` is signed — the build's `char` default
     /// (mainline/1.3.2+ signed; GC/1.3 build 53 and `-char unsigned` unsigned).
@@ -244,6 +245,7 @@ pub(crate) struct Parser {
     /// Enumeration constant values, so a bare enumerator resolves to its integer
     /// value in an expression. (`-enum int`: an enum type is a 4-byte `int`.)
     pub(crate) enum_constants: HashMap<String, i64>,
+    pub(crate) function_sources: Vec<Option<mwcc_syntax_trees::FunctionSource>>,
 }
 
 impl Parser {
@@ -255,6 +257,9 @@ impl Parser {
     pub(crate) fn peek_at(&self, offset: usize) -> &Token {
         let index = (self.position + offset).min(self.tokens.len() - 1);
         &self.tokens[index]
+    }
+    pub(crate) fn current_location(&self) -> SourceLocation {
+        self.locations[self.position]
     }
     /// If the next two tokens are an arithmetic/bitwise operator followed by `=`
     /// (a compound assignment like `+=`), return the operator. The operator and

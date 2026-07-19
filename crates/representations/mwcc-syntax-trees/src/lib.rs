@@ -9,9 +9,9 @@ mod types;
 
 pub use expression::{ConditionalOrigin, Expression};
 pub use function::{
-    ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, GlobalDeclaration,
-    GuardedReturn, LocalDeclaration, LoopKind, Parameter, PointerElement, Statement, SwitchArm,
-    TranslationUnit,
+    ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, FunctionSource,
+    GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter, PointerElement,
+    Statement, SwitchArm, TranslationUnit,
 };
 pub use operators::{BinaryOperator, UnaryOperator};
 pub use types::{Pointee, Type};

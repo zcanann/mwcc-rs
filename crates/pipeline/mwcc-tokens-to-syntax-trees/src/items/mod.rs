@@ -793,6 +793,7 @@ impl Parser {
                 asm_body: None,
                 force_active: false,
             });
+            self.function_sources.push(None);
             globals.push(GlobalDeclaration {
                 declared_type: Type::Int,
                 name: String::new(),
@@ -814,6 +815,11 @@ impl Parser {
                 attribute_alignment: None,
             });
         }
+        debug_assert_eq!(
+            functions.len(),
+            self.function_sources.len(),
+            "every parsed function must retain one source-provenance slot"
+        );
         Ok(TranslationUnit {
             globals,
             functions,
@@ -829,6 +835,7 @@ impl Parser {
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
             fixed_address_arrays: std::mem::take(&mut self.fixed_address_arrays),
+            function_sources: std::mem::take(&mut self.function_sources),
         })
     }
 
@@ -1697,7 +1704,9 @@ impl Parser {
                 && *self.peek_at(2) == Token::ParenClose
             {
                 self.tokens.remove(self.position); // `(`
+                self.locations.remove(self.position);
                 self.tokens.remove(self.position + 1); // `)` (the name shifted down)
+                self.locations.remove(self.position + 1);
             }
             // Function-pointer declarator: `RET (*name)(params)` — a pointer-typed
             // global (a 4-byte address). The return/parameter types don't affect
@@ -2894,6 +2903,7 @@ impl Parser {
         is_static: bool,
         parameters: Vec<Parameter>,
     ) -> Compilation<Function> {
+        let body_start_line = self.current_location().line;
         self.expect(Token::BraceOpen)?;
         // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro
         // artifact — the MSL ctype shape) is transparent: consume the inner
@@ -3494,9 +3504,11 @@ impl Parser {
 
         // The final `return <expr>;` is optional — a `void` function may end after
         // its statements (or an `if/else` already supplied the return).
+        let mut terminal_return_line = None;
         let return_expression = if conditional_return.is_some() {
             conditional_return
         } else if *self.peek() == Token::KeywordReturn {
+            terminal_return_line = Some(self.current_location().line);
             self.advance();
             // A bare `return;` ends a `void` function with no value — like reaching the
             // closing brace, it produces no return value (the epilogue is the whole tail).
@@ -3516,6 +3528,7 @@ impl Parser {
         while *self.peek() == Token::Semicolon {
             self.advance();
         }
+        let body_end_line = self.current_location().line;
         self.expect(Token::BraceClose)?;
         for _ in 0..redundant_blocks {
             self.expect(Token::BraceClose)?;
@@ -3523,6 +3536,12 @@ impl Parser {
 
         let mut locals = locals;
         locals.extend(block_locals);
+        self.function_sources
+            .push(Some(mwcc_syntax_trees::FunctionSource {
+                body_start_line,
+                terminal_return_line,
+                body_end_line,
+            }));
         Ok(Function {
             return_type,
             name,

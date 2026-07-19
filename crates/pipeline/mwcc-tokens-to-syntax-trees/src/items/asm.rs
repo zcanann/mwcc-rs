@@ -124,11 +124,19 @@ impl Parser {
             self.advance();
             return Ok(None);
         }
+        let body_start_line = self.current_location().line;
         self.expect(Token::BraceOpen)?;
         self.asm_parameters = parameters;
         let asm_body = self.parse_asm_body();
         self.asm_parameters = Vec::new();
         let asm_body = asm_body?;
+        let body_end_line = self.locations[self.position.saturating_sub(1)].line;
+        self.function_sources
+            .push(Some(mwcc_syntax_trees::FunctionSource {
+                body_start_line,
+                terminal_return_line: None,
+                body_end_line,
+            }));
         Ok(Some(Function {
             text_deferred: false,
             return_type,
