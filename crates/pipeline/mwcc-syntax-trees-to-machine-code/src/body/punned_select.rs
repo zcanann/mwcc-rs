@@ -3,6 +3,12 @@
 #[allow(unused_imports)]
 use super::*;
 
+#[derive(Clone, Copy)]
+enum ZeroSelectArm {
+    Constant(i16),
+    SelfMask { begin: u8, end: u8 },
+}
+
 impl Generator {
     /// A whole-body `if (c) { <store run> } else { <store run> }` where each arm is two-plus stores
     /// whose values are either all REGISTER-valued (emitted sequentially) or all CONSTANT (the
@@ -92,15 +98,11 @@ impl Generator {
         };
         // The live arm: a small constant, or the measured L4 self-mask
         // (`p & M`, only captured under `<` with the zero in the then).
-        enum LiveArm {
-            Constant(i16),
-            SelfMask { begin: u8, end: u8 },
-        }
         let live_arm = if let Some(constant) = crate::analysis::constant_value(live_value) {
             let Ok(small) = i16::try_from(constant) else {
                 return Ok(false);
             };
-            LiveArm::Constant(small)
+            ZeroSelectArm::Constant(small)
         } else if let Expression::Binary {
             operator: BinaryOperator::BitAnd,
             left,
@@ -118,7 +120,7 @@ impl Generator {
             else {
                 return Ok(false);
             };
-            LiveArm::SelfMask { begin, end }
+            ZeroSelectArm::SelfMask { begin, end }
         } else {
             return Ok(false);
         };
@@ -137,8 +139,28 @@ impl Generator {
         } else {
             None
         };
+        if self.behavior.punned_zero_select_style
+            == mwcc_versions::PunnedZeroSelectStyle::BranchDiamond
+        {
+            let zero = ZeroSelectArm::Constant(0);
+            let (then_arm, else_arm) = if then_zero {
+                (zero, live_arm)
+            } else {
+                (live_arm, zero)
+            };
+            self.emit_branch_punned_zero_select(
+                operator,
+                bound,
+                offset,
+                guard,
+                offset_negative,
+                then_arm,
+                else_arm,
+            )?;
+            return Ok(true);
+        }
         // -- commit --
-        let self_mask_arm = matches!(live_arm, LiveArm::SelfMask { .. });
+        let self_mask_arm = matches!(live_arm, ZeroSelectArm::SelfMask { .. });
         let carry_form = matches!(operator, BinaryOperator::Less | BinaryOperator::Greater);
         // Homes: the select value in r0; </> claim r3/r4 for K and its
         // sign; the load lands beyond them (r5) or shares r0 (self-mask).
@@ -185,7 +207,7 @@ impl Generator {
             }
             _ => {}
         }
-        if let LiveArm::Constant(constant) = live_arm {
+        if let ZeroSelectArm::Constant(constant) = live_arm {
             self.output
                 .instructions
                 .push(Instruction::load_immediate(0, constant));
@@ -226,7 +248,7 @@ impl Generator {
                     });
             }
         }
-        if let LiveArm::SelfMask { begin, end } = live_arm {
+        if let ZeroSelectArm::SelfMask { begin, end } = live_arm {
             // The arm rlwinm weaves between the guard extract and its addi
             // (measured L4).
             self.output.instructions.push(Instruction::RotateAndMask {
@@ -365,6 +387,132 @@ impl Generator {
         // compound self-mask arm adds one more (L4's @9/@10).
         self.output.anonymous_label_bump += if self_mask_arm { 4 } else { 3 };
         Ok(true)
+    }
+
+    fn emit_branch_punned_zero_select(
+        &mut self,
+        operator: BinaryOperator,
+        bound: i16,
+        offset: i16,
+        guard: &GuardLocal<'_>,
+        offset_negative: Option<i16>,
+        then_arm: ZeroSelectArm,
+        else_arm: ZeroSelectArm,
+    ) -> Compilation<()> {
+        let inverted = match operator {
+            BinaryOperator::Less => (4, 0),
+            BinaryOperator::Greater => (4, 1),
+            BinaryOperator::Equal => (4, 2),
+            BinaryOperator::NotEqual => (12, 2),
+            BinaryOperator::LessEqual => (12, 1),
+            _ => unreachable!("zero-select operator gated by recognizer"),
+        };
+        let self_mask = matches!(then_arm, ZeroSelectArm::SelfMask { .. })
+            || matches!(else_arm, ZeroSelectArm::SelfMask { .. });
+        let load_register = if self_mask { 4 } else { 0 };
+        let emit_arm = |generator: &mut Generator, arm: ZeroSelectArm| match arm {
+            ZeroSelectArm::Constant(constant) => generator
+                .output
+                .instructions
+                .push(Instruction::load_immediate(0, constant)),
+            ZeroSelectArm::SelfMask { begin, end } => {
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::RotateAndMask {
+                        a: 0,
+                        s: load_register,
+                        shift: 0,
+                        begin,
+                        end,
+                    })
+            }
+        };
+
+        self.frame_size = 24;
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -24,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: 1,
+                a: 1,
+                offset: 8,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: load_register,
+            a: 1,
+            offset: 8 + offset,
+        });
+        match guard.mask {
+            Some(mask) => {
+                let rotated = ((32 - guard.shift as u32) % 32) as u8;
+                let Some((begin, end)) = crate::analysis::rlwinm_mask(mask) else {
+                    return Err(Diagnostic::error("guard mask is not a run (roadmap)"));
+                };
+                self.output.instructions.push(Instruction::RotateAndMask {
+                    a: 3,
+                    s: load_register,
+                    shift: rotated,
+                    begin,
+                    end,
+                });
+            }
+            None => self
+                .output
+                .instructions
+                .push(Instruction::ShiftRightAlgebraicImmediate {
+                    a: 3,
+                    s: load_register,
+                    shift: guard.shift,
+                }),
+        }
+        if let Some(negative) = offset_negative {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: negative,
+            });
+        }
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: 0,
+                immediate: bound,
+            });
+        let else_label = self.fresh_label();
+        let join = self.fresh_label();
+        self.emit_branch_conditional_to(inverted.0, inverted.1, else_label);
+        emit_arm(self, then_arm);
+        self.emit_branch_to(join);
+        self.bind_label(else_label);
+        emit_arm(self, else_arm);
+        self.bind_label(join);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 8 + offset,
+        });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 1,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 24,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
+        self.output.anonymous_label_bump += if self_mask { 4 } else { 3 };
+        Ok(())
     }
 
     /// The HOISTED-ELSE OVERWRITE: `if (j0 cmp K) p = C1; else p = C2;`
