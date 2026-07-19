@@ -37,6 +37,14 @@ ours="${MWCC_BIN:-$here/target/release/mwcc}"
 
 project="$(cd "$project" && pwd)"
 dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"
+# The input suffix selects mwcceppc's language. Flattening every TU to `ctx.c`
+# silently forced `.cpp`/`.cp` reference sources into C mode, producing false
+# HARNESS failures before our compiler ran. Both sides use the same synthetic
+# basename so the FILE symbol remains byte-identical too.
+case "$src" in
+  *.cpp|*.cp|*.cxx|*.cc) ctx_name="ctx.cpp";;
+  *)                     ctx_name="ctx.c";;
+esac
 # Only ever remove the mktemp scratch dir — guard against a clobbered $dir so the
 # cleanup can never delete a real tree (a stray loop variable once aliased $dir).
 if [[ "${REFCTX_KEEP:-0}" == 1 ]]; then
@@ -119,33 +127,33 @@ fi
 include_flags=()
 # NB: not `dir` — that variable holds the mktemp scratch dir the EXIT trap removes.
 for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
-( cd "$project" && python3 tools/decompctx.py "$src" "${include_flags[@]}" -o "$dir/ctx.c" ) >/dev/null 2>&1 \
+( cd "$project" && python3 tools/decompctx.py "$src" "${include_flags[@]}" -o "$dir/$ctx_name" ) >/dev/null 2>&1 \
   || { echo "decompctx failed for $src"; exit 1; }
 
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
-#    preprocess). mwcceppc only accepts .c/.cpp, so the real compiler builds the
-#    reference straight from ctx.c (preprocessing it internally) — identical input.
-( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E ctx.c -o ctx.i ) 2>/dev/null
+#    preprocess). mwcceppc only accepts a C/C++ source suffix, so the real compiler
+#    builds the reference straight from the language-preserving context file.
+( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E "$ctx_name" -o ctx.i ) 2>/dev/null
 if [[ ! -s "$dir/ctx.i" ]]; then
   # An effectively EMPTY TU (sunshine's exponentialsf.c is a single
   # newline): mwcc -E emits nothing, but both compilers produce the
   # trivial object — continue with an empty .i. Anything with real
   # content that still failed -E is a genuine harness error.
-  if grep -q '[^[:space:]]' "$dir/ctx.c"; then
+  if grep -q '[^[:space:]]' "$dir/$ctx_name"; then
     echo "preprocess produced no .i"; exit 1
   fi
   : > "$dir/ctx.i"
 fi
 
-# 3a. Reference object from the real compiler (from the self-contained ctx.c).
-( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -c ctx.c -o ref.o ) 2>/dev/null
-[[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected ctx.c"; exit 1; }
+# 3a. Reference object from the real compiler (from the self-contained context).
+( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o ) 2>/dev/null
+[[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
 
-# 3b. Our object. Feed the preprocessed text under the name ctx.c so our FILE
-#     symbol matches the reference's (which compiled ctx.c). Pass the same flags
-#     the real compiler got — our mwcc models the ones it knows and ignores the rest.
-mkdir -p "$dir/ours" && cp "$dir/ctx.i" "$dir/ours/ctx.c"
-if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
+# 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.
+#     Pass the same flags the real compiler got — our mwcc models the ones it knows
+#     and ignores the rest.
+mkdir -p "$dir/ours" && cp "$dir/ctx.i" "$dir/ours/$ctx_name"
+if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/$ctx_name" -o "$dir/our.o" 2>"$dir/oerr"; then
   echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   exit 0
 fi
