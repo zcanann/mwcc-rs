@@ -74,6 +74,10 @@ pub struct Flags {
     /// `-use_lmw_stmw on` asks mwcc to save and restore contiguous GPR ranges
     /// with inline `stmw`/`lmw` instructions instead of EABI helper calls.
     pub use_lmw_stmw: bool,
+    /// `-sym on` requests CodeWarrior `.line` and `.debug` sections. This is
+    /// tracked even before the sections can be emitted so the driver never
+    /// silently produces a partial object for a debug-enabled invocation.
+    pub debug_info: bool,
 }
 
 impl Default for Flags {
@@ -91,6 +95,7 @@ impl Default for Flags {
             string_literals_read_only: false,
             pooling_enabled: true,
             use_lmw_stmw: false,
+            debug_info: false,
         }
     }
 }

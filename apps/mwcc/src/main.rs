@@ -111,6 +111,17 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.use_lmw_stmw,
                 };
             }
+            // `-sym on` emits CodeWarrior `.line` and `.debug` sections. Keep
+            // last-wins behavior even while object-level debug emission is a
+            // deliberate capability boundary.
+            "-sym" => {
+                index += 1;
+                invocation.flags.debug_info = match arguments.get(index).map(String::as_str) {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => invocation.flags.debug_info,
+                };
+            }
             // `-sdata N`: zero disables writable SDA (r13); a later non-zero
             // threshold turns it back on. Keep it independent from `-sdata2`.
             "-sdata" => {
@@ -235,6 +246,11 @@ fn compile(
     config: mwcc_versions::CompilerConfig,
     artifacts: Option<&str>,
 ) -> Compilation<Vec<u8>> {
+    if config.flags.debug_info {
+        return Err(Diagnostic::error(
+            "CodeWarrior debug-info emission requested by '-sym on' is not implemented (roadmap)",
+        ));
+    }
     let tokens = mwcc_source_to_tokens::tokenize_bytes(source)?;
     let behavior = mwcc_versions::Behavior::resolve(&config);
     let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(
@@ -1423,6 +1439,16 @@ mod tests {
             "off".into(),
         ]);
         assert!(!last_wins.flags.use_lmw_stmw);
+    }
+
+    #[test]
+    fn command_line_debug_info_mode_is_last_wins() {
+        let on = parse_invocation(&["-sym".into(), "on".into()]);
+        assert!(on.flags.debug_info);
+
+        let last_wins =
+            parse_invocation(&["-sym".into(), "on".into(), "-sym".into(), "off".into()]);
+        assert!(!last_wins.flags.debug_info);
     }
 
     #[test]
