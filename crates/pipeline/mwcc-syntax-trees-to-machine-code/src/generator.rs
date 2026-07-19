@@ -111,6 +111,7 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     #[default]
     InferFromValueOrigin,
     ReserveForwardedParameterLane,
+    PreserveLogicalSizeForMemoryOrigin,
 }
 
 pub(crate) struct Generator {

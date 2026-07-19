@@ -1067,7 +1067,6 @@ impl Generator {
         }
         if self.behavior.frame_convention == FrameConvention::LinkageFirst
             && paired_parameter.is_none()
-            && guard.is_none()
         {
             if let MemoryLoad::Array { name, index } = &load {
                 // Build 163 threads the explicit array element address through
@@ -1120,20 +1119,75 @@ impl Generator {
                     a: 1,
                     offset: 20,
                 });
+                let staged = if guard.is_some() {
+                    GENERAL_SCRATCH
+                } else {
+                    saved
+                };
                 self.output.instructions.push(Instruction::LoadWord {
-                    d: saved,
+                    d: staged,
                     a: index_register,
                     offset: 0,
                 });
+                let result = mwcc_target::Eabi::general_result().number;
+                let early_epilogue = if let Some((condition, early_constant)) =
+                    guard_chain.first().copied()
+                {
+                    self.locations.insert(
+                        local.name.clone(),
+                        Location {
+                            class: ValueClass::General,
+                            register: GENERAL_SCRATCH,
+                            signed: !matches!(local.declared_type, Type::UnsignedInt),
+                            width: 32,
+                            pointee: None,
+                            stride: None,
+                        },
+                    );
+                    let (options, condition_bit) = self.emit_condition_test(condition)?;
+                    self.output.instructions.push(Instruction::Or {
+                        a: saved,
+                        s: GENERAL_SCRATCH,
+                        b: GENERAL_SCRATCH,
+                    });
+                    let continuation_branch = self.output.instructions.len();
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options,
+                            condition_bit,
+                            target: 0,
+                        });
+                    self.load_integer_constant(result, early_constant as i64);
+                    let early_epilogue = self.output.instructions.len();
+                    self.output
+                        .instructions
+                        .push(Instruction::Branch { target: 0 });
+                    let continuation = self.output.instructions.len();
+                    if let Instruction::BranchConditionalForward { target, .. } =
+                        &mut self.output.instructions[continuation_branch]
+                    {
+                        *target = continuation;
+                    }
+                    self.output.anonymous_label_bump = 3;
+                    Some(early_epilogue)
+                } else {
+                    None
+                };
                 for statement in calls {
                     self.emit_statement(statement)?;
                 }
-                let result = mwcc_target::Eabi::general_result().number;
                 self.output.instructions.push(Instruction::Or {
                     a: result,
                     s: saved,
                     b: saved,
                 });
+                let epilogue = self.output.instructions.len();
+                if let Some(branch) = early_epilogue {
+                    if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
+                        *target = epilogue;
+                    }
+                }
                 self.output.instructions.push(Instruction::LoadWord {
                     d: 0,
                     a: 1,
@@ -1157,6 +1211,16 @@ impl Generator {
                     .push(Instruction::BranchToLinkRegister);
                 return Ok(true);
             }
+        }
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && guard.is_some()
+            && matches!(load, MemoryLoad::Scalar)
+        {
+            // The staged r0 -> callee-saved copy retains its memory origin in
+            // build 163's frame-pressure accounting; it does not reserve the
+            // extra lane used by entry-materialized parameter homes.
+            self.legacy_callee_saved_frame_layout =
+                LegacyCalleeSavedFrameLayout::PreserveLogicalSizeForMemoryOrigin;
         }
         self.non_leaf = true;
         self.frame_size = 16;

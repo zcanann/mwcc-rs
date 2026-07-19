@@ -120,9 +120,11 @@ impl Generator {
                     if s == b && physical_saved.contains(a))
             })
             .count();
-        let reserve_inferred_lane = materialized_home_before_call
-            || self.legacy_callee_saved_frame_layout
-                == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
+        let reserve_inferred_lane = self.legacy_callee_saved_frame_layout
+            != LegacyCalleeSavedFrameLayout::PreserveLogicalSizeForMemoryOrigin
+            && (materialized_home_before_call
+                || self.legacy_callee_saved_frame_layout
+                    == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane);
         // Build 163 keeps dead call-initializer results in its frame-pressure
         // accounting even after eliminating the values. Only that erased-local
         // case exposes the pairwise lane count; ordinary promoted values retain
