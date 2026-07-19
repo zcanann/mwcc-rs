@@ -16,6 +16,17 @@ pub enum FrameConvention {
     LinkageFirst,
 }
 
+/// Placement of a bare floating-point comparison relative to non-leaf linkage
+/// when a following `cror` folds equality for `<=` or `>=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldedFloatCompareLinkageStyle {
+    /// 2.4.x saves LR first, then emits the comparison into its latency slot.
+    LinkRegisterFirst,
+    /// Build 163 emits `fcmpo` before `mflr`, separating it from the dependent
+    /// `cror` by the linkage instructions.
+    CompareFirst,
+}
+
 /// Lowering used when an integer condition selects the canonical boolean
 /// constants `1` and `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,11 +414,15 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    fn folded_float_compare_linkage_style(&self) -> FoldedFloatCompareLinkageStyle {
+        FoldedFloatCompareLinkageStyle::LinkRegisterFirst
+    }
+
     /// In a float `if`-condition comparing a LOADED value (member/global) against a
-    /// pool CONSTANT, whether the value operand is loaded BEFORE the constant. GC/2.0p1:
-    /// `lfs f1,(v); lfs f0,k` vs mainline `lfs f0,k; lfs f1,(v)` (which hoists the
-    /// independent constant to fill the prologue latency slot). Same 2.0p1 float-reorder
-    /// family; the register assignment (`fcmpo f1,f0`) is unchanged, only the load order.
+    /// pool CONSTANT, whether the value operand is loaded BEFORE the constant.
+    /// GC/2.0p1 and build 163 use `lfs f1,(v); lfs f0,k`, while mainline uses
+    /// `lfs f0,k; lfs f1,(v)`. The register assignment (`fcmpo f1,f0`) is
+    /// unchanged; only the independent load order differs.
     fn float_compare_value_before_const(&self) -> bool {
         false
     }
@@ -664,6 +679,14 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn lr_save_precedes_float_const(&self) -> bool {
+        true
+    }
+
+    fn folded_float_compare_linkage_style(&self) -> FoldedFloatCompareLinkageStyle {
+        FoldedFloatCompareLinkageStyle::CompareFirst
+    }
+
+    fn float_compare_value_before_const(&self) -> bool {
         true
     }
 

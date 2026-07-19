@@ -16,15 +16,15 @@ use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
-    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle, FrameConvention,
-    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
-    IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder,
-    LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
-    NarrowComputedReturnStyle, NarrowGuardScheduleStyle, NarrowStoreConversionStyle,
-    NegativePowerOfTwoMultiplyStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
-    ReturnRegisterStoreStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
-    StoredGlobalReadStyle, SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
-    WideConstantAddSchedule,
+    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle,
+    FoldedFloatCompareLinkageStyle, FrameConvention, GlobalArrayIndexStyle,
+    IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
+    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
+    MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
+    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
+    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
+    SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -55,9 +55,11 @@ pub enum Quirk {
     /// before loading the bias double (`lfd f1,0(0)`), reversing the mainline
     /// schedule. Unique to GC/2.0p1.
     FloatCastStoresValueFirst,
+    FloatCompareLoadsValueFirst,
     /// Build 163's int-to-float lowering stores a biased signed value through
     /// r0 before materializing the high word in that same register.
     LegacyFloatCastSchedule,
+    LegacyFoldedFloatCompareBeforeLinkage,
     LegacyIntCallResultConversion,
     /// Build 163 preserves a compare/branch diamond for canonical integer
     /// boolean ternaries instead of using the 2.4.x branchless idioms.
@@ -111,7 +113,9 @@ impl Quirk {
             Quirk::UnsignedPlainChar => QuirkKind::Intentional,
             // A scheduling change introduced by the 2.0 patch release.
             Quirk::FloatCastStoresValueFirst => QuirkKind::Intentional,
+            Quirk::FloatCompareLoadsValueFirst => QuirkKind::Intentional,
             Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
+            Quirk::LegacyFoldedFloatCompareBeforeLinkage => QuirkKind::Intentional,
             Quirk::LegacyIntCallResultConversion => QuirkKind::Intentional,
             Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
             Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
@@ -165,8 +169,14 @@ impl Quirk {
             Quirk::FloatCastStoresValueFirst => {
                 "int->float stores the value before loading the bias double (GC/2.0p1)"
             }
+            Quirk::FloatCompareLoadsValueFirst => {
+                "loaded float comparisons evaluate the value before the pool constant"
+            }
             Quirk::LegacyFloatCastSchedule => {
                 "int->float uses build 163's r0 scratch/store schedule"
+            }
+            Quirk::LegacyFoldedFloatCompareBeforeLinkage => {
+                "folded float comparisons precede build 163's linkage instructions"
             }
             Quirk::LegacyIntCallResultConversion => {
                 "integer call results use build 163's bias-first conversion frame"
@@ -314,8 +324,11 @@ pub struct Behavior {
     /// float-constant load rather than filling the mflr->store latency slot with it
     /// (GC/2.0p1's order).
     pub lr_save_precedes_float_const: bool,
+    /// Placement of a bare float comparison relative to non-leaf linkage when a
+    /// following CR operation folds equality.
+    pub folded_float_compare_linkage_style: FoldedFloatCompareLinkageStyle,
     /// In a float `if`-condition against a pool constant, whether the loaded value
-    /// operand (member/global) is emitted before the constant load (GC/2.0p1's order).
+    /// operand (member/global) is emitted before the constant load.
     pub float_compare_value_before_const: bool,
     /// In `frexp`, whether the mantissa scaling `fmul` precedes the `*eptr` store
     /// (GC/2.0p1's order).
@@ -442,6 +455,10 @@ impl Behavior {
                 .profile
                 .int_call_result_conversion_style(),
             lr_save_precedes_float_const: config.build.profile.lr_save_precedes_float_const(),
+            folded_float_compare_linkage_style: config
+                .build
+                .profile
+                .folded_float_compare_linkage_style(),
             float_compare_value_before_const: config
                 .build
                 .profile
@@ -528,8 +545,16 @@ impl Behavior {
         if self.float_cast_value_store_first {
             quirks.push(ActiveQuirk::of(Quirk::FloatCastStoresValueFirst));
         }
+        if self.float_compare_value_before_const {
+            quirks.push(ActiveQuirk::of(Quirk::FloatCompareLoadsValueFirst));
+        }
         if self.legacy_float_cast_schedule {
             quirks.push(ActiveQuirk::of(Quirk::LegacyFloatCastSchedule));
+        }
+        if self.folded_float_compare_linkage_style == FoldedFloatCompareLinkageStyle::CompareFirst {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyFoldedFloatCompareBeforeLinkage,
+            ));
         }
         if self.int_call_result_conversion_style == IntCallResultConversionStyle::LegacyBiasFirst {
             quirks.push(ActiveQuirk::of(Quirk::LegacyIntCallResultConversion));
@@ -827,6 +852,11 @@ mod tests {
             CommaValuePlacementStyle::ParameterHome
         );
         assert!(behavior.lr_save_precedes_float_const);
+        assert_eq!(
+            behavior.folded_float_compare_linkage_style,
+            FoldedFloatCompareLinkageStyle::CompareFirst
+        );
+        assert!(behavior.float_compare_value_before_const);
         assert_eq!(
             behavior.bit_field_load_placement,
             BitFieldLoadPlacement::ResultRegister
