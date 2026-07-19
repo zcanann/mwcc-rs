@@ -809,6 +809,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         self.read_only_section_anchor_comment_flags()
     }
 
+    /// Whether unused function prototypes carrying a section attribute remain
+    /// visible as GLOBAL UND symbols in the emitted object.
+    fn materialize_section_prototypes(&self) -> bool {
+        false
+    }
+
     /// Whether unsaved single-precision use sets the extab FPU bit.
     fn mark_single_precision_extab(&self) -> bool {
         true
@@ -951,6 +957,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn data_section_relocation_style(&self) -> DataSectionRelocationStyle {
         DataSectionRelocationStyle::SectionAnchor
+    }
+
+    fn materialize_section_prototypes(&self) -> bool {
+        true
     }
 
     fn emit_leaf_frame_unwind(&self) -> bool {

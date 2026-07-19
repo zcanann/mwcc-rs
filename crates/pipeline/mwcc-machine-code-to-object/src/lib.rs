@@ -64,6 +64,7 @@ pub fn assemble_object(
     defined_globals: &[DefinedGlobal],
     inline_asm_symbols: &[String],
     forward_declared_statics: &[String],
+    early_undefined_externals: &[String],
     source_name: &str,
     object_format: ObjectFormat,
     small_data: bool,
@@ -218,6 +219,7 @@ pub fn assemble_object(
         emit_mwcats,
         inline_asm_symbols,
         forward_declared_statics,
+        early_undefined_externals,
         local_symbol_order,
     })
 }

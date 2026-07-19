@@ -1762,6 +1762,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // reference order, trailing when unused.)
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
     let mut global_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for name in input.early_undefined_externals {
+        if global_symbols.contains_key(name.as_str()) {
+            continue;
+        }
+        global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add(name),
+            0,
+            0,
+            STB_GLOBAL_NOTYPE,
+            0,
+            SHN_UNDEF,
+        );
+        comment_values.push((0, 0));
+    }
     // One initialized exported object's symbol plus its pointer-relocation
     // targets (reverse element order) — shared by the up-front run and the
     // source-position interleaved runs below.

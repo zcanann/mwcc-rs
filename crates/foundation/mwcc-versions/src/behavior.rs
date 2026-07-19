@@ -145,6 +145,7 @@ pub enum Quirk {
     LegacyForwardSmallZeroStatics,
     LegacyCoefficientTableSectionAnchor,
     EarlyDataSectionRelocationAnchors,
+    LegacyMaterializedSectionPrototypes,
     LegacyEarlyReadOnlySectionAnchor,
     LegacyUnmarkedReadOnlySectionAnchor,
     LegacyUnmarkedSinglePrecisionExtab,
@@ -214,6 +215,7 @@ impl Quirk {
             Quirk::LegacyForwardSmallZeroStatics => QuirkKind::Intentional,
             Quirk::LegacyCoefficientTableSectionAnchor => QuirkKind::Intentional,
             Quirk::EarlyDataSectionRelocationAnchors => QuirkKind::Intentional,
+            Quirk::LegacyMaterializedSectionPrototypes => QuirkKind::Intentional,
             Quirk::LegacyEarlyReadOnlySectionAnchor => QuirkKind::Intentional,
             Quirk::LegacyUnmarkedReadOnlySectionAnchor => QuirkKind::Intentional,
             Quirk::LegacyUnmarkedSinglePrecisionExtab => QuirkKind::Intentional,
@@ -348,6 +350,9 @@ impl Quirk {
             }
             Quirk::EarlyDataSectionRelocationAnchors => {
                 "pointer initializers target full data-section anchors before build 81"
+            }
+            Quirk::LegacyMaterializedSectionPrototypes => {
+                "section-attributed prototypes remain global undefined symbols in build 163"
             }
             Quirk::LegacyEarlyReadOnlySectionAnchor => {
                 "the read-only section anchor precedes named data symbols"
@@ -574,6 +579,8 @@ pub struct Behavior {
     pub data_section_relocation_style: DataSectionRelocationStyle,
     /// `.comment` flags attached to the writable `...data.0` section anchor.
     pub data_section_anchor_comment_flags: u32,
+    /// Whether unused section-attributed prototypes remain in the symbol table.
+    pub materialize_section_prototypes: bool,
     /// Whether unsaved single-precision use sets the extab FPU bit.
     pub mark_single_precision_extab: bool,
     /// First `$localstaticN` suffix within each plain inline definition.
@@ -771,6 +778,10 @@ impl Behavior {
                 .build
                 .profile
                 .data_section_anchor_comment_flags(),
+            materialize_section_prototypes: config
+                .build
+                .profile
+                .materialize_section_prototypes(),
             mark_single_precision_extab: config.build.profile.mark_single_precision_extab(),
             plain_inline_localstatic_base: config.build.profile.plain_inline_localstatic_base(),
             skipped_static_inline_label_base: config
@@ -960,6 +971,11 @@ impl Behavior {
         }
         if self.data_section_relocation_style == DataSectionRelocationStyle::SectionAnchor {
             quirks.push(ActiveQuirk::of(Quirk::EarlyDataSectionRelocationAnchors));
+        }
+        if self.materialize_section_prototypes {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyMaterializedSectionPrototypes,
+            ));
         }
         if self.read_only_section_anchor_order == ReadOnlySectionAnchorOrder::BeforeDataObjects {
             quirks.push(ActiveQuirk::of(Quirk::LegacyEarlyReadOnlySectionAnchor));
@@ -1156,19 +1172,23 @@ mod tests {
     fn build_53_reports_the_unsigned_char_quirk() {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
         let quirks = behavior.active_quirks();
-        assert_eq!(quirks.len(), 3);
+        assert_eq!(quirks.len(), 4);
         assert_eq!(quirks[0].quirk, Quirk::UnsignedPlainChar);
         assert_eq!(quirks[0].kind, QuirkKind::Intentional);
+        assert_eq!(
+            quirks[1].quirk,
+            Quirk::EarlyDataSectionRelocationAnchors
+        );
         assert_eq!(
             behavior.fixed_address_poll_address_style,
             FixedAddressPollAddressStyle::FoldedBankDisplacement
         );
-        assert_eq!(quirks[1].quirk, Quirk::EarlyFoldedFixedPollDisplacement);
+        assert_eq!(quirks[2].quirk, Quirk::EarlyFoldedFixedPollDisplacement);
         assert_eq!(
             behavior.queue_service_inlining_style,
             QueueServiceInliningStyle::KeepServiceCallOutOfLine
         );
-        assert_eq!(quirks[2].quirk, Quirk::EarlyOutOfLineQueueService);
+        assert_eq!(quirks[3].quirk, Quirk::EarlyOutOfLineQueueService);
 
         let mut deferred_config = CompilerConfig::new(build::GC_1_3);
         deferred_config.flags.inline_deferred = true;
@@ -1219,6 +1239,11 @@ mod tests {
         assert!(!behavior.emit_leaf_frame_unwind);
         assert!(behavior.constant_join_return_precedes_lr_reload);
         assert!(behavior.guard_store_precedes_return_value);
+        assert!(behavior.materialize_section_prototypes);
+        assert!(behavior
+            .active_quirks()
+            .iter()
+            .any(|active| active.quirk == Quirk::LegacyMaterializedSectionPrototypes));
         assert_eq!(
             behavior.narrow_guard_schedule_style,
             NarrowGuardScheduleStyle::CompareFirstDeclarationOrder

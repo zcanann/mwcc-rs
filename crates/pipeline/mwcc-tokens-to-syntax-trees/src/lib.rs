@@ -63,6 +63,7 @@ pub fn parse_translation_unit(
         weak_functions: std::collections::HashSet::new(),
         static_functions: std::collections::HashSet::new(),
         section_functions: std::collections::HashMap::new(),
+        section_prototype_order: Vec::new(),
         skipped_inline_names: std::collections::HashSet::new(),
         inline_bodies: std::collections::HashMap::new(),
         default_cplusplus: cplusplus,

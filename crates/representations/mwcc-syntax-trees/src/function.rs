@@ -259,6 +259,9 @@ pub struct TranslationUnit {
     /// PLAIN-inline materializations — weak FUNC symbols carrying the
     /// weak-OBJECT 0x0d comment flag (not declspec-weak's 0x0e).
     pub weak_materialized: Vec<String>,
+    /// Function prototypes carrying `__declspec(section "…")`, in first
+    /// declaration order. Early compilers retain unused ones in the symbol table.
+    pub section_prototypes: Vec<String>,
     /// The skipped inline functions' NAMES: a body that calls one must defer
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.

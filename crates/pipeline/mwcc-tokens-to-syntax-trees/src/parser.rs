@@ -186,6 +186,9 @@ pub(crate) struct Parser {
     /// A `__declspec(section "…")` seen on a function PROTOTYPE — mwcc applies it to
     /// the later definition (pikmin's `DECL_SECT(".init")` sits on the memcpy proto).
     pub(crate) section_functions: std::collections::HashMap<String, String>,
+    /// Section-attributed function prototypes, in first-declaration order.
+    /// Build 163 retains otherwise-unused declarations as GLOBAL UND symbols.
+    pub(crate) section_prototype_order: Vec<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
     /// `#pragma cplusplus` state: declarations parsed under it mangle their

@@ -99,6 +99,9 @@ pub struct ObjectInput<'a> {
     /// declaration, so they emit ahead of statics first seen at their definition
     /// (measured: OSAlarm's `DecrementerExceptionHandler`).
     pub forward_declared_statics: &'a [String],
+    /// Unused section-attributed function prototypes retained as GLOBAL UND
+    /// symbols by early compilers, in declaration order.
+    pub early_undefined_externals: &'a [String],
     /// Optional capture pin for interleaved LOCAL data/function symbols.
     pub local_symbol_order: &'a [String],
 }

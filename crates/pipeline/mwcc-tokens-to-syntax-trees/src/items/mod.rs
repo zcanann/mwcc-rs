@@ -824,6 +824,7 @@ impl Parser {
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
             weak_materialized: std::mem::take(&mut self.weak_materialized),
+            section_prototypes: std::mem::take(&mut self.section_prototype_order),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
@@ -2338,7 +2339,13 @@ impl Parser {
                     self.static_functions.insert(name.clone());
                 }
                 if let Some(section) = &declspec_section {
-                    self.section_functions.insert(name.clone(), section.clone());
+                    if self
+                        .section_functions
+                        .insert(name.clone(), section.clone())
+                        .is_none()
+                    {
+                        self.section_prototype_order.push(name.clone());
+                    }
                 }
                 if is_variadic {
                     self.variadic_definitions.insert(name.clone());

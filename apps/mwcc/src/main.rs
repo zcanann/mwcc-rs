@@ -1351,12 +1351,22 @@ fn compile(
         })
         .cloned()
         .collect();
+    let early_undefined_externals: Vec<String> = if behavior.materialize_section_prototypes {
+        unit.section_prototypes
+            .iter()
+            .filter(|name| !unit.functions.iter().any(|function| function.name == **name))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let object = mwcc_machine_code_to_object::assemble_object(
         &machine_functions,
         &defined_globals,
         &object_inline_asm_symbols,
         &forward_declared_statics,
+        &early_undefined_externals,
         source_name,
         mwcc_machine_code_to_object::ObjectFormat {
             comment: mwcc_machine_code_to_object::CommentFormat {
