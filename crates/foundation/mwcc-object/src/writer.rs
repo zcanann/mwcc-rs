@@ -68,7 +68,7 @@ fn comment_record(format: CommentFormat, symbol_records: &[(u32, u32)]) -> Vec<u
     record[12] = format.version.0;
     record[13] = format.version.1;
     record[14] = format.version.2;
-    record[16] = u8::from(format.optimized);
+    record[16] = u8::from(format.has_code);
     record.extend_from_slice(&[0, 0, 0, 0]);
     for &(alignment, flags) in symbol_records {
         record.extend_from_slice(&alignment.to_be_bytes());
@@ -2046,7 +2046,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             };
         }
-        if input.object_format.function_symbol_order == FunctionSymbolOrder::FunctionFirst {
+        if input.object_format.function_symbol_order == FunctionSymbolOrder::FunctionFirst
+            || function.is_asm
+        {
             emit_referenced!(absolute_ordered);
             emit_current_function_symbol!();
             emit_referenced!(early_implicit_ordered.iter().copied());
@@ -2845,7 +2847,7 @@ mod tests {
             CommentFormat {
                 marker: 0x08,
                 version: (2, 3, 0),
-                optimized: true,
+                has_code: true,
             },
             &[],
         );

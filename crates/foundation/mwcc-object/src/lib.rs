@@ -14,9 +14,9 @@ mod writer;
 pub struct CommentFormat {
     pub marker: u8,
     pub version: (u8, u8, u8),
-    /// Byte 16 of the Metrowerks header: zero for `-O0`, one when optimization
-    /// is enabled.
-    pub optimized: bool,
+    /// Byte 16 of the Metrowerks header: zero for an empty translation unit,
+    /// one when the object contains code.
+    pub has_code: bool,
 }
 
 /// Build-specific conventions affecting relocatable-object encoding.

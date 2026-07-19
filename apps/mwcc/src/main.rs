@@ -1217,10 +1217,10 @@ fn compile(
         ));
     }
 
-    // Immediate inline processing retains every skipped static-inline asm helper
-    // as a LOCAL undefined symbol. Under `-inline …,deferred`, mwcc drops helpers
-    // that no emitted function calls; referenced helpers still need their local
-    // UND entry so call relocations bind correctly.
+    // Optimized immediate inline processing retains every skipped static-inline
+    // asm helper as a LOCAL undefined symbol. Deferred processing and `-O0` drop
+    // helpers that no emitted function calls; referenced helpers still need their
+    // local UND entry so call relocations bind correctly.
     let referenced_targets: std::collections::HashSet<&str> = machine_functions
         .iter()
         .flat_map(|function| &function.relocations)
@@ -1235,7 +1235,11 @@ fn compile(
     let object_inline_asm_symbols: Vec<String> = unit
         .inline_asm_symbols
         .iter()
-        .filter(|name| !config.flags.inline_deferred || referenced_targets.contains(name.as_str()))
+        .filter(|name| {
+            (!config.flags.inline_deferred
+                && config.flags.optimization != mwcc_versions::Optimization::O0)
+                || referenced_targets.contains(name.as_str())
+        })
         .cloned()
         .collect();
 
@@ -1249,7 +1253,7 @@ fn compile(
             comment: mwcc_machine_code_to_object::CommentFormat {
                 marker: config.build.comment_marker,
                 version: config.build.comment_version,
-                optimized: config.flags.optimization != mwcc_versions::Optimization::O0,
+                has_code: !machine_functions.is_empty(),
             },
             emb_sda21_offset: config.build.emb_sda21_offset,
             function_symbol_order: if config.build.function_symbol_before_references {
