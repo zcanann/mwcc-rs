@@ -236,6 +236,11 @@ pub fn lower_function(
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
         callee_saved: Vec::new(),
+        entry_parameter_words: function
+            .parameters
+            .iter()
+            .map(|parameter| usize::from(parameter.parameter_type.width()).div_ceil(32).max(1))
+            .sum(),
         legacy_callee_saved_frame_layout:
             generator::LegacyCalleeSavedFrameLayout::InferFromValueOrigin,
         legacy_discarded_call_locals: 0,

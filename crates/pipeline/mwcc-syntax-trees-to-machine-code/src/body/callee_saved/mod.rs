@@ -266,19 +266,16 @@ impl Generator {
         if live.is_empty() {
             return Ok(false);
         }
-        // Every live value must be a general-class parameter (locals defer), and none
-        // may be passed to a call — the first such argument use stays in the incoming
-        // register (mwcc skips the move until a call clobbers it), which needs
-        // value-location tracking not modeled here.
+        // Every live value must be a general-class parameter (locals defer).
+        // Passing one of those values through a call normally belongs to a
+        // schedule-specific owner: some calls use the still-live incoming
+        // register while others materialize a saved home first.
         let passed_to_call = function.statements.iter().any(|statement| match statement {
             Statement::Expression(expression) => live
                 .iter()
                 .any(|name| expression_reads_name(expression, name)),
             _ => false,
         });
-        if passed_to_call {
-            return Ok(false);
-        }
         // (parameter index, name, incoming register) for each promoted value.
         let mut promoted: Vec<(usize, String, u8)> = Vec::new();
         for name in &live {
@@ -307,7 +304,30 @@ impl Generator {
         // more reschedule the LR reload by register death — `lwz r31; lwz r30; lwz r29; lwz
         // r0` — and defer). A second saved value must be void; a value returned alongside
         // two saved values interleaves the return move with the epilogue and is not modeled.
-        if has_store && (count > 2 || (count == 2 && function.return_type != Type::Void)) {
+        let single_store_consumes_both = count == 2
+            && function.return_type != Type::Void
+            && matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if live.contains(name))
+            && function
+                .statements
+                .iter()
+                .filter(|statement| matches!(statement, Statement::Store { .. }))
+                .count()
+                == 1
+            && matches!(
+                function.statements.last(),
+                Some(Statement::Store { target, value })
+                    if live.iter().all(|name|
+                        expression_reads_name(target, name) || expression_reads_name(value, name))
+            );
+        if passed_to_call && !single_store_consumes_both {
+            return Ok(false);
+        }
+        if has_store
+            && (count > 2
+                || (count == 2
+                    && function.return_type != Type::Void
+                    && !single_store_consumes_both))
+        {
             return Ok(false);
         }
         // A two-value store sink stores the saved values directly (`gi = a; gj = b;`). A
@@ -335,6 +355,7 @@ impl Generator {
                 .filter(|statement| matches!(statement, Statement::Store { .. }))
                 .count()
                 < count
+            && !single_store_consumes_both
         {
             return Ok(false);
         }
@@ -395,6 +416,8 @@ impl Generator {
         let frame_size = (((8 + 4 * count as i32) + 15) / 16 * 16) as i16;
         self.non_leaf = true;
         self.frame_size = frame_size;
+        self.legacy_callee_saved_frame_layout =
+            LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
         // Phase D: the promoted parameters' homes are virtuals, created highest-rank
         // first — id order reproduces r31, r30, … through the callee-saved pool. The
         // interleaved save+move prologue comes from the FRAME BUILDER.
@@ -405,8 +428,9 @@ impl Generator {
         // afterward (`foo(); gi=a; return a;`). An EARLIER store whose sink is the return (`*p=a; g();
         // return a;`) takes the ordinary return epilogue (GPRs, then LR), where the hoist pass places
         // the LR reload right after the last call. So key on the LAST statement, not merely has_store.
-        self.epilogue_lr_first =
-            matches!(function.statements.last(), Some(Statement::Store { .. }));
+        self.epilogue_lr_before_gprs = single_store_consumes_both;
+        self.epilogue_lr_first = !single_store_consumes_both
+            && matches!(function.statements.last(), Some(Statement::Store { .. }));
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         debug_assert_eq!(plan.frame_size, frame_size);
         let incoming_ordered: Vec<u8> = promoted
@@ -417,14 +441,37 @@ impl Generator {
         self.output
             .instructions
             .extend(plan.prologue_interleaved(&incoming_ordered));
-        for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
-            if let Some(location) = self.locations.get_mut(name) {
-                location.register = homes[rank];
+        // The constructor-style two-value store sink uses both incoming values
+        // in its first call, then consumes their saved homes in the trailing
+        // store/return. Keep the incoming locations through that call so it does
+        // not grow redundant argument moves. Other schedules materialize homes
+        // before the body, as their dedicated owners and the original general
+        // path expect.
+        let mut remapped = !single_store_consumes_both;
+        if remapped {
+            for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
+                if let Some(location) = self.locations.get_mut(name) {
+                    location.register = homes[rank];
+                }
             }
         }
-
         for statement in &function.statements {
             self.emit_statement(statement)?;
+            if !remapped && statement_has_call(statement) {
+                for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
+                    if let Some(location) = self.locations.get_mut(name) {
+                        location.register = homes[rank];
+                    }
+                }
+                remapped = true;
+            }
+        }
+        if !remapped {
+            for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
+                if let Some(location) = self.locations.get_mut(name) {
+                    location.register = homes[rank];
+                }
+            }
         }
         if function.return_type != Type::Void {
             let result = Eabi::general_result().number;

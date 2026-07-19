@@ -114,6 +114,7 @@ pub(crate) struct FrameSlot {
 pub(crate) enum LegacyCalleeSavedFrameLayout {
     #[default]
     InferFromValueOrigin,
+    RetainEntryParameterTable,
     ReserveForwardedParameterLane,
     PreserveLogicalSize,
 }
@@ -265,6 +266,11 @@ pub(crate) struct Generator {
     /// hold values live across a call. They are saved high-to-low in the prologue
     /// and reloaded in the epilogue, and drive the unwind table's saved-GPR count.
     pub(crate) callee_saved: Vec<u8>,
+    /// Incoming EABI argument footprint in 32-bit words. Build 163 retains this
+    /// frontend bookkeeping when it sizes a frame containing entry-materialized
+    /// callee-saved values: every pair of argument words occupies one 8-byte lane,
+    /// including words belonging to otherwise-unused parameters.
+    pub(crate) entry_parameter_words: usize,
     pub(crate) legacy_callee_saved_frame_layout: LegacyCalleeSavedFrameLayout,
     /// Dead call-initializer locals removed from the semantic body. Build 163
     /// still counts their discarded values while sizing callee-saved frame lanes.

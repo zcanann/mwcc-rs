@@ -120,19 +120,44 @@ impl Generator {
                     if s == b && physical_saved.contains(a))
             })
             .count();
-        let reserve_inferred_lane = self.legacy_callee_saved_frame_layout
-            != LegacyCalleeSavedFrameLayout::PreserveLogicalSize
-            && (materialized_home_before_call
-                || self.legacy_callee_saved_frame_layout
-                    == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane);
+        let preserve_logical_size = self.legacy_callee_saved_frame_layout
+            == LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
+        let reserve_forwarded_parameter_lane = self.legacy_callee_saved_frame_layout
+            == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
         // Build 163 keeps dead call-initializer results in its frame-pressure
         // accounting even after eliminating the values. Only that erased-local
         // case exposes the pairwise lane count; ordinary promoted values retain
         // the established single inferred lane regardless of their count.
-        let extra_lane_count = if self.legacy_discarded_call_locals == 0 {
-            usize::from(reserve_inferred_lane)
+        let extra_lane_count = if preserve_logical_size {
+            0
+        } else if self.legacy_discarded_call_locals == 0 {
+            if materialized_home_before_call
+                && self.legacy_callee_saved_frame_layout
+                    == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
+            {
+                // Build 163 retains the incoming parameter table in pairs of
+                // 32-bit words whenever an entry value is materialized into a
+                // saved home. This is why an otherwise-unused third parameter
+                // grows a 24-byte one-home frame to 32 bytes, and why a double
+                // has the same effect: both make the footprint three words.
+                self.entry_parameter_words.div_ceil(2).max(1)
+            } else if materialized_home_before_call {
+                1
+            } else {
+                usize::from(reserve_forwarded_parameter_lane)
+            }
         } else {
-            let promoted_values = promoted_parameter_count.max(usize::from(reserve_inferred_lane));
+            let retained_parameter_lanes = if materialized_home_before_call
+                && self.legacy_callee_saved_frame_layout
+                    == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
+            {
+                self.entry_parameter_words.div_ceil(2).max(1)
+            } else if materialized_home_before_call {
+                1
+            } else {
+                usize::from(reserve_forwarded_parameter_lane)
+            };
+            let promoted_values = promoted_parameter_count.max(retained_parameter_lanes);
             (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
         };
         let new_size = old_size + i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX);

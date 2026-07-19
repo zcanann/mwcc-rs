@@ -1317,6 +1317,15 @@ impl Parser {
                 && matches!(self.peek_at(1), Token::Identifier(_))
             {
                 let (name, layout, class) = self.parse_class_definition()?;
+                let class_type = Type::StructPointer {
+                    element_size: layout.size,
+                };
+                for signature in &class.constructors {
+                    let mangled = crate::cxx::mangle_member_function(&name, "__ct", signature)?;
+                    let mut parameter_types = vec![class_type];
+                    parameter_types.extend(signature.iter().copied());
+                    prototypes.push((mangled, class_type, parameter_types));
+                }
                 self.struct_typedefs.insert(name.clone(), name.clone());
                 self.structs.insert(name.clone(), layout);
                 self.cxx_classes.insert(name, class);
@@ -2368,11 +2377,25 @@ impl Parser {
                 self.deferred_function_names.push(name.clone());
             }
             let mut function =
-                self.function_body(return_type, name, function_is_static, parameters)?;
+                self.function_body(
+                    if let Some(scope) = &constructor_scope {
+                        Type::StructPointer {
+                            element_size: self.structs.get(scope).map_or(0, |layout| layout.size),
+                        }
+                    } else {
+                        return_type
+                    },
+                    name,
+                    function_is_static,
+                    parameters,
+                )?;
             if !constructor_initializers.is_empty() {
                 function
                     .statements
                     .splice(0..0, constructor_initializers);
+            }
+            if constructor_scope.is_some() && function.return_expression.is_none() {
+                function.return_expression = Some(Expression::Variable("this".to_string()));
             }
             function.is_weak = function_is_weak;
             function.section = declspec_section.clone().or(proto_section);

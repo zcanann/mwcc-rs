@@ -6,11 +6,6 @@ public:
     int base_value;
 };
 
-BaseCounter::BaseCounter(int initial)
-    : base_value(initial)
-{
-}
-
 class DerivedCounter : public BaseCounter {
 public:
     DerivedCounter(int, short);
