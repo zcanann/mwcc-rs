@@ -132,7 +132,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_harness_results_widen_identification_bounds(self):
         rows = [row(source=f"src/{index}.c") for index in range(4)]
-        statuses = ("BYTE", "DEFER", "HARNESS", "HARNESS")
+        statuses = ("BYTE", "DEFER", "HARNESS", "MISSING_DEPENDENCY")
         observations = {
             item["configuration_id"]: {"status": statuses[index]}
             for index, item in enumerate(rows)

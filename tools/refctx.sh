@@ -131,8 +131,23 @@ fi
 include_flags=()
 # NB: not `dir` — that variable holds the mktemp scratch dir the EXIT trap removes.
 for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
-( cd "$project" && python3 tools/decompctx.py "$src" "${include_flags[@]}" -o "$dir/$ctx_name" ) >/dev/null 2>&1 \
-  || { echo "decompctx failed for $src"; exit 1; }
+decompctx_log="$dir/decompctx.log"
+( cd "$project" && python3 tools/decompctx.py "$src" "${include_flags[@]}" -o "$dir/$ctx_name" ) \
+  >"$decompctx_log" 2>&1 || { echo "decompctx failed for $src"; exit 1; }
+
+# decompctx is intentionally permissive: when an include is absent it logs the
+# path, emits an empty include region, and exits successfully. Keep those paths
+# so a later reference-compiler rejection can be distinguished from an actual
+# harness/compiler error. A basename available elsewhere in the project (MSL's
+# stddef.h roots, for example) is not called an absent dependency here.
+missing_dependencies=()
+while IFS= read -r missing; do
+  [[ -n "$missing" ]] || continue
+  normalized_missing="${missing//\\//}"
+  if ! find "$project" -type f -path "*/$normalized_missing" -print -quit 2>/dev/null | grep -q .; then
+    missing_dependencies+=("$normalized_missing")
+  fi
+done < <(sed -n 's/^Failed to locate //p' "$decompctx_log" | sort -u)
 
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
 #    preprocess). mwcceppc drops language-changing pragmas from `-E` output, so
@@ -167,7 +182,17 @@ if [[ ! -s "$dir/ctx.i" ]]; then
 fi
 
 # 3a. Reference object from the real compiler (from the self-contained context).
-( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o ) 2>/dev/null
+if ! reference_output="$(
+  cd "$dir" && "$wibo" "$sjis" "$compiler" \
+    ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o 2>&1
+)"; then
+  if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
+    echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
+    exit 0
+  fi
+  printf '%s\n' "$reference_output" >&2
+  exit 1
+fi
 [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
 
 # 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.

@@ -14,7 +14,15 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from parity_identity import configuration_id
 
 
-STATUSES = ("BYTE", "DIFF", "DEFER", "HARNESS", "UNSUPPORTED_BUILD", "UNTESTED")
+STATUSES = (
+    "BYTE",
+    "DIFF",
+    "DEFER",
+    "HARNESS",
+    "MISSING_DEPENDENCY",
+    "UNSUPPORTED_BUILD",
+    "UNTESTED",
+)
 
 
 def normalize_reason(reason: str) -> str:
@@ -34,6 +42,8 @@ def failure_reason(record: Dict[str, Any]) -> str:
         return "object bytes differ"
     if status == "UNSUPPORTED_BUILD":
         return f"compiler build is unsupported: {record.get('mw_version', '<unknown>')}"
+    if status == "MISSING_DEPENDENCY":
+        return output.rpartition(" — ")[2] or "source dependency is absent"
     if status == "DEFER":
         first = next((line for line in lines if line.startswith("DEFER")), lines[0] if lines else "deferred")
         return normalize_reason(first.rpartition(" — ")[2])
@@ -298,14 +308,16 @@ def representative_audit(
     }
     if complete and selected:
         successes = counts["BYTE"]
-        unknown = counts["HARNESS"]
+        unknown = counts["HARNESS"] + counts["MISSING_DEPENDENCY"]
         resolved = len(selected) - unknown
         resolved_low, resolved_high = wilson_interval(successes, resolved)
         result["estimate"] = {
             "measure": "configured_byte_exact",
             "successes": successes,
             "total": len(selected),
-            "harness_unknown": unknown,
+            "measurement_unknown": unknown,
+            "harness_unknown": counts["HARNESS"],
+            "missing_dependency_unknown": counts["MISSING_DEPENDENCY"],
             "confirmed_proportion": successes / len(selected),
             "identification_interval_low": successes / len(selected),
             "identification_interval_high": (successes + unknown) / len(selected),
@@ -320,11 +332,15 @@ def representative_audit(
 
 def print_breakdown(title: str, rows: List[Dict[str, Any]]) -> None:
     print(f"\n{title}")
-    print(f"{'name':28} {'total':>7} {'BYTE':>7} {'DIFF':>7} {'DEFER':>7} {'HARNESS':>8} {'UNSUP':>7} {'UNTEST':>8}")
+    print(
+        f"{'name':28} {'total':>7} {'BYTE':>7} {'DIFF':>7} {'DEFER':>7} "
+        f"{'HARNESS':>8} {'MISSDEP':>8} {'UNSUP':>7} {'UNTEST':>8}"
+    )
     for row in rows:
         print(
             f"{row['name'][:28]:28} {row['total']:7d} {row['BYTE']:7d} {row['DIFF']:7d} "
-            f"{row['DEFER']:7d} {row['HARNESS']:8d} {row['UNSUPPORTED_BUILD']:7d} {row['UNTESTED']:8d}"
+            f"{row['DEFER']:7d} {row['HARNESS']:8d} {row['MISSING_DEPENDENCY']:8d} "
+            f"{row['UNSUPPORTED_BUILD']:7d} {row['UNTESTED']:8d}"
         )
 
 
@@ -370,7 +386,9 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                 f"{estimate['confirmed_proportion']:.1%}"
             )
             print(
-                f"harness-unknown: {estimate['harness_unknown']}/{estimate['total']}; "
+                f"measurement-unknown: {estimate['measurement_unknown']}/{estimate['total']} "
+                f"(harness {estimate['harness_unknown']}, "
+                f"missing dependency {estimate['missing_dependency_unknown']}); "
                 f"sample parity bounds "
                 f"{estimate['identification_interval_low']:.1%}.."
                 f"{estimate['identification_interval_high']:.1%}"

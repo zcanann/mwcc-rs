@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from parity_identity import configuration_id, files_fingerprint, observation_id
 
 
-STATUSES = ("BYTE", "DIFF", "DEFER", "HARNESS", "UNSUPPORTED_BUILD")
+STATUSES = ("BYTE", "DIFF", "DEFER", "HARNESS", "MISSING_DEPENDENCY", "UNSUPPORTED_BUILD")
 
 
 def sha256_file(path: Path) -> str:
@@ -160,7 +160,7 @@ def verdict_line(output: str) -> str:
 
 def classify(output: str, returncode: int) -> str:
     first = verdict_line(output)
-    for status in ("BYTE", "DIFF", "DEFER"):
+    for status in ("BYTE", "DIFF", "DEFER", "MISSING_DEPENDENCY"):
         if first.startswith(status):
             return status
     return "HARNESS" if returncode != 0 or first else "HARNESS"
@@ -334,7 +334,7 @@ def main() -> int:
     summary = " / ".join(f"{status} {counts.get(status, 0)}" for status in STATUSES)
     print(f"== {len(rows)} configurations: {summary} / cached {reused} ==")
     print(f"cache: {cache}")
-    return 1 if counts["DIFF"] or counts["HARNESS"] or counts["UNSUPPORTED_BUILD"] else 0
+    return 1 if any(counts[status] for status in ("DIFF", "HARNESS", "MISSING_DEPENDENCY", "UNSUPPORTED_BUILD")) else 0
 
 
 if __name__ == "__main__":
