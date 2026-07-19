@@ -39,6 +39,11 @@ pub struct ObjectFormat {
     pub rodata_anchor_before_data_symbols: bool,
     /// `.comment` attribute flags for `...rodata.0`.
     pub rodata_anchor_comment_flags: u32,
+    /// Whether data initializers targeting full `.data`/`.rodata` objects bind
+    /// through the corresponding zero-offset section anchor.
+    pub data_relocations_use_section_anchors: bool,
+    /// `.comment` attribute flags for `...data.0`.
+    pub data_anchor_comment_flags: u32,
     pub initial_anonymous_counter: u8,
     pub post_leaf_function_anonymous_bump: u8,
     pub post_framed_function_anonymous_bump: u8,

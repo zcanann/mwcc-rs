@@ -1012,13 +1012,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // symbol named `...rodata.0` at `.rodata`+0 — created right after the
     // FIRST rodata object's symbol — and binds the ADDR16 relocations to
     // it. Only emitted when a relocation actually targets that name.
-    let rodata_anchor_needed = input.functions.iter().any(|function| {
+    let data_relocation_targets_section = |section: &str| {
+        input.data_objects.iter().any(|object| {
+            object.relocations.iter().any(|relocation| {
+                data_section
+                    .get(relocation.target.as_str())
+                    .is_some_and(|target_section| *target_section == section)
+            })
+        })
+    };
+    let rodata_anchor_needed_by_code = input.functions.iter().any(|function| {
         function.relocations.iter().any(|relocation| {
             matches!(&relocation.target, RelocationTarget::External(name) if name == "...rodata.0")
         })
     });
+    let rodata_anchor_needed_by_data = input.object_format.data_relocations_use_section_anchors
+        && data_relocation_targets_section(".rodata");
+    let rodata_anchor_needed = rodata_anchor_needed_by_code || rodata_anchor_needed_by_data;
     let mut rodata_anchor_emitted = false;
-    if rodata_anchor_needed && input.object_format.rodata_anchor_before_data_symbols {
+    if rodata_anchor_needed_by_code && input.object_format.rodata_anchor_before_data_symbols {
         local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(
             &mut symtab,
@@ -1213,7 +1225,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // ctzl's symbol, before @797).
     let mut data_marker_pending = functions.iter().any(|function| {
         function.relocations.iter().any(|relocation| matches!(&relocation.target, RelocationTarget::External(name) if name == "...data.0"))
-    });
+    }) || (input.object_format.data_relocations_use_section_anchors
+        && data_relocation_targets_section(".data"));
     // ONE creation-order pass: per function, its file-scope statics, static
     // locals, strings, blobs, pooled constants, unwind entries, jump table,
     // then — for a STATIC function — its own FUNC symbol at definition end
@@ -1287,7 +1300,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0,
                         index_of(".data") as u16,
                     );
-                    comment_values.push((1, 0x0010_0000));
+                    comment_values.push((1, input.object_format.data_anchor_comment_flags));
                     data_marker_pending = false;
                 }
                 local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -1393,7 +1406,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0,
                         index_of(".data") as u16,
                     );
-                    comment_values.push((1, 0x0010_0000));
+                    comment_values.push((1, input.object_format.data_anchor_comment_flags));
                     data_marker_pending = false;
                 }
                 local_data_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
@@ -1709,6 +1722,36 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
+    // A data-only unit has no per-function local-symbol block in which to create
+    // the writable section anchor. Emit it at the end of the LOCAL run, still
+    // before every global symbol (ansi_files' `...data.0, __files` ordering).
+    if data_marker_pending {
+        local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add("...data.0"),
+            0,
+            0,
+            0,
+            0,
+            index_of(".data") as u16,
+        );
+        comment_values.push((1, input.object_format.data_anchor_comment_flags));
+    }
+    if rodata_anchor_needed && !rodata_anchor_emitted {
+        local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add("...rodata.0"),
+            0,
+            0,
+            0,
+            0,
+            index_of(".rodata") as u16,
+        );
+        comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
+    }
+
     // The GLOBAL run. mwcc emits symbols in source-encounter order, which for the
     // common shape (data declared before functions) means:
     //   1. the INITIALIZED (.sdata) defined globals, in declaration order, up front;
@@ -2379,23 +2422,36 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // relocation entries run in REVERSE element order. `.sdata` for small pointers,
     // `.data` for large arrays.
     let mut rela_sdata = Vec::new();
-    let resolve_data_target = |name: &str| -> u32 {
-        *local_data_symbols
-            .get(name)
-            .or_else(|| local_function_symbols.get(name))
-            .unwrap_or_else(|| &global_symbols[name])
+    let resolve_data_target = |name: &str| -> (u32, u32) {
+        if input.object_format.data_relocations_use_section_anchors {
+            match data_section.get(name).copied() {
+                Some(".data") => return (local_data_symbols["...data.0"], data_offsets[name]),
+                Some(".rodata") => {
+                    return (local_data_symbols["...rodata.0"], data_offsets[name]);
+                }
+                _ => {}
+            }
+        }
+        (
+            *local_data_symbols
+                .get(name)
+                .or_else(|| local_function_symbols.get(name))
+                .unwrap_or_else(|| &global_symbols[name]),
+            0,
+        )
     };
     for object in &input.data_objects {
         if data_section[object.name] != ".sdata" {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
+            let (symbol, section_addend) = resolve_data_target(&relocation.target);
             write_rela(
                 &mut rela_sdata,
                 data_offsets[object.name] + relocation.offset,
-                resolve_data_target(&relocation.target),
+                symbol,
                 R_PPC_ADDR32,
-                relocation.addend as u32,
+                section_addend.wrapping_add(relocation.addend as u32),
             );
         }
     }
@@ -2405,12 +2461,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
+            let (symbol, section_addend) = resolve_data_target(&relocation.target);
             write_rela(
                 &mut rela_sdata2,
                 data_offsets[object.name] + relocation.offset,
-                resolve_data_target(&relocation.target),
+                symbol,
                 R_PPC_ADDR32,
-                relocation.addend as u32,
+                section_addend.wrapping_add(relocation.addend as u32),
             );
         }
     }
@@ -2419,12 +2476,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
+            let (symbol, section_addend) = resolve_data_target(&relocation.target);
             write_rela(
                 &mut rela_data,
                 data_offsets[object.name] + relocation.offset,
-                resolve_data_target(&relocation.target),
+                symbol,
                 R_PPC_ADDR32,
-                relocation.addend as u32,
+                section_addend.wrapping_add(relocation.addend as u32),
             );
         }
     }
@@ -2435,12 +2493,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter() {
+            let (symbol, section_addend) = resolve_data_target(&relocation.target);
             write_rela(
                 &mut rela_ctors,
                 data_offsets[object.name] + relocation.offset,
-                resolve_data_target(&relocation.target),
+                symbol,
                 R_PPC_ADDR32,
-                relocation.addend as u32,
+                section_addend.wrapping_add(relocation.addend as u32),
             );
         }
     }
@@ -2450,12 +2509,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             continue;
         }
         for relocation in object.relocations.iter().rev() {
+            let (symbol, section_addend) = resolve_data_target(&relocation.target);
             write_rela(
                 &mut rela_dtors,
                 data_offsets[object.name] + relocation.offset,
-                resolve_data_target(&relocation.target),
+                symbol,
                 R_PPC_ADDR32,
-                relocation.addend as u32,
+                section_addend.wrapping_add(relocation.addend as u32),
             );
         }
     }

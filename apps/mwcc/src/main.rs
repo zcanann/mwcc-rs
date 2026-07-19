@@ -1392,6 +1392,9 @@ fn compile(
             rodata_anchor_before_data_symbols: behavior.read_only_section_anchor_order
                 == mwcc_versions::ReadOnlySectionAnchorOrder::BeforeDataObjects,
             rodata_anchor_comment_flags: behavior.read_only_section_anchor_comment_flags,
+            data_relocations_use_section_anchors: behavior.data_section_relocation_style
+                == mwcc_versions::DataSectionRelocationStyle::SectionAnchor,
+            data_anchor_comment_flags: behavior.data_section_anchor_comment_flags,
             initial_anonymous_counter: config.build.initial_anonymous_counter,
             post_leaf_function_anonymous_bump: config.build.post_leaf_function_anonymous_bump,
             post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,

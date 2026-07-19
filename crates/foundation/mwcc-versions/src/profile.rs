@@ -413,6 +413,16 @@ pub enum ReadOnlySectionAnchorOrder {
     BeforeDataObjects,
 }
 
+/// Symbol identity used by pointer initializers targeting objects in the full
+/// `.data` or `.rodata` sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataSectionRelocationStyle {
+    /// Bind directly to the named object symbol (build 81 and later).
+    NamedObject,
+    /// Bind to `...data.0` / `...rodata.0`, adding the object's section offset.
+    SectionAnchor,
+}
+
 /// Optimizations applied after resolving labels in an `asm` function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsmBranchOptimizationStyle {
@@ -791,6 +801,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         0x0010_0000
     }
 
+    fn data_section_relocation_style(&self) -> DataSectionRelocationStyle {
+        DataSectionRelocationStyle::NamedObject
+    }
+
+    fn data_section_anchor_comment_flags(&self) -> u32 {
+        self.read_only_section_anchor_comment_flags()
+    }
+
     /// Whether unsaved single-precision use sets the extab FPU bit.
     fn mark_single_precision_extab(&self) -> bool {
         true
@@ -873,6 +891,10 @@ impl CodegenProfile for Gc13Build53 {
         false
     }
 
+    fn data_section_relocation_style(&self) -> DataSectionRelocationStyle {
+        DataSectionRelocationStyle::SectionAnchor
+    }
+
     fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
         FixedAddressPollAddressStyle::FoldedBankDisplacement
     }
@@ -925,6 +947,10 @@ pub struct Gc233Build163;
 impl CodegenProfile for Gc233Build163 {
     fn frame_convention(&self) -> FrameConvention {
         FrameConvention::LinkageFirst
+    }
+
+    fn data_section_relocation_style(&self) -> DataSectionRelocationStyle {
+        DataSectionRelocationStyle::SectionAnchor
     }
 
     fn emit_leaf_frame_unwind(&self) -> bool {

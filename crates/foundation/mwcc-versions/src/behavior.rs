@@ -18,7 +18,8 @@ use crate::profile::{
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
     ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressPollAddressStyle,
     FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle,
-    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
+    DataSectionRelocationStyle, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle,
+    IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
@@ -143,6 +144,7 @@ pub enum Quirk {
     LegacyLocalDataDeclarationOrder,
     LegacyForwardSmallZeroStatics,
     LegacyCoefficientTableSectionAnchor,
+    EarlyDataSectionRelocationAnchors,
     LegacyEarlyReadOnlySectionAnchor,
     LegacyUnmarkedReadOnlySectionAnchor,
     LegacyUnmarkedSinglePrecisionExtab,
@@ -211,6 +213,7 @@ impl Quirk {
             Quirk::LegacyLocalDataDeclarationOrder => QuirkKind::Intentional,
             Quirk::LegacyForwardSmallZeroStatics => QuirkKind::Intentional,
             Quirk::LegacyCoefficientTableSectionAnchor => QuirkKind::Intentional,
+            Quirk::EarlyDataSectionRelocationAnchors => QuirkKind::Intentional,
             Quirk::LegacyEarlyReadOnlySectionAnchor => QuirkKind::Intentional,
             Quirk::LegacyUnmarkedReadOnlySectionAnchor => QuirkKind::Intentional,
             Quirk::LegacyUnmarkedSinglePrecisionExtab => QuirkKind::Intentional,
@@ -342,6 +345,9 @@ impl Quirk {
             }
             Quirk::LegacyCoefficientTableSectionAnchor => {
                 "coefficient-table bases relocate through the read-only section anchor"
+            }
+            Quirk::EarlyDataSectionRelocationAnchors => {
+                "pointer initializers target full data-section anchors before build 81"
             }
             Quirk::LegacyEarlyReadOnlySectionAnchor => {
                 "the read-only section anchor precedes named data symbols"
@@ -564,6 +570,10 @@ pub struct Behavior {
     pub read_only_section_anchor_order: ReadOnlySectionAnchorOrder,
     /// `.comment` flags attached to the read-only section anchor.
     pub read_only_section_anchor_comment_flags: u32,
+    /// Relocation identity used by pointer initializers targeting full data sections.
+    pub data_section_relocation_style: DataSectionRelocationStyle,
+    /// `.comment` flags attached to the writable `...data.0` section anchor.
+    pub data_section_anchor_comment_flags: u32,
     /// Whether unsaved single-precision use sets the extab FPU bit.
     pub mark_single_precision_extab: bool,
     /// First `$localstaticN` suffix within each plain inline definition.
@@ -753,6 +763,14 @@ impl Behavior {
                 .build
                 .profile
                 .read_only_section_anchor_comment_flags(),
+            data_section_relocation_style: config
+                .build
+                .profile
+                .data_section_relocation_style(),
+            data_section_anchor_comment_flags: config
+                .build
+                .profile
+                .data_section_anchor_comment_flags(),
             mark_single_precision_extab: config.build.profile.mark_single_precision_extab(),
             plain_inline_localstatic_base: config.build.profile.plain_inline_localstatic_base(),
             skipped_static_inline_label_base: config
@@ -939,6 +957,9 @@ impl Behavior {
             == CoefficientTableRelocationStyle::SectionAnchorForComplexDag
         {
             quirks.push(ActiveQuirk::of(Quirk::LegacyCoefficientTableSectionAnchor));
+        }
+        if self.data_section_relocation_style == DataSectionRelocationStyle::SectionAnchor {
+            quirks.push(ActiveQuirk::of(Quirk::EarlyDataSectionRelocationAnchors));
         }
         if self.read_only_section_anchor_order == ReadOnlySectionAnchorOrder::BeforeDataObjects {
             quirks.push(ActiveQuirk::of(Quirk::LegacyEarlyReadOnlySectionAnchor));
