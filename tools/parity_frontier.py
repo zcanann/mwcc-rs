@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from parity_dashboard import load_inventory, load_results
+from parity_dashboard import latest_observations, load_inventory, load_results
 from parity_identity import configuration_id
 
 
@@ -56,8 +56,12 @@ def candidate_rows(inventory: Dict[str, Any], args: argparse.Namespace) -> List[
 
 
 def build_frontier(
-    rows: List[Dict[str, Any]], observations: Dict[str, Dict[str, Any]], args: argparse.Namespace
+    rows: List[Dict[str, Any]],
+    observations: Dict[str, Dict[str, Any]],
+    args: argparse.Namespace,
+    build_observations: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    build_observations = build_observations if build_observations is not None else observations
     universe = {row["configuration_id"] for row in rows}
     by_status: Dict[str, List[str]] = {}
     for identity in universe:
@@ -75,7 +79,7 @@ def build_frontier(
     probed_versions: List[str] = []
     for version in sorted({row["mw_version"] for row in rows}):
         version_rows = [row for row in rows if row["mw_version"] == version]
-        if any(row["configuration_id"] in observations for row in version_rows):
+        if any(row["configuration_id"] in build_observations for row in version_rows):
             continue
         candidates = [row["configuration_id"] for row in version_rows]
         picked = choose(candidates, 1, args.seed, args.epoch, f"VERSION:{version}")
@@ -135,6 +139,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--byte-audit", type=int, default=16)
     parser.add_argument("--seed", default="mwcc-frontier-v1")
     parser.add_argument("--epoch", default="0", help="change to rotate the frontier and BYTE audit")
+    parser.add_argument(
+        "--tool-fingerprint",
+        help="reserve build probes not yet observed by this compiler/harness revision",
+    )
     parser.add_argument("--project", action="append")
     parser.add_argument("--version", action="append")
     parser.add_argument("--language", choices=("c", "c++"), action="append")
@@ -149,8 +157,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     try:
         inventory = load_inventory(args.inventory)
-        observations = latest_any_tool(load_results(args.result))
-        frontier = build_frontier(candidate_rows(inventory, args), observations, args)
+        records = load_results(args.result)
+        observations = latest_any_tool(records)
+        build_observations = (
+            latest_observations(records, args.tool_fingerprint)
+            if args.tool_fingerprint is not None
+            else observations
+        )
+        frontier = build_frontier(
+            candidate_rows(inventory, args), observations, args, build_observations
+        )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(frontier, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except (OSError, ValueError, json.JSONDecodeError) as error:

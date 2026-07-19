@@ -137,6 +137,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.seed,
         "--epoch",
         args.epoch,
+        "--tool-fingerprint",
+        fingerprint,
         *filters,
         *result_arguments(previous_results),
     ]

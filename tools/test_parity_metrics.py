@@ -134,6 +134,16 @@ class FrontierTests(unittest.TestCase):
         self.assertIn(rows[-1]["configuration_id"], frontier["configuration_ids"])
         self.assertEqual(frontier["probed_versions"], ["Wii/1.0"])
 
+    def test_new_tool_reprobes_versions_seen_only_by_an_old_tool(self):
+        rows = [row(source="src/gc.c"), row(source="src/wii.c", mw_version="Wii/1.0")]
+        old_observations = {
+            item["configuration_id"]: {"status": "BYTE"}
+            for item in rows
+        }
+        args = argparse.Namespace(size=2, byte_audit=0, seed="seed", epoch="0")
+        frontier = build_frontier(rows, old_observations, args, {})
+        self.assertEqual(set(frontier["probed_versions"]), {"GC/2.6", "Wii/1.0"})
+
 
 if __name__ == "__main__":
     unittest.main()
