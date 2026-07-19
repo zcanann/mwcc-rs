@@ -1109,11 +1109,20 @@ impl Generator {
             .push(Instruction::BranchToLinkRegister);
         // Pre-pool labels: mainline advances 40; build 163 retains four
         // additional ladder-edge slots before the shared double constants.
+        // Deferred compilation retains another 36 internal CFG labels in every
+        // measured generation (builds 163/53/81 and the 2.4.7 mainline) without
+        // changing the emitted instruction stream.
+        let deferred_label_bump = if self.behavior.deferred_inlining {
+            36
+        } else {
+            0
+        };
         self.output.anonymous_label_bump += 40
             + legacy_roles
                 .as_ref()
                 .map(|roles| roles.constant_label_bump)
-                .unwrap_or(0);
+                .unwrap_or(0)
+            + deferred_label_bump;
         Ok(true)
     }
 }
