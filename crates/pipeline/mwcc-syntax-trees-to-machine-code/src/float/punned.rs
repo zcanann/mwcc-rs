@@ -882,6 +882,13 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
+        // Deferred compilation retains the nested punned/fctiwz prefix's three
+        // internal control-flow labels. This prefix is shared by the k_sin and
+        // k_cos composed families; its emitted frame and instruction schedule
+        // are otherwise unchanged in every measured generation.
+        if nested && self.behavior.deferred_inlining {
+            self.output.anonymous_label_bump += 3;
+        }
         Ok(true)
     }
 }
