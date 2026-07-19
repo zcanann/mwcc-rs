@@ -765,8 +765,17 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::BranchToLinkRegister);
-            // Pre-pool labels (measure via objprobe on the tan object).
-            self.output.anonymous_label_bump += if legacy_reloading { 7 } else { 8 };
+            // Pre-pool labels. The parity-tail CFG costs seven labels in build
+            // 163 and eight in the live-parameter family. Every measured
+            // deferred build retains two additional internal labels without
+            // changing the emitted instructions.
+            let parity_label_bump = if legacy_reloading { 7 } else { 8 };
+            let deferred_label_bump = if self.behavior.deferred_inlining {
+                2
+            } else {
+                0
+            };
+            self.output.anonymous_label_bump += parity_label_bump + deferred_label_bump;
             return Ok(true);
         }
         self.output.instructions.push(Instruction::RotateAndMask {
