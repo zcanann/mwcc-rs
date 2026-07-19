@@ -83,6 +83,14 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     invocation.flags.inline_deferred = true;
                 }
             }
+            // `-str reuse,readonly` pools string literals in read-only data.
+            // Treat each occurrence as the complete mode so the last flag wins.
+            "-str" => {
+                index += 1;
+                invocation.flags.string_literals_read_only = arguments
+                    .get(index)
+                    .is_some_and(|value| value.split(',').any(|part| part == "readonly"));
+            }
             // `-sdata N`: a threshold of zero addresses globals absolutely.
             "-sdata" => {
                 index += 1;
@@ -654,7 +662,7 @@ fn compile(
                                     size: object_bytes.len() as u32,
                                     alignment: 4,
                                     initial_bytes: Some(object_bytes),
-                                    is_const: false,
+                                    is_const: config.flags.string_literals_read_only,
                                     force_full_data_section: false,
                                     is_static: true,
                                     is_explicit_zero: false,
@@ -890,7 +898,7 @@ fn compile(
                                             size: object_bytes.len() as u32,
                                             alignment: 4,
                                             initial_bytes: Some(object_bytes),
-                                            is_const: false,
+                                            is_const: config.flags.string_literals_read_only,
                                             force_full_data_section: false,
                                             is_static: true,
                                             is_explicit_zero: false,
@@ -974,7 +982,8 @@ fn compile(
                     size: object_bytes.len() as u32,
                     alignment: 4,
                     initial_bytes: Some(object_bytes),
-                    is_const: machine_function.strings_are_const,
+                    is_const: config.flags.string_literals_read_only
+                        || machine_function.strings_are_const,
                     force_full_data_section: false,
                     is_static: true,
                     is_explicit_zero: false,
@@ -1293,6 +1302,20 @@ mod tests {
             "cats on".into(),
         ]);
         assert!(last_wins.flags.emit_mwcats);
+    }
+
+    #[test]
+    fn command_line_string_mode_controls_read_only_literals() {
+        let read_only = parse_invocation(&["-str".into(), "reuse,readonly".into()]);
+        assert!(read_only.flags.string_literals_read_only);
+
+        let last_wins = parse_invocation(&[
+            "-str".into(),
+            "reuse,readonly".into(),
+            "-str".into(),
+            "reuse".into(),
+        ]);
+        assert!(!last_wins.flags.string_literals_read_only);
     }
 }
 

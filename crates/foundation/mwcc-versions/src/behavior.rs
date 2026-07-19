@@ -511,6 +511,10 @@ pub struct Behavior {
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
     pub global_addressing: GlobalAddressing,
+    /// Whether `-inline …,deferred` is active. Most deferred behavior belongs
+    /// to TU/object orchestration; captures consult this only for measured
+    /// codegen metadata differences.
+    pub deferred_inlining: bool,
 }
 
 /// A quirk that is active for a configuration, paired with its kind and summary
@@ -638,6 +642,7 @@ impl Behavior {
             narrow_compound_shift_style: config.build.profile.narrow_compound_shift_style(),
             logical_or_value_style: config.build.profile.logical_or_value_style(),
             global_addressing: config.flags.global_addressing,
+            deferred_inlining: config.flags.inline_deferred,
         }
     }
 

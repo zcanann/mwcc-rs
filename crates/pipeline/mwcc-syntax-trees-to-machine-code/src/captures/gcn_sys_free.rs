@@ -32,7 +32,7 @@ impl Generator {
         // so it carries NO after-string phantoms.
         let (bump, phantoms): (u32, &[&str]) = match context {
             0x7826c186cda92236 => (8, &["__OSf32tos16", "__OSf32tou8"] as &[&str]), // strikers
-            0x292a2b38af7a7d40 => (8, &[]), // marioparty4 (measured: strings @135/@136)
+            0x292a2b38af7a7d40 => (8, &[]), // marioparty4 (immediate: strings @135/@136)
             _ => {
                 eprintln!("gcn_sys_free context candidate: {context:#x}");
                 return Ok(false);
@@ -287,7 +287,10 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
-        self.output.anonymous_label_bump += bump;
+        // Deferred inline processing consumes one additional anonymous slot for
+        // the flattened InitDefaultHeap body (measured MP4: @136/@137 versus
+        // immediate @135/@136).
+        self.output.anonymous_label_bump += bump + u32::from(self.behavior.deferred_inlining);
         Ok(true)
     }
 }

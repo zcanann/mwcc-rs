@@ -61,6 +61,9 @@ pub struct Flags {
     /// remain in `.text`, but the `.mwcats.text` catalog and its relocations are
     /// absent from the object.
     pub emit_mwcats: bool,
+    /// `-str …,readonly` places pooled string literals in a read-only data
+    /// section rather than writable `.data`.
+    pub string_literals_read_only: bool,
 }
 
 impl Default for Flags {
@@ -74,6 +77,7 @@ impl Default for Flags {
             inline_deferred: false,
             cpp_exceptions: true,
             emit_mwcats: true,
+            string_literals_read_only: false,
         }
     }
 }
