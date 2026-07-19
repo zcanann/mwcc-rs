@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_versions::TrigDispatcherStyle;
 
 impl Generator {
     /// The FPCLASSIFY SWITCH (fire 411, fminmaxdim's __fpclassifyd): a
@@ -869,9 +870,25 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
-        // Pre-pool labels (measured @18 on the s_sin object vs the +0
-        // base's @5).
-        self.output.anonymous_label_bump += if legacy_reloading { 12 } else { 13 };
+        // Pre-pool labels. Deferred compilation expands the dispatcher's
+        // internal CFG block even though its emitted instructions are stable,
+        // and that hidden block contracts at each measured generation
+        // boundary. Isolated probes place its first pool entry at @25 (build
+        // 163), @29 (build 53), and @24 (build 81+) from bases @2/@5.
+        let expanded_dispatcher_labels = self.behavior.deferred_inlining;
+        self.output.anonymous_label_bump += match (
+            self.behavior.trig_dispatcher_style,
+            expanded_dispatcher_labels,
+        ) {
+            (TrigDispatcherStyle::EarlyLiveParameter, true) => 24,
+            (TrigDispatcherStyle::LiveParameter, true) => 19,
+            (TrigDispatcherStyle::LegacyReloading, true) => 23,
+            (
+                TrigDispatcherStyle::EarlyLiveParameter | TrigDispatcherStyle::LiveParameter,
+                false,
+            ) => 13,
+            (TrigDispatcherStyle::LegacyReloading, false) => 12,
+        };
         Ok(true)
     }
 

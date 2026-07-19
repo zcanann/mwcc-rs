@@ -254,9 +254,17 @@ pub enum PunnedShiftWritebackStyle {
 /// Linkage and floating-spill schedule for fdlibm trigonometric dispatchers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrigDispatcherStyle {
-    /// Mainline adjusts the frame first and keeps the incoming argument live.
+    /// Build 81 and later adjust the frame first and keep the incoming argument
+    /// live. Dispatchers consume thirteen anonymous labels normally and
+    /// nineteen under deferred compilation.
     LiveParameter,
-    /// Build 163 saves linkage through the incoming stack and reloads the argument spill.
+    /// Build 53 uses the same instruction schedule but its earlier control-flow
+    /// pass consumes twenty-four anonymous labels under deferred compilation.
+    /// Non-deferred dispatchers retain the thirteen-label block.
+    EarlyLiveParameter,
+    /// Build 163 saves linkage through the incoming stack and reloads the
+    /// argument spill. Its dispatcher label block consumes twelve entries
+    /// normally and twenty-three under deferred compilation.
     LegacyReloading,
 }
 
@@ -845,6 +853,10 @@ impl CodegenProfile for Gc13Build53 {
 
     fn mem_copy_remainder_mask_style(&self) -> MemCopyRemainderMaskStyle {
         MemCopyRemainderMaskStyle::MaterializedThree
+    }
+
+    fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
+        TrigDispatcherStyle::EarlyLiveParameter
     }
 }
 

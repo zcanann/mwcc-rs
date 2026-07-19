@@ -135,6 +135,7 @@ pub enum Quirk {
     LegacyReloadingPunnedFloatFrame,
     LegacyBranchPunnedConditionalWriteback,
     LegacyReloadingPunnedShiftWriteback,
+    EarlyExpandedTrigDispatcherLabels,
     LegacyReloadingTrigDispatcher,
     LegacyAddImmediateMaterializationCopy,
     LegacySerialWideConstantAdd,
@@ -202,6 +203,7 @@ impl Quirk {
             Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
             Quirk::LegacyBranchPunnedConditionalWriteback => QuirkKind::Intentional,
             Quirk::LegacyReloadingPunnedShiftWriteback => QuirkKind::Intentional,
+            Quirk::EarlyExpandedTrigDispatcherLabels => QuirkKind::Intentional,
             Quirk::LegacyReloadingTrigDispatcher => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
             Quirk::LegacySerialWideConstantAdd => QuirkKind::Intentional,
@@ -316,6 +318,9 @@ impl Quirk {
             }
             Quirk::LegacyReloadingPunnedShiftWriteback => {
                 "shifted-mask punned writebacks use build 163's reload and allocation plan"
+            }
+            Quirk::EarlyExpandedTrigDispatcherLabels => {
+                "deferred trigonometric dispatchers consume build 53's expanded anonymous-label block"
             }
             Quirk::LegacyReloadingTrigDispatcher => {
                 "trigonometric dispatchers use build 163's linkage-first reload schedule"
@@ -868,6 +873,11 @@ impl Behavior {
         if self.punned_shift_writeback_style == PunnedShiftWritebackStyle::LegacyReloading {
             quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingPunnedShiftWriteback));
         }
+        if self.deferred_inlining
+            && self.trig_dispatcher_style == TrigDispatcherStyle::EarlyLiveParameter
+        {
+            quirks.push(ActiveQuirk::of(Quirk::EarlyExpandedTrigDispatcherLabels));
+        }
         if self.trig_dispatcher_style == TrigDispatcherStyle::LegacyReloading {
             quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingTrigDispatcher));
         }
@@ -1103,6 +1113,18 @@ mod tests {
             QueueServiceInliningStyle::KeepServiceCallOutOfLine
         );
         assert_eq!(quirks[2].quirk, Quirk::EarlyOutOfLineQueueService);
+
+        let mut deferred_config = CompilerConfig::new(build::GC_1_3);
+        deferred_config.flags.inline_deferred = true;
+        let deferred = Behavior::resolve(&deferred_config);
+        assert_eq!(
+            deferred.trig_dispatcher_style,
+            TrigDispatcherStyle::EarlyLiveParameter
+        );
+        assert_eq!(
+            deferred.active_quirks()[1].quirk,
+            Quirk::EarlyExpandedTrigDispatcherLabels
+        );
     }
 
     #[test]

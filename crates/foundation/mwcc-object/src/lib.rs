@@ -46,9 +46,13 @@ pub struct ObjectFormat {
 pub enum FunctionSymbolOrder {
     /// Prototyped references are registered before the function itself.
     ReferencesFirst,
-    /// The function is registered before its body references, except for the
-    /// legacy fixed-address-symbol special case.
+    /// The function is registered before body-created references, except for
+    /// the legacy fixed-address-symbol special case.
     FunctionFirst,
+    /// Build 163 with deferred inlining retains function-first body references,
+    /// but resolves data already defined in the translation unit before the
+    /// current function.
+    LegacyDeferred,
     /// Modern deferred codegen registers locally defined function targets before
     /// the current function. Ordinary declared references, including defined
     /// data, retain reference-first registration.

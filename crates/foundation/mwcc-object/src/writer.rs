@@ -1843,6 +1843,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             } else {
                 (Vec::new(), ordered)
             };
+        // Build 163's deferred pass registers the current function before
+        // ordinary body-created externals, but a reference to data defined in
+        // this translation unit resolves the declaration's existing symbol
+        // first. Keep that data out of the function-first reference run.
+        let (defined_data_ordered, ordered): (Vec<&str>, Vec<&str>) =
+            if input.object_format.function_symbol_order == FunctionSymbolOrder::LegacyDeferred {
+                ordered
+                    .into_iter()
+                    .partition(|name| data_offsets.contains_key(name))
+            } else {
+                (Vec::new(), ordered)
+            };
         // An IMPLICITLY-declared callee's symbol is created by mwcc at its call site inside
         // the body, so it is emitted AFTER the function symbol; an explicitly-declared
         // (prototyped) external precedes it. Partition preserving order within each group.
@@ -1891,14 +1903,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 _ => None,
             })
             .collect();
-        let (absolute_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) =
-            if input.object_format.function_symbol_order == FunctionSymbolOrder::FunctionFirst {
-                explicit_ordered
-                    .into_iter()
-                    .partition(|name| absolute_targets.contains(name))
-            } else {
-                (Vec::new(), explicit_ordered)
-            };
+        let (absolute_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = if matches!(
+            input.object_format.function_symbol_order,
+            FunctionSymbolOrder::FunctionFirst | FunctionSymbolOrder::LegacyDeferred
+        ) {
+            explicit_ordered
+                .into_iter()
+                .partition(|name| absolute_targets.contains(name))
+        } else {
+            (Vec::new(), explicit_ordered)
+        };
         // The register save/restore HELPERS (_savegpr_N/_restgpr_N) are created
         // while mwcc compiles the PROLOGUE/EPILOGUE — before the function's
         // symbol — even though they are unprototyped (measured: strtoul).
@@ -2050,8 +2064,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             };
         }
-        if input.object_format.function_symbol_order == FunctionSymbolOrder::FunctionFirst
-            || function.is_asm
+        emit_referenced!(defined_data_ordered);
+        if matches!(
+            input.object_format.function_symbol_order,
+            FunctionSymbolOrder::FunctionFirst | FunctionSymbolOrder::LegacyDeferred
+        ) || function.is_asm
         {
             emit_referenced!(absolute_ordered);
             emit_current_function_symbol!();
