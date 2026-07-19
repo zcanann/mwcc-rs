@@ -183,6 +183,17 @@ pub enum NegativePowerOfTwoMultiplyStyle {
     ShiftInResultRegister,
 }
 
+/// Base operand and redundant-mask policy for an OR of two disjoint fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldMergeStyle {
+    /// 2.4.x computes the right operand as the `rlwimi` base and removes a mask
+    /// when the inserted field overwrites every bit outside it.
+    RightBaseElideCoveredMask,
+    /// 2.3.3 masks the left operand as the base even when the other field covers
+    /// the entire complement, then inserts the right operand.
+    LeftBasePreserveMask,
+}
+
 /// AST traversal used to assign external/data symbol indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolTraversalStyle {
@@ -438,6 +449,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         NegativePowerOfTwoMultiplyStyle::ShiftThroughScratch
     }
 
+    fn field_merge_style(&self) -> FieldMergeStyle {
+        FieldMergeStyle::RightBaseElideCoveredMask
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -620,6 +635,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn negative_power_of_two_multiply_style(&self) -> NegativePowerOfTwoMultiplyStyle {
         NegativePowerOfTwoMultiplyStyle::ShiftInResultRegister
+    }
+    fn field_merge_style(&self) -> FieldMergeStyle {
+        FieldMergeStyle::LeftBasePreserveMask
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {

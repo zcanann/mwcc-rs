@@ -15,8 +15,8 @@ use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
-    CoefficientTableRelocationStyle, ComputedStoreIssueStyle, ConstantStoreScheduleStyle, FixedAddressRmwStyle,
-    FrameConvention, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
+    CoefficientTableRelocationStyle, ComputedStoreIssueStyle, ConstantStoreScheduleStyle, FieldMergeStyle,
+    FixedAddressRmwStyle, FrameConvention, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
     NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
@@ -89,6 +89,7 @@ pub enum Quirk {
     LegacyEvaluationOrderComputedStores,
     LegacyInPlaceValueTrackedMutation,
     LegacyInPlaceNegativePowerOfTwoMultiply,
+    LegacyLeftBaseFieldMerge,
     LegacyInPlaceBitFieldExtraction,
     LegacyConstantJoinReturnBeforeLrReload,
     LegacyGuardStoreBeforeReturnValue,
@@ -136,6 +137,7 @@ impl Quirk {
             Quirk::LegacyEvaluationOrderComputedStores => QuirkKind::Intentional,
             Quirk::LegacyInPlaceValueTrackedMutation => QuirkKind::Intentional,
             Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => QuirkKind::Intentional,
+            Quirk::LegacyLeftBaseFieldMerge => QuirkKind::Intentional,
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
@@ -247,6 +249,9 @@ impl Quirk {
             Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => {
                 "negative power-of-two multiplies shift and negate in place in build 163"
             }
+            Quirk::LegacyLeftBaseFieldMerge => {
+                "field merges preserve build 163's masked left-operand base"
+            }
             Quirk::LegacyInPlaceBitFieldExtraction => {
                 "bit-field unit loads extract in place in build 163"
             }
@@ -325,6 +330,8 @@ pub struct Behavior {
     pub value_tracked_mutation_style: ValueTrackedMutationStyle,
     /// Placement of the shift in a negative power-of-two multiply.
     pub negative_power_of_two_multiply_style: NegativePowerOfTwoMultiplyStyle,
+    /// Base orientation and redundant-mask policy for disjoint field merges.
+    pub field_merge_style: FieldMergeStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
@@ -435,6 +442,7 @@ impl Behavior {
                 .build
                 .profile
                 .negative_power_of_two_multiply_style(),
+            field_merge_style: config.build.profile.field_merge_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -530,6 +538,9 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(
                 Quirk::LegacyInPlaceNegativePowerOfTwoMultiply,
             ));
+        }
+        if self.field_merge_style == FieldMergeStyle::LeftBasePreserveMask {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyLeftBaseFieldMerge));
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
@@ -742,6 +753,10 @@ mod tests {
         assert_eq!(
             behavior.negative_power_of_two_multiply_style,
             NegativePowerOfTwoMultiplyStyle::ShiftInResultRegister
+        );
+        assert_eq!(
+            behavior.field_merge_style,
+            FieldMergeStyle::LeftBasePreserveMask
         );
         assert!(behavior.lr_save_precedes_float_const);
         assert_eq!(

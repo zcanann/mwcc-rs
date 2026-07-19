@@ -165,27 +165,32 @@ impl Generator {
     }
 
     /// `L | R` where each operand is a contiguous bit field of a leaf variable
-    /// (a constant shift or a mask) and the two fields tile the word exactly.
+    /// (a constant shift or a mask) and the two fields are disjoint.
     /// This one shape subsumes a constant rotate `(x<<c)|(x>>(32-c))`, a
     /// sign/magnitude mask merge `(a&m)|(b&~m)`, and any mix such as
-    /// `(a<<16)|(b&0xffff)`. mwcc computes the OR's **right** operand (the base)
-    /// directly into the destination, then inserts the **left** operand's field
-    /// with `rlwimi`, preserving the inserted value in r0 first when computing the
-    /// base would otherwise clobber it. A logical right-shift operand (the base's
-    /// `srwi`) requires an unsigned value.
+    /// `(a<<16)|(b&0xffff)`. The profile chooses which OR operand becomes the
+    /// `rlwimi` base. The other field is inserted, preserving its value in r0
+    /// first when computing the base would otherwise clobber it. A logical
+    /// right-shift operand requires an unsigned value.
     pub(crate) fn try_emit_field_merge(
         &mut self,
         left: &Expression,
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
-        let (
-            Some((insert_value, insert_kind, insert_begin, insert_end)),
-            Some((base_value, base_kind, base_begin, base_end)),
-        ) = (as_field(left), as_field(right))
+        let (Some(left_field), Some(right_field)) = (as_field(left), as_field(right))
         else {
             return Ok(false);
         };
+        let preserve_left_base_mask = self.behavior.field_merge_style
+            == mwcc_versions::FieldMergeStyle::LeftBasePreserveMask;
+        let (base_field, insert_field) = if preserve_left_base_mask {
+            (left_field, right_field)
+        } else {
+            (right_field, left_field)
+        };
+        let (base_value, base_kind, base_begin, base_end) = base_field;
+        let (insert_value, insert_kind, insert_begin, insert_end) = insert_field;
         // The two fields must be disjoint. If they also tile the whole word (full
         // coverage) the base is moved raw and `rlwimi` overwrites the other field; with
         // PARTIAL coverage the bits outside both fields must be zeroed, so a MASK base is
@@ -211,12 +216,13 @@ impl Generator {
         ) else {
             return Ok(false);
         };
-        // Computing the base writes the destination, except a FULL-COVERAGE unshifted
-        // mask whose value already sits there (a partial-coverage mask must be masked in
-        // place, which writes it).
-        let base_writes_destination = !(matches!(base_kind, FieldSource::Mask)
-            && base_register == destination
-            && full_coverage);
+        // Computing the base writes the destination, except under the mainline
+        // policy when a full-coverage unshifted mask already sits there. Build
+        // 163 preserves that explicit mask, so its base always writes.
+        let base_writes_destination = preserve_left_base_mask
+            || !(matches!(base_kind, FieldSource::Mask)
+                && base_register == destination
+                && full_coverage);
         // Preserve the inserted value when the base computation would overwrite it.
         let insert_source = if base_writes_destination && insert_register == destination {
             self.output
@@ -247,7 +253,7 @@ impl Generator {
                     })
             }
             FieldSource::Mask => {
-                if full_coverage {
+                if full_coverage && !preserve_left_base_mask {
                     if base_register != destination {
                         self.output
                             .instructions
