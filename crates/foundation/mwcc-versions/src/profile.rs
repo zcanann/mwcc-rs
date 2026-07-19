@@ -849,6 +849,15 @@ pub trait CodegenProfile: core::fmt::Debug {
 pub struct Mainline;
 impl CodegenProfile for Mainline {}
 
+/// GC/3.0a3 — mwcceppc 4.1 build 51213. Differential characterization shows
+/// a substantial optimizer transition from the 2.4.7 generation. This profile
+/// deliberately has its own identity even while uncharacterized behaviors fall
+/// back to the shared defaults, so each measured 4.1 behavior can be added here
+/// without changing the older mainline builds.
+#[derive(Debug)]
+pub struct Gc41Build51213;
+impl CodegenProfile for Gc41Build51213 {}
+
 /// GC/1.3 — mwcceppc 2.4.2 build 53. The early 2.4.2 build that defaulted plain
 /// `char` to unsigned, before build 81 restored signed.
 #[derive(Debug)]

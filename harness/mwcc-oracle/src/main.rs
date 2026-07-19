@@ -5,8 +5,9 @@
 //! then compares the `.text` disassembly. We are correct for a canary if and
 //! only if the two match exactly.
 //!
-//! Usage: `mwcc-oracle [GC_VERSION]`   (default 1.3.2)
+//! Usage: `mwcc-oracle [BUILD]`   (default GC/1.3.2; bare versions imply GC/)
 //! Set `MWCC_ORACLE_FILTER` to a filename substring for a focused probe.
+//! Set `MWCC_ORACLE_COMPILER` to override the reference compiler executable.
 //! The real toolchain (wibo, the compiler set, powerpc-eabi-objdump) is taken
 //! from a decomp checkout; set `FFCC` to point at it.
 
@@ -39,9 +40,14 @@ const COMPILE_FLAGS: &[&str] = &[
 ];
 
 fn main() -> std::process::ExitCode {
-    let version = std::env::args()
+    let requested_build = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "1.3.2".to_string());
+    let build = if requested_build.contains('/') {
+        requested_build
+    } else {
+        format!("GC/{requested_build}")
+    };
     let decomp = PathBuf::from(
         std::env::var("FFCC")
             .unwrap_or_else(|_| "/Users/zcanann/Documents/projects/FFCC-Decomp".to_string()),
@@ -49,7 +55,9 @@ fn main() -> std::process::ExitCode {
 
     let wibo = decomp.join("build/tools/wibo");
     let sjis = decomp.join("build/tools/sjiswrap.exe");
-    let real_compiler = decomp.join(format!("build/compilers/GC/{version}/mwcceppc.exe"));
+    let real_compiler = std::env::var_os("MWCC_ORACLE_COMPILER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| decomp.join(format!("build/compilers/{build}/mwcceppc.exe")));
     let objdump = decomp.join("build/binutils/powerpc-eabi-objdump");
     let our_compiler = std::env::current_exe()
         .ok()
@@ -65,7 +73,7 @@ fn main() -> std::process::ExitCode {
     let temporary = std::env::temp_dir().join("mwcc-oracle");
     let _ = std::fs::create_dir_all(&temporary);
 
-    println!("== differential oracle vs mwcceppc GC/{version} ==");
+    println!("== differential oracle vs mwcceppc {build} ==");
     let mut passed = 0u32;
     let mut failed = 0u32;
     // Whole-object byte-exactness, tracked alongside .text. Pass/fail keys on
@@ -90,8 +98,8 @@ fn main() -> std::process::ExitCode {
 
     for source in entries {
         let name = source.file_stem().unwrap().to_string_lossy().to_string();
-        if !build_directive_applies(&source, &version) {
-            println!("  SKIP {name} (not applicable to GC/{version})");
+        if !build_directive_applies(&source, &build) {
+            println!("  SKIP {name} (not applicable to {build})");
             continue;
         }
         let reference_object = temporary.join("reference.o");
@@ -127,7 +135,7 @@ fn main() -> std::process::ExitCode {
         // canary's own flags.
         let ours = Command::new(&our_compiler)
             .arg("--build")
-            .arg(format!("GC/{version}"))
+            .arg(&build)
             .args(&extra_flags)
             .arg("-c")
             .arg(&source)
@@ -187,7 +195,9 @@ fn main() -> std::process::ExitCode {
         }
     }
 
-    println!("== {passed} passed, {failed} failed ({object_exact} byte-exact, {reloc_exact} reloc-exact objects) ==");
+    println!(
+        "== {passed} passed, {failed} failed ({object_exact} byte-exact, {reloc_exact} reloc-exact objects) =="
+    );
     if failed == 0 {
         std::process::ExitCode::SUCCESS
     } else {
@@ -205,9 +215,14 @@ fn flag_directive(source: &Path) -> Vec<String> {
 /// Whether a canary applies to this compiler build. Canaries without a
 /// `// builds:` directive remain universal; build-family probes can list the
 /// exact versions whose scheduler/capture they exercise.
-fn build_directive_applies(source: &Path, version: &str) -> bool {
+fn build_directive_applies(source: &Path, build: &str) -> bool {
+    let bare_gc = build.strip_prefix("GC/");
     directive(source, "builds")
-        .map(|builds| builds.iter().any(|build| build == version))
+        .map(|builds| {
+            builds
+                .iter()
+                .any(|candidate| candidate == build || bare_gc == Some(candidate.as_str()))
+        })
         .unwrap_or(true)
 }
 

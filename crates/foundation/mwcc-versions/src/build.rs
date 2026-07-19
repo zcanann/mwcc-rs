@@ -4,7 +4,7 @@
 //! profile in [`crate::profile`].
 
 use crate::profile::{
-    CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc233Build163, Mainline,
+    CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc233Build163, Gc41Build51213, Mainline,
 };
 
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.
@@ -204,6 +204,34 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
     profile: &Mainline,
 };
 
+/// GC/3.0a3 — mwcceppc 4.1 build 51213. Initial measurements retain the
+/// GC/2.7 object conventions, with a newer `.comment` identity and a substantial
+/// optimizer transition. Kept experimental while its dedicated profile is
+/// characterized from differential canaries.
+pub const GC_3_0A3: CompilerBuild = CompilerBuild {
+    label: "GC/3.0a3",
+    product: "CodeWarrior for GameCube 3.0 alpha 3",
+    version: (4, 1, 0),
+    build: 51213,
+    comment_marker: 0x0e,
+    comment_version: (4, 0, 0),
+    emb_sda21_offset: 0,
+    function_symbol_before_references: false,
+    initial_anonymous_counter: 5,
+    post_leaf_function_anonymous_bump: 4,
+    post_framed_function_anonymous_bump: 4,
+    profile: &Gc41Build51213,
+};
+
+/// GC/3.0a3p1 — Twilight Princess' patched build 51213. The patch accepts
+/// multi-character constants; its measured object identity and ordinary
+/// codegen are otherwise the GC/3.0a3 build above.
+pub const GC_3_0A3P1: CompilerBuild = CompilerBuild {
+    label: "GC/3.0a3p1",
+    product: "CodeWarrior for GameCube 3.0 alpha 3 (patch 1)",
+    ..GC_3_0A3
+};
+
 /// Every build the generator reproduces byte-for-byte across the canary suite.
 pub const SUPPORTED: &[CompilerBuild] = &[
     GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_0P1, GC_2_5, GC_2_6, GC_2_7,
@@ -211,7 +239,7 @@ pub const SUPPORTED: &[CompilerBuild] = &[
 
 /// Known compiler identities whose profiles are still incomplete. They are
 /// available only through the explicit experimental-build opt-in.
-pub const EXPERIMENTAL: &[CompilerBuild] = &[GC_1_2_5, GC_1_2_5N];
+pub const EXPERIMENTAL: &[CompilerBuild] = &[GC_1_2_5, GC_1_2_5N, GC_3_0A3, GC_3_0A3P1];
 
 /// The default build new compilations target until one is selected.
 pub const DEFAULT: CompilerBuild = GC_1_3_2;
@@ -267,5 +295,18 @@ mod tests {
         assert!(SUPPORTED
             .iter()
             .all(|build| build.post_framed_function_anonymous_bump == 4));
+    }
+
+    #[test]
+    fn gc3_builds_are_measured_experimental_identities() {
+        assert!(by_label("GC/3.0a3").is_none());
+        for label in ["GC/3.0a3", "GC/3.0a3p1"] {
+            let build = by_label_experimental(label).expect("experimental GC/3 build");
+            assert_eq!(build.version, (4, 1, 0));
+            assert_eq!(build.build, 51213);
+            assert_eq!(build.comment_marker, 0x0e);
+            assert_eq!(build.comment_version, (4, 0, 0));
+            assert_eq!(build.initial_anonymous_counter, 5);
+        }
     }
 }
