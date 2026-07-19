@@ -745,8 +745,16 @@ impl Generator {
             }
         }
 
-        // The frame is the linkage area plus the slots, rounded up to 16 bytes.
-        let mut frame_size = (((offset as i32) + 15) / 16 * 16) as i16;
+        // The frame is the linkage area plus the slots. Build 163's linkage-
+        // first ABI rounds generic aggregate/local frames to 8 bytes; mainline
+        // uses 16-byte frames.
+        let frame_alignment = if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            8
+        } else {
+            16
+        };
+        let mut frame_size = (((offset as i32) + frame_alignment - 1) / frame_alignment
+            * frame_alignment) as i16;
         let non_leaf = function_makes_call(function);
         // Build 163's direct integer-return puns keep frame-resident slots at
         // the same r1+8 base as 2.4.x but reserve another eight bytes at the top.
@@ -912,8 +920,21 @@ impl Generator {
                 Some((tests, fall))
             }
         };
-        // Prologue: allocate the frame, save the link register if non-leaf, then
-        // spill the address-taken parameters to their slots.
+        // Prologue: build 163 saves LR in the caller linkage area before
+        // allocating its 8-byte-aligned frame. Mainline allocates first and
+        // stores LR above the new frame.
+        let linkage_first_nonleaf = non_leaf
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        if linkage_first_nonleaf {
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -1000,7 +1021,7 @@ impl Generator {
                 .instructions
                 .push(Instruction::load_immediate_shifted(GENERAL_SCRATCH, *high));
         }
-        if non_leaf {
+        if non_leaf && !linkage_first_nonleaf {
             self.output
                 .instructions
                 .push(Instruction::MoveFromLinkRegister { d: 0 });
