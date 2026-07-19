@@ -141,24 +141,27 @@ impl Generator {
                         }
                     }
                     // `(x & (1<<k)) == 0`: extract bit k to the low bit (one rlwinm),
-                    // then flip it.
-                    if let Some((variable, mask)) = as_masked_leaf(value) {
-                        if mask.is_power_of_two() {
-                            let register = self.general_register_of_leaf(variable)?;
-                            let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
-                            self.output.instructions.push(Instruction::RotateAndMask {
-                                a: GENERAL_SCRATCH,
-                                s: register,
-                                shift,
-                                begin: 31,
-                                end: 31,
-                            });
-                            self.output.instructions.push(Instruction::XorImmediate {
-                                a: d,
-                                s: GENERAL_SCRATCH,
-                                immediate: 1,
-                            });
-                            return Ok(());
+                    // then flip it. Build 163 instead preserves the masked value
+                    // and feeds it through its negate/cntlzw equality sequence.
+                    if !self.behavior.negate_before_zero_equality {
+                        if let Some((variable, mask)) = as_masked_leaf(value) {
+                            if mask.is_power_of_two() {
+                                let register = self.general_register_of_leaf(variable)?;
+                                let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
+                                self.output.instructions.push(Instruction::RotateAndMask {
+                                    a: GENERAL_SCRATCH,
+                                    s: register,
+                                    shift,
+                                    begin: 31,
+                                    end: 31,
+                                });
+                                self.output.instructions.push(Instruction::XorImmediate {
+                                    a: d,
+                                    s: GENERAL_SCRATCH,
+                                    immediate: 1,
+                                });
+                                return Ok(());
+                            }
                         }
                     }
                     // A signed byte load is `lbz` (zero-extended); mwcc loads it into the scratch
