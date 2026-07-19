@@ -581,6 +581,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         3
     }
 
+    /// Hidden labels retained by the deferred inlined-classifier `ldexp`
+    /// control-flow graph. Build 81 and later retain ten.
+    fn ldexp_deferred_label_bump(&self) -> u8 {
+        10
+    }
+
     fn raise_family_style(&self) -> RaiseFamilyStyle {
         RaiseFamilyStyle::DirectLoadCountRegister
     }
@@ -876,6 +882,10 @@ impl CodegenProfile for Gc13Build53 {
         5
     }
 
+    fn ldexp_deferred_label_bump(&self) -> u8 {
+        20
+    }
+
     fn punned_float_composition_deferred_label_bump(&self) -> u8 {
         7
     }
@@ -948,6 +958,12 @@ impl CodegenProfile for Gc233Build163 {
 
     fn frexp_deferred_label_bump(&self) -> u8 {
         5
+    }
+
+    // Build 163's materially different ldexp schedule is not represented by
+    // the 2.4.x inlined-classifier capture family.
+    fn ldexp_deferred_label_bump(&self) -> u8 {
+        0
     }
 
     fn raise_family_style(&self) -> RaiseFamilyStyle {

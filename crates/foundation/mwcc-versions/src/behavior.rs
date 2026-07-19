@@ -457,6 +457,9 @@ pub struct Behavior {
     /// Additional anonymous labels retained around `frexp` when deferred
     /// inlining is enabled. Zero for ordinary compilation.
     pub frexp_deferred_label_bump: u8,
+    /// Additional anonymous labels retained by the inlined-classifier `ldexp`
+    /// family under deferred compilation. Zero for ordinary compilation.
+    pub ldexp_deferred_label_bump: u8,
     /// Whole-family schedule for the signal-dispatch `raise` transaction.
     pub raise_family_style: RaiseFamilyStyle,
     /// Scheduler, register allocation, and symbol creation for integer DAGs.
@@ -636,6 +639,11 @@ impl Behavior {
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
                 config.build.profile.frexp_deferred_label_bump()
+            } else {
+                0
+            },
+            ldexp_deferred_label_bump: if config.flags.inline_deferred {
+                config.build.profile.ldexp_deferred_label_bump()
             } else {
                 0
             },

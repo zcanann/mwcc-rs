@@ -439,7 +439,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
-        self.output.anonymous_label_bump += bump;
+        self.add_inlined_ldexp_label_bump(bump);
         Ok(true)
     }
 }

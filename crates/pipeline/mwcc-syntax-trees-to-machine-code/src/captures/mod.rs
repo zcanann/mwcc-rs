@@ -745,6 +745,14 @@ pub(crate) fn skipped_context_fingerprint(names: &std::collections::HashSet<Stri
 }
 
 impl Generator {
+    /// Apply the shared pool-label accounting for the five identical 2.4.x
+    /// inlined-classifier `ldexp` emitters. Keeping this here prevents their
+    /// context-specific recognizers from drifting on flag/version behavior.
+    pub(super) fn add_inlined_ldexp_label_bump(&mut self, ordinary_bump: u32) {
+        self.output.anonymous_label_bump +=
+            ordinary_bump + u32::from(self.behavior.ldexp_deferred_label_bump);
+    }
+
     /// Try every capture in registration order; the AST-hash + context gates
     /// make the order irrelevant for correctness.
     pub(crate) fn try_captures(&mut self, function: &Function) -> Compilation<bool> {
