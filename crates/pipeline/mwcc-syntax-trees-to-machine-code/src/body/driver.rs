@@ -3793,10 +3793,9 @@ impl Generator {
                 left,
                 right,
             } => self.emit_short_circuit(*operator, left, right, result),
-            // De Morgan: `return !(X && Y)` is `!X || !Y` and `!(X || Y)` is `!X && !Y` —
-            // mwcc folds the negation into the short-circuit exits rather than computing the
-            // operator into a register and inverting it (cntlzw/srwi). Single level only;
-            // a nested logical operand defers to the general path.
+            // Negated short-circuit policy is versioned: mainline applies De
+            // Morgan, while build 163 materializes and inverts the written
+            // logical value. Nested logical operands still defer.
             Expression::Unary {
                 operator: UnaryOperator::LogicalNot,
                 operand,
@@ -3816,34 +3815,7 @@ impl Generator {
                 else {
                     unreachable!()
                 };
-                let is_logical = |expression: &Expression| {
-                    matches!(
-                        expression,
-                        Expression::Binary {
-                            operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
-                            ..
-                        }
-                    )
-                };
-                if is_logical(left.as_ref()) || is_logical(right.as_ref()) {
-                    return Err(Diagnostic::error(
-                        "a nested negated logical needs the general short-circuit (roadmap)",
-                    ));
-                }
-                let flipped = if *inner == BinaryOperator::LogicalAnd {
-                    BinaryOperator::LogicalOr
-                } else {
-                    BinaryOperator::LogicalAnd
-                };
-                let not_left = Expression::Unary {
-                    operator: UnaryOperator::LogicalNot,
-                    operand: Box::new(left.as_ref().clone()),
-                };
-                let not_right = Expression::Unary {
-                    operator: UnaryOperator::LogicalNot,
-                    operand: Box::new(right.as_ref().clone()),
-                };
-                self.emit_short_circuit(flipped, &not_left, &not_right, result)
+                self.emit_negated_short_circuit(*inner, left, right, result)
             }
             // A narrow return type truncates the returned value. A `(type)` cast
             // expression already yields the narrow type, so it falls through to the

@@ -8,6 +8,7 @@ mod branches;
 mod common_offset_select;
 mod float;
 mod nested_phi_select;
+mod negated_short_circuit;
 mod passes;
 mod record_condition;
 mod select;
