@@ -86,11 +86,11 @@ exact_out="$(python3 tools/reference_parity.py \
   --source 'Runtime\.PPCEABI\.H/(GCN_Mem_Alloc|__mem|runtime|__va_arg|global_destructor_chain)\.c$' \
   --rerun --cache target/reference-parity/gate-runtime.jsonl 2>&1)"
 exact_summary="$(grep -E '^== [0-9]+ configurations:' <<<"$exact_out" | tail -1)"
-if grep -qF '== 30 configurations: BYTE 30 / DIFF 0 / DEFER 0 / HARNESS 0 / MISSING_DEPENDENCY 0 / UNSUPPORTED_BUILD 0' <<<"$exact_summary"; then
+if grep -qF '== 30 configurations: BYTE 30 / DIFF 0 / DEFER 0 / HARNESS 0 / MISSING_DEPENDENCY 0 / INVALID_CONFIGURATION 0 / UNSUPPORTED_BUILD 0' <<<"$exact_summary"; then
   echo "  PASS  exact      $exact_summary"
 else
   echo "  FAIL  exact      ${exact_summary:-<no summary — inventory/harness error>}"
-  grep -E '^\[[0-9]+/[0-9]+\] (DIFF|DEFER|HARNESS|MISSING_DEPENDENCY|UNSUPPORTED_BUILD)' <<<"$exact_out" \
+  grep -E '^\[[0-9]+/[0-9]+\] (DIFF|DEFER|HARNESS|MISSING_DEPENDENCY|INVALID_CONFIGURATION|UNSUPPORTED_BUILD)' <<<"$exact_out" \
     | head -5 | sed 's/^/          /'
   fail=1
 fi

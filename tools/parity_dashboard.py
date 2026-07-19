@@ -20,6 +20,7 @@ STATUSES = (
     "DEFER",
     "HARNESS",
     "MISSING_DEPENDENCY",
+    "INVALID_CONFIGURATION",
     "UNSUPPORTED_BUILD",
     "UNTESTED",
 )
@@ -44,6 +45,8 @@ def failure_reason(record: Dict[str, Any]) -> str:
         return f"compiler build is unsupported: {record.get('mw_version', '<unknown>')}"
     if status == "MISSING_DEPENDENCY":
         return output.rpartition(" — ")[2] or "source dependency is absent"
+    if status == "INVALID_CONFIGURATION":
+        return output.rpartition(" — ")[2] or "reference compiler rejects configured flags"
     if status == "DEFER":
         first = next((line for line in lines if line.startswith("DEFER")), lines[0] if lines else "deferred")
         return normalize_reason(first.rpartition(" — ")[2])
@@ -334,13 +337,14 @@ def print_breakdown(title: str, rows: List[Dict[str, Any]]) -> None:
     print(f"\n{title}")
     print(
         f"{'name':28} {'total':>7} {'BYTE':>7} {'DIFF':>7} {'DEFER':>7} "
-        f"{'HARNESS':>8} {'MISSDEP':>8} {'UNSUP':>7} {'UNTEST':>8}"
+        f"{'HARNESS':>8} {'MISSDEP':>8} {'INVALID':>8} {'UNSUP':>7} {'UNTEST':>8}"
     )
     for row in rows:
         print(
             f"{row['name'][:28]:28} {row['total']:7d} {row['BYTE']:7d} {row['DIFF']:7d} "
             f"{row['DEFER']:7d} {row['HARNESS']:8d} {row['MISSING_DEPENDENCY']:8d} "
-            f"{row['UNSUPPORTED_BUILD']:7d} {row['UNTESTED']:8d}"
+            f"{row['INVALID_CONFIGURATION']:8d} {row['UNSUPPORTED_BUILD']:7d} "
+            f"{row['UNTESTED']:8d}"
         )
 
 

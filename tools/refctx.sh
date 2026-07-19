@@ -191,6 +191,11 @@ if [[ ${#missing_dependencies[@]} -gt 0 ]] \
   echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
   exit 0
 fi
+if grep -q 'Unknown option' <<<"$direct_reference_output"; then
+  invalid_detail="$(grep -m1 'Unknown option' <<<"$direct_reference_output" | sed 's/^[#[:space:]]*//')"
+  echo "INVALID_CONFIGURATION  $src — $invalid_detail"
+  exit 0
+fi
 
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
 #    preprocess). mwcceppc drops language-changing pragmas from `-E` output, so
@@ -231,6 +236,11 @@ if ! reference_output="$(
 )"; then
   if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
     echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
+    exit 0
+  fi
+  if grep -q 'Unknown option' <<<"$reference_output"; then
+    invalid_detail="$(grep -m1 'Unknown option' <<<"$reference_output" | sed 's/^[#[:space:]]*//')"
+    echo "INVALID_CONFIGURATION  $src — $invalid_detail"
     exit 0
   fi
   printf '%s\n' "$reference_output" >&2
