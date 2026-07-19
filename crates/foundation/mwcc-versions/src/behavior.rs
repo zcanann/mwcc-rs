@@ -705,6 +705,7 @@ mod tests {
             behavior.computed_store_issue_style,
             ComputedStoreIssueStyle::EvaluationOrder
         );
+        assert!(behavior.lr_save_precedes_float_const);
         assert_eq!(
             behavior.bit_field_load_placement,
             BitFieldLoadPlacement::ResultRegister

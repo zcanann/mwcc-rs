@@ -2619,7 +2619,7 @@ impl Generator {
                                 _ => true,
                             }
                         });
-                // GC/2.0p1 does not fill the mflr->store slot with a leading FLOAT-CONSTANT
+                // Older/patch profiles do not fill the mflr->store slot with a leading FLOAT-CONSTANT
                 // load — it stores LR first, then loads the constant (`stw r0,20; lfs f0,0(0)`),
                 // where mainline fills the slot (`lfs; stw r0,20`). Same "store before a float
                 // load" family as float_cast_value_store_first.
@@ -2757,7 +2757,7 @@ impl Generator {
                                 _ => true,
                             }
                         });
-                // GC/2.0p1 does not fill the mflr->store slot with a leading FLOAT-CONSTANT
+                // Older/patch profiles do not fill the mflr->store slot with a leading FLOAT-CONSTANT
                 // load — it stores LR first, then loads the constant (`stw r0,20; lfs f0,0(0)`),
                 // where mainline fills the slot (`lfs; stw r0,20`). Same "store before a float
                 // load" family as float_cast_value_store_first.

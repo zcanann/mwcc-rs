@@ -315,9 +315,9 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     /// In a non-leaf `if`-prologue, whether the saved-LR store (`stw r0,20(r1)`) is
     /// emitted BEFORE a leading float-constant load in the condition, rather than
-    /// filling the `mflr`->store latency slot with that load. GC/2.0p1: `mflr r0;
-    /// stw r0,20; lfs f0,0(0); fcmpo` vs mainline `mflr r0; lfs f0,0(0); stw r0,20;
-    /// fcmpo`. The same "store before a float load" family as
+    /// filling the `mflr`->store latency slot with that load. GC/2.0p1 and build
+    /// 163 store the linkage first; mainline emits `mflr r0; lfs f0,0(0); stw
+    /// r0,20; fcmpo`. The same "store before a float load" family as
     /// [`Self::float_cast_value_store_first`].
     fn lr_save_precedes_float_const(&self) -> bool {
         false
@@ -552,6 +552,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn legacy_float_cast_schedule(&self) -> bool {
+        true
+    }
+
+    fn lr_save_precedes_float_const(&self) -> bool {
         true
     }
 
