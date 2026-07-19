@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import unittest
 
-from parity_dashboard import failure_reason, snapshot
+from parity_audit import build_audit
+from parity_dashboard import failure_reason, representative_audit, snapshot, wilson_interval
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
 from reference_parity import stable_sample
@@ -102,6 +103,55 @@ class DashboardTests(unittest.TestCase):
             "output": "DEFER  test.cpp — expected a type, found Identifier(\"Thing\")",
         }
         self.assertEqual(failure_reason(record), "expected a type, found Identifier(…)")
+
+    def test_representative_audit_requires_the_complete_fixed_sample(self):
+        rows = [row(source="src/a.c"), row(source="src/b.c")]
+        observations = {rows[0]["configuration_id"]: {"status": "BYTE"}}
+        report = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )
+        self.assertFalse(report["complete"])
+        self.assertIsNone(report["estimate"])
+
+    def test_representative_audit_reports_byte_successes_and_interval(self):
+        rows = [row(source=f"src/{index}.c") for index in range(4)]
+        observations = {
+            item["configuration_id"]: {"status": "BYTE" if index == 0 else "DEFER"}
+            for index, item in enumerate(rows)
+        }
+        report = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )
+        self.assertTrue(report["complete"])
+        self.assertEqual(report["estimate"]["confirmed_proportion"], 0.25)
+        self.assertEqual(report["estimate"]["identification_interval_low"], 0.25)
+        self.assertEqual(report["estimate"]["identification_interval_high"], 0.25)
+        low, high = wilson_interval(1, 4)
+        self.assertLess(low, 0.25)
+        self.assertGreater(high, 0.25)
+
+    def test_harness_results_widen_identification_bounds(self):
+        rows = [row(source=f"src/{index}.c") for index in range(4)]
+        statuses = ("BYTE", "DEFER", "HARNESS", "HARNESS")
+        observations = {
+            item["configuration_id"]: {"status": statuses[index]}
+            for index, item in enumerate(rows)
+        }
+        report = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )
+        self.assertEqual(report["estimate"]["identification_interval_low"], 0.25)
+        self.assertEqual(report["estimate"]["identification_interval_high"], 0.75)
+        self.assertEqual(report["estimate"]["resolved_proportion"], 0.5)
+
+
+class AuditSelectionTests(unittest.TestCase):
+    def test_fixed_audit_is_deterministic_and_order_independent(self):
+        rows = [row(source=f"src/{index}.c") for index in range(20)]
+        first = build_audit(rows, 7, "seed", "0")
+        second = build_audit(list(reversed(rows)), 7, "seed", "0")
+        self.assertEqual(first["configuration_ids"], second["configuration_ids"])
+        self.assertEqual(len(first["configuration_ids"]), 7)
 
 
 class FrontierTests(unittest.TestCase):

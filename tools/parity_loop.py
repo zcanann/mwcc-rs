@@ -59,6 +59,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--state-dir", type=Path, default=Path("target/reference-parity/frontier"))
     parser.add_argument("--size", type=int, default=256)
     parser.add_argument("--byte-audit", type=int, default=16)
+    parser.add_argument("--audit-size", type=int, default=384)
+    parser.add_argument("--audit-seed", default="mwcc-representative-audit-v1")
+    parser.add_argument("--audit-epoch", default="0")
     parser.add_argument("--seed", default="mwcc-frontier-v1")
     parser.add_argument("--epoch", default="0", help="change to rotate equally ranked work")
     parser.add_argument("--refresh-inventory", action="store_true")
@@ -76,6 +79,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     state = args.state_dir if args.state_dir.is_absolute() else root / args.state_dir
     inventory = state / "inventory.json"
     frontier = state / "frontier.json"
+    audit = state / "audit.json"
     runs = state / "runs"
     snapshots = state / "snapshots"
     state.mkdir(parents=True, exist_ok=True)
@@ -144,10 +148,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ]
     if subprocess.run(frontier_command).returncode:
         return 2
+    audit_command = [
+        sys.executable,
+        str(tools / "parity_audit.py"),
+        "--inventory",
+        str(inventory),
+        "--output",
+        str(audit),
+        "--size",
+        str(args.audit_size),
+        "--seed",
+        args.audit_seed,
+        "--epoch",
+        args.audit_epoch,
+        *filters,
+    ]
+    if subprocess.run(audit_command).returncode:
+        return 2
     if args.frontier_only:
         return 0
 
-    run_command = [
+    audit_run_command = [
+        sys.executable,
+        str(tools / "reference_parity.py"),
+        "--inventory",
+        str(inventory),
+        "--compiler",
+        str(compiler),
+        "--selection",
+        str(audit),
+        "--cache",
+        str(result),
+        *filters,
+    ]
+    if args.rerun:
+        audit_run_command.append("--rerun")
+    run_status = subprocess.run(audit_run_command).returncode
+    if run_status not in (0, 1):
+        return run_status
+
+    frontier_run_command = [
         sys.executable,
         str(tools / "reference_parity.py"),
         "--inventory",
@@ -161,8 +201,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         *filters,
     ]
     if args.rerun:
-        run_command.append("--rerun")
-    run_status = subprocess.run(run_command).returncode
+        frontier_run_command.append("--rerun")
+    run_status = subprocess.run(frontier_run_command).returncode
     if run_status not in (0, 1):
         return run_status
 
@@ -174,6 +214,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         str(inventory),
         "--tool-fingerprint",
         fingerprint,
+        "--audit-selection",
+        str(audit),
         *filters,
         *result_arguments(all_results),
     ]

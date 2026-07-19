@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -263,6 +264,60 @@ def delta(
     }
 
 
+def wilson_interval(successes: int, total: int, z: float = 1.959963984540054) -> tuple[float, float]:
+    if total <= 0:
+        return (0.0, 1.0)
+    proportion = successes / total
+    denominator = 1.0 + z * z / total
+    center = (proportion + z * z / (2.0 * total)) / denominator
+    radius = (
+        z
+        * math.sqrt(proportion * (1.0 - proportion) / total + z * z / (4.0 * total * total))
+        / denominator
+    )
+    return (max(0.0, center - radius), min(1.0, center + radius))
+
+
+def representative_audit(
+    rows: List[Dict[str, Any]],
+    observations: Dict[str, Dict[str, Any]],
+    selection: set[str],
+) -> Dict[str, Any]:
+    universe = {row["configuration_id"] for row in rows if row["source_exists"]}
+    selected = universe & selection
+    direct = {identity: observations[identity] for identity in selected if identity in observations}
+    counts = Counter(observation["status"] for observation in direct.values())
+    complete = len(direct) == len(selected)
+    result: Dict[str, Any] = {
+        "method": "simple_random_sample_without_replacement",
+        "selected": len(selected),
+        "observed": len(direct),
+        "complete": complete,
+        "statuses": {status: counts[status] for status in STATUSES if status != "UNTESTED"},
+        "estimate": None,
+    }
+    if complete and selected:
+        successes = counts["BYTE"]
+        unknown = counts["HARNESS"]
+        resolved = len(selected) - unknown
+        resolved_low, resolved_high = wilson_interval(successes, resolved)
+        result["estimate"] = {
+            "measure": "configured_byte_exact",
+            "successes": successes,
+            "total": len(selected),
+            "harness_unknown": unknown,
+            "confirmed_proportion": successes / len(selected),
+            "identification_interval_low": successes / len(selected),
+            "identification_interval_high": (successes + unknown) / len(selected),
+            "resolved_outcomes": resolved,
+            "resolved_proportion": successes / resolved if resolved else None,
+            "resolved_confidence": 0.95,
+            "resolved_interval_low": resolved_low,
+            "resolved_interval_high": resolved_high,
+        }
+    return result
+
+
 def print_breakdown(title: str, rows: List[Dict[str, Any]]) -> None:
     print(f"\n{title}")
     print(f"{'name':28} {'total':>7} {'BYTE':>7} {'DIFF':>7} {'DEFER':>7} {'HARNESS':>8} {'UNSUP':>7} {'UNTEST':>8}")
@@ -297,11 +352,43 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
         rate = count / report["existing"] if report["existing"] else 0.0
         print(f"{status:18} {count:8d} {rate:11.1%}")
     print(
-        f"\nproven exact parity (lower bound): {report['statuses']['BYTE']}/{report['existing']} existing "
-        f"({report['rates']['byte_of_existing']:.1%}); "
-        f"sample outcome: {report['statuses']['BYTE']}/{report['evaluable']} directly evaluable "
-        f"({report['rates']['byte_of_evaluable']:.1%})"
+        f"\nproven exact parity (full-corpus lower bound): "
+        f"{report['statuses']['BYTE']}/{report['existing']} existing "
+        f"({report['rates']['byte_of_existing']:.1%})"
     )
+    audit = report.get("representative_audit")
+    if audit is not None:
+        print(
+            f"representative audit: {audit['observed']}/{audit['selected']} observed "
+            f"({'complete' if audit['complete'] else 'INCOMPLETE'})"
+        )
+        estimate = audit["estimate"]
+        if estimate is not None:
+            print(
+                f"confirmed byte parity in representative audit: "
+                f"{estimate['successes']}/{estimate['total']} = "
+                f"{estimate['confirmed_proportion']:.1%}"
+            )
+            print(
+                f"harness-unknown: {estimate['harness_unknown']}/{estimate['total']}; "
+                f"sample parity bounds "
+                f"{estimate['identification_interval_low']:.1%}.."
+                f"{estimate['identification_interval_high']:.1%}"
+            )
+            if estimate["resolved_outcomes"]:
+                print(
+                    f"resolved-outcome parity: "
+                    f"{estimate['successes']}/{estimate['resolved_outcomes']} = "
+                    f"{estimate['resolved_proportion']:.1%}; conditional 95% CI "
+                    f"{estimate['resolved_interval_low']:.1%}.."
+                    f"{estimate['resolved_interval_high']:.1%}"
+                )
+        counts = " / ".join(
+            f"{status} {audit['statuses'][status]}"
+            for status in STATUSES
+            if status != "UNTESTED"
+        )
+        print(f"audit outcomes: {counts}")
     if delta_report is not None:
         print(
             f"delta: +{delta_report['byte_gained']} BYTE / -{delta_report['byte_lost']} BYTE "
@@ -327,6 +414,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--tool-fingerprint", help="current tool fingerprint prefix")
     parser.add_argument("--baseline-tool-fingerprint", help="baseline tool fingerprint prefix")
     parser.add_argument("--selection", type=Path)
+    parser.add_argument("--audit-selection", type=Path)
     parser.add_argument("--project", action="append")
     parser.add_argument("--version", action="append")
     parser.add_argument("--language", choices=("c", "c++"), action="append")
@@ -354,6 +442,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         report = snapshot(
             inventory, rows, observations, tool, unsupported_versions, source_projects
         )
+        if args.audit_selection is not None:
+            report["representative_audit"] = representative_audit(
+                rows, observations, load_selection(args.audit_selection) or set()
+            )
         delta_report = None
         if args.baseline_result:
             baseline_records = load_results(args.baseline_result)
