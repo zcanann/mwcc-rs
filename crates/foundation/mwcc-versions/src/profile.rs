@@ -71,6 +71,16 @@ pub enum IntegerDagStyle {
     PortAwareSerialR0,
 }
 
+/// Entry, allocation, and scheduling policy for specialized integer loops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerLoopStyle {
+    /// 2.4.x favors latency-filling schedules and reuses the dead CTR source home.
+    ModernLatencyInterleaved,
+    /// Build 163 evaluates the entry comparison first, keeps loop temporaries
+    /// above the parameter homes, and completes dependency chains first.
+    LegacyDependencyFirst,
+}
+
 /// Allocation and ready-op ordering for a float DAG shared by both arms of
 /// an integer-controlled return diamond.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,6 +527,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         IntegerDagStyle::WideIssueClosedIntervals
     }
 
+    fn integer_loop_style(&self) -> IntegerLoopStyle {
+        IntegerLoopStyle::ModernLatencyInterleaved
+    }
+
     fn shared_float_dag_style(&self) -> SharedFloatDagStyle {
         SharedFloatDagStyle::ModernDefinitionDescending
     }
@@ -815,6 +829,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn integer_dag_style(&self) -> IntegerDagStyle {
         IntegerDagStyle::PortAwareSerialR0
+    }
+
+    fn integer_loop_style(&self) -> IntegerLoopStyle {
+        IntegerLoopStyle::LegacyDependencyFirst
     }
 
     fn shared_float_dag_style(&self) -> SharedFloatDagStyle {

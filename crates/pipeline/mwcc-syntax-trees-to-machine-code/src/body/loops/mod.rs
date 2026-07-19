@@ -6,5 +6,6 @@ use super::*;
 mod count_register;
 mod counters;
 mod fill_copy;
+pub(crate) mod policy;
 mod poll_search;
 mod walker;

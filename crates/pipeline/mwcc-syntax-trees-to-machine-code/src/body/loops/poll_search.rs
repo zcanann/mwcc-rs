@@ -496,6 +496,7 @@ impl Generator {
         if temp > 10 {
             return Ok(false);
         }
+        let policy = policy::IntegerLoopPolicy::resolve(self.behavior.integer_loop_style);
         // -- emit --
         self.output
             .instructions
@@ -515,26 +516,49 @@ impl Generator {
                 s: lx_register,
                 shift: 31,
             });
-        self.output.instructions.push(Instruction::Add {
-            d: lx_register,
-            a: lx_register,
-            b: lx_register,
-        });
-        self.output.instructions.push(Instruction::Add {
-            d: temp,
-            a: hx_register,
-            b: temp,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: iy_register,
-            a: iy_register,
-            immediate: -1,
-        });
-        self.output.instructions.push(Instruction::Add {
-            d: hx_register,
-            a: hx_register,
-            b: temp,
-        });
+        if policy.dependency_first {
+            self.output.instructions.push(Instruction::Add {
+                d: temp,
+                a: hx_register,
+                b: temp,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hx_register,
+                b: temp,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: lx_register,
+                a: lx_register,
+                b: lx_register,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: iy_register,
+                a: iy_register,
+                immediate: -1,
+            });
+        } else {
+            self.output.instructions.push(Instruction::Add {
+                d: lx_register,
+                a: lx_register,
+                b: lx_register,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: temp,
+                a: hx_register,
+                b: temp,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: iy_register,
+                a: iy_register,
+                immediate: -1,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hx_register,
+                b: temp,
+            });
+        }
         self.bind_label(test_label);
         self.output.instructions.push(Instruction::CompareWord {
             a: hx_register,

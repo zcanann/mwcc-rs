@@ -278,16 +278,20 @@ impl Generator {
                 None => return Ok(false),
             },
         };
+        let policy = policy::IntegerLoopPolicy::resolve(self.behavior.integer_loop_style);
         // -- emit --
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: count_register });
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
-                a: count_register,
-                immediate: 0,
-            });
+        let compare = Instruction::CompareWordImmediate {
+            a: count_register,
+            immediate: 0,
+        };
+        let move_to_ctr = Instruction::MoveToCountRegister { s: count_register };
+        if policy.compare_before_ctr {
+            self.output.instructions.push(compare);
+            self.output.instructions.push(move_to_ctr);
+        } else {
+            self.output.instructions.push(move_to_ctr);
+            self.output.instructions.push(compare);
+        }
         let end_label = self.fresh_label();
         match tail {
             Tail::Home => {
@@ -310,7 +314,14 @@ impl Generator {
                         d: 0,
                         a: hx_register,
                         immediate: *negated_k,
-                    })
+                    });
+                if policy.recompute_recorded_immediate {
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: 0,
+                        a: hx_register,
+                        immediate: *negated_k,
+                    });
+                }
             }
             Head::Register(_) => self
                 .output
@@ -340,21 +351,39 @@ impl Generator {
                         s: low,
                         shift: 31,
                     });
-                self.output.instructions.push(Instruction::Add {
-                    d: low,
-                    a: low,
-                    b: low,
-                });
-                self.output.instructions.push(Instruction::Add {
-                    d: 0,
-                    a: hx_register,
-                    b: 0,
-                });
-                self.output.instructions.push(Instruction::Add {
-                    d: hx_register,
-                    a: hx_register,
-                    b: 0,
-                });
+                if policy.dependency_first {
+                    self.output.instructions.push(Instruction::Add {
+                        d: 0,
+                        a: hx_register,
+                        b: 0,
+                    });
+                    self.output.instructions.push(Instruction::Add {
+                        d: hx_register,
+                        a: hx_register,
+                        b: 0,
+                    });
+                    self.output.instructions.push(Instruction::Add {
+                        d: low,
+                        a: low,
+                        b: low,
+                    });
+                } else {
+                    self.output.instructions.push(Instruction::Add {
+                        d: low,
+                        a: low,
+                        b: low,
+                    });
+                    self.output.instructions.push(Instruction::Add {
+                        d: 0,
+                        a: hx_register,
+                        b: 0,
+                    });
+                    self.output.instructions.push(Instruction::Add {
+                        d: hx_register,
+                        a: hx_register,
+                        b: 0,
+                    });
+                }
             }
         }
         let join_label = self.fresh_label();
@@ -782,16 +811,15 @@ impl Generator {
         if hx_register != 3 {
             return Ok(false);
         }
-        // The sign local takes the next-free register BEFORE the count home
-        // frees; hz keeps the freed count home; lz shifts past the sign.
-        let sign_register = if sign_local.is_some() {
-            Some(3 + function.parameters.len() as u8)
-        } else {
-            None
-        };
-        let hz_register = count_register;
-        let lz_register =
-            3 + function.parameters.len() as u8 + if sign_local.is_some() { 1 } else { 0 };
+        let policy = policy::IntegerLoopPolicy::resolve(self.behavior.integer_loop_style);
+        let temporaries = policy.pair_temporaries(
+            count_register,
+            function.parameters.len(),
+            sign_local.is_some(),
+        );
+        let sign_register = temporaries.sign;
+        let hz_register = temporaries.hz;
+        let lz_register = temporaries.lz;
         if lz_register > 10 {
             return Ok(false);
         }
@@ -827,47 +855,83 @@ impl Generator {
                 }
             }
         }
-        // -- emit --
-        for op in &resolved_scaffold {
-            match op {
-                ResolvedScaffold::Mask { register, clear } => {
-                    self.output
+        let emit_scaffold = |generator: &mut Generator| {
+            for op in &resolved_scaffold {
+                match op {
+                    ResolvedScaffold::Mask { register, clear } => generator
+                        .output
                         .instructions
                         .push(Instruction::AndContiguousMask {
                             a: *register,
                             s: *register,
                             begin: *clear,
                             end: 31,
+                        }),
+                    ResolvedScaffold::Extract { source_register } => {
+                        let target = if policy.sign_extract_through_scratch {
+                            0
+                        } else {
+                            sign_register.unwrap()
+                        };
+                        generator
+                            .output
+                            .instructions
+                            .push(Instruction::AndContiguousMask {
+                                a: target,
+                                s: *source_register,
+                                begin: 0,
+                                end: 0,
+                            });
+                        if policy.sign_extract_through_scratch {
+                            generator
+                                .output
+                                .instructions
+                                .push(Instruction::move_register(sign_register.unwrap(), 0));
+                        }
+                    }
+                    ResolvedScaffold::Xor { register } => {
+                        let sign_source = if policy.sign_extract_through_scratch {
+                            0
+                        } else {
+                            sign_register.unwrap()
+                        };
+                        generator.output.instructions.push(Instruction::Xor {
+                            a: *register,
+                            s: *register,
+                            b: sign_source,
                         })
-                }
-                ResolvedScaffold::Extract { source_register } => {
-                    self.output
-                        .instructions
-                        .push(Instruction::AndContiguousMask {
-                            a: sign_register.unwrap(),
-                            s: *source_register,
-                            begin: 0,
-                            end: 0,
-                        })
-                }
-                ResolvedScaffold::Xor { register } => {
-                    self.output.instructions.push(Instruction::Xor {
-                        a: *register,
-                        s: *register,
-                        b: sign_register.unwrap(),
-                    })
+                    }
                 }
             }
+        };
+        // -- emit --
+        if !policy.scaffold_after_ctr {
+            emit_scaffold(self);
         }
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: count_register });
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
-                a: count_register,
-                immediate: 0,
-            });
+        if policy.compare_before_ctr {
+            self.output
+                .instructions
+                .push(Instruction::CompareWordImmediate {
+                    a: count_register,
+                    immediate: 0,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: count_register });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: count_register });
+            self.output
+                .instructions
+                .push(Instruction::CompareWordImmediate {
+                    a: count_register,
+                    immediate: 0,
+                });
+        }
+        if policy.scaffold_after_ctr {
+            emit_scaffold(self);
+        }
         self.output
             .instructions
             .push(Instruction::BranchConditionalToLinkRegister {
@@ -915,21 +979,39 @@ impl Generator {
                 s: lx_register,
                 shift: 31,
             });
-        self.output.instructions.push(Instruction::Add {
-            d: lx_register,
-            a: lx_register,
-            b: lx_register,
-        });
-        self.output.instructions.push(Instruction::Add {
-            d: 0,
-            a: hx_register,
-            b: 0,
-        });
-        self.output.instructions.push(Instruction::Add {
-            d: hx_register,
-            a: hx_register,
-            b: 0,
-        });
+        if policy.dependency_first {
+            self.output.instructions.push(Instruction::Add {
+                d: 0,
+                a: hx_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hx_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: lx_register,
+                a: lx_register,
+                b: lx_register,
+            });
+        } else {
+            self.output.instructions.push(Instruction::Add {
+                d: lx_register,
+                a: lx_register,
+                b: lx_register,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: 0,
+                a: hx_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hx_register,
+                b: 0,
+            });
+        }
         let join_label = self.fresh_label();
         self.emit_branch_to(join_label);
         self.bind_label(else_label);
@@ -965,21 +1047,39 @@ impl Generator {
                 s: lz_register,
                 shift: 31,
             });
-        self.output.instructions.push(Instruction::Add {
-            d: lx_register,
-            a: lz_register,
-            b: lz_register,
-        });
-        self.output.instructions.push(Instruction::Add {
-            d: hx_register,
-            a: hz_register,
-            b: 0,
-        });
-        self.output.instructions.push(Instruction::Add {
-            d: hx_register,
-            a: hz_register,
-            b: hx_register,
-        });
+        if policy.dependency_first {
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hz_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hz_register,
+                b: hx_register,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: lx_register,
+                a: lz_register,
+                b: lz_register,
+            });
+        } else {
+            self.output.instructions.push(Instruction::Add {
+                d: lx_register,
+                a: lz_register,
+                b: lz_register,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hz_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: hx_register,
+                a: hz_register,
+                b: hx_register,
+            });
+        }
         self.bind_label(join_label);
         self.emit_branch_conditional_to(16, 0, body_label); // bdnz
         self.output

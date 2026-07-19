@@ -516,6 +516,8 @@ impl Generator {
         ) else {
             return Ok(false);
         };
+        let policy =
+            super::loops::policy::IntegerLoopPolicy::resolve(self.behavior.integer_loop_style);
         // -- emit --
         self.output
             .instructions
@@ -565,26 +567,49 @@ impl Generator {
                 a: ix_register,
                 immediate: 32,
             });
-        self.output.instructions.push(Instruction::ShiftLeftWord {
-            a: hx_register,
-            s: hx_register,
-            b: ix_register,
-        });
-        self.output.instructions.push(Instruction::ShiftRightWord {
-            a: 0,
-            s: lx_register,
-            b: 0,
-        });
-        self.output.instructions.push(Instruction::ShiftLeftWord {
-            a: lx_register,
-            s: lx_register,
-            b: ix_register,
-        });
-        self.output.instructions.push(Instruction::Or {
-            a: 0,
-            s: hx_register,
-            b: 0,
-        });
+        if policy.dependency_first {
+            self.output.instructions.push(Instruction::ShiftRightWord {
+                a: 0,
+                s: lx_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::ShiftLeftWord {
+                a: hx_register,
+                s: hx_register,
+                b: ix_register,
+            });
+            self.output.instructions.push(Instruction::Or {
+                a: 0,
+                s: hx_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::ShiftLeftWord {
+                a: lx_register,
+                s: lx_register,
+                b: ix_register,
+            });
+        } else {
+            self.output.instructions.push(Instruction::ShiftLeftWord {
+                a: hx_register,
+                s: hx_register,
+                b: ix_register,
+            });
+            self.output.instructions.push(Instruction::ShiftRightWord {
+                a: 0,
+                s: lx_register,
+                b: 0,
+            });
+            self.output.instructions.push(Instruction::ShiftLeftWord {
+                a: lx_register,
+                s: lx_register,
+                b: ix_register,
+            });
+            self.output.instructions.push(Instruction::Or {
+                a: 0,
+                s: hx_register,
+                b: 0,
+            });
+        }
         self.emit_branch_to(join_label);
         self.bind_label(big_label);
         self.output.instructions.push(Instruction::AddImmediate {
