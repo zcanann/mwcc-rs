@@ -132,7 +132,8 @@ include_flags=()
 # NB: not `dir` — that variable holds the mktemp scratch dir the EXIT trap removes.
 for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
 decompctx_log="$dir/decompctx.log"
-( cd "$project" && python3 tools/decompctx.py "$src" "${include_flags[@]}" -o "$dir/$ctx_name" ) \
+( cd "$project" && python3 "$here/tools/decompctx_runner.py" tools/decompctx.py \
+    "$src" "${include_flags[@]}" -o "$dir/$ctx_name" ) \
   >"$decompctx_log" 2>&1 || { echo "decompctx failed for $src"; exit 1; }
 
 # decompctx is intentionally permissive: when an include is absent it logs the
