@@ -71,13 +71,17 @@ pub(crate) struct FloatElseComposition {
     pub(crate) skip_bit: u8,
     /// The preserved ix register (the compare's A side, the addis source).
     pub(crate) ix_register: u8,
-    /// The freed raw-word register the addis result lands in (r3).
+    /// The freed raw-word register the addis result lands in (r3 modern,
+    /// r0 for the legacy frame convention).
     pub(crate) addis_target: u8,
+    /// Whether the high word is stored before r0 is reused to materialize
+    /// the zero low word.
+    pub(crate) store_high_before_zero: bool,
     /// The diamond's then-arm literal (qx = 0.28125).
     pub(crate) then_bits: u64,
     /// The addis immediate (ix - C, C a lis-able constant; shift = -C>>16).
     pub(crate) addis_shift: i16,
-    /// The diamond local's name + frame offset (qx @ 16).
+    /// The diamond local's name + frame offset.
     pub(crate) qx_name: String,
     pub(crate) qx_offset: i16,
     /// The else-only fold-away locals (hz, a) with their initializers.

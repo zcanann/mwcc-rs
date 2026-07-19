@@ -959,14 +959,23 @@ impl Generator {
                     a: payload.ix_register,
                     immediate: payload.addis_shift,
                 });
+            if payload.store_high_before_zero {
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: payload.addis_target,
+                    a: 1,
+                    offset: payload.qx_offset,
+                });
+            }
             self.output
                 .instructions
                 .push(Instruction::load_immediate(0, 0));
-            self.output.instructions.push(Instruction::StoreWord {
-                s: payload.addis_target,
-                a: 1,
-                offset: payload.qx_offset,
-            });
+            if !payload.store_high_before_zero {
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: payload.addis_target,
+                    a: 1,
+                    offset: payload.qx_offset,
+                });
+            }
             self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
                 a: 1,

@@ -472,6 +472,7 @@ impl Generator {
                     skip_bit: 1,
                     ix_register: 0, // filled at emission (target_register)
                     addis_target: 0,
+                    store_high_before_zero: false,
                     then_bits: then_value.to_bits(),
                     addis_shift: ((-subtracted) >> 16) as i16,
                     qx_name: qx_name.clone(),
@@ -549,9 +550,16 @@ impl Generator {
         let frame_before = self.frame_size;
         let legacy_reloading = self.behavior.punned_float_frame_convention
             == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading;
+        let legacy_composed_frame = legacy_reloading && composition.is_some();
         // The frame drives the extab/extabindex sections; the nested fctiwz
         // form needs a second conversion slot.
-        let mut frame_size: i16 = if nested { 32 } else { 16 };
+        let mut frame_size: i16 = if legacy_composed_frame {
+            56
+        } else if nested {
+            32
+        } else {
+            16
+        };
         let legacy_nested_tail_slot = nested
             && !ix_in_dual_condition
             && ix_dual_big.is_none()
@@ -807,7 +815,13 @@ impl Generator {
         }
         if let Some(mut payload) = composition {
             payload.ix_register = target_register;
-            payload.addis_target = load_register;
+            if legacy_composed_frame {
+                payload.addis_target = 0;
+                payload.store_high_before_zero = true;
+                payload.qx_offset = 24;
+            } else {
+                payload.addis_target = load_register;
+            }
             self.float.else_composition = Some(payload);
         }
         let saved_ix_location = if ix_in_dual_condition {
