@@ -3,6 +3,39 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// Recognize `(a == C1) || (a == C2)` with consecutive constants. Both
+/// equality spellings (`a == C` and `C == a`) normalize to the same result.
+pub(crate) fn consecutive_equality_or<'e>(
+    left: &'e Expression,
+    right: &'e Expression,
+) -> Option<(&'e str, i64)> {
+    let equality = |expression: &'e Expression| -> Option<(&'e str, i64)> {
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left,
+            right,
+        } = expression
+        else {
+            return None;
+        };
+        if let (Expression::Variable(name), Some(constant)) =
+            (left.as_ref(), constant_value(right))
+        {
+            return Some((name.as_str(), constant));
+        }
+        if let (Some(constant), Expression::Variable(name)) =
+            (constant_value(left), right.as_ref())
+        {
+            return Some((name.as_str(), constant));
+        }
+        None
+    };
+    let ((left_name, left_constant), (right_name, right_constant)) =
+        (equality(left)?, equality(right)?);
+    (left_name == right_name && left_constant.abs_diff(right_constant) == 1)
+        .then_some((left_name, left_constant.min(right_constant)))
+}
+
 /// A select arm that mwcc materializes into a register with a plain arithmetic instruction (or a
 /// short strength-reduced sequence), for which it uses the simple branch select used by the
 /// computed-arm handlers above. Comparisons (0/1 idioms), logicals, loads (deref/member/index),

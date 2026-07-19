@@ -141,32 +141,8 @@ impl Generator {
         // compare-branch idiom as mwcc (byte-exact), and the `if (...)` CONDITION form takes a
         // different path, so both are unaffected.
         if matches!(operator, BinaryOperator::LogicalOr) {
-            let as_equality_constant = |expression: &Expression| -> Option<(String, i64)> {
-                if let Expression::Binary {
-                    operator: BinaryOperator::Equal,
-                    left,
-                    right,
-                } = expression
-                {
-                    if let (Expression::Variable(name), Some(constant)) =
-                        (left.as_ref(), constant_value(right))
-                    {
-                        return Some((name.clone(), constant));
-                    }
-                    if let (Some(constant), Expression::Variable(name)) =
-                        (constant_value(left), right.as_ref())
-                    {
-                        return Some((name.clone(), constant));
-                    }
-                }
-                None
-            };
-            if let (Some((left_variable, left_constant)), Some((right_variable, right_constant))) =
-                (as_equality_constant(left), as_equality_constant(right))
-            {
-                if left_variable == right_variable && (left_constant - right_constant).abs() == 1 {
-                    return Err(Diagnostic::error("a consecutive-constant equality OR value is mwcc's unsigned range idiom (roadmap)"));
-                }
+            if consecutive_equality_or(left, right).is_some() {
+                return Err(Diagnostic::error("a consecutive-constant equality OR value is mwcc's unsigned range idiom (roadmap)"));
             }
         }
         match operator {
@@ -856,6 +832,56 @@ impl Generator {
         };
         if !is_simple(when_true) || !is_simple(when_false) {
             return Ok(false);
+        }
+
+        // Build 163 canonicalizes two consecutive equalities used as an OR
+        // condition into the unsigned range `(a - min) <= 1`. This condition
+        // form only needs the range compare and the ordinary two return arms;
+        // the integer-value form has a separate branchless materialization.
+        if operator == BinaryOperator::LogicalOr
+            && terms.len() == 2
+            && self.behavior.logical_or_value_style
+                == mwcc_versions::LogicalOrValueStyle::TrueFirst
+        {
+            if let Some((name, minimum)) = consecutive_equality_or(terms[0], terms[1]) {
+                let immediate = minimum
+                    .checked_neg()
+                    .and_then(|value| i16::try_from(value).ok());
+                if let (Some(register), Some(immediate)) =
+                    (self.lookup_general(name), immediate)
+                {
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: GENERAL_SCRATCH,
+                        a: register,
+                        immediate,
+                    });
+                    self.output.instructions.push(
+                        Instruction::CompareLogicalWordImmediate {
+                            a: GENERAL_SCRATCH,
+                            immediate: 1,
+                        },
+                    );
+                    let fall_branch = self.output.instructions.len();
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options: 12,
+                            condition_bit: 1,
+                            target: 0,
+                        });
+                    self.place_select_value(when_true, result)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchToLinkRegister);
+                    let fall = self.output.instructions.len();
+                    self.patch_forward(fall_branch, fall);
+                    self.place_select_value(when_false, result)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchToLinkRegister);
+                    return Ok(true);
+                }
+            }
         }
 
         // When the taken value already sits in the result register, mwcc drops the separate
