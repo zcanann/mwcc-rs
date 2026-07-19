@@ -18,7 +18,8 @@ use crate::profile::{
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
     ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressPollAddressStyle,
     FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle,
-    DataSectionRelocationStyle, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle,
+    DataSectionRelocationStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
+    IndexedRmwAssignmentStyle,
     IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
@@ -130,6 +131,7 @@ pub enum Quirk {
     LegacyEarlyInPlaceJumpTableBase,
     LegacyPartialNarrowStoreConversionElision,
     LegacyExplicitGlobalArrayAddress,
+    LaterDirectGlobalArrayDecayStore,
     LegacyExplicitIndexedRmwAddress,
     LegacyReloadAfterGlobalStore,
     LegacyZeroEqualityNegate,
@@ -202,6 +204,7 @@ impl Quirk {
             Quirk::LegacyEarlyInPlaceJumpTableBase => QuirkKind::Intentional,
             Quirk::LegacyPartialNarrowStoreConversionElision => QuirkKind::Intentional,
             Quirk::LegacyExplicitGlobalArrayAddress => QuirkKind::Intentional,
+            Quirk::LaterDirectGlobalArrayDecayStore => QuirkKind::Intentional,
             Quirk::LegacyExplicitIndexedRmwAddress => QuirkKind::Intentional,
             Quirk::LegacyReloadAfterGlobalStore => QuirkKind::Intentional,
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
@@ -309,6 +312,9 @@ impl Quirk {
             }
             Quirk::LegacyExplicitGlobalArrayAddress => {
                 "variable global-array indexes form an explicit address in build 163"
+            }
+            Quirk::LaterDirectGlobalArrayDecayStore => {
+                "later compilers store a decayed global-array address directly from its address register"
             }
             Quirk::LegacyExplicitIndexedRmwAddress => {
                 "explicit indexed read/modify/write assignments preserve an element address in build 163"
@@ -552,6 +558,8 @@ pub struct Behavior {
     pub comma_value_placement_style: CommaValuePlacementStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
+    /// Register placement for a bare array address stored to a pointer global.
+    pub global_array_decay_store_style: GlobalArrayDecayStoreStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
     pub indexed_rmw_assignment_style: IndexedRmwAssignmentStyle,
     /// Treatment of an immediate read following a store to the same global.
@@ -633,6 +641,8 @@ pub struct Behavior {
     /// Whether contiguous GPR saves/restores use inline `stmw`/`lmw` rather
     /// than `_savegpr_N`/`_restgpr_N` helper calls.
     pub use_lmw_stmw: bool,
+    /// Whether independent instructions may fill one another's latency slots.
+    pub scheduler_enabled: bool,
     /// Whether whole-file IPA may replace a terminal call/return with a sibling
     /// branch after marshaling its arguments.
     pub tail_call_optimization: bool,
@@ -754,6 +764,10 @@ impl Behavior {
             return_register_store_style: config.build.profile.return_register_store_style(),
             comma_value_placement_style: config.build.profile.comma_value_placement_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
+            global_array_decay_store_style: config
+                .build
+                .profile
+                .global_array_decay_store_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -834,6 +848,7 @@ impl Behavior {
             read_only_global_addressing: config.flags.read_only_global_addressing,
             deferred_inlining: config.flags.inline_deferred,
             use_lmw_stmw: config.flags.use_lmw_stmw,
+            scheduler_enabled: config.flags.scheduler_enabled,
             tail_call_optimization: config.flags.ipa_file,
         }
     }
@@ -943,6 +958,9 @@ impl Behavior {
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
+        }
+        if self.global_array_decay_store_style == GlobalArrayDecayStoreStyle::DirectAddress {
+            quirks.push(ActiveQuirk::of(Quirk::LaterDirectGlobalArrayDecayStore));
         }
         if self.indexed_rmw_assignment_style == IndexedRmwAssignmentStyle::PreserveExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitIndexedRmwAddress));
@@ -1445,6 +1463,10 @@ mod tests {
             let mut config = CompilerConfig::new(compiler_build);
             let plain = Behavior::resolve(&config);
             assert_eq!(
+                plain.global_array_decay_store_style,
+                GlobalArrayDecayStoreStyle::DirectAddress
+            );
+            assert_eq!(
                 plain.trig_zero_constant_placement,
                 TrigZeroConstantPlacement::Prologue
             );
@@ -1460,5 +1482,13 @@ mod tests {
             assert!(ipa.tail_call_optimization);
             assert_eq!(ipa.trig_dispatcher_ipa_label_bump, 4);
         }
+    }
+
+    #[test]
+    fn schedule_off_disables_latency_slot_filling() {
+        let mut config = CompilerConfig::new(build::GC_1_3_2);
+        assert!(Behavior::resolve(&config).scheduler_enabled);
+        config.flags.scheduler_enabled = false;
+        assert!(!Behavior::resolve(&config).scheduler_enabled);
     }
 }

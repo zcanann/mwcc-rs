@@ -155,6 +155,9 @@ impl Generator {
                 let pointee = pointee_of_type(global_type).ok_or_else(|| {
                     Diagnostic::error("global store of this type is not supported yet")
                 })?;
+                if self.try_emit_global_array_decay_store(name, pointee, value)? {
+                    return Ok(());
+                }
                 match self.behavior.global_addressing {
                     GlobalAddressing::SmallData => {
                         let source = match self
@@ -201,6 +204,25 @@ impl Generator {
                             .insert(name.clone(), (source, self.output.instructions.len()));
                     }
                     GlobalAddressing::Absolute => {
+                        if !self.behavior.scheduler_enabled {
+                            // Without instruction scheduling, mwcc completes the
+                            // source value before materializing the absolute
+                            // destination address (`li value; lis target; stw`).
+                            let source = self.place_store_value(value, pointee)?;
+                            let base = self.free_general_excluding(source)?;
+                            self.emit_address_high(base, name);
+                            if self.behavior.absolute_access_style
+                                == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
+                            {
+                                self.emit_address_low(base, name);
+                            } else {
+                                self.record_relocation(RelocationKind::Addr16Lo, name);
+                            }
+                            self.output.instructions.push(displacement_store(
+                                pointee, source, base, 0,
+                            )?);
+                            return Ok(());
+                        }
                         // mwcc materializes the address base before the value, so the
                         // base GPR (chosen to avoid the value's input registers) is
                         // reserved while the value is placed.

@@ -398,10 +398,10 @@ impl Generator {
                     let (source, width, signed) = (location.register, location.width, location.signed);
                     self.emit_widen(destination, source, width, signed);
                     Ok(())
-                } else if let Some(&total_size) = self.global_array_sizes.get(name.as_str()).filter(|_| destination != GENERAL_SCRATCH) {
+                } else if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
                     // A bare array variable in value position decays to its address
                     // (`return g;` / `f(g)` for `int g[N]`), not a load of g[0].
-                    self.emit_global_array_base(name, total_size, destination)
+                    self.emit_global_array_decay(name, total_size, destination)
                 } else {
                     self.emit_global_load(name, destination)
                 }

@@ -113,6 +113,17 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.use_lmw_stmw,
                 };
             }
+            // `-schedule off` preserves dependency order instead of filling
+            // latency slots with independent address materializations.
+            "-schedule" => {
+                index += 1;
+                invocation.flags.scheduler_enabled =
+                    match arguments.get(index).map(String::as_str) {
+                        Some("off") => false,
+                        Some("on") => true,
+                        _ => invocation.flags.scheduler_enabled,
+                    };
+            }
             // `-sym on` emits CodeWarrior `.line` and `.debug` sections. Keep
             // last-wins behavior even while object-level debug emission is a
             // deliberate capability boundary.
@@ -1474,6 +1485,20 @@ mod tests {
         let last_wins =
             parse_invocation(&["-sym".into(), "on".into(), "-sym".into(), "off".into()]);
         assert!(!last_wins.flags.debug_info);
+    }
+
+    #[test]
+    fn command_line_scheduler_mode_is_last_wins() {
+        let off = parse_invocation(&["-schedule".into(), "off".into()]);
+        assert!(!off.flags.scheduler_enabled);
+
+        let last_wins = parse_invocation(&[
+            "-schedule".into(),
+            "off".into(),
+            "-schedule".into(),
+            "on".into(),
+        ]);
+        assert!(last_wins.flags.scheduler_enabled);
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod arithmetic;
 mod bit_fields;
 mod calls;
 mod driver;
+mod global_array_decay;
 mod global_array_index;
 mod globals;
 mod implicit_narrow_store;
@@ -29,5 +30,6 @@ pub(crate) use mwcc_machine_code::{Instruction, RelocationKind};
 pub(crate) use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 pub(crate) use mwcc_target::Eabi;
 pub(crate) use mwcc_versions::{
-    BitFieldLoadPlacement, GlobalAddressing, MaterializationCopyStyle,
+    BitFieldLoadPlacement, GlobalAddressing, GlobalArrayDecayStoreStyle,
+    MaterializationCopyStyle,
 };

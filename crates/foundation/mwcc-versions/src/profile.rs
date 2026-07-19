@@ -199,6 +199,16 @@ pub enum GlobalArrayIndexStyle {
     ExplicitAddress,
 }
 
+/// Register holding a file-scope array address assigned to a pointer global.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalArrayDecayStoreStyle {
+    /// GC 1.x/2.x completes the address in r0 before storing it.
+    ScratchValue,
+    /// GC 3/Wii complete the address in its high-half register and store that
+    /// register directly.
+    DirectAddress,
+}
+
 /// Whether an indexed read/modify/write preserves the frontend assignment form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexedRmwAssignmentStyle {
@@ -740,6 +750,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         GlobalArrayIndexStyle::Indexed
     }
 
+    fn global_array_decay_store_style(&self) -> GlobalArrayDecayStoreStyle {
+        GlobalArrayDecayStoreStyle::ScratchValue
+    }
+
     fn indexed_rmw_assignment_style(&self) -> IndexedRmwAssignmentStyle {
         IndexedRmwAssignmentStyle::UniformIndexed
     }
@@ -904,6 +918,10 @@ impl CodegenProfile for Mainline {}
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn global_array_decay_store_style(&self) -> GlobalArrayDecayStoreStyle {
+        GlobalArrayDecayStoreStyle::DirectAddress
+    }
+
     fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
         TrigZeroConstantPlacement::Prologue
     }
@@ -922,6 +940,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn global_array_decay_store_style(&self) -> GlobalArrayDecayStoreStyle {
+        GlobalArrayDecayStoreStyle::DirectAddress
+    }
+
     fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
         TrigZeroConstantPlacement::Prologue
     }
