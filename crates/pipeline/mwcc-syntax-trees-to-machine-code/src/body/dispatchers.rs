@@ -1267,9 +1267,17 @@ impl Generator {
         let plan = mwcc_vreg::FramePlan::sized_for(vec![virtual_temp, virtual_sig]);
         self.output.instructions.extend(plan.prologue());
         let result = Eabi::general_result().number;
-        self.output
-            .instructions
-            .push(Instruction::move_register(virtual_sig, result));
+        let legacy_raise =
+            self.behavior.raise_family_style == RaiseFamilyStyle::StagedLoadLinkRegister;
+        self.output.instructions.push(if legacy_raise {
+            Instruction::AddImmediate {
+                d: virtual_sig,
+                a: result,
+                immediate: 0,
+            }
+        } else {
+            Instruction::move_register(virtual_sig, result)
+        });
         let taken = self.fresh_label();
         let load = self.fresh_label();
         let skip_store = self.fresh_label();
@@ -1302,6 +1310,14 @@ impl Generator {
         self.bind_label(load);
         let address = self.fresh_virtual_general();
         self.emit_address_high(address, &table);
+        if legacy_raise {
+            self.record_relocation(RelocationKind::Addr16Lo, &table);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: address,
+                a: address,
+                immediate: 0,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::ShiftLeftImmediate {
@@ -1309,21 +1325,28 @@ impl Generator {
                 s: virtual_sig,
                 shift: 2,
             });
-        self.record_relocation(RelocationKind::Addr16Lo, &table);
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: address,
-            a: address,
-            immediate: 0,
-        });
+        if !legacy_raise {
+            self.record_relocation(RelocationKind::Addr16Lo, &table);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: address,
+                a: address,
+                immediate: 0,
+            });
+        }
         self.output.instructions.push(Instruction::Add {
             d: address,
             a: address,
             b: GENERAL_SCRATCH,
         });
+        let loaded_temp = if legacy_raise {
+            GENERAL_SCRATCH
+        } else {
+            virtual_temp
+        };
         self.output
             .instructions
             .push(Instruction::LoadWordWithUpdate {
-                d: virtual_temp,
+                d: loaded_temp,
                 a: address,
                 offset: -4,
             });
@@ -1331,9 +1354,14 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::CompareLogicalWordImmediate {
-                a: virtual_temp,
+                a: loaded_temp,
                 immediate: 1,
             });
+        if legacy_raise {
+            self.output
+                .instructions
+                .push(Instruction::move_register(virtual_temp, loaded_temp));
+        }
         self.emit_branch_conditional_to(12, 2, skip_store);
         self.output
             .instructions
@@ -1387,20 +1415,40 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchAndLink { target: exit_name });
-        // TAIL: the dispatch through ctr.
+        // TAIL: mainline dispatches through CTR; build 163 uses LR and schedules
+        // the argument copy between `mtlr` and `blrl`.
         self.bind_label(call_label);
-        self.output
-            .instructions
-            .push(Instruction::move_register(12, virtual_temp));
-        self.output
-            .instructions
-            .push(Instruction::move_register(result, virtual_sig));
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: 12 });
-        self.output
-            .instructions
-            .push(Instruction::BranchToCountRegisterAndLink);
+        if legacy_raise {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 12,
+                a: virtual_temp,
+                immediate: 0,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 12 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: result,
+                a: virtual_sig,
+                immediate: 0,
+            });
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegisterAndLink);
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::move_register(12, virtual_temp));
+            self.output
+                .instructions
+                .push(Instruction::move_register(result, virtual_sig));
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: 12 });
+            self.output
+                .instructions
+                .push(Instruction::BranchToCountRegisterAndLink);
+        }
         self.output
             .instructions
             .push(Instruction::load_immediate(result, 0));

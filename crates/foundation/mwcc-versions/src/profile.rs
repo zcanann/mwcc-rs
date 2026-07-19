@@ -48,6 +48,17 @@ pub enum FrexpFamilyStyle {
     LegacyPhysicalFrame,
 }
 
+/// Whole-family lowering of the signal-dispatch `raise` transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaiseFamilyStyle {
+    /// 2.4.x loads the table entry directly into its callee-saved home and
+    /// dispatches through CTR with logical-OR register copies.
+    DirectLoadCountRegister,
+    /// Build 163 stages the table entry through r0, completes the table address
+    /// before scaling the index, and dispatches through LR with `addi` copies.
+    StagedLoadLinkRegister,
+}
+
 /// Lowering used when an integer condition selects the canonical boolean
 /// constants `1` and `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,6 +458,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         FrexpFamilyStyle::VirtualCompactFrame
     }
 
+    fn raise_family_style(&self) -> RaiseFamilyStyle {
+        RaiseFamilyStyle::DirectLoadCountRegister
+    }
+
     /// In a float `if`-condition comparing a LOADED value (member/global) against a
     /// pool CONSTANT, whether the value operand is loaded BEFORE the constant.
     /// GC/2.0p1 and build 163 use `lfs f1,(v); lfs f0,k`, while mainline uses
@@ -721,6 +736,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn frexp_family_style(&self) -> FrexpFamilyStyle {
         FrexpFamilyStyle::LegacyPhysicalFrame
+    }
+
+    fn raise_family_style(&self) -> RaiseFamilyStyle {
+        RaiseFamilyStyle::StagedLoadLinkRegister
     }
 
     fn float_compare_value_before_const(&self) -> bool {

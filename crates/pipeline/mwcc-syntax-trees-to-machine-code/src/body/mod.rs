@@ -41,5 +41,5 @@ pub(crate) use mwcc_syntax_trees::{
 pub(crate) use mwcc_target::Eabi;
 pub(crate) use mwcc_versions::{
     FrameConvention, GlobalAddressing, IntegerComparisonValueStyle, NarrowComputedReturnStyle,
-    WideConstantAddSchedule,
+    RaiseFamilyStyle, WideConstantAddSchedule,
 };
