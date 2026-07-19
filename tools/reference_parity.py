@@ -39,6 +39,12 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def result_cache_name(compiler_hash: str, harness_hash: str) -> str:
+    """Name a result cache from both independently changing tool inputs."""
+
+    return f"{compiler_hash[:16]}-{harness_hash[:16]}.jsonl"
+
+
 def load_inventory(args: argparse.Namespace, script_dir: Path) -> Dict[str, Any]:
     if args.inventory is not None:
         with args.inventory.open(encoding="utf-8") as source:
@@ -279,7 +285,9 @@ def main() -> int:
     fingerprint = compiler_hash + ":" + harness_hash
     cache = args.cache
     if cache is None:
-        cache = root / "target" / "reference-parity" / f"{fingerprint[:20]}.jsonl"
+        cache = root / "target" / "reference-parity" / result_cache_name(
+            compiler_hash, harness_hash
+        )
     cache.parent.mkdir(parents=True, exist_ok=True)
     cached = {} if args.rerun else load_cache(cache)
     build_support: Dict[str, Tuple[bool, str]] = {}

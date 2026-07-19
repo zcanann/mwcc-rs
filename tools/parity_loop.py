@@ -13,6 +13,7 @@ import sys
 from typing import List, Optional, Sequence
 
 from parity_identity import files_fingerprint
+from reference_parity import result_cache_name
 
 
 INVENTORY_SCHEMA_VERSION = 3
@@ -125,7 +126,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         (tools / "refctx.sh", tools / "reference_parity.py", tools / "parity_identity.py")
     )
     fingerprint = f"{compiler_hash}:{harness_hash}"
-    result = runs / f"{compiler_hash[:16]}-{harness_hash[:16]}.jsonl"
+    result = runs / result_cache_name(compiler_hash, harness_hash)
     previous_results = sorted(runs.glob("*.jsonl"))
 
     filters: List[str] = []

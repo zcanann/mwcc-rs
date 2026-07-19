@@ -34,12 +34,35 @@ extra=("$@")
 FFCC="${FFCC:-/Users/zcanann/Documents/projects/FFCC-Decomp}"
 wibo="$FFCC/build/tools/wibo"
 sjis="$FFCC/build/tools/sjiswrap.exe"
-compiler="$FFCC/build/compilers/$build/mwcceppc.exe"
 objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 ours="${MWCC_BIN:-$here/target/release/mwcc}"
 
 project="$(cd "$project" && pwd)"
+# Resolve the real compiler independently from the tools checkout. Some builds
+# used by reference projects (notably GC/3.0a3p1) live in the compiler archive
+# but not FFCC's curated compiler set. An explicit executable wins, followed by
+# FFCC, caller-provided roots, and the archive beside reference_projects/.
+compiler="${MWCC_REFERENCE_COMPILER:-$FFCC/build/compilers/$build/mwcceppc.exe}"
+if [[ -z "${MWCC_REFERENCE_COMPILER:-}" && ! -f "$compiler" ]]; then
+  compiler_roots=()
+  if [[ -n "${REFCTX_COMPILER_ROOTS:-}" ]]; then
+    IFS=: read -r -a compiler_roots <<< "$REFCTX_COMPILER_ROOTS"
+  fi
+  reference_parent="$(cd "$(dirname "$project")/.." && pwd)"
+  compiler_roots+=("$reference_parent/misc/compilers_latest")
+  for compiler_root in "${compiler_roots[@]}"; do
+    candidate="$compiler_root/$build/mwcceppc.exe"
+    if [[ -f "$candidate" ]]; then
+      compiler="$candidate"
+      break
+    fi
+  done
+fi
+if [[ ! -f "$compiler" ]]; then
+  echo "MISSING_DEPENDENCY  $src — reference compiler $build not found"
+  exit 0
+fi
 dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"
 # The input suffix selects mwcceppc's language. Flattening every TU to `ctx.c`
 # silently forced `.cpp`/`.cp` reference sources into C mode, producing false

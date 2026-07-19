@@ -15,7 +15,7 @@ from parity_dashboard import (
 )
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
-from reference_parity import stable_sample
+from reference_parity import result_cache_name, stable_sample
 
 
 def row(**overrides):
@@ -38,6 +38,11 @@ def row(**overrides):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_result_cache_name_changes_with_either_tool_input(self):
+        baseline = result_cache_name("a" * 64, "b" * 64)
+        self.assertNotEqual(baseline, result_cache_name("c" * 64, "b" * 64))
+        self.assertNotEqual(baseline, result_cache_name("a" * 64, "d" * 64))
+
     def test_variant_and_progress_do_not_change_compiler_input_identity(self):
         first = row(variant="a", matching=True)
         second = row(variant="b", matching=False)
