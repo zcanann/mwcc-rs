@@ -869,9 +869,10 @@ impl Generator {
     /// Measured: the index `(sx>>31)<<3` FUSES into one rotate-mask
     /// (`rlwinm r0,sx,4,28,28`); the base is a lis/addi ADDR16_HA/LO
     /// pair on the (local) array symbol — .data, NOT sdata, despite the
-    /// 16-byte size; the load is `lfdx f1,lo,index`. Register slots per
-    /// the capture: ha -> r4, lo -> r3 (sx's home, dead after the
-    /// rlwinm), index -> r0.
+    /// 16-byte size. Mainline keeps the base and index separate for
+    /// `lfdx f1,lo,index`; build 163 applies its ordinary explicit-address
+    /// global-array policy: the scaled index remains in r3, the low base is
+    /// staged through r0, and `lfd f1,0(r3)` consumes their sum.
     pub(crate) fn try_indexed_double_return(&mut self, function: &Function) -> Compilation<bool> {
         if function.return_type != Type::Double
             || !function.guards.is_empty()
@@ -927,23 +928,46 @@ impl Generator {
         let array = array.clone();
         // -- emit --
         self.emit_address_high(4, &array);
+        let explicit_address = self.behavior.global_array_index_style
+            == mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress;
         // (sx >> 31) << 3 in one rotate-mask: rotate left 4, keep bit 28.
+        // Build 163 keeps the scaled index in the dead parameter home so that
+        // home can become the completed element address.
+        let index_register = if explicit_address { sx_register } else { 0 };
         self.output.instructions.push(Instruction::RotateAndMask {
-            a: 0,
+            a: index_register,
             s: sx_register,
             shift: 4,
             begin: 28,
             end: 28,
         });
         self.record_relocation(RelocationKind::Addr16Lo, &array);
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 3,
-            a: 4,
-            immediate: 0,
-        });
-        self.output
-            .instructions
-            .push(Instruction::LoadFloatDoubleIndexed { d: 1, a: 3, b: 0 });
+        if explicit_address {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: 4,
+                immediate: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: sx_register,
+                a: 0,
+                b: sx_register,
+            });
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: sx_register,
+                offset: 0,
+            });
+        } else {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3,
+                a: 4,
+                immediate: 0,
+            });
+            self.output
+                .instructions
+                .push(Instruction::LoadFloatDoubleIndexed { d: 1, a: 3, b: 0 });
+        }
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
