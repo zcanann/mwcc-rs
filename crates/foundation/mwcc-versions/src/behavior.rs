@@ -21,13 +21,14 @@ use crate::profile::{
     GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
-    MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
-    PunnedConditionalWritebackStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
-    QueueServiceInliningStyle, RaiseFamilyStyle, ReadOnlySectionAnchorOrder,
-    ReturnRegisterStoreStyle, SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle,
-    VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
+    MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
+    NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
+    NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle,
+    PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
+    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
+    SymbolTraversalStyle, TrigDispatcherStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
+    WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -454,6 +455,10 @@ pub struct Behavior {
     pub integer_dag_style: IntegerDagStyle,
     /// Entry, allocation, and scheduling policy for specialized integer loops.
     pub integer_loop_style: IntegerLoopStyle,
+    /// Register allocation and issue order for MSL's aligned word-copy unroll.
+    pub mem_copy_word_schedule_style: MemCopyWordScheduleStyle,
+    /// Instruction selection for MSL's final three-byte remainder mask.
+    pub mem_copy_remainder_mask_style: MemCopyRemainderMaskStyle,
     /// Whether the invocation runs mwcc's O4 latency scheduler over selected
     /// instructions and linkage save/reload slots.
     pub schedule_latency_slots: bool,
@@ -621,6 +626,8 @@ impl Behavior {
             raise_family_style: config.build.profile.raise_family_style(),
             integer_dag_style: config.build.profile.integer_dag_style(),
             integer_loop_style: config.build.profile.integer_loop_style(),
+            mem_copy_word_schedule_style: config.build.profile.mem_copy_word_schedule_style(),
+            mem_copy_remainder_mask_style: config.build.profile.mem_copy_remainder_mask_style(),
             schedule_latency_slots: config.flags.optimization == Optimization::O4,
             pointer_walker_schedule_style: match config.flags.optimization {
                 Optimization::O0 => PointerWalkerScheduleStyle::DirectAddressDuplicateLoad,
@@ -1036,6 +1043,39 @@ mod tests {
         assert_eq!(
             behavior.shift_mask_fusion_style,
             ShiftMaskFusionStyle::Fused
+        );
+    }
+
+    #[test]
+    fn msl_copy_policy_tracks_each_measured_generation_transition() {
+        let early = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
+        assert_eq!(
+            early.mem_copy_word_schedule_style,
+            MemCopyWordScheduleStyle::SerialScratch
+        );
+        assert_eq!(
+            early.mem_copy_remainder_mask_style,
+            MemCopyRemainderMaskStyle::MaterializedThree
+        );
+
+        let build_81 = Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2));
+        assert_eq!(
+            build_81.mem_copy_word_schedule_style,
+            MemCopyWordScheduleStyle::SerialScratch
+        );
+        assert_eq!(
+            build_81.mem_copy_remainder_mask_style,
+            MemCopyRemainderMaskStyle::FusedClearLeft
+        );
+
+        let build_92 = Behavior::resolve(&CompilerConfig::new(build::GC_2_0));
+        assert_eq!(
+            build_92.mem_copy_word_schedule_style,
+            MemCopyWordScheduleStyle::PipelinedAlternatingScratch
+        );
+        assert_eq!(
+            build_92.mem_copy_remainder_mask_style,
+            MemCopyRemainderMaskStyle::FusedClearLeft
         );
     }
 

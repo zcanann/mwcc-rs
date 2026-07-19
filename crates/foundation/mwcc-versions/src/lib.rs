@@ -2,11 +2,10 @@
 //!
 //! Byte-matching is per-build. A [`CompilerBuild`] identifies an mwcceppc build;
 //! its [`CodegenProfile`] says how that build's code generation differs from the
-//! GameCube 2.4.x mainline. Empirically (differential oracle + cross-build
-//! diffing over ~320 forms) builds 53..=108 share one code generator with two
-//! observable knobs — plain-`char` signedness and one int->float scheduling
-//! choice — so most builds use the mainline profile and the two outliers each
-//! override a single method.
+//! GameCube 2.4.x mainline. Differential oracle and cross-build measurements
+//! resolve each observed transition into a narrow profile decision, keeping one
+//! shared generator while preserving changes in instruction selection, register
+//! allocation, and scheduling between builds 53 and 108.
 
 mod behavior;
 mod build;

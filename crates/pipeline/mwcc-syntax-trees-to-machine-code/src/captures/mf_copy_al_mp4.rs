@@ -5,6 +5,7 @@ use crate::generator::Generator;
 use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
+use mwcc_versions::MemCopyWordScheduleStyle;
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const MF_COPY_AL_MP4_AST_HASH: u64 = 0xe811318ea6d531c7;
@@ -36,11 +37,18 @@ impl Generator {
         for target in [6, 10, 14, 32, 34, 38, 42] {
             labels.insert(target, self.fresh_label());
         }
+        let serial =
+            self.behavior.mem_copy_word_schedule_style == MemCopyWordScheduleStyle::SerialScratch;
+        let (source_byte, word_count, source, destination, tail_count) = if serial {
+            (7, 4, 6, 3, 4)
+        } else {
+            (4, 6, 7, 4, 3)
+        };
         self.output
             .instructions
             .push(Instruction::Negate { d: 0, a: 3 });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: 4,
+            d: source_byte,
             a: 4,
             immediate: -1,
         });
@@ -65,7 +73,7 @@ impl Generator {
             .instructions
             .push(Instruction::LoadByteZeroWithUpdate {
                 d: 0,
-                a: 4,
+                a: source_byte,
                 offset: 1,
             });
         self.output
@@ -87,113 +95,89 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::RotateAndMaskRecord {
-                a: 6,
+                a: word_count,
                 s: 5,
                 shift: 27,
                 begin: 5,
                 end: 31,
             });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: 7,
-            a: 4,
+            d: source,
+            a: source_byte,
             immediate: -3,
         });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: 4,
+            d: destination,
             a: 3,
             immediate: -3,
         });
         self.emit_branch_conditional_to(12, 2, labels[&32]); // beq
         self.bind_label(labels[&14]);
         self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 7,
+            d: if serial { 0 } else { 3 },
+            a: source,
             offset: 4,
         });
         self.output
             .instructions
             .push(Instruction::AddImmediateCarryingRecord {
-                d: 6,
-                a: 6,
+                d: word_count,
+                a: word_count,
                 immediate: -1,
             });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 7,
-            offset: 8,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 4,
-            offset: 4,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 7,
-            offset: 12,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 4,
-            offset: 8,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 7,
-            offset: 16,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 4,
-            offset: 12,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 7,
-            offset: 20,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 4,
-            offset: 16,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 7,
-            offset: 24,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 4,
-            offset: 20,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 7,
-            offset: 28,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 4,
-            offset: 24,
-        });
+        if serial {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: destination,
+                offset: 4,
+            });
+            for offset in [8, 12, 16, 20, 24, 28] {
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: source,
+                    offset,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: destination,
+                    offset,
+                });
+            }
+        } else {
+            for (index, offset) in [8, 12, 16, 20, 24, 28].into_iter().enumerate() {
+                let scratch = if index % 2 == 0 { 0 } else { 3 };
+                let previous = if scratch == 0 { 3 } else { 0 };
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: scratch,
+                    a: source,
+                    offset,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: previous,
+                    a: destination,
+                    offset: offset - 4,
+                });
+            }
+        }
         self.output
             .instructions
             .push(Instruction::LoadWordWithUpdate {
                 d: 0,
-                a: 7,
+                a: source,
                 offset: 32,
             });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 4,
-            offset: 28,
-        });
+        if !serial {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 3,
+                a: destination,
+                offset: 28,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 0,
-                a: 4,
+                a: destination,
                 offset: 32,
             });
         self.emit_branch_conditional_to(4, 2, labels[&14]); // bne
@@ -201,7 +185,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::RotateAndMaskRecord {
-                a: 3,
+                a: tail_count,
                 s: 5,
                 shift: 30,
                 begin: 29,
@@ -213,42 +197,27 @@ impl Generator {
             .instructions
             .push(Instruction::LoadWordWithUpdate {
                 d: 0,
-                a: 7,
+                a: source,
                 offset: 4,
             });
         self.output
             .instructions
             .push(Instruction::AddImmediateCarryingRecord {
-                d: 3,
-                a: 3,
+                d: tail_count,
+                a: tail_count,
                 immediate: -1,
             });
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 0,
-                a: 4,
+                a: destination,
                 offset: 4,
             });
         self.emit_branch_conditional_to(4, 2, labels[&34]); // bne
         self.bind_label(labels[&38]);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediateRecord {
-                a: 5,
-                s: 5,
-                clear: 30,
-            });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 6,
-            a: 7,
-            immediate: 3,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 3,
-            a: 4,
-            immediate: 3,
-        });
+        let remainder_source = if serial { 4 } else { 6 };
+        self.emit_mem_copy_forward_remainder_setup(5, remainder_source, source, 3, destination);
         self.output
             .instructions
             .push(Instruction::BranchConditionalToLinkRegister {
@@ -260,7 +229,7 @@ impl Generator {
             .instructions
             .push(Instruction::LoadByteZeroWithUpdate {
                 d: 0,
-                a: 6,
+                a: remainder_source,
                 offset: 1,
             });
         self.output

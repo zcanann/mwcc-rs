@@ -3,7 +3,9 @@
 //! from the mainline. Adding a build is one entry here; adding a *behavior* is a
 //! profile in [`crate::profile`].
 
-use crate::profile::{CodegenProfile, Gc13Build53, Gc20Patch1, Gc233Build163, Mainline};
+use crate::profile::{
+    CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc233Build163, Mainline,
+};
 
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.
 #[derive(Debug, Clone, Copy)]
@@ -100,10 +102,12 @@ pub const GC_1_3_2: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
     post_framed_function_anonymous_bump: 4,
-    profile: &Mainline,
+    profile: &Gc132Build81,
 };
 
-/// GC/1.3.2r — mwcceppc 2.4.2 build 81, byte-identical to GC/1.3.2 (a re-release).
+/// GC/1.3.2r — Animal Crossing's hacked build 81 variant. It disabled `.rodata`
+/// pooling; retained as a compatibility label but excluded from required parity
+/// inventories now that the underlying stock GC/1.3.2 bug is understood.
 pub const GC_1_3_2R: CompilerBuild = CompilerBuild {
     label: "GC/1.3.2r",
     product: "CodeWarrior for GameCube 1.3.2 (r)",
@@ -116,7 +120,7 @@ pub const GC_1_3_2R: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
     post_framed_function_anonymous_bump: 4,
-    profile: &Mainline,
+    profile: &Gc132Build81,
 };
 
 /// GC/2.0 — mwcceppc 2.4.7 build 92.
@@ -201,8 +205,9 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
 };
 
 /// Every build the generator reproduces byte-for-byte across the canary suite.
-pub const SUPPORTED: &[CompilerBuild] =
-    &[GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_0P1, GC_2_5, GC_2_6, GC_2_7];
+pub const SUPPORTED: &[CompilerBuild] = &[
+    GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_0P1, GC_2_5, GC_2_6, GC_2_7,
+];
 
 /// Known compiler identities whose profiles are still incomplete. They are
 /// available only through the explicit experimental-build opt-in.
@@ -250,9 +255,17 @@ mod tests {
     #[test]
     fn supported_builds_retain_mainline_object_numbering() {
         assert!(SUPPORTED.iter().all(|build| build.emb_sda21_offset == 0));
-        assert!(SUPPORTED.iter().all(|build| !build.function_symbol_before_references));
-        assert!(SUPPORTED.iter().all(|build| build.initial_anonymous_counter == 5));
-        assert!(SUPPORTED.iter().all(|build| build.post_leaf_function_anonymous_bump == 4));
-        assert!(SUPPORTED.iter().all(|build| build.post_framed_function_anonymous_bump == 4));
+        assert!(SUPPORTED
+            .iter()
+            .all(|build| !build.function_symbol_before_references));
+        assert!(SUPPORTED
+            .iter()
+            .all(|build| build.initial_anonymous_counter == 5));
+        assert!(SUPPORTED
+            .iter()
+            .all(|build| build.post_leaf_function_anonymous_bump == 4));
+        assert!(SUPPORTED
+            .iter()
+            .all(|build| build.post_framed_function_anonymous_bump == 4));
     }
 }

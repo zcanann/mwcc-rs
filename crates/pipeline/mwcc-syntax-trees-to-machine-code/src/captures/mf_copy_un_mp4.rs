@@ -218,23 +218,7 @@ impl Generator {
                 offset: 4,
             });
         self.bind_label(labels[&37]);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediateRecord {
-                a: 5,
-                s: 5,
-                clear: 30,
-            });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 4,
-            a: 8,
-            immediate: 3,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 3,
-            a: 6,
-            immediate: 3,
-        });
+        self.emit_mem_copy_forward_remainder_setup(5, 4, 8, 3, 6);
         self.output
             .instructions
             .push(Instruction::BranchConditionalToLinkRegister {

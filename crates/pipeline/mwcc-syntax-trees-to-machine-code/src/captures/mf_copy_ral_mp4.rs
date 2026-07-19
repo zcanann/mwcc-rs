@@ -5,6 +5,7 @@ use crate::generator::Generator;
 use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
+use mwcc_versions::MemCopyWordScheduleStyle;
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const MF_COPY_RAL_MP4_AST_HASH: u64 = 0x7ce68ebd1364d60f;
@@ -37,17 +38,24 @@ impl Generator {
         for target in [5, 9, 11, 29, 31, 35, 37] {
             labels.insert(target, self.fresh_label());
         }
-        self.output
-            .instructions
-            .push(Instruction::Add { d: 7, a: 3, b: 5 });
-        self.output
-            .instructions
-            .push(Instruction::Add { d: 6, a: 4, b: 5 });
+        let serial =
+            self.behavior.mem_copy_word_schedule_style == MemCopyWordScheduleStyle::SerialScratch;
+        let (destination, source, word_count) = if serial { (6, 4, 3) } else { (7, 6, 4) };
+        self.output.instructions.push(Instruction::Add {
+            d: destination,
+            a: 3,
+            b: 5,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: source,
+            a: 4,
+            b: 5,
+        });
         self.output
             .instructions
             .push(Instruction::ClearLeftImmediateRecord {
                 a: 3,
-                s: 7,
+                s: destination,
                 clear: 30,
             });
         self.emit_branch_conditional_to(12, 2, labels[&9]); // beq
@@ -59,7 +67,7 @@ impl Generator {
             .instructions
             .push(Instruction::LoadByteZeroWithUpdate {
                 d: 0,
-                a: 6,
+                a: source,
                 offset: -1,
             });
         self.output
@@ -73,7 +81,7 @@ impl Generator {
             .instructions
             .push(Instruction::StoreByteWithUpdate {
                 s: 0,
-                a: 7,
+                a: destination,
                 offset: -1,
             });
         self.emit_branch_conditional_to(4, 2, labels[&5]); // bne
@@ -81,7 +89,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::RotateAndMaskRecord {
-                a: 4,
+                a: word_count,
                 s: 5,
                 shift: 27,
                 begin: 5,
@@ -90,94 +98,70 @@ impl Generator {
         self.emit_branch_conditional_to(12, 2, labels[&29]); // beq
         self.bind_label(labels[&11]);
         self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 6,
+            d: if serial { 0 } else { 3 },
+            a: source,
             offset: -4,
         });
         self.output
             .instructions
             .push(Instruction::AddImmediateCarryingRecord {
-                d: 4,
-                a: 4,
+                d: word_count,
+                a: word_count,
                 immediate: -1,
             });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 6,
-            offset: -8,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 7,
-            offset: -4,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 6,
-            offset: -12,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 7,
-            offset: -8,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 6,
-            offset: -16,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 7,
-            offset: -12,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 6,
-            offset: -20,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 7,
-            offset: -16,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 6,
-            offset: -24,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 7,
-            offset: -20,
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
-            a: 6,
-            offset: -28,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 7,
-            offset: -24,
-        });
+        if serial {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: destination,
+                offset: -4,
+            });
+            for offset in [-8, -12, -16, -20, -24, -28] {
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: source,
+                    offset,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: destination,
+                    offset,
+                });
+            }
+        } else {
+            for (index, offset) in [-8, -12, -16, -20, -24, -28].into_iter().enumerate() {
+                let scratch = if index % 2 == 0 { 0 } else { 3 };
+                let previous = if scratch == 0 { 3 } else { 0 };
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: scratch,
+                    a: source,
+                    offset,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: previous,
+                    a: destination,
+                    offset: offset + 4,
+                });
+            }
+        }
         self.output
             .instructions
             .push(Instruction::LoadWordWithUpdate {
                 d: 0,
-                a: 6,
+                a: source,
                 offset: -32,
             });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 7,
-            offset: -28,
-        });
+        if !serial {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 3,
+                a: destination,
+                offset: -28,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 0,
-                a: 7,
+                a: destination,
                 offset: -32,
             });
         self.emit_branch_conditional_to(4, 2, labels[&11]); // bne
@@ -197,7 +181,7 @@ impl Generator {
             .instructions
             .push(Instruction::LoadWordWithUpdate {
                 d: 0,
-                a: 6,
+                a: source,
                 offset: -4,
             });
         self.output
@@ -211,18 +195,12 @@ impl Generator {
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 0,
-                a: 7,
+                a: destination,
                 offset: -4,
             });
         self.emit_branch_conditional_to(4, 2, labels[&31]); // bne
         self.bind_label(labels[&35]);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediateRecord {
-                a: 5,
-                s: 5,
-                clear: 30,
-            });
+        self.emit_mem_copy_remainder_mask(5);
         self.output
             .instructions
             .push(Instruction::BranchConditionalToLinkRegister {
@@ -234,7 +212,7 @@ impl Generator {
             .instructions
             .push(Instruction::LoadByteZeroWithUpdate {
                 d: 0,
-                a: 6,
+                a: source,
                 offset: -1,
             });
         self.output
@@ -248,7 +226,7 @@ impl Generator {
             .instructions
             .push(Instruction::StoreByteWithUpdate {
                 s: 0,
-                a: 7,
+                a: destination,
                 offset: -1,
             });
         self.emit_branch_conditional_to(4, 2, labels[&37]); // bne

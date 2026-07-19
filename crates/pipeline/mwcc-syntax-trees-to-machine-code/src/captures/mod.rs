@@ -238,6 +238,7 @@ mod mbs_mbtowc_pik;
 mod mbs_mbtowc_str;
 mod mbs_mbtowc_ww;
 mod mbs_unicode;
+mod mem_copy_policy;
 mod mbs_unicode_ac;
 mod mbs_utf8_bfbb;
 mod mbs_utf8_ww;

@@ -81,6 +81,27 @@ pub enum IntegerLoopStyle {
     LegacyDependencyFirst,
 }
 
+/// Register allocation and issue order for the eight-word unroll in MSL's
+/// aligned memory-copy helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemCopyWordScheduleStyle {
+    /// Builds 53 and 81 keep one loaded word in r0 and complete each load/store
+    /// pair before issuing the next load.
+    SerialScratch,
+    /// 2.4.7 and later alternate r3/r0 and issue the following load before the
+    /// preceding store, hiding load latency.
+    PipelinedAlternatingScratch,
+}
+
+/// Instruction selection for the final `n &= 3` in MSL memory-copy helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemCopyRemainderMaskStyle {
+    /// Build 53 materializes `3` in r0 and uses `and.`.
+    MaterializedThree,
+    /// Other measured builds fuse the mask into `clrlwi.`.
+    FusedClearLeft,
+}
+
 /// Allocation and ready-op ordering for a float DAG shared by both arms of
 /// an integer-controlled return diamond.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -557,6 +578,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         IntegerLoopStyle::ModernLatencyInterleaved
     }
 
+    fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
+        MemCopyWordScheduleStyle::PipelinedAlternatingScratch
+    }
+
+    fn mem_copy_remainder_mask_style(&self) -> MemCopyRemainderMaskStyle {
+        MemCopyRemainderMaskStyle::FusedClearLeft
+    }
+
     fn shared_float_dag_style(&self) -> SharedFloatDagStyle {
         SharedFloatDagStyle::ModernDefinitionDescending
     }
@@ -787,8 +816,8 @@ pub trait CodegenProfile: core::fmt::Debug {
     }
 }
 
-/// GameCube 2.4.x mainline — the reference behavior (all defaults). Covers
-/// GC/1.3.2 (build 81), 1.3.2r, 2.0, 2.5, 2.6, and 2.7.
+/// GameCube 2.4.7 mainline — the reference behavior (all defaults). Covers
+/// GC/2.0, 2.5, 2.6, and 2.7.
 #[derive(Debug)]
 pub struct Mainline;
 impl CodegenProfile for Mainline {}
@@ -808,6 +837,25 @@ impl CodegenProfile for Gc13Build53 {
 
     fn queue_service_inlining_style(&self) -> QueueServiceInliningStyle {
         QueueServiceInliningStyle::KeepServiceCallOutOfLine
+    }
+
+    fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
+        MemCopyWordScheduleStyle::SerialScratch
+    }
+
+    fn mem_copy_remainder_mask_style(&self) -> MemCopyRemainderMaskStyle {
+        MemCopyRemainderMaskStyle::MaterializedThree
+    }
+}
+
+/// GC/1.3.2 — mwcceppc 2.4.2 build 81. Its MSL aligned-copy loop still uses
+/// the serial single-scratch schedule; the pipelined two-register form arrives
+/// with the 2.4.7 line.
+#[derive(Debug)]
+pub struct Gc132Build81;
+impl CodegenProfile for Gc132Build81 {
+    fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
+        MemCopyWordScheduleStyle::SerialScratch
     }
 }
 
@@ -875,6 +923,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn integer_loop_style(&self) -> IntegerLoopStyle {
         IntegerLoopStyle::LegacyDependencyFirst
+    }
+
+    fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
+        MemCopyWordScheduleStyle::SerialScratch
     }
 
     fn shared_float_dag_style(&self) -> SharedFloatDagStyle {
