@@ -59,6 +59,18 @@ pub enum RaiseFamilyStyle {
     StagedLoadLinkRegister,
 }
 
+/// Scheduling, register allocation, and symbol creation for straight-line
+/// integer expression DAGs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegerDagStyle {
+    /// 2.4.x uses the wide-issue scheduler and its closed-interval allocator;
+    /// referenced symbols retain the source-AST traversal order.
+    WideIssueClosedIntervals,
+    /// Build 163 schedules distinct execution ports, stages the selected sink
+    /// through a serial r0 lane, and creates symbols in scheduled-use order.
+    PortAwareSerialR0,
+}
+
 /// Lowering used when an integer condition selects the canonical boolean
 /// constants `1` and `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -462,6 +474,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         RaiseFamilyStyle::DirectLoadCountRegister
     }
 
+    fn integer_dag_style(&self) -> IntegerDagStyle {
+        IntegerDagStyle::WideIssueClosedIntervals
+    }
+
     /// In a float `if`-condition comparing a LOADED value (member/global) against a
     /// pool CONSTANT, whether the value operand is loaded BEFORE the constant.
     /// GC/2.0p1 and build 163 use `lfs f1,(v); lfs f0,k`, while mainline uses
@@ -740,6 +756,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn raise_family_style(&self) -> RaiseFamilyStyle {
         RaiseFamilyStyle::StagedLoadLinkRegister
+    }
+
+    fn integer_dag_style(&self) -> IntegerDagStyle {
+        IntegerDagStyle::PortAwareSerialR0
     }
 
     fn float_compare_value_before_const(&self) -> bool {

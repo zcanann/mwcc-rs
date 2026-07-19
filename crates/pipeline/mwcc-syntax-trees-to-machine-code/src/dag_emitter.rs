@@ -11,10 +11,13 @@
 //! defers the rest honestly.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::{Instruction, RelocationKind};
+use mwcc_machine_code::{Instruction, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Pointee, Statement, Type};
-use mwcc_versions::GlobalAddressing;
-use mwcc_vreg::{assign_registers_v3, linearize, DagNode, OpKind, HAZARD_MUL, HAZARD_XER};
+use mwcc_versions::{GlobalAddressing, IntegerDagStyle};
+use mwcc_vreg::{
+    assign_registers_legacy, assign_registers_v3, linearize, linearize_with, DagNode, OpKind,
+    HAZARD_MUL, HAZARD_XER, LEGACY_PORT_AWARE,
+};
 
 use crate::analysis::{constant_value, count_name_occurrences, function_makes_call};
 use crate::generator::Generator;
@@ -659,9 +662,11 @@ impl Generator {
         }
         // The RETURN chain: a consumerless value node — the register model
         // forces its result into r3 (the contracts' return mode).
+        let mut return_start = None;
         if returns_int {
             let return_expression = function.return_expression.as_ref().expect("gated");
             let before_return = builder.nodes.len();
+            return_start = Some(before_return);
             // A bare parameter return is an `mr r3,rX` move node (measured); a
             // bare constant return is an li. Anything unrecognizable DEFERS:
             // the legacy fall-through would emit the store+return
@@ -697,7 +702,6 @@ impl Generator {
             } else if builder.expression(return_expression, self).is_none() {
                 return Ok(false);
             }
-            let _ = before_return;
         }
         // The PPC r0-as-zero rule: a value consumed as an addi source (or any
         // base field) must not live in r0 — mark producers so the register
@@ -714,8 +718,62 @@ impl Generator {
                 }
             }
         }
+        // Build 163 does not fill store-value latency slots with a shallow
+        // return chain. Make that scheduling edge explicit: once every store
+        // value has been produced, the ordinary priority model decides
+        // store-vs-return order. Deeper return arithmetic remains free to lead.
+        if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
+            if let Some(return_start) = return_start {
+                if builder.nodes.len() - return_start <= 2 {
+                    let mut store_producers = Vec::new();
+                    let mut stores = Vec::new();
+                    for store in 0..return_start {
+                        if builder.nodes[store].kind != OpKind::Store {
+                            continue;
+                        }
+                        stores.push(store);
+                        for read in builder.nodes[store].reads.clone() {
+                            if let Some(producer) = (0..store)
+                                .rev()
+                                .find(|&node| builder.nodes[node].writes.contains(&read))
+                            {
+                                store_producers.push(producer);
+                            }
+                        }
+                    }
+                    store_producers.sort_unstable();
+                    store_producers.dedup();
+                    builder.nodes[return_start]
+                        .extra_deps
+                        .extend(store_producers);
+                    // With three plain store chains, build 163 braids the
+                    // shallow two-op return through the tail: return feeder,
+                    // second store, return final, third store. These edges
+                    // describe that emission boundary without teaching the
+                    // generic scheduler about source statement positions.
+                    let plain_stores = stores.iter().all(|&store| {
+                        builder.nodes[store].reads.iter().all(|read| {
+                            (0..store)
+                                .rev()
+                                .find(|&producer| builder.nodes[producer].writes.contains(read))
+                                .is_none_or(|producer| builder.nodes[producer].gate_latency < 2)
+                        })
+                    });
+                    if builder.nodes.len() - return_start == 2 && stores.len() == 3 && plain_stores
+                    {
+                        builder.nodes[stores[1]].extra_deps.push(return_start);
+                        builder.nodes[return_start + 1].extra_deps.push(stores[1]);
+                        builder.nodes[stores[2]].extra_deps.push(return_start + 1);
+                    }
+                }
+            }
+        }
         // -- the models take over --
-        let order = linearize(&builder.nodes);
+        let order = if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
+            linearize_with(&builder.nodes, LEGACY_PORT_AWARE)
+        } else {
+            linearize(&builder.nodes)
+        };
         if std::env::var("DAG_DEBUG").is_ok() {
             for (index, node) in builder.nodes.iter().enumerate() {
                 eprintln!(
@@ -725,7 +783,11 @@ impl Generator {
             }
             eprintln!("order: {order:?}");
         }
-        let registers = assign_registers_v3(&builder.nodes, &order, &params);
+        let registers = if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
+            assign_registers_legacy(&builder.nodes, &order, &params)
+        } else {
+            assign_registers_v3(&builder.nodes, &order, &params)
+        };
         let register_of = |source: ValueSource, registers: &[Option<u8>]| -> Compilation<u8> {
             match source {
                 ValueSource::Parameter(register) => Ok(register),
@@ -860,6 +922,19 @@ impl Generator {
                 }
             };
             self.output.instructions.push(instruction);
+        }
+        if self.behavior.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
+            // Build 163 creates these undefined data symbols as scheduled
+            // references are emitted, so its symbol order follows the final
+            // relocation stream rather than the source AST traversal.
+            for relocation in &self.output.relocations {
+                let RelocationTarget::External(name) = &relocation.target else {
+                    continue;
+                };
+                if !self.output.symbol_order.contains(name) {
+                    self.output.symbol_order.push(name.clone());
+                }
+            }
         }
         self.output.pre_scheduled = true;
         self.emit_epilogue_and_return();

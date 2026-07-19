@@ -1930,7 +1930,7 @@
                             Strategy::ChainRobin { lead: LeadRule::Alternating, offer_non_load_first: false },
                             Strategy::ChainRobin { lead: LeadRule::Alternating, offer_non_load_first: true },
                         ] {
-                            let model = Model { issue_width, gate_on_complete, gated_last, kind_rank, weight_before_kind, strategy };
+                            let model = Model { issue_width, gate_on_complete, gated_last, kind_rank, weight_before_kind, strategy, port_aware: false };
                             let passed = shapes
                                 .iter()
                                 .filter(|(_, nodes, expected)| {
@@ -2454,4 +2454,43 @@
                 );
             }
         }
+    }
+
+    #[test]
+    fn legacy_port_model_pairs_distinct_units() {
+        use OpKind::Store as St;
+        let nodes = vec![
+            DagNode::new("mulli", MUL).gate(2).hazard(HAZARD_MUL).reads(&[1]).writes(&[10]),
+            DagNode::new("store", STORE).kind(St).reads(&[10]),
+            DagNode::new("mask", ALU).reads(&[2]).writes(&[20]).after(0),
+            DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
+        ];
+        let order: Vec<&str> = linearize_with(&nodes, LEGACY_PORT_AWARE)
+            .into_iter()
+            .map(|node| nodes[node].label)
+            .collect();
+        assert_eq!(order, ["mulli", "mask", "store", "ori"]);
+    }
+
+    #[test]
+    fn legacy_allocator_reuses_forbidden_dying_input_in_return_mode() {
+        use OpKind::Store as St;
+        let nodes = vec![
+            DagNode::new("mulli", MUL)
+                .gate(2)
+                .hazard(HAZARD_MUL)
+                .reads(&[1])
+                .writes(&[10])
+                .forbid_r0(),
+            DagNode::new("addi", ALU).reads(&[10]).writes(&[11]),
+            DagNode::new("store", STORE).kind(St).reads(&[11]),
+            DagNode::new("mask", ALU).reads(&[2]).writes(&[20]),
+            DagNode::new("ori", ALU).reads(&[20]).writes(&[21]),
+        ];
+        let registers = assign_registers_legacy(
+            &nodes,
+            &[0, 1, 3, 2, 4],
+            &[(1, 3), (2, 4)],
+        );
+        assert_eq!(registers, [Some(3), Some(3), None, Some(0), Some(3)]);
     }

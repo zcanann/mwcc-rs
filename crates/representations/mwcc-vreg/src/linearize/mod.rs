@@ -19,6 +19,10 @@
 //! This module is UNWIRED: it exists to be A/B'd against the dataset before
 //! any emitter consumes it.
 
+mod legacy;
+
+pub use legacy::assign_registers_legacy;
+
 /// The operation class, for kind-ranked priority components.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {
@@ -162,6 +166,10 @@ pub struct Model {
     pub weight_before_kind: bool,
     /// The selection strategy (global key vs chain round-robin).
     pub strategy: Strategy,
+    /// Whether issue-width slots must use distinct execution ports. Build 163
+    /// models one integer ALU, one multiplier, and one shared load/store unit;
+    /// the 2.4.x scheduler's measured ordering does not expose this restriction.
+    pub port_aware: bool,
 }
 
 /// How the next ops are chosen: one global priority key, or per-CHAIN
@@ -198,6 +206,14 @@ pub const FROZEN: Model = Model {
     kind_rank: [0, 2, 1],
     weight_before_kind: true,
     strategy: Strategy::GlobalKey,
+    port_aware: false,
+};
+
+/// Build 163 uses the same dependence/priority model but will not place two
+/// operations targeting the same execution port in one issue window.
+pub const LEGACY_PORT_AWARE: Model = Model {
+    port_aware: true,
+    ..FROZEN
 };
 
 /// Linearize the DAG with the frozen model.
@@ -353,8 +369,8 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                     nodes[node].r3_chain_store
                         && earliest[node] <= earliest[sink].max(1)
                         && (deps[node].is_empty() // a LEAF store reads r3 itself: a true RAW hazard
-                            || Some(node) != last_store_index
-                            || has_r0_reservation)
+                            || ((!model.port_aware && Some(node) != last_store_index)
+                                || has_r0_reservation))
                 })
                 .collect()
         })
@@ -416,15 +432,34 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
         // only; a void block keeps the store-first tie-break of the original
         // dataset fit.
         let return_mode = return_sink.is_some();
+        let execution_port = |node: usize| match nodes[node].kind {
+            OpKind::Load | OpKind::Store => 0,
+            OpKind::Alu if nodes[node].hazard == Some(HAZARD_MUL) => 1,
+            OpKind::Alu => 2,
+        };
+        let store_count = (0..count)
+            .filter(|&node| nodes[node].kind == OpKind::Store)
+            .count();
+        let long_store_count = (0..count)
+            .filter(|&node| {
+                nodes[node].kind == OpKind::Store
+                    && deps[node]
+                        .iter()
+                        .any(|&dependency| nodes[dependency].gate_latency >= 2)
+            })
+            .count();
         let rank = |candidate: usize| -> (u8, u8, u8, u32, u32, usize) {
             let gate = if model.gated_last && gated[candidate] { 1 } else { 0 };
             // A store released by a LONG-latency producer (gate >= 2) issues
             // the moment the gate opens — ahead of everything (measured: the
             // mulli store beats the fresh return op).
-            let affinity = if return_mode
+            let legacy_long_store_affinity =
+                !return_mode || (store_count > 1 && long_store_count == 1);
+            let affinity = if (return_mode || model.port_aware)
                 && nodes[candidate].kind == OpKind::Store
                 && deps[candidate].iter().any(|&dependency| nodes[dependency].gate_latency >= 2)
-                && fresh(candidate)
+                && (fresh(candidate) || model.port_aware)
+                && (!model.port_aware || legacy_long_store_affinity)
             {
                 0u8
             } else {
@@ -435,9 +470,15 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             // weight still decides). A port-deferred LOAD keeps the tier while
             // it ages (measured: s1_s2's fourth coefficient load outranks the
             // fresh first fmadd — weight decides between them).
+            let legacy_after_store = model.port_aware
+                && (0..count)
+                    .any(|node| nodes[node].kind == OpKind::Store && issued_at[node].is_some());
             let fresh_alu = if return_mode
+                && (!model.port_aware || legacy_after_store)
                 && nodes[candidate].kind != OpKind::Store
-                && (fresh(candidate) || nodes[candidate].kind == OpKind::Load)
+                && ((model.port_aware && legacy_after_store)
+                    || fresh(candidate)
+                    || nodes[candidate].kind == OpKind::Load)
             {
                 0u8
             } else {
@@ -570,6 +611,32 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         if picked.contains(&candidate) {
                             continue;
                         }
+                        if model.port_aware {
+                            if picked
+                                .iter()
+                                .any(|&taken| execution_port(taken) == execution_port(candidate))
+                            {
+                                continue;
+                            }
+                            if nodes[candidate].kind == OpKind::Store {
+                                let pending_long_store = (0..count).any(|other| {
+                                    other != candidate
+                                        && issued_at[other].is_none()
+                                        && nodes[other].kind == OpKind::Store
+                                        && deps[other].iter().any(|&dependency| {
+                                            nodes[dependency].gate_latency >= 2
+                                                && issued_at[dependency].is_some()
+                                        })
+                                });
+                                if pending_long_store
+                                    && !deps[candidate]
+                                        .iter()
+                                        .any(|&dependency| nodes[dependency].gate_latency >= 2)
+                                {
+                                    continue;
+                                }
+                            }
+                        }
                         // The LOAD PORT: one load issue per cycle (Gekko has a
                         // single load/store unit; measured: horner coefficient
                         // loads and the s1_s2 front serialize one per cycle).
@@ -655,6 +722,23 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 robin_flip = !robin_flip;
                 offers.truncate(model.issue_width);
                 ready = offers;
+            }
+        }
+        // Build 163's bundler holds a lone operation for one cycle when a
+        // different execution port will become available immediately.
+        if model.port_aware && ready.len() == 1 {
+            let sole = ready[0];
+            let pair_next = (0..count).any(|candidate| {
+                candidate != sole
+                    && issued_at[candidate].is_none()
+                    && execution_port(candidate) != execution_port(sole)
+                    && deps[candidate].iter().all(|&dependency| {
+                        issued_at[dependency]
+                            .is_some_and(|at| at + edge_gate(dependency, candidate) <= time + 1)
+                    })
+            });
+            if pair_next {
+                ready.clear();
             }
         }
         for &pick in &ready {
@@ -1310,6 +1394,7 @@ pub fn assign_registers_sequenced(
     }
     result
 }
+
 
 /// The FLOAT register machines (fires 331-335 captures). Both share the
 /// interval/window frame: values are non-store defs, intervals are CLOSED
