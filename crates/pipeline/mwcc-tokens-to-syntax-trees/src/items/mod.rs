@@ -5,7 +5,6 @@
 //! Split from the former single items.rs (fire 536); behavior-identical.
 
 mod asm;
-mod cxx;
 mod initializers;
 mod statements;
 mod templates;
@@ -2233,7 +2232,7 @@ impl Parser {
                     .iter()
                     .map(|parameter| parameter.parameter_type)
                     .collect();
-                name = cxx::mangle_member_function(&scope, &name, &explicit_types)?;
+                name = crate::cxx::mangle_member_function(&scope, &name, &explicit_types)?;
                 parameters.insert(
                     0,
                     Parameter {
@@ -3151,6 +3150,21 @@ impl Parser {
                 }
                 if let Some(statement) = self.parse_jump_statement()? {
                     statements.push(statement);
+                    continue;
+                }
+                // C++ and C99 allow a declaration after earlier statements in
+                // the function's outermost block. Reuse the block declaration
+                // parser: it hoists storage to the Function while preserving an
+                // initializer as a positioned assignment.
+                if self.peek_is_type()
+                    || self.peek_is_local_array_typedef()
+                    || matches!(self.peek(), Token::Identifier(word) if word == "static")
+                {
+                    self.parse_block_declaration(
+                        &mut local_names,
+                        &mut block_locals,
+                        &mut statements,
+                    )?;
                     continue;
                 }
                 let statement = self.parse_simple_statement(&mut local_names, &mut block_locals)?;

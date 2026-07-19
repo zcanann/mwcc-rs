@@ -1,11 +1,60 @@
-//! CodeWarrior C++ declarator details kept out of the general item parser.
+//! Metrowerks C++ surface syntax kept out of the general C item parser.
 //!
-//! This is intentionally narrower than a general Itanium-style mangler:
-//! Metrowerks uses its own `name__<scope>F<arguments>` spelling, and accepting a
-//! type without encoding it exactly would silently create the wrong ELF symbol.
+//! Linkage specifications are declaration wrappers, not declarations themselves;
+//! normalization removes those wrappers before recursive descent. Symbol names
+//! use CodeWarrior's own mangling rather than the Itanium ABI.
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Pointee, Type};
+use mwcc_tokens::Token;
+
+/// Remove C++ linkage-specification syntax while retaining every enclosed token
+/// in source order. `extern "C" { declarations }` becomes `declarations`, and
+/// `extern "C" declaration` keeps the `extern` storage class but drops the
+/// language string. The latter distinction matters for data declarations.
+pub(crate) fn normalize_linkage_specifications(mut tokens: Vec<Token>) -> Vec<Token> {
+    let mut index = 0usize;
+    while index + 1 < tokens.len() {
+        let starts_linkage = matches!(&tokens[index], Token::Identifier(word) if word == "extern")
+            && matches!(&tokens[index + 1], Token::StringLiteral(language) if language == b"C" || language == b"C++");
+        if !starts_linkage {
+            index += 1;
+            continue;
+        }
+
+        if tokens.get(index + 2) == Some(&Token::BraceOpen) {
+            let mut cursor = index + 2;
+            let mut depth = 0i32;
+            let mut close = None;
+            while cursor < tokens.len() {
+                match tokens[cursor] {
+                    Token::BraceOpen => depth += 1,
+                    Token::BraceClose => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(cursor);
+                            break;
+                        }
+                    }
+                    Token::EndOfFile => break,
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            if let Some(close) = close {
+                tokens.remove(close);
+                tokens.drain(index..index + 3);
+                continue;
+            }
+        } else {
+            // Keep `extern` so an object declaration remains a declaration rather
+            // than becoming a tentative definition.
+            tokens.remove(index + 1);
+        }
+        index += 1;
+    }
+    tokens
+}
 
 /// Mangle an ordinary, singly-qualified member function.
 ///
@@ -81,6 +130,29 @@ fn encode_pointee(pointee: Pointee) -> Compilation<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_block_linkage_without_losing_declarations() {
+        let tokens = vec![
+            Token::Identifier("extern".to_string()),
+            Token::StringLiteral(b"C".to_vec()),
+            Token::BraceOpen,
+            Token::KeywordInt,
+            Token::Identifier("value".to_string()),
+            Token::Semicolon,
+            Token::BraceClose,
+            Token::EndOfFile,
+        ];
+        assert_eq!(
+            normalize_linkage_specifications(tokens),
+            vec![
+                Token::KeywordInt,
+                Token::Identifier("value".to_string()),
+                Token::Semicolon,
+                Token::EndOfFile,
+            ]
+        );
+    }
 
     #[test]
     fn mangles_measured_member_shapes() {

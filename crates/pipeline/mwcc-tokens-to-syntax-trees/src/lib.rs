@@ -9,6 +9,7 @@ use mwcc_syntax_trees::TranslationUnit;
 use mwcc_tokens::Token;
 use std::collections::HashMap;
 
+mod cxx;
 mod expressions;
 mod items;
 mod parser;
@@ -29,7 +30,7 @@ pub fn parse_translation_unit(
     // precede the `*` so every parse_type path sees the canonical `u8*`.
     // (`int const g = 5;` KEEPS its const: it routes the global to the
     // read-only section.)
-    let mut tokens = tokens;
+    let mut tokens = cxx::normalize_linkage_specifications(tokens);
     let mut index = 0;
     while index + 1 < tokens.len() {
         let is_east_pointee_qualifier = matches!(&tokens[index], Token::Identifier(word) if word == "const" || word == "volatile")
