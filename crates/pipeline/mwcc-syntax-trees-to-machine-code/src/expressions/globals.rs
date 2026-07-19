@@ -139,6 +139,17 @@ impl Generator {
             .push(Instruction::load_immediate_shifted(base, 0));
     }
 
+    /// Finish absolute address formation with `addi base,base,name@l`.
+    /// O0 keeps this source-order step separate from the following access.
+    pub(crate) fn emit_address_low(&mut self, base: u8, name: &str) {
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: base,
+            a: base,
+            immediate: 0,
+        });
+    }
+
     /// Load a global under absolute (`-sdata 0`) addressing. mwcc's address-mode
     /// selection follows from r0 never being a usable base: when the destination
     /// is a non-r0 GPR, the address materializes into it (`lis dest; addi dest;
@@ -156,19 +167,20 @@ impl Generator {
         if global_type == Type::Float {
             let base = self.lowest_free_general()?;
             self.emit_address_high(base, name);
-            self.record_relocation(RelocationKind::Addr16Lo, name);
+            if self.behavior.absolute_access_style
+                == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
+            {
+                self.emit_address_low(base, name);
+            } else {
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+            }
             let load = self.global_load_instruction(global_type, destination, base)?;
             self.output.instructions.push(load);
             return Ok(());
         }
         if destination != GENERAL_SCRATCH {
             self.emit_address_high(destination, name);
-            self.record_relocation(RelocationKind::Addr16Lo, name);
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: destination,
-                a: destination,
-                immediate: 0,
-            });
+            self.emit_address_low(destination, name);
             let load = self.global_load_instruction(global_type, destination, destination)?;
             self.output.instructions.push(load);
             return Ok(());
@@ -179,7 +191,13 @@ impl Generator {
         // never be the base (the literal-zero trap).
         let base = self.lowest_free_general()?;
         self.emit_address_high(base, name);
-        self.record_relocation(RelocationKind::Addr16Lo, name);
+        if self.behavior.absolute_access_style
+            == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
+        {
+            self.emit_address_low(base, name);
+        } else {
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+        }
         let load = self.global_load_instruction(global_type, destination, base)?;
         self.output.instructions.push(load);
         Ok(())
@@ -204,7 +222,13 @@ impl Generator {
             GlobalAddressing::Absolute => {
                 let base = self.free_general_excluding(source)?;
                 self.emit_address_high(base, name);
-                self.record_relocation(RelocationKind::Addr16Lo, name);
+                if self.behavior.absolute_access_style
+                    == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
+                {
+                    self.emit_address_low(base, name);
+                } else {
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                }
                 self.output
                     .instructions
                     .push(displacement_store(pointee, source, base, 0)?);

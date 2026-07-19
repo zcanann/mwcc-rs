@@ -178,12 +178,11 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
-        let (Some(left_field), Some(right_field)) = (as_field(left), as_field(right))
-        else {
+        let (Some(left_field), Some(right_field)) = (as_field(left), as_field(right)) else {
             return Ok(false);
         };
-        let preserve_left_base_mask = self.behavior.field_merge_style
-            == mwcc_versions::FieldMergeStyle::LeftBasePreserveMask;
+        let preserve_left_base_mask =
+            self.behavior.field_merge_style == mwcc_versions::FieldMergeStyle::LeftBasePreserveMask;
         let (base_field, insert_field) = if preserve_left_base_mask {
             (left_field, right_field)
         } else {
@@ -439,6 +438,9 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        if self.behavior.shift_mask_fusion_style == mwcc_versions::ShiftMaskFusionStyle::Separate {
+            return Ok(false);
+        }
         self.try_emit_rotate_mask_loading_value_into(operator, left, right, destination, None)
     }
 
@@ -469,23 +471,20 @@ impl Generator {
         // keeps that leaf's register, a value-tracked global just stored stays live
         // in its register — and only a genuinely computed value (`a*b+c`) lands in
         // the scratch, matching mwcc's `rlwinm d,reg,…` / `<compute> r0; rlwinm d,r0`.
-        let register =
-            if let Some(register) = input_destination {
-                self.evaluate_general(value, register)?;
-                register
-            } else if let Some(register) =
-                leaf_name(value).and_then(|name| self.lookup_general(name))
-            {
-                register
-            } else if self.is_simple_word_load(value) {
-                self.evaluate_general(value, GENERAL_SCRATCH)?;
-                GENERAL_SCRATCH
-            } else {
-                match self.place_operand(value, GENERAL_SCRATCH, false)? {
-                    Some(register) => register,
-                    None => return Ok(false),
-                }
-            };
+        let register = if let Some(register) = input_destination {
+            self.evaluate_general(value, register)?;
+            register
+        } else if let Some(register) = leaf_name(value).and_then(|name| self.lookup_general(name)) {
+            register
+        } else if self.is_simple_word_load(value) {
+            self.evaluate_general(value, GENERAL_SCRATCH)?;
+            GENERAL_SCRATCH
+        } else {
+            match self.place_operand(value, GENERAL_SCRATCH, false)? {
+                Some(register) => register,
+                None => return Ok(false),
+            }
+        };
         self.output.instructions.push(Instruction::RotateAndMask {
             a: destination,
             s: register,
@@ -1079,6 +1078,24 @@ impl Generator {
                 return Ok(true);
             }
             if self.is_global(variable) {
+                if self.behavior.global_wide_multiply_style
+                    == mwcc_versions::GlobalWideMultiplyStyle::Sequential
+                {
+                    // O0 follows the source tree: finish the global load before
+                    // materializing the wide constant. The address base dies at
+                    // the load, so allocation can reuse it for the constant and
+                    // product (`lis/addi/lwz r0; lis/addi r3; mullw r3,r0,r3`).
+                    let name = leaf_name(variable).unwrap();
+                    self.emit_global_load(name, GENERAL_SCRATCH)?;
+                    let constant_register = self.fresh_virtual_general();
+                    self.load_integer_constant(constant_register, constant);
+                    self.output.instructions.push(Instruction::MultiplyLow {
+                        d: destination,
+                        a: GENERAL_SCRATCH,
+                        b: constant_register,
+                    });
+                    return Ok(true);
+                }
                 // Global operand: mwcc builds the constant high in one register and
                 // loads the global into another, then assembles the low half in the
                 // scratch and multiplies: `lis t,ha; lwz g,sym; addi r0,t,lo; mullw
@@ -1109,7 +1126,9 @@ impl Generator {
         // `(x >>(logical) n) & low-mask` fuses into one rlwinm: rotate-left by
         // (32 - n), then keep the masked low bits. mwcc emits this for the classic
         // `(value >> 16) & 0x7FFF` shape (e.g. the LCG in rand.c).
-        if operator == BinaryOperator::BitAnd {
+        if operator == BinaryOperator::BitAnd
+            && self.behavior.shift_mask_fusion_style == mwcc_versions::ShiftMaskFusionStyle::Fused
+        {
             if let Expression::Binary {
                 operator: BinaryOperator::ShiftRight,
                 left: inner,

@@ -184,8 +184,7 @@ impl Generator {
                                         Some(Type::Float | Type::Double)
                                     )
                                 {
-                                    self.output.symbol_order =
-                                        vec![callee.clone(), name.clone()];
+                                    self.output.symbol_order = vec![callee.clone(), name.clone()];
                                     self.output
                                         .early_implicit_external_callees
                                         .push(callee.clone());
@@ -212,7 +211,13 @@ impl Generator {
                         if restore {
                             self.reserved.remove(&base);
                         }
-                        self.record_relocation(RelocationKind::Addr16Lo, name);
+                        if self.behavior.absolute_access_style
+                            == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
+                        {
+                            self.emit_address_low(base, name);
+                        } else {
+                            self.record_relocation(RelocationKind::Addr16Lo, name);
+                        }
                         self.output
                             .instructions
                             .push(displacement_store(pointee, source, base, 0)?);
@@ -1029,12 +1034,9 @@ impl Generator {
             origin,
         } = value
         {
-            if let Some(phi) = self.try_emit_legacy_store_phi_select(
-                condition,
-                when_true,
-                when_false,
-                *origin,
-            )? {
+            if let Some(phi) =
+                self.try_emit_legacy_store_phi_select(condition, when_true, when_false, *origin)?
+            {
                 return Ok(phi);
             }
             if leaf_name(when_true).is_some()

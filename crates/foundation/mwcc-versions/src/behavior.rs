@@ -64,6 +64,34 @@ pub enum PointerWalkerScheduleStyle {
     LatencyInterleaved,
 }
 
+/// Placement of an absolute symbol's low relocation on a load or store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbsoluteAccessStyle {
+    /// `-O0`: finish `lis`/`addi` address formation, then access offset zero.
+    MaterializedAddress,
+    /// `-O1` and above: fold the low relocation into the load/store displacement
+    /// whenever the destination cannot double as the address base.
+    FoldedDisplacement,
+}
+
+/// Evaluation schedule for `global * <wide integer constant>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalWideMultiplyStyle {
+    /// `-O0`: load the global first, then materialize the constant in source order.
+    Sequential,
+    /// `-O1` and above: issue the constant high half ahead of the global load.
+    Interleaved,
+}
+
+/// Whether an explicit source-level shift followed by a mask is combined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShiftMaskFusionStyle {
+    /// `-O0`: preserve a shift instruction followed by a mask instruction.
+    Separate,
+    /// `-O1` and above: combine the pair into one rotate-and-mask instruction.
+    Fused,
+}
+
 /// A named codegen decision that diverges from the mainline for some builds. The
 /// set is closed (an enum) so every divergence has a stable identity that can be
 /// listed, explained, and asserted against in tests. Each variant names the
@@ -431,6 +459,12 @@ pub struct Behavior {
     pub schedule_latency_slots: bool,
     /// Optimization-level policy for ctor/dtor function-pointer walkers.
     pub pointer_walker_schedule_style: PointerWalkerScheduleStyle,
+    /// Optimization-level policy for absolute load/store displacement folding.
+    pub absolute_access_style: AbsoluteAccessStyle,
+    /// Optimization-level schedule for a global multiplied by a wide constant.
+    pub global_wide_multiply_style: GlobalWideMultiplyStyle,
+    /// Optimization-level policy for explicit shift/mask peephole fusion.
+    pub shift_mask_fusion_style: ShiftMaskFusionStyle,
     /// Allocation and scheduling for float DAGs shared by two return arms.
     pub shared_float_dag_style: SharedFloatDagStyle,
     /// In a float `if`-condition against a pool constant, whether the loaded value
@@ -595,6 +629,21 @@ impl Behavior {
                     PointerWalkerScheduleStyle::ReusedConditionLoad
                 }
                 Optimization::O4 => PointerWalkerScheduleStyle::LatencyInterleaved,
+            },
+            absolute_access_style: if config.flags.optimization == Optimization::O0 {
+                AbsoluteAccessStyle::MaterializedAddress
+            } else {
+                AbsoluteAccessStyle::FoldedDisplacement
+            },
+            global_wide_multiply_style: if config.flags.optimization == Optimization::O0 {
+                GlobalWideMultiplyStyle::Sequential
+            } else {
+                GlobalWideMultiplyStyle::Interleaved
+            },
+            shift_mask_fusion_style: if config.flags.optimization == Optimization::O0 {
+                ShiftMaskFusionStyle::Separate
+            } else {
+                ShiftMaskFusionStyle::Fused
             },
             shared_float_dag_style: config.build.profile.shared_float_dag_style(),
             float_compare_value_before_const: config
@@ -954,6 +1003,40 @@ mod tests {
             assert_eq!(behavior.pointer_walker_schedule_style, style);
             assert_eq!(behavior.schedule_latency_slots, schedule_latency_slots);
         }
+    }
+
+    #[test]
+    fn o0_preserves_sequential_expression_lowering() {
+        let mut config = CompilerConfig::new(build::GC_1_3_2);
+        config.flags.optimization = Optimization::O0;
+        let behavior = Behavior::resolve(&config);
+        assert_eq!(
+            behavior.absolute_access_style,
+            AbsoluteAccessStyle::MaterializedAddress
+        );
+        assert_eq!(
+            behavior.global_wide_multiply_style,
+            GlobalWideMultiplyStyle::Sequential
+        );
+        assert_eq!(
+            behavior.shift_mask_fusion_style,
+            ShiftMaskFusionStyle::Separate
+        );
+
+        config.flags.optimization = Optimization::O1;
+        let behavior = Behavior::resolve(&config);
+        assert_eq!(
+            behavior.absolute_access_style,
+            AbsoluteAccessStyle::FoldedDisplacement
+        );
+        assert_eq!(
+            behavior.global_wide_multiply_style,
+            GlobalWideMultiplyStyle::Interleaved
+        );
+        assert_eq!(
+            behavior.shift_mask_fusion_style,
+            ShiftMaskFusionStyle::Fused
+        );
     }
 
     #[test]
