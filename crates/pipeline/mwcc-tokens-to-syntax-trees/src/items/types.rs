@@ -67,9 +67,9 @@ impl Parser {
                         self.last_struct_tag = Some(tag);
                         Ok(struct_type)
                     }
-                    None => Err(Diagnostic::error(
-                        "struct values are not supported yet — use a struct pointer",
-                    )),
+                    None => Err(Diagnostic::error(format!(
+                        "struct '{tag}' value layout is not declared",
+                    ))),
                 };
             }
             self.advance();
@@ -136,9 +136,9 @@ impl Parser {
                             self.last_struct_tag = Some(tag);
                             Ok(struct_type)
                         }
-                        None => Err(Diagnostic::error(
-                            "struct values are not supported yet — use a struct pointer",
-                        )),
+                        None => Err(Diagnostic::error(format!(
+                            "struct '{tag}' value layout is not declared",
+                        ))),
                     };
                 }
                 self.advance();
@@ -286,7 +286,12 @@ impl Parser {
                     Type::Int
                 }
             },
-            other => return Err(Diagnostic::error(format!("expected a type, found {other}"))),
+            other => {
+                return Err(Diagnostic::error(format!(
+                    "expected a type, found {other} at token {}",
+                    self.position.saturating_sub(1)
+                )))
+            }
         };
         // East-const/volatile: a qualifier may TRAIL the base type (`float const`, the
         // mirror of the leading `const float` — dolphin/MSL headers use both). Fold

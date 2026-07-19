@@ -7,6 +7,7 @@
 mod asm;
 mod initializers;
 mod statements;
+mod templates;
 mod types;
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -676,6 +677,7 @@ impl Parser {
                 }
                 // A skipped `typedef` still registers its alias name, so function
                 // bodies that use the type as a pointer (`FILE *fp`) still parse.
+                self.capture_skipped_struct_template();
                 self.capture_skipped_typedef();
                 self.skip_top_level_declaration();
             }
@@ -1560,7 +1562,7 @@ impl Parser {
                     return Ok(());
                 }
                 let struct_type = self.struct_value_type(&tag).ok_or_else(|| {
-                    Diagnostic::error("struct values are not supported yet — use a struct pointer")
+                    Diagnostic::error(format!("struct '{tag}' value layout is not declared"))
                 })?;
                 loop {
                     let name = self.parse_identifier()?;
@@ -2408,7 +2410,11 @@ impl Parser {
         while let Some(token) = self.tokens.get(index) {
             let top_level = brace == 0 && paren == 0 && bracket == 0;
             match token {
-                // A typedef never defines data, even with an `=` (none occur).
+                // A typedef never defines data. Neither does a skipped inline
+                // function whose operator name contains `=` (`operator *=`):
+                // treating that token as an initializer would turn a harmless
+                // unused header definition into a whole-unit defer.
+                Token::Identifier(word) if word == "inline" || word == "__inline" => return false,
                 Token::Identifier(word) if index == self.position && word == "typedef" => {
                     return false
                 }
@@ -2579,6 +2585,13 @@ impl Parser {
     }
 
     pub(crate) fn item_is_function_definition(&self) -> bool {
+        // A function template definition does not itself emit a function body;
+        // code appears only for an instantiated specialization. Recovery may
+        // therefore skip an unused template just like an inline header helper.
+        if matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if word == "template")
+        {
+            return false;
+        }
         let mut index = self.position;
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
@@ -2626,6 +2639,9 @@ impl Parser {
     pub(crate) fn capture_skipped_typedef(&mut self) {
         if !matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if word == "typedef")
         {
+            return;
+        }
+        if self.capture_skipped_template_typedef() {
             return;
         }
         let mut index = self.position + 1;

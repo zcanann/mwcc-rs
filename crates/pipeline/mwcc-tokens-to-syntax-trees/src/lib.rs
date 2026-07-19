@@ -66,6 +66,7 @@ pub fn parse_translation_unit(
         cplusplus_stack: Vec::new(),
         force_active: false,
         structs: HashMap::new(),
+        struct_templates: HashMap::new(),
         variable_structs: HashMap::new(),
         function_return_structs: HashMap::new(),
         fixed_address_globals: HashMap::new(),

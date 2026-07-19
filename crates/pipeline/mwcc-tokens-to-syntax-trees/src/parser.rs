@@ -36,6 +36,13 @@ pub(crate) struct StructLayout {
     pub(crate) align: u8,
 }
 
+/// Recoverable layout information from a skipped single-parameter C++ struct
+/// template. Methods and static members are irrelevant to object layout; each
+/// recorded name is an instance field whose type is the template parameter.
+pub(crate) struct StructTemplate {
+    pub(crate) fields: Vec<String>,
+}
+
 pub(crate) struct Parser {
     pub(crate) tokens: Vec<Token>,
     pub(crate) position: usize,
@@ -51,6 +58,9 @@ pub(crate) struct Parser {
     pub(crate) skipped_static_inline_label_base: u8,
     /// Declared struct layouts, by tag name.
     pub(crate) structs: HashMap<String, StructLayout>,
+    /// Single-parameter C++ struct templates whose instance fields can be laid
+    /// out when a concrete typedef such as `Vector3<float>` is encountered.
+    pub(crate) struct_templates: HashMap<String, StructTemplate>,
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
     pub(crate) variable_structs: HashMap<String, String>,
@@ -264,9 +274,19 @@ impl Parser {
             self.position += 1;
             Ok(())
         } else {
+            if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
+                let start = self.position.saturating_sub(8);
+                let end = (self.position + 9).min(self.tokens.len());
+                eprintln!(
+                    "parse context at token {}: {:?}",
+                    self.position,
+                    &self.tokens[start..end]
+                );
+            }
             Err(Diagnostic::error(format!(
-                "expected {expected}, found {}",
-                self.peek()
+                "expected {expected}, found {} at token {}",
+                self.peek(),
+                self.position
             )))
         }
     }
