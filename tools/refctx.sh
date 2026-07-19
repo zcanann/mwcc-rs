@@ -131,9 +131,26 @@ for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
   || { echo "decompctx failed for $src"; exit 1; }
 
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
-#    preprocess). mwcceppc only accepts a C/C++ source suffix, so the real compiler
-#    builds the reference straight from the language-preserving context file.
-( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E "$ctx_name" -o ctx.i ) 2>/dev/null
+#    preprocess). mwcceppc drops language-changing pragmas from `-E` output, so
+#    preserve the subset our parser models as inert declaration sentinels and
+#    restore them afterward at their original positions. This matters for MSL
+#    headers whose inline-local symbols mangle only inside `cplusplus` scopes.
+preprocess_name="preprocess_$ctx_name"
+sed -E \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+push[[:space:]]*$/extern int __mwcc_refctx_pragma_push;/' \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+pop[[:space:]]*$/extern int __mwcc_refctx_pragma_pop;/' \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+on[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_on;/' \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+off[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_off;/' \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+reset[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_reset;/' \
+  "$dir/$ctx_name" > "$dir/$preprocess_name"
+( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E "$preprocess_name" -o ctx.marked.i ) 2>/dev/null
+sed -E \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_push;[[:space:]]*$/#pragma push/' \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_pop;[[:space:]]*$/#pragma pop/' \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_on;[[:space:]]*$/#pragma cplusplus on/' \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_off;[[:space:]]*$/#pragma cplusplus off/' \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_reset;[[:space:]]*$/#pragma cplusplus reset/' \
+  "$dir/ctx.marked.i" > "$dir/ctx.i"
 if [[ ! -s "$dir/ctx.i" ]]; then
   # An effectively EMPTY TU (sunshine's exponentialsf.c is a single
   # newline): mwcc -E emits nothing, but both compilers produce the

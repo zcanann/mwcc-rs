@@ -29,6 +29,8 @@ impl Generator {
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
             0x4c0074f426dac8c9 => 35, // strikers s_ldexp
+            0x69fdba26e251de6f => 43, // mario kart s_ldexp
+            0xacad83bca4c56e87 => 33, // metroid prime s_ldexp
             _ => {
                 eprintln!("ldx_ldexp context candidate: {context:#x}");
                 return Ok(false);

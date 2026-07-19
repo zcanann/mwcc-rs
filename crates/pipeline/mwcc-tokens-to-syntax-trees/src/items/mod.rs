@@ -1250,7 +1250,7 @@ impl Parser {
                     "push" => self.cplusplus_stack.push(self.cplusplus),
                     "pop" => self.cplusplus = self.cplusplus_stack.pop().unwrap_or(false),
                     "cplusplus on" => self.cplusplus = true,
-                    "cplusplus off" => self.cplusplus = false,
+                    "cplusplus off" | "cplusplus reset" => self.cplusplus = false,
                     "defer_codegen on" => self.defer_codegen = true,
                     "defer_codegen off" => self.defer_codegen = false,
                     "force_active on" => self.force_active = true,
