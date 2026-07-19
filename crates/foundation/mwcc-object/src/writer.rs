@@ -722,7 +722,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // mwcc catalogs only COMPILER-GENERATED functions in `.mwcats.text`; hand-written
     // inline-`asm` functions are excluded. An object whose only functions are asm has
     // no `.mwcats.text`/`.rela.mwcats.text` at all (its code still lives in `.text`).
-    let has_mwcats = functions.iter().any(|function| !function.is_asm);
+    let has_mwcats = input.emit_mwcats && functions.iter().any(|function| !function.is_asm);
     // A jump table and large writable globals share `.data`; the lowering guarantees
     // they do not co-occur, so one `.data` entry covers both.
     let has_data = has_jump_table || has_file_data;

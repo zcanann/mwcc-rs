@@ -67,6 +67,7 @@ pub fn assemble_object(
     source_name: &str,
     object_format: ObjectFormat,
     small_data: bool,
+    emit_mwcats: bool,
 ) -> Vec<u8> {
     // The encoded text is owned here so the borrowed `FunctionObject` can point at
     // it for the lifetime of the call.
@@ -214,6 +215,7 @@ pub fn assemble_object(
         functions: function_objects,
         data_objects,
         small_data,
+        emit_mwcats,
         inline_asm_symbols,
         forward_declared_statics,
         local_symbol_order,

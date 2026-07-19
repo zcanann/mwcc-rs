@@ -56,6 +56,10 @@ pub struct Flags {
     /// suppresses the `extab`/`extabindex` unwind tables entirely (the stack frame
     /// itself is unchanged).
     pub cpp_exceptions: bool,
+    /// `-pragma "cats off"` disables Code Address Table emission. The functions
+    /// remain in `.text`, but the `.mwcats.text` catalog and its relocations are
+    /// absent from the object.
+    pub emit_mwcats: bool,
 }
 
 impl Default for Flags {
@@ -68,6 +72,7 @@ impl Default for Flags {
             char_default: CharDefault::BuildDefault,
             inline_deferred: false,
             cpp_exceptions: true,
+            emit_mwcats: true,
         }
     }
 }

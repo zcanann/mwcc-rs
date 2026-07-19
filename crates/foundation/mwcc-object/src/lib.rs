@@ -56,6 +56,9 @@ pub struct ObjectInput<'a> {
     /// off, and the data sections are named `.bss`/`.data` instead of
     /// `.sbss`/`.sdata` (identical type/flags/alignment otherwise).
     pub small_data: bool,
+    /// Whether compiler-generated functions receive Code Address Table entries
+    /// in `.mwcats.text`. Disabled by `-pragma "cats off"`.
+    pub emit_mwcats: bool,
     /// Names of `static inline` asm functions skipped from the source, in
     /// declaration order. Each becomes a local *undefined* symbol (mwcc keeps
     /// inline-asm helpers as deferred symbols even when unused).

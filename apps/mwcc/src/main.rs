@@ -63,6 +63,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     invocation.flags.cpp_exceptions = false;
                 }
             }
+            // `-pragma "cats off"` suppresses the Code Address Table section.
+            // Accept `on` as well so the last command-line pragma wins, as in mwcc.
+            "-pragma" => {
+                index += 1;
+                invocation.flags.emit_mwcats = match arguments.get(index).map(String::as_str) {
+                    Some("cats off") => false,
+                    Some("cats on") => true,
+                    _ => invocation.flags.emit_mwcats,
+                };
+            }
             // `-inline …`: a `deferred` setting emits functions in reverse order.
             "-inline" => {
                 index += 1;
@@ -1204,6 +1214,7 @@ fn compile(
             post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
         },
         small_data,
+        config.flags.emit_mwcats,
     );
 
     if let Some(directory) = artifacts {
@@ -1217,6 +1228,25 @@ fn compile(
         );
     }
     Ok(object)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_invocation;
+
+    #[test]
+    fn command_line_cats_pragma_controls_object_catalogs() {
+        let off = parse_invocation(&["-pragma".into(), "cats off".into()]);
+        assert!(!off.flags.emit_mwcats);
+
+        let last_wins = parse_invocation(&[
+            "-pragma".into(),
+            "cats off".into(),
+            "-pragma".into(),
+            "cats on".into(),
+        ]);
+        assert!(last_wins.flags.emit_mwcats);
+    }
 }
 
 fn write_artifacts(
