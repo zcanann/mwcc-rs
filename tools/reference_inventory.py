@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import glob
+import hashlib
 import importlib
 import io
 import json
@@ -28,10 +29,22 @@ import subprocess
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from parity_identity import configuration_id
 
-SCHEMA_VERSION = 1
+
+SCHEMA_VERSION = 3
 SOURCE_SUFFIXES = {".c", ".cc", ".cp", ".cpp", ".cxx"}
 EXCLUDED_MW_VERSIONS = {"GC/1.3.2r"}
+
+
+def sha256_file(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def source_files(project: Path) -> Iterable[Path]:
@@ -166,6 +179,7 @@ def capture_project(project: Path, variant: Optional[str]) -> List[Dict[str, Any
                         "project": project.name,
                         "variant": str(config_version),
                         "source": source.as_posix(),
+                        "source_sha256": sha256_file(source),
                         "language": "c++" if source.suffix.lower() != ".c" else "c",
                         "mw_version": options["mw_version"],
                         "cflags": jsonable(options.get("cflags") or []),
@@ -240,6 +254,7 @@ def row_key(row: Dict[str, Any]) -> Tuple[Any, ...]:
     return (
         row["project"],
         row["source"],
+        row.get("source_sha256"),
         row["language"],
         row["mw_version"],
         tuple(row["cflags"]),
@@ -293,6 +308,7 @@ def build_inventory(root: Path, python: str) -> Dict[str, Any]:
             if row["mw_version"] in EXCLUDED_MW_VERSIONS:
                 excluded_rows += 1
                 continue
+            row["configuration_id"] = configuration_id(row)
             unique_rows.setdefault(row_key(row), row)
 
         projects.append(

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -13,7 +14,10 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from parity_identity import configuration_id, files_fingerprint, observation_id
 
 
 STATUSES = ("BYTE", "DIFF", "DEFER", "HARNESS", "UNSUPPORTED_BUILD")
@@ -53,6 +57,34 @@ def flatten_flags(row: Dict[str, Any]) -> List[str]:
     return flags
 
 
+def row_configuration_id(row: Dict[str, Any]) -> str:
+    return row.get("configuration_id") or configuration_id(row)
+
+
+def load_selection(path: Path) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError:
+        return {line.strip() for line in text.splitlines() if line.strip()}
+    if isinstance(document, dict):
+        document = document.get("configuration_ids", [])
+    if not isinstance(document, list) or not all(isinstance(item, str) for item in document):
+        raise ValueError("selection must be a JSON list/object of configuration IDs")
+    return set(document)
+
+
+def stable_sample(rows: List[Dict[str, Any]], size: int, seed: str) -> List[Dict[str, Any]]:
+    if size <= 0 or size >= len(rows):
+        return rows
+
+    def rank(row: Dict[str, Any]) -> bytes:
+        identity = row_configuration_id(row)
+        return hashlib.sha256(f"{seed}\0{identity}".encode()).digest()
+
+    return sorted(rows, key=rank)[:size]
+
+
 def selected_rows(rows: Iterable[Dict[str, Any]], args: argparse.Namespace) -> List[Dict[str, Any]]:
     source_pattern = re.compile(args.source) if args.source else None
     selected = []
@@ -72,6 +104,11 @@ def selected_rows(rows: Iterable[Dict[str, Any]], args: argparse.Namespace) -> L
         if source_pattern and source_pattern.search(row["source"]) is None:
             continue
         selected.append(row)
+    if args.selection is not None:
+        selection = load_selection(args.selection)
+        selected = [row for row in selected if row_configuration_id(row) in selection]
+    if args.sample_size:
+        selected = stable_sample(selected, args.sample_size, args.sample_seed)
     if args.shard_count > 1:
         selected = [
             row
@@ -98,20 +135,6 @@ def build_supported(compiler: Path, build: str) -> Tuple[bool, str]:
         )
     detail = (result.stderr or result.stdout).strip().splitlines()
     return result.returncode == 0, detail[0] if detail else "unsupported compiler build"
-
-
-def row_id(row: Dict[str, Any], tool_fingerprint: str) -> str:
-    identity = {
-        "tool": tool_fingerprint,
-        "project": row["project"],
-        "source": row["source"],
-        "build": row["mw_version"],
-        "cflags": row["cflags"],
-        "extra_cflags": row["extra_cflags"],
-        "shift_jis": row["shift_jis"],
-    }
-    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def load_cache(path: Path) -> Dict[str, Dict[str, Any]]:
@@ -193,6 +216,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--selection", type=Path, help="run stable configuration IDs from a frontier manifest")
+    parser.add_argument("--write-selection", type=Path, help="write the selected stable configuration IDs")
+    parser.add_argument("--sample-size", type=int, default=0, help="select a deterministic hash-ranked sample")
+    parser.add_argument("--sample-seed", default="mwcc-parity-v1", help="seed for deterministic sampling")
     parser.add_argument("--rerun", action="store_true", help="ignore cached results")
     parser.add_argument("--list", action="store_true", help="list selected rows without compiling")
     return parser.parse_args(argv)
@@ -202,6 +229,9 @@ def main() -> int:
     args = parse_args()
     if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
         print("invalid shard index/count", file=sys.stderr)
+        return 2
+    if args.selection is not None and args.sample_size:
+        print("--selection and --sample-size are mutually exclusive", file=sys.stderr)
         return 2
     script_dir = Path(__file__).resolve().parent
     root = script_dir.parent
@@ -217,17 +247,28 @@ def main() -> int:
         print(f"inventory failed: {error}", file=sys.stderr)
         return 2
     rows = selected_rows(inventory["translation_units"], args)
+    if args.write_selection is not None:
+        args.write_selection.parent.mkdir(parents=True, exist_ok=True)
+        selection = {
+            "schema_version": 1,
+            "sample_seed": args.sample_seed if args.sample_size else None,
+            "configuration_ids": [row_configuration_id(row) for row in rows],
+        }
+        args.write_selection.write_text(
+            json.dumps(selection, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     if args.list:
         for row in rows:
             print(
                 f'{row["project"]}\t{row["variant"]}\t{row["mw_version"]}\t'
-                f'{row["language"]}\t{row["source"]}'
+                f'{row["language"]}\t{row["source"]}\t{row_configuration_id(row)}'
             )
         print(f"== {len(rows)} selected translation-unit configurations ==")
         return 0
 
     compiler_hash = sha256_file(compiler)
-    fingerprint = compiler_hash + ":" + sha256_file(refctx)
+    harness_hash = files_fingerprint((refctx, Path(__file__), script_dir / "parity_identity.py"))
+    fingerprint = compiler_hash + ":" + harness_hash
     cache = args.cache
     if cache is None:
         cache = root / "target" / "reference-parity" / f"{fingerprint[:20]}.jsonl"
@@ -239,13 +280,16 @@ def main() -> int:
 
     with cache.open("a", encoding="utf-8") as cache_output:
         for index, row in enumerate(rows, 1):
-            identity = row_id(row, fingerprint)
+            config_identity = row_configuration_id(row)
+            identity = observation_id(config_identity, fingerprint)
             if identity in cached:
                 record = cached[identity]
                 status = record["status"]
                 detail = record.get("output", "")
                 reused += 1
             else:
+                observed_at = datetime.now(timezone.utc).isoformat()
+                row_started = time.monotonic()
                 build = row["mw_version"]
                 if build not in build_support:
                     build_support[build] = build_supported(compiler, build)
@@ -262,12 +306,20 @@ def main() -> int:
                     status, detail = "UNSUPPORTED_BUILD", support_detail
                 record = {
                     "id": identity,
+                    "configuration_id": config_identity,
+                    "tool_fingerprint": fingerprint,
+                    "compiler_sha256": compiler_hash,
+                    "harness_sha256": harness_hash,
+                    "observed_at": observed_at,
+                    "elapsed_seconds": round(time.monotonic() - row_started, 6),
                     "status": status,
                     "project": row["project"],
                     "variant": row["variant"],
                     "source": row["source"],
                     "mw_version": row["mw_version"],
                     "language": row["language"],
+                    "matching": row["matching"],
+                    "source_sha256": row.get("source_sha256"),
                     "output": detail,
                 }
                 cache_output.write(json.dumps(record, sort_keys=True) + "\n")

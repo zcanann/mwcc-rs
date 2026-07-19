@@ -19,6 +19,10 @@
 #
 # Runs wibo, so do NOT run it while a full oracle sweep is in progress.
 set -euo pipefail
+# Treat Shift-JIS source as bytes in the shell transforms. Locale-aware macOS
+# sed otherwise rejects valid project files with "illegal byte sequence" before
+# either compiler runs, falsely classifying them as HARNESS failures.
+export LC_ALL=C
 
 project="${1:?usage: refctx.sh <project_dir> <src/file.c> [build] [cflags…]}"
 src="${2:?need a source file relative to the project}"

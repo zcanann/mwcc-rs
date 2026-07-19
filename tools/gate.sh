@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# The canonical pre-commit gate — one command for the full byte-exact-or-defer check.
+# Optional exhaustive regression gate. This is not the parity metric and the
+# frontier development loop does not run it on every change; use parity_loop.py
+# to spend iteration time on known failures, untested configurations, and a
+# small rotating audit of previous byte matches.
 #
 # Runs the differential oracle for every version whose codegen we model to green,
 # the vreg unit tests, and the reference-project support parity. The HARD INVARIANT

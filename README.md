@@ -34,6 +34,30 @@ The oracle needs a decomp checkout for the real toolchain — `wibo`, the compil
 
 There is a standing rule: **fail honestly**. When a construct is not yet supported, the relevant phase returns a diagnostic. It never emits plausible-but-wrong bytes — a silently-wrong compiler is worse than one that stops.
 
+### Measuring reference-project parity
+
+Canary totals and a hand-picked green gate are regression aids, not a measure of
+overall parity. The persistent frontier loop uses every configured translation
+unit in `reference_projects/*` as its denominator, spends each iteration on
+known `DIFF`, `DEFER`, and harness failures before drawing from untested work,
+and reserves a small rotating sample of previous byte matches for regression
+detection:
+
+```sh
+cargo build --release -p mwcc
+python3 tools/parity_loop.py --refresh-inventory --size 256 --epoch 0
+```
+
+The report separates `BYTE`, `DIFF`, `DEFER`, `HARNESS`, unsupported builds, and
+untested configurations, with language, compiler-version, and project
+breakdowns. It also reports source coverage so files absent from project build
+metadata cannot disappear from the denominator. Results are keyed by stable
+compiler inputs and retained under `target/reference-parity/frontier/`; after a
+compiler change, unresolved work remains in the frontier while observations for
+the new binary are kept separate. Increment `--epoch` to rotate equally ranked
+work. `tools/gate.sh` remains available as an occasional exhaustive regression
+check, but it is intentionally not on this inner loop.
+
 ## Architecture
 
 A Cargo workspace split three ways. The discipline is that **data and transforms are different crates**: a *representation* is the data a phase produces (a noun); a *pipeline* crate is a transform named for what it converts (`source-to-tokens`). You can read the whole compiler off the crate list.
