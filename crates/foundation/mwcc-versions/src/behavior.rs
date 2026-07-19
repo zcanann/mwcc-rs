@@ -23,9 +23,10 @@ use crate::profile::{
     LocalDataSymbolOrder, LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
     NarrowComputedReturnStyle, NarrowGuardScheduleStyle, NarrowStoreConversionStyle,
     NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle, PunnedFloatFrameConvention,
-    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
-    SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
+    PunnedShiftWritebackStyle, RaiseFamilyStyle, ReadOnlySectionAnchorOrder,
+    ReturnRegisterStoreStyle, SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle,
+    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, VaArgScheduleStyle,
+    ValueTrackedMutationStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -81,6 +82,7 @@ pub enum Quirk {
     LegacyZeroEqualityNegate,
     LegacyReloadingPunnedFloatFrame,
     LegacyBranchPunnedConditionalWriteback,
+    LegacyReloadingPunnedShiftWriteback,
     LegacyAddImmediateMaterializationCopy,
     LegacySerialWideConstantAdd,
     LegacySymbolCreationOrder,
@@ -141,6 +143,7 @@ impl Quirk {
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
             Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
             Quirk::LegacyBranchPunnedConditionalWriteback => QuirkKind::Intentional,
+            Quirk::LegacyReloadingPunnedShiftWriteback => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
             Quirk::LegacySerialWideConstantAdd => QuirkKind::Intentional,
             Quirk::LegacySymbolCreationOrder => QuirkKind::Intentional,
@@ -244,6 +247,9 @@ impl Quirk {
             }
             Quirk::LegacyBranchPunnedConditionalWriteback => {
                 "conditional punned writebacks preserve build 163's branch diamond"
+            }
+            Quirk::LegacyReloadingPunnedShiftWriteback => {
+                "shifted-mask punned writebacks use build 163's reload and allocation plan"
             }
             Quirk::LegacyAddImmediateMaterializationCopy => {
                 "integer value materializations use build 163's add-immediate-zero copy encoding"
@@ -426,6 +432,8 @@ pub struct Behavior {
     pub punned_float_frame_convention: PunnedFloatFrameConvention,
     /// Lowering of conditional punned integer writebacks.
     pub punned_conditional_writeback_style: PunnedConditionalWritebackStyle,
+    /// Frame, reload, and integer-allocation convention for shifted-mask writebacks.
+    pub punned_shift_writeback_style: PunnedShiftWritebackStyle,
     /// Encoding of generation-specific integer value materializations.
     pub materialization_copy_style: MaterializationCopyStyle,
     /// Scheduling of unequal constant words in a 64-bit add/subtract.
@@ -553,6 +561,7 @@ impl Behavior {
                 .build
                 .profile
                 .punned_conditional_writeback_style(),
+            punned_shift_writeback_style: config.build.profile.punned_shift_writeback_style(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
             symbol_traversal_style: config.build.profile.symbol_traversal_style(),
@@ -706,6 +715,9 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(
                 Quirk::LegacyBranchPunnedConditionalWriteback,
             ));
+        }
+        if self.punned_shift_writeback_style == PunnedShiftWritebackStyle::LegacyReloading {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingPunnedShiftWriteback));
         }
         if self.materialization_copy_style == MaterializationCopyStyle::AddImmediateZero {
             quirks.push(ActiveQuirk::of(
@@ -873,6 +885,10 @@ mod tests {
         assert_eq!(
             behavior.punned_conditional_writeback_style,
             PunnedConditionalWritebackStyle::BranchDiamond
+        );
+        assert_eq!(
+            behavior.punned_shift_writeback_style,
+            PunnedShiftWritebackStyle::LegacyReloading
         );
         assert_eq!(
             behavior.materialization_copy_style,

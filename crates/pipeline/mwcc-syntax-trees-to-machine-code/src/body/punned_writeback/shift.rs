@@ -639,7 +639,7 @@ impl Generator {
             }
         }
         // -- the synthetic position pass --
-        use mwcc_vreg::int_alloc::{allocate, Class, Value};
+        use mwcc_vreg::int_alloc::{Class, Value};
         let needs_temp = i16::try_from(mask_constant).is_err();
         let mut position = 1u32; // 0 = stwu
         let temp_range = needs_temp.then(|| {
@@ -877,20 +877,39 @@ impl Generator {
             tags.push("local");
             local_value_indices[index] = Some(values.len() - 1);
         }
-        let registers = allocate(&values);
+        let style = self.behavior.punned_shift_writeback_style;
+        let plan = policy::shift_writeback_plan(style, sign_block.is_some(), float_guard.is_some());
+        let mut registers = policy::allocate_shift_registers(style, &values);
+        let legacy_carry_roles = match &sign_block {
+            Some(SignBlock::CarryDiamond { local, other, .. }) => {
+                policy::legacy_shift_carry_registers(style).map(|roles| {
+                    registers[mask_value_index.expect("carry mask allocated")] = roles.mask;
+                    registers[computed_value_index] = roles.guard;
+                    registers[shift_value_index.expect("carry shift allocated")] = roles.shift;
+                    registers[local_value_indices[*local].expect("carry source loaded")] =
+                        roles.source;
+                    registers[local_value_indices[*other].expect("carry other loaded")] =
+                        roles.other;
+                    registers[carry_one_value_index.expect("carry one allocated")] =
+                        roles.carry_one;
+                    roles
+                })
+            }
+            _ => None,
+        };
         let _ = &tags;
         let mask_register = mask_value_index.map(|i| registers[i]).unwrap_or(0);
         let guard_register = registers[computed_value_index];
         let shift_register = shift_value_index.map(|i| registers[i]).unwrap_or(0);
         let home = |index: usize| local_value_indices[index].map(|i| registers[i]);
         // -- emit --
-        self.frame_size = 16;
+        self.frame_size = plan.frame_size;
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 1,
                 a: 1,
-                offset: -16,
+                offset: -plan.frame_size,
             });
         if needs_temp {
             let temp_register = registers[0];
@@ -953,7 +972,16 @@ impl Generator {
             }
         }
         let negative = i16::try_from(-guard.offset_k).expect("validated");
-        let shift_amount = if guard_multi_read {
+        let shift_amount = if legacy_carry_roles.is_some() {
+            let combined =
+                i16::try_from(i64::from(negative) - amount_offset).expect("validated shift amount");
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: guard_register,
+                immediate: combined,
+            });
+            0
+        } else if guard_multi_read {
             // Multiple j0 reads: the -K lands in the home; an amount
             // offset (arm3's j0-20) folds separately into r0.
             self.output.instructions.push(Instruction::AddImmediate {
@@ -1014,17 +1042,62 @@ impl Generator {
                 b: shift_register,
             });
         }
+        if legacy_carry_roles.is_some() {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: guard_register,
+                immediate: negative,
+            });
+        }
+        let legacy_conditional_rewrite = style
+            == mwcc_versions::PunnedShiftWritebackStyle::LegacyReloading
+            && float_guard.is_some()
+            && mutations
+                .iter()
+                .any(|(_, mutation)| matches!(mutation, Mutation::Rewrite(_)));
+        if legacy_conditional_rewrite {
+            let rewrite_local = mutations
+                .iter()
+                .find_map(|(index, mutation)| {
+                    matches!(mutation, Mutation::Rewrite(_)).then_some(*index)
+                })
+                .expect("checked");
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: home(rewrite_local).expect("conditional rewrite loads"),
+                immediate: 0,
+            });
+        }
         let continuation = self.fresh_label();
         let epilogue = self.fresh_label();
         let join = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, continuation); // bne — skip the return
+        if plan.reload_early_return {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.emit_branch_to(epilogue);
         self.bind_label(continuation);
+        let sign_guard_register = if legacy_carry_roles.is_some() {
+            0
+        } else {
+            guard_register
+        };
         if let Some((huge, zero)) = float_guard {
             // The nested inexact guard (the G2 recipe): huge/0.0 pool-load
             // back-to-back into f2/f0, fadd clobbers the spilled f1, ble
             // chains to the join.
             self.load_double_constant(2, huge);
+            if plan.reload_before_float_guard {
+                self.output.instructions.push(Instruction::LoadFloatDouble {
+                    d: 1,
+                    a: 1,
+                    offset: 8,
+                });
+            }
             self.load_double_constant(0, zero);
             self.output
                 .instructions
@@ -1089,7 +1162,7 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::CompareWordImmediate {
-                        a: guard_register,
+                        a: sign_guard_register,
                         immediate: *equal_bound,
                     });
                 self.emit_branch_conditional_to(4, 2, else_at); // bne
@@ -1104,7 +1177,7 @@ impl Generator {
                     .instructions
                     .push(Instruction::SubtractFromImmediate {
                         d: 0,
-                        a: guard_register,
+                        a: sign_guard_register,
                         immediate: *shift_base,
                     });
                 self.output
@@ -1148,67 +1221,107 @@ impl Generator {
                 b: shift_register,
             });
         }
-        for (index, mutation) in &mutations {
-            let index = *index;
+        let emit_mutation = |generator: &mut Generator,
+                             index: usize,
+                             mutation: &Mutation,
+                             result_in_scratch: bool|
+         -> u8 {
             match mutation {
                 Mutation::Rewrite(constant) => {
                     // Conditional (guarded) rewrites write the HOME — the
                     // original flows to the store on the guard-false path.
-                    let target = if float_guard.is_some() {
+                    let target = if legacy_conditional_rewrite {
+                        0
+                    } else if float_guard.is_some() {
                         home(index).expect("conditional rewrite loads")
                     } else {
                         0
                     };
-                    self.output
+                    generator
+                        .output
                         .instructions
                         .push(Instruction::load_immediate(target, *constant));
+                    target
                 }
                 Mutation::AndcShift => {
                     let register = home(index).expect("loaded");
                     if not_position.is_some() {
-                        self.output.instructions.push(Instruction::And {
-                            a: register,
+                        let target = if result_in_scratch { 0 } else { register };
+                        generator.output.instructions.push(Instruction::And {
+                            a: target,
                             s: register,
                             b: 0,
                         });
+                        target
                     } else {
-                        self.output.instructions.push(Instruction::AndComplement {
-                            a: register,
-                            s: register,
-                            b: shift_register,
-                        });
+                        generator
+                            .output
+                            .instructions
+                            .push(Instruction::AndComplement {
+                                a: register,
+                                s: register,
+                                b: shift_register,
+                            });
+                        register
                     }
                 }
                 Mutation::MaskViaScratch { begin, end } => {
-                    self.output.instructions.push(Instruction::RotateAndMask {
-                        a: 0,
-                        s: home(index).expect("loaded"),
-                        shift: 0,
-                        begin: *begin,
-                        end: *end,
-                    });
+                    generator
+                        .output
+                        .instructions
+                        .push(Instruction::RotateAndMask {
+                            a: 0,
+                            s: home(index).expect("loaded"),
+                            shift: 0,
+                            begin: *begin,
+                            end: *end,
+                        });
+                    0
                 }
             }
-        }
-        // Stores (the guard's ble lands here): surviving homes store
-        // themselves; UNCONDITIONAL rewrites and mask-via-scratch store
-        // from r0.
-        self.bind_label(join);
-        for (index, &(_, offset)) in locals.iter().enumerate() {
-            let from_scratch = float_guard.is_none()
-                && mutations
+        };
+        let legacy_serial = style == mwcc_versions::PunnedShiftWritebackStyle::LegacyReloading
+            && float_guard.is_none();
+        if legacy_serial {
+            self.bind_label(join);
+            for (index, &(_, offset)) in locals.iter().enumerate() {
+                let mutation = mutations
                     .iter()
-                    .any(|&(m, ref form)| m == index && !matches!(form, Mutation::AndcShift));
-            let register = if from_scratch {
-                0
-            } else {
-                home(index).map(|r| r).unwrap_or(0)
-            };
-            self.output.instructions.push(Instruction::StoreWord {
-                s: register,
-                a: 1,
-                offset: 8 + offset,
-            });
+                    .find_map(|(mutated, mutation)| (*mutated == index).then_some(mutation));
+                let final_shared_not = not_position.is_some() && index + 1 == locals.len();
+                let register = mutation
+                    .map(|mutation| emit_mutation(self, index, mutation, final_shared_not))
+                    .unwrap_or_else(|| home(index).unwrap_or(0));
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: register,
+                    a: 1,
+                    offset: 8 + offset,
+                });
+            }
+        } else {
+            for (index, mutation) in &mutations {
+                emit_mutation(self, *index, mutation, false);
+            }
+            // Stores (the guard's ble lands here): surviving homes store
+            // themselves; rewrites and mask-via-scratch store from r0 when
+            // their selected schedule computes there.
+            self.bind_label(join);
+            for (index, &(_, offset)) in locals.iter().enumerate() {
+                let from_scratch = (float_guard.is_none() || legacy_conditional_rewrite)
+                    && mutations.iter().any(|&(mutated, ref mutation)| {
+                        mutated == index && !matches!(mutation, Mutation::AndcShift)
+                    });
+                let register = if from_scratch {
+                    0
+                } else {
+                    home(index).unwrap_or(0)
+                };
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: register,
+                    a: 1,
+                    offset: 8 + offset,
+                });
+            }
         }
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 1,
@@ -1219,7 +1332,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
-            immediate: 16,
+            immediate: plan.frame_size,
         });
         self.output
             .instructions
@@ -1239,7 +1352,8 @@ impl Generator {
                 // (measured @18 on the arm3 object).
                 Some(SignBlock::CarryDiamond { .. }) => 8,
                 None => 0,
-            };
+            }
+            + plan.constant_label_bump;
         Ok(true)
     }
 }

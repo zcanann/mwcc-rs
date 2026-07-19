@@ -211,6 +211,15 @@ pub enum PunnedConditionalWritebackStyle {
     BranchDiamond,
 }
 
+/// Frame, reload, and integer-allocation convention for shifted-mask punned writebacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PunnedShiftWritebackStyle {
+    /// Mainline keeps the live floating parameter and allocates surviving homes before the mask.
+    LiveParameter,
+    /// Build 163 reloads the floating spill and allocates the shifted mask before the homes.
+    LegacyReloading,
+}
+
 /// Encoding used for generation-specific integer value materializations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterializationCopyStyle {
@@ -636,6 +645,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         PunnedConditionalWritebackStyle::Optimized
     }
 
+    fn punned_shift_writeback_style(&self) -> PunnedShiftWritebackStyle {
+        PunnedShiftWritebackStyle::LiveParameter
+    }
+
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -859,6 +872,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn punned_conditional_writeback_style(&self) -> PunnedConditionalWritebackStyle {
         PunnedConditionalWritebackStyle::BranchDiamond
+    }
+    fn punned_shift_writeback_style(&self) -> PunnedShiftWritebackStyle {
+        PunnedShiftWritebackStyle::LegacyReloading
     }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::AddImmediateZero
