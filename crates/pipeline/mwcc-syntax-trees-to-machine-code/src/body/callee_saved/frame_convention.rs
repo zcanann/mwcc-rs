@@ -121,7 +121,7 @@ impl Generator {
             })
             .count();
         let reserve_inferred_lane = self.legacy_callee_saved_frame_layout
-            != LegacyCalleeSavedFrameLayout::PreserveLogicalSizeForMemoryOrigin
+            != LegacyCalleeSavedFrameLayout::PreserveLogicalSize
             && (materialized_home_before_call
                 || self.legacy_callee_saved_frame_layout
                     == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane);

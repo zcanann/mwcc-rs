@@ -212,64 +212,112 @@ impl Generator {
             .map_err(|_| Diagnostic::error("context-handler frame is too large"))?;
         let address = shape.fixed_base;
         let (high, low) = crate::expressions::split_address(address);
-        let fixed_offset = i16::try_from(low as i64 + shape.fixed_index * 2)
-            .map_err(|_| Diagnostic::error("fixed-address handler displacement is out of range"))?;
+        let linkage_first = self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        let fixed_offset =
+            i16::try_from(if linkage_first { 0 } else { low as i64 } + shape.fixed_index * 2)
+                .map_err(|_| {
+                    Diagnostic::error("fixed-address handler displacement is out of range")
+                })?;
+        let local_offset = if linkage_first { 16 } else { 8 };
 
         self.non_leaf = true;
         self.frame_size = frame_size;
         self.callee_saved = vec![context_home];
-        self.output
-            .instructions
-            .push(Instruction::StoreWordWithUpdate {
-                s: 1,
+        let fixed_base = if linkage_first { 3 } else { 6 };
+        if linkage_first {
+            // This owner already knows its physical frame. Build 163 fills both
+            // linkage hazards with the fixed-register address and mask before
+            // updating SP, then places the 8-byte-aligned context at sp+16.
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(fixed_base, high));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
                 a: 1,
-                offset: -frame_size,
+                offset: 4,
             });
-        self.output
-            .instructions
-            .push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(6, high));
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 1,
-            offset: frame_size + 4,
-        });
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(0, shape.preserve_mask));
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 3,
-            a: 1,
-            immediate: 8,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: context_home,
-            a: 1,
-            offset: frame_size - 4,
-        });
-        self.output
-            .instructions
-            .push(Instruction::move_register(context_home, context_incoming));
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: fixed_base,
+                a: fixed_base,
+                immediate: low,
+            });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, shape.preserve_mask));
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -frame_size,
+                });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: context_home,
+                a: 1,
+                offset: frame_size - 4,
+            });
+            self.emit_callee_saved_home_copy(context_home, context_incoming);
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -frame_size,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(fixed_base, high));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: frame_size + 4,
+            });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, shape.preserve_mask));
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: local_offset,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: context_home,
+                a: 1,
+                offset: frame_size - 4,
+            });
+            self.output
+                .instructions
+                .push(Instruction::move_register(context_home, context_incoming));
+        }
         self.output
             .instructions
             .push(crate::expressions::displacement_load(
                 Pointee::UnsignedShort,
                 5,
-                6,
+                fixed_base,
                 fixed_offset,
             )?);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
-                a: 4,
-                s: 5,
-                clear: 16,
-            });
-        self.output
-            .instructions
-            .push(Instruction::And { a: 0, s: 4, b: 0 });
+        if !linkage_first {
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 4,
+                    s: 5,
+                    clear: 16,
+                });
+        }
+        self.output.instructions.push(Instruction::And {
+            a: 0,
+            s: if linkage_first { 5 } else { 4 },
+            b: 0,
+        });
         self.output.instructions.push(Instruction::OrImmediate {
             a: 0,
             s: 0,
@@ -280,9 +328,17 @@ impl Generator {
             .push(crate::expressions::displacement_store(
                 Pointee::UnsignedShort,
                 0,
-                6,
+                fixed_base,
                 fixed_offset,
             )?);
+
+        if linkage_first {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: local_offset,
+            });
+        }
 
         self.record_relocation(RelocationKind::Rel24, shape.clear_context);
         self.output.instructions.push(Instruction::BranchAndLink {
@@ -291,7 +347,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate {
             d: 3,
             a: 1,
-            immediate: 8,
+            immediate: local_offset,
         });
         self.record_relocation(RelocationKind::Rel24, shape.set_context);
         self.output.instructions.push(Instruction::BranchAndLink {
@@ -307,21 +363,16 @@ impl Generator {
             });
         let after_callback = self.fresh_label();
         self.emit_branch_conditional_to(12, 2, after_callback);
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: 12 });
-        self.output
-            .instructions
-            .push(Instruction::BranchToCountRegisterAndLink);
+        self.emit_indirect_branch_and_link(12);
         self.bind_label(after_callback);
-        // The condition plus indirect-call control flow consumes four slots in
-        // mwcc's internal anonymous-label walk (extab starts at @9, not @7).
-        self.output.anonymous_label_bump += 4;
+        // The condition plus indirect-call control flow consumes one additional
+        // internal slot in build 163's LR-dispatch path compared with the CTR path.
+        self.output.anonymous_label_bump += if linkage_first { 5 } else { 4 };
 
         self.output.instructions.push(Instruction::AddImmediate {
             d: 3,
             a: 1,
-            immediate: 8,
+            immediate: local_offset,
         });
         self.record_relocation(RelocationKind::Rel24, shape.clear_context);
         self.output.instructions.push(Instruction::BranchAndLink {
@@ -345,14 +396,25 @@ impl Generator {
             a: 1,
             offset: frame_size - 4,
         });
-        self.output
-            .instructions
-            .push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 1,
-            a: 1,
-            immediate: frame_size,
-        });
+        if linkage_first {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: frame_size,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: frame_size,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);

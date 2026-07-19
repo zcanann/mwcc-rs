@@ -1229,7 +1229,7 @@ impl Generator {
             // build 163's frame-pressure accounting; it does not reserve the
             // extra lane used by entry-materialized parameter homes.
             self.legacy_callee_saved_frame_layout =
-                LegacyCalleeSavedFrameLayout::PreserveLogicalSizeForMemoryOrigin;
+                LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
         }
         self.non_leaf = true;
         self.frame_size = 16;

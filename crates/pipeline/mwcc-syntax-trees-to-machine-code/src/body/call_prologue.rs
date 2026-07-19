@@ -36,6 +36,7 @@ impl Generator {
                 Instruction::AddImmediate { d, a, .. } => {
                     d != 0 && (a != 0 || saw_move || linkage_first)
                 }
+                Instruction::AddImmediateShifted { d, a: 0, .. } => d != 0 && linkage_first,
                 ref other if is_argument_alu(other) => {
                     let movable = mwcc_vreg::register_operands(other)
                         .iter()
