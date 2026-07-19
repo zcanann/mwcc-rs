@@ -639,20 +639,29 @@ impl Generator {
                     condition_bit: 0,
                     target: 0,
                 });
+            let conversion_input = if legacy_reloading && early_return_const.is_some() {
+                // f1 is reserved for the folded constant-return path.
+                0
+            } else {
+                1
+            };
             if legacy_reloading {
                 // Build 163 does not keep the punned parameter live across
                 // the outer integer comparison. Reload the conversion input;
                 // the float tail receives its own independently allocated
                 // reload after the guard.
                 self.output.instructions.push(Instruction::LoadFloatDouble {
-                    d: 1,
+                    d: conversion_input,
                     a: 1,
                     offset: 8,
                 });
             }
             self.output
                 .instructions
-                .push(Instruction::ConvertToIntegerWordZero { d: 0, b: 1 });
+                .push(Instruction::ConvertToIntegerWordZero {
+                    d: 0,
+                    b: conversion_input,
+                });
             let conversion_slot: i16 = if legacy_reloading {
                 frame_size - 8
             } else if composition.is_some() {
