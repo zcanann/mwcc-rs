@@ -15,6 +15,7 @@ mod fixed_rmw_recognize;
 mod frame_convention;
 mod global_swap;
 mod guarded_initialization;
+mod guarded_pointer_call;
 mod indirect_call_schedule;
 mod queue_initialization;
 mod queue_interrupt;
@@ -609,120 +610,6 @@ impl Generator {
                 function.return_type,
                 mwcc_target::Eabi::general_result().number,
             )?;
-        }
-        self.emit_epilogue_and_return();
-        Ok(true)
-    }
-
-    /// A MEMORY-loaded local carried across calls in r31: `int t = gi; g(); return t;`
-    /// loads the global into r31 in the prologue, runs the calls, and returns it —
-    /// `stwu; mflr; stw r0; stw r31; lwz r31,gi; bl; lwz r0; mr r3,r31; lwz r31; mtlr;
-    /// addi; blr` (the `mr` rides between the LR and r31 reloads). A computed-index
-    /// global-array element (`int t = arr[i]; g(); return t;` — the signal.c handler
-    /// fetch) interleaves the address build into the prologue: `stwu; mflr; lis r4;
-    /// stw r0; slwi r0,i; addi r3,r4; stw r31; lwzx r31,r3,r0; bl; …`. Call arguments
-    /// must be constants (a register argument after a call reads clobbered state).
-    /// A guarded call through a GLOBAL function pointer held in a local (the signal.c
-    /// dispatch tail): `F t = gf; if (!t) return; t();` loads the pointer into r12,
-    /// tests it, branches to the shared epilogue when the guard fires, and calls
-    /// through — `stwu; mflr; stw r0; lwz r12,gf; cmplwi r12,0; beq EPILOGUE; mtctr;
-    /// bctrl; EPILOGUE: lwz r0; mtlr; addi; blr`. Zero-argument, void, single call.
-    pub(crate) fn try_guarded_global_pointer_call(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
-        if function.return_type != Type::Void
-            || !function.guards.is_empty()
-            || function.locals.len() != 1
-            || function.return_expression.is_some()
-        {
-            return Ok(false);
-        }
-        let local = &function.locals[0];
-        if local.is_static {
-            return Ok(false);
-        }
-        let Some(Expression::Variable(global)) = &local.initializer else {
-            return Ok(false);
-        };
-        if !self.globals.contains_key(global.as_str())
-            || self.global_array_sizes.contains_key(global.as_str())
-        {
-            return Ok(false);
-        }
-        let [Statement::If {
-            condition,
-            then_body,
-            else_body,
-        }, Statement::Expression(Expression::Call { name, arguments })] =
-            function.statements.as_slice()
-        else {
-            return Ok(false);
-        };
-        if !matches!(then_body.as_slice(), [Statement::Return(None)]) || !else_body.is_empty() {
-            return Ok(false);
-        }
-        if name != &local.name {
-            return Ok(false);
-        }
-        // Arguments must ALREADY sit in their argument registers (`t(s)` with `s` the
-        // first parameter): nothing to materialize, so the sequence is identical to the
-        // zero-argument form. Anything needing placement defers.
-        for (position, argument) in arguments.iter().enumerate() {
-            let Expression::Variable(argument_name) = argument else {
-                return Ok(false);
-            };
-            let expected = mwcc_target::Eabi::FIRST_GENERAL_ARGUMENT + position as u8;
-            match self.locations.get(argument_name) {
-                Some(location)
-                    if location.class == ValueClass::General && location.register == expected => {}
-                _ => return Ok(false),
-            }
-        }
-
-        // The canonical saveless non-leaf frame, derived by the FRAME BUILDER — the
-        // first consumer of the plan-based prologue (its epilogue is the standard
-        // emit_epilogue_and_return form, identical to plan.epilogue()).
-        let plan = mwcc_vreg::FramePlan::sized_for(Vec::new());
-        self.non_leaf = true;
-        self.frame_size = plan.frame_size;
-        self.output.instructions.extend(plan.prologue());
-        self.emit_global_load_value(global, 12)?;
-        // The pointer local is UNSIGNED (cmplwi) and lives in r12 for the test.
-        self.locations.insert(
-            local.name.clone(),
-            Location {
-                class: ValueClass::General,
-                register: 12,
-                signed: false,
-                width: 32,
-                pointee: None,
-                stride: None,
-            },
-        );
-        let (options, condition_bit) = self.emit_condition_test(condition)?;
-        // The guard branches ON TRUE straight to the shared epilogue (the bare-void fold).
-        // The branch label and the staged pointer load advance the anonymous-`@N` counter.
-        self.output.anonymous_label_bump = 3;
-        let epilogue_branch = self.output.instructions.len();
-        self.output
-            .instructions
-            .push(Instruction::BranchConditionalForward {
-                options: options ^ 8,
-                condition_bit,
-                target: 0,
-            });
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: 12 });
-        self.output
-            .instructions
-            .push(Instruction::BranchToCountRegisterAndLink);
-        let epilogue_label = self.output.instructions.len();
-        if let Instruction::BranchConditionalForward { target, .. } =
-            &mut self.output.instructions[epilogue_branch]
-        {
-            *target = epilogue_label;
         }
         self.emit_epilogue_and_return();
         Ok(true)
@@ -1415,19 +1302,32 @@ impl Generator {
             for statement in calls {
                 self.emit_statement(statement)?;
             }
-            // The epilogue computes the return expression in the slot after the LR
-            // reload: `lwz r0,20; add r3,r31,r30; lwz r31,12; lwz r30,8; mtlr; addi; blr`.
+            // Build 163 computes the return before the LR reload; later builds use
+            // the LR-load latency slot. Saved-register restores follow either form.
             let result = mwcc_target::Eabi::general_result().number;
-            self.output.instructions.push(Instruction::LoadWord {
-                d: 0,
-                a: 1,
-                offset: 20,
-            });
-            self.evaluate_tail(
-                function.return_expression.as_ref().expect("checked above"),
-                function.return_type,
-                result,
-            )?;
+            if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+                self.evaluate_tail(
+                    function.return_expression.as_ref().expect("checked above"),
+                    function.return_type,
+                    result,
+                )?;
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 20,
+                });
+            } else {
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 20,
+                });
+                self.evaluate_tail(
+                    function.return_expression.as_ref().expect("checked above"),
+                    function.return_type,
+                    result,
+                )?;
+            }
             self.output.instructions.push(Instruction::LoadWord {
                 d: saved,
                 a: 1,

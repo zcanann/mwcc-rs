@@ -5,7 +5,7 @@ use super::*;
 use mwcc_versions::FrameConvention;
 
 impl Generator {
-    fn emit_indirect_branch_and_link(&mut self, register: u8) {
+    pub(crate) fn emit_indirect_branch_and_link(&mut self, register: u8) {
         match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
                 self.output
