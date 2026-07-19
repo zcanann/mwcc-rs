@@ -82,7 +82,7 @@ pub fn lower_function(
         .filter(|local| local.is_static)
         .cloned()
         .collect();
-    let mut static_local_data: Vec<(String, Option<Vec<u8>>, u32, u32, bool)> = Vec::new();
+    let mut static_local_data: Vec<mwcc_machine_code::StaticLocal> = Vec::new();
     for local in &static_locals {
         if globals.iter().any(|global| global.name == local.name) {
             return Err(Diagnostic::error(
@@ -129,7 +129,14 @@ pub fn lower_function(
             }
             _ => element.max(4),
         };
-        static_local_data.push((local.name.clone(), bytes, size, alignment, local.is_const));
+        static_local_data.push(mwcc_machine_code::StaticLocal {
+            name: local.name.clone(),
+            initial_bytes: bytes,
+            size,
+            alignment,
+            is_const: local.is_const,
+            relocations: local.data_relocations.clone(),
+        });
     }
     // The body machinery never sees the statics as automatic locals.
     let stripped;

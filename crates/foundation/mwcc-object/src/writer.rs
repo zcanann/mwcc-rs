@@ -1869,6 +1869,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     let mut functions_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
+        // A function-local static initializer creates its address targets while
+        // compiling the owning body. The LOCAL object symbols were emitted in
+        // the per-function block above; register each object's targets here,
+        // in declaration order with reverse-slot order inside the object, before
+        // the owner's GLOBAL function symbol.
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| object.static_local_owner == Some(index))
+        {
+            emit_object_targets!(object);
+        }
         // Assign this function's referenced externals in mwcc's symbol-table order
         // (its AST `symbol_order`) for the names it lists, then any remaining in
         // relocation order so nothing is missed. `.text` reference (offset) order

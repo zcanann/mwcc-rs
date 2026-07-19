@@ -40,7 +40,14 @@ impl Generator {
         self.non_leaf = true;
         // The inlined __init_uart_console's function-scoped static: emitted
         // as initialized$K (K from the @N front) in .sbss.
-        self.output.static_locals = vec![("initialized".to_string(), None, 4, 4, false)];
+        self.output.static_locals = vec![mwcc_machine_code::StaticLocal {
+            name: "initialized".to_string(),
+            initial_bytes: None,
+            size: 4,
+            alignment: 4,
+            is_const: false,
+            relocations: Vec::new(),
+        }];
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
             std::collections::HashMap::new();
         for target in [22, 26, 35, 41] {

@@ -479,6 +479,7 @@ impl Parser {
                         array_length: Some(total),
                         is_static: false,
                         data_bytes: None,
+                        data_relocations: Vec::new(),
                         is_const: false,
                         row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)),
                     });
@@ -572,6 +573,7 @@ impl Parser {
                             array_length: Some(length),
                             is_static: false,
                             data_bytes,
+                            data_relocations: Vec::new(),
                             is_const: false,
                             row_bytes: None,
                         });
@@ -646,6 +648,7 @@ impl Parser {
                         array_length: Some(length),
                         is_static: true,
                         data_bytes: Some(bytes),
+                        data_relocations: Vec::new(),
                         is_const: self.last_type_was_const,
                         row_bytes: None,
                     });
@@ -663,6 +666,7 @@ impl Parser {
                     array_length: None,
                     is_static,
                     data_bytes: None,
+                    data_relocations: Vec::new(),
                     is_const: false,
                     row_bytes: None,
                 });

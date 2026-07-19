@@ -2891,6 +2891,7 @@ impl Parser {
                         array_length: Some(total),
                         is_static: false,
                         data_bytes: None,
+                        data_relocations: Vec::new(),
                         is_const: false,
                         row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)),
                     });
@@ -2944,6 +2945,7 @@ impl Parser {
                         array_length: None,
                         is_static: false,
                         data_bytes: None,
+                        data_relocations: Vec::new(),
                         is_const: false,
                         row_bytes: None,
                     });
@@ -3006,54 +3008,102 @@ impl Parser {
                         }
                     }
                     if *self.peek() == Token::Equals {
-                        // An AUTOMATIC initialized array parses like the static
-                        // form (its byte image on the local); NATIVE codegen for
-                        // the frame copy-in is unmodeled, so the GENERATOR defers
-                        // it AFTER the exact-match templates get a claim.
                         self.advance();
-                        self.expect(Token::BraceOpen)?;
-                        let mut bytes = Vec::new();
-                        let mut count = 0u16;
-                        loop {
-                            if *self.peek() == Token::BraceClose {
-                                break;
-                            }
-                            // A float-literal element (optionally negated) keeps the direct
-                            // read; any other element is a CONSTANT EXPRESSION — enums,
-                            // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
-                            let is_float = matches!(self.peek(), Token::FloatLiteral(_))
-                                || (*self.peek() == Token::Minus
-                                    && matches!(self.peek_at(1), Token::FloatLiteral(_)));
-                            if is_float {
-                                let negative = self.eat_keyword(Token::Minus);
-                                let Token::FloatLiteral(value) = self.advance().clone() else {
-                                    unreachable!()
-                                };
-                                let value = if negative { -value } else { value };
-                                match declared_type {
-                                    Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
-                                    Type::Double => bytes.extend_from_slice(&value.to_be_bytes()),
-                                    _ => return Err(Diagnostic::error("a float element in an integer static array is not supported yet (roadmap)")),
-                                }
-                            } else {
-                                let value = self.parse_integer_constant()?;
-                                match declared_type {
-                                    Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
-                                    Type::Double => bytes.extend_from_slice(&(value as f64).to_be_bytes()),
-                                    Type::Int | Type::UnsignedInt => bytes.extend_from_slice(&(value as i32).to_be_bytes()),
-                                    Type::Char | Type::UnsignedChar => bytes.push(value as u8),
-                                    Type::Short | Type::UnsignedShort => bytes.extend_from_slice(&(value as i16).to_be_bytes()),
-                                    _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
+                        if is_static
+                            && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
+                        {
+                            // Function/data-pointer static arrays carry zero word images plus
+                            // ADDR32 relocations, just like their file-scope counterparts.
+                            let elements = self.parse_address_initializer()?;
+                            let count = u16::try_from(elements.len()).map_err(|_| {
+                                Diagnostic::error("too many static pointer initializer elements")
+                            })?;
+                            let length = explicit.unwrap_or(count);
+                            let mut bytes = vec![0u8; usize::from(length) * 4];
+                            for (index, element) in elements.into_iter().enumerate() {
+                                let offset = index as u32 * 4;
+                                match element {
+                                    PointerElement::Null => {}
+                                    PointerElement::Scalar(value) => bytes
+                                        [index * 4..index * 4 + 4]
+                                        .copy_from_slice(&(value as u32).to_be_bytes()),
+                                    PointerElement::Symbol(target) => {
+                                        data_relocations.push((offset, target, 0));
+                                    }
+                                    PointerElement::Str(_) => {
+                                        return Err(Diagnostic::error("a string in a static-local pointer array needs function-local pooling (roadmap)"));
+                                    }
                                 }
                             }
-                            count += 1;
-                            if !self.eat_keyword(Token::Comma) {
-                                break;
+                            data_bytes = Some(bytes);
+                            Some(length)
+                        } else if is_static
+                            && matches!(declared_type, Type::Struct { .. })
+                            && struct_tag.is_some()
+                        {
+                            // Preserve field widths/padding and address fields for a static
+                            // array of structs. The same relocation-aware serializer serves
+                            // file-scope struct arrays.
+                            let tag = struct_tag.as_ref().unwrap();
+                            let bytes =
+                                self.parse_struct_array_initializer(tag, &mut data_relocations)?;
+                            let element_size = match declared_type {
+                                Type::Struct { size, .. } => usize::from(size),
+                                _ => unreachable!(),
+                            };
+                            let count = u16::try_from(bytes.len() / element_size).map_err(|_| {
+                                Diagnostic::error("too many static struct initializer elements")
+                            })?;
+                            data_bytes = Some(bytes);
+                            Some(explicit.unwrap_or(count))
+                        } else {
+                            // An AUTOMATIC initialized array parses like the static
+                            // form (its byte image on the local); native frame copy-in
+                            // remains a generator concern.
+                            self.expect(Token::BraceOpen)?;
+                            let mut bytes = Vec::new();
+                            let mut count = 0u16;
+                            loop {
+                                if *self.peek() == Token::BraceClose {
+                                    break;
+                                }
+                                // A float-literal element (optionally negated) keeps the direct
+                                // read; any other element is a CONSTANT EXPRESSION — enums,
+                                // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
+                                let is_float = matches!(self.peek(), Token::FloatLiteral(_))
+                                    || (*self.peek() == Token::Minus
+                                        && matches!(self.peek_at(1), Token::FloatLiteral(_)));
+                                if is_float {
+                                    let negative = self.eat_keyword(Token::Minus);
+                                    let Token::FloatLiteral(value) = self.advance().clone() else {
+                                        unreachable!()
+                                    };
+                                    let value = if negative { -value } else { value };
+                                    match declared_type {
+                                        Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
+                                        Type::Double => bytes.extend_from_slice(&value.to_be_bytes()),
+                                        _ => return Err(Diagnostic::error("a float element in an integer static array is not supported yet (roadmap)")),
+                                    }
+                                } else {
+                                    let value = self.parse_integer_constant()?;
+                                    match declared_type {
+                                        Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
+                                        Type::Double => bytes.extend_from_slice(&(value as f64).to_be_bytes()),
+                                        Type::Int | Type::UnsignedInt => bytes.extend_from_slice(&(value as i32).to_be_bytes()),
+                                        Type::Char | Type::UnsignedChar => bytes.push(value as u8),
+                                        Type::Short | Type::UnsignedShort => bytes.extend_from_slice(&(value as i16).to_be_bytes()),
+                                        _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
+                                    }
+                                }
+                                count += 1;
+                                if !self.eat_keyword(Token::Comma) {
+                                    break;
+                                }
                             }
+                            self.expect(Token::BraceClose)?;
+                            data_bytes = Some(bytes);
+                            Some(explicit.unwrap_or(count))
                         }
-                        self.expect(Token::BraceClose)?;
-                        data_bytes = Some(bytes);
-                        Some(explicit.unwrap_or(count))
                     } else {
                         match explicit {
                             Some(length) => Some(length),
@@ -3123,6 +3173,7 @@ impl Parser {
                     array_length,
                     is_static,
                     data_bytes,
+                    data_relocations,
                     is_const: self.last_type_was_const,
                     row_bytes: (inner_elements > 1)
                         .then(|| inner_elements * (declared_type.width() as u16 / 8)),

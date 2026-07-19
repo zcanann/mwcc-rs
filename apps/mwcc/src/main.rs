@@ -427,13 +427,13 @@ fn compile(
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let total_inline_bump = unit.skipped_inline_functions as i64;
     for (function_index, function) in machine_functions.iter().enumerate() {
-        for (name, bytes, size, alignment, is_const) in &function.static_locals {
+        for local in &function.static_locals {
             // A static numbers at the counter AS OF ITS DECLARATION (the parser's
             // positional sample). The whole-unit pre-bump folds into the FIRST
             // function's block below, so a first-function static shifts by its
             // full prebump; a later owner's running counter already includes the
             // total, leaving only the (typically zero) difference.
-            let anonymous_adjust = match unit.static_local_prebumps.get(name) {
+            let anonymous_adjust = match unit.static_local_prebumps.get(&local.name) {
                 Some(&prebump) if function_index == 0 => prebump as i64,
                 Some(&prebump) => prebump as i64 - total_inline_bump,
                 None => 0,
@@ -444,15 +444,25 @@ fn compile(
                 is_weak: false,
                 functions_before: 0,
                 non_static_functions_before: 0,
-                name: name.clone(),
-                size: *size,
-                alignment: *alignment,
-                initial_bytes: bytes.clone(),
-                is_const: *is_const,
-                force_full_data_section: *is_const && !read_only_small_data,
+                name: local.name.clone(),
+                size: local.size,
+                alignment: local.alignment,
+                initial_bytes: local.initial_bytes.clone(),
+                is_const: local.is_const,
+                force_full_data_section: local.is_const && !read_only_small_data,
                 is_static: true,
                 is_explicit_zero: false,
-                relocations: Vec::new(),
+                relocations: local
+                    .relocations
+                    .iter()
+                    .map(
+                        |(offset, target, addend)| mwcc_machine_code_to_object::DataRelocation {
+                            offset: *offset,
+                            target: target.clone(),
+                            addend: *addend,
+                        },
+                    )
+                    .collect(),
                 section: None,
             });
         }

@@ -56,16 +56,37 @@ impl Generator {
             PoolStatics::Both => {
                 self.output
                     .static_locals
-                    .push(("protopool".to_string(), None, 56, 4, false));
+                    .push(mwcc_machine_code::StaticLocal {
+                        name: "protopool".to_string(),
+                        initial_bytes: None,
+                        size: 56,
+                        alignment: 4,
+                        is_const: false,
+                        relocations: Vec::new(),
+                    });
                 self.output
                     .static_locals
-                    .push(("init".to_string(), None, 1, 1, false));
+                    .push(mwcc_machine_code::StaticLocal {
+                        name: "init".to_string(),
+                        initial_bytes: None,
+                        size: 1,
+                        alignment: 1,
+                        is_const: false,
+                        relocations: Vec::new(),
+                    });
                 self.output.static_local_adjust = 50; // measured: $109/$110
             }
             PoolStatics::InitLead => {
                 self.output
                     .static_locals
-                    .push(("init".to_string(), None, 1, 1, false));
+                    .push(mwcc_machine_code::StaticLocal {
+                        name: "init".to_string(),
+                        initial_bytes: None,
+                        size: 1,
+                        alignment: 1,
+                        is_const: false,
+                        relocations: Vec::new(),
+                    });
                 self.output.static_locals_lead = true;
                 self.output.static_local_adjust = 40; // measured: init$72
             }

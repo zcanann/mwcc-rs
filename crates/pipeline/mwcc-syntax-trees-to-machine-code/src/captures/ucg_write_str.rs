@@ -35,7 +35,14 @@ impl Generator {
         // compilation surface as UND globals (measured: syms after the fn).
         self.output.phantom_externals = vec!["__OSf32tos16".to_string(), "__OSf32tou8".to_string()];
         // The inlined init's static local (positional $N via the unit prebump).
-        self.output.static_locals = vec![("initialized".to_string(), None, 4, 4, false)];
+        self.output.static_locals = vec![mwcc_machine_code::StaticLocal {
+            name: "initialized".to_string(),
+            initial_bytes: None,
+            size: 4,
+            alignment: 4,
+            is_const: false,
+            relocations: Vec::new(),
+        }];
         // -- emit (the capture, verbatim) --
         self.frame_size = 32;
         self.non_leaf = true;

@@ -83,9 +83,9 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
             }
         }
         _ => {
-            return Err(Diagnostic::error(
-                "a non-constant global initializer is not supported yet (roadmap)",
-            ))
+            return Err(Diagnostic::error(format!(
+                "a non-constant global initializer is not supported yet (roadmap): {expression:?}"
+            )))
         }
     })
 }

@@ -32,7 +32,14 @@ impl Generator {
         };
         // The inlined __init_console's static local (the $N .sbss shape —
         // fire-491 diagnosis; same as the pikmin2 uart_write precedent).
-        self.output.static_locals = vec![("initialized".to_string(), None, 4, 4, false)];
+        self.output.static_locals = vec![mwcc_machine_code::StaticLocal {
+            name: "initialized".to_string(),
+            initial_bytes: None,
+            size: 4,
+            alignment: 4,
+            is_const: false,
+            relocations: Vec::new(),
+        }];
         // External symbol order measured from the real object: the inlined
         // __init_console's InitializeUART is FIRST-REFERENCED in .text, ahead
         // of ReadUARTN (the AST fallback cannot see through the inlining).

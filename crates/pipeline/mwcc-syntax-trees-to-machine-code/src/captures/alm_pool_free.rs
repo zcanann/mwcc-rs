@@ -48,7 +48,14 @@ impl Generator {
         if owns_protopool {
             self.output
                 .static_locals
-                .push(("protopool".to_string(), None, 56, 4, false));
+                .push(mwcc_machine_code::StaticLocal {
+                    name: "protopool".to_string(),
+                    initial_bytes: None,
+                    size: 56,
+                    alignment: 4,
+                    is_const: false,
+                    relocations: Vec::new(),
+                });
             self.output.static_locals_lead = true;
             self.output.static_local_adjust = 30; // measured: protopool$71
         }

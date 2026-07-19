@@ -30,6 +30,10 @@ pub struct LocalDeclaration {
     /// A static local's constant byte image (a brace-initialized array or a
     /// scalar literal); `None` for a zero-initialized or automatic local.
     pub data_bytes: Option<Vec<u8>>,
+    /// `R_PPC_ADDR32` relocations carried by a static local's data image:
+    /// (byte offset, target symbol, addend). Empty for automatic locals and
+    /// ordinary constant images.
+    pub data_relocations: Vec<(u32, String, i32)>,
     /// Whether the static local was declared `const` (routes .sdata2/.rodata).
     pub is_const: bool,
     /// For a flattened MULTI-DIMENSIONAL array local (`float m[3][4];` / `Mtx m;`):

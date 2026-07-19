@@ -48,6 +48,20 @@ pub struct JumpTable {
     pub anonymous_offset: u32,
 }
 
+/// A function-scoped object with static storage. Keeping this as a named data
+/// object (rather than an expanding tuple) lets the syntax and object stages
+/// preserve initialized bytes and their relocations independently of codegen.
+#[derive(Debug, Clone)]
+pub struct StaticLocal {
+    pub name: String,
+    pub initial_bytes: Option<Vec<u8>>,
+    pub size: u32,
+    pub alignment: u32,
+    pub is_const: bool,
+    /// `(byte offset, target symbol, addend)` for `R_PPC_ADDR32` entries.
+    pub relocations: Vec<(u32, String, i32)>,
+}
+
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
@@ -105,10 +119,9 @@ pub struct MachineFunction {
     /// the weak-OBJECT 0x0d, not declspec-weak's 0x0e (strikers mbstowcs).
     pub weak_inline: bool,
     pub is_weak: bool,
-    /// The function's STATIC LOCALS: (name, byte image or None for zero,
-    /// byte size, alignment, is_const). Emitted as `name$K` LOCAL objects,
-    /// K taken from the function's @N sequence front.
-    pub static_locals: Vec<(String, Option<Vec<u8>>, u32, u32, bool)>,
+    /// The function's STATIC LOCALS, emitted as `name$K` LOCAL objects with K
+    /// taken from the function's @N sequence front.
+    pub static_locals: Vec<StaticLocal>,
     /// Extra `$N` adjustment for THIS function's capture-pushed static locals
     /// (unmeasured inline label consumption before the owner — _alloc's
     /// protopool$109/init$110 sit +50 past the natural counter).
