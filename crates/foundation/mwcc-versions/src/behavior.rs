@@ -15,7 +15,7 @@ use crate::config::CompilerConfig;
 use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
-    CoefficientTableRelocationStyle, ConstantStoreScheduleStyle, FixedAddressRmwStyle,
+    CoefficientTableRelocationStyle, ComputedStoreIssueStyle, ConstantStoreScheduleStyle, FixedAddressRmwStyle,
     FrameConvention, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
@@ -85,6 +85,7 @@ pub enum Quirk {
     LegacyNarrowCompoundShift,
     LegacyTrueFirstLogicalOr,
     LegacyInterleavedConstantStores,
+    LegacyEvaluationOrderComputedStores,
     LegacyInPlaceBitFieldExtraction,
     LegacyConstantJoinReturnBeforeLrReload,
     LegacyGuardStoreBeforeReturnValue,
@@ -129,6 +130,7 @@ impl Quirk {
             Quirk::LegacyNarrowCompoundShift => QuirkKind::Intentional,
             Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
             Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
+            Quirk::LegacyEvaluationOrderComputedStores => QuirkKind::Intentional,
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
@@ -231,6 +233,9 @@ impl Quirk {
             Quirk::LegacyInterleavedConstantStores => {
                 "distinct constant-store runs use build 163's interleaved pair schedule"
             }
+            Quirk::LegacyEvaluationOrderComputedStores => {
+                "computed-store runs issue stores in build 163's value evaluation order"
+            }
             Quirk::LegacyInPlaceBitFieldExtraction => {
                 "bit-field unit loads extract in place in build 163"
             }
@@ -303,6 +308,8 @@ pub struct Behavior {
     pub bit_field_load_placement: BitFieldLoadPlacement,
     /// Scheduling of distinct constant values consumed by consecutive stores.
     pub constant_store_schedule_style: ConstantStoreScheduleStyle,
+    /// Issue order for stores fed by an overlapping two-value schedule.
+    pub computed_store_issue_style: ComputedStoreIssueStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
@@ -407,6 +414,7 @@ impl Behavior {
             narrow_store_conversion_style: config.build.profile.narrow_store_conversion_style(),
             bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
+            computed_store_issue_style: config.build.profile.computed_store_issue_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -489,6 +497,9 @@ impl Behavior {
         }
         if self.constant_store_schedule_style == ConstantStoreScheduleStyle::InterleavedPairs {
             quirks.push(ActiveQuirk::of(Quirk::LegacyInterleavedConstantStores));
+        }
+        if self.computed_store_issue_style == ComputedStoreIssueStyle::EvaluationOrder {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyEvaluationOrderComputedStores));
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
@@ -689,6 +700,10 @@ mod tests {
         assert_eq!(
             behavior.logical_or_value_style,
             LogicalOrValueStyle::TrueFirst
+        );
+        assert_eq!(
+            behavior.computed_store_issue_style,
+            ComputedStoreIssueStyle::EvaluationOrder
         );
         assert_eq!(
             behavior.bit_field_load_placement,

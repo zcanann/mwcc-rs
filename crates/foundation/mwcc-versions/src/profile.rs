@@ -152,6 +152,16 @@ pub enum ConstantStoreScheduleStyle {
     InterleavedPairs,
 }
 
+/// Store issue order after a two-value overlap schedule has materialized both
+/// results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputedStoreIssueStyle {
+    /// 2.4.x issues the result expected to become ready first.
+    ReadinessOrder,
+    /// 2.3.3 preserves the value evaluation order.
+    EvaluationOrder,
+}
+
 /// AST traversal used to assign external/data symbol indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolTraversalStyle {
@@ -395,6 +405,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         ConstantStoreScheduleStyle::PreloadAll
     }
 
+    fn computed_store_issue_style(&self) -> ComputedStoreIssueStyle {
+        ComputedStoreIssueStyle::ReadinessOrder
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -564,6 +578,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn constant_store_schedule_style(&self) -> ConstantStoreScheduleStyle {
         ConstantStoreScheduleStyle::InterleavedPairs
+    }
+    fn computed_store_issue_style(&self) -> ComputedStoreIssueStyle {
+        ComputedStoreIssueStyle::EvaluationOrder
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {

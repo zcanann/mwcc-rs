@@ -341,15 +341,34 @@ impl Generator {
                 });
         }
         let first_register = self.fresh_virtual_general();
-        if weights[1] > weights[0] {
+        let evaluation_order = if weights[1] > weights[0] {
             // The second value is the heavier op: compute it (into r0) first.
             self.evaluate_general(&stores[1].2, GENERAL_SCRATCH)?;
             self.evaluate_general(&stores[0].2, first_register)?;
+            [1usize, 0usize]
         } else {
             self.evaluate_general(&stores[0].2, first_register)?;
             self.evaluate_general(&stores[1].2, GENERAL_SCRATCH)?;
-        }
-        if high[0] && !high[1] {
+            [0usize, 1usize]
+        };
+        let store_register = |index: usize| {
+            if index == 0 {
+                first_register
+            } else {
+                GENERAL_SCRATCH
+            }
+        };
+        if self.behavior.computed_store_issue_style
+            == mwcc_versions::ComputedStoreIssueStyle::EvaluationOrder
+        {
+            for index in evaluation_order {
+                self.emit_sda_global_store_from(
+                    &stores[index].0,
+                    stores[index].1,
+                    store_register(index),
+                )?;
+            }
+        } else if high[0] && !high[1] {
             // The first value is the long op: store the quicker second value first.
             self.emit_sda_global_store_from(&stores[1].0, stores[1].1, GENERAL_SCRATCH)?;
             self.emit_sda_global_store_from(&stores[0].0, stores[0].1, first_register)?;
