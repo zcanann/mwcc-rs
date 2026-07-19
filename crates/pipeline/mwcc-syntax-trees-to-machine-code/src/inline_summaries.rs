@@ -30,6 +30,15 @@ pub(crate) struct FixedLocalRmwSummary {
     pub(crate) set_bits: u16,
 }
 
+/// A parameterless static helper whose entire body is one direct void call.
+/// mwcc may retain the helper's out-of-line body while also expanding this call
+/// at a caller that owns a larger schedule (for example a REL ctor walker).
+#[derive(Clone, Debug)]
+pub(crate) struct StaticCallWrapperSummary {
+    pub(crate) callee: String,
+    pub(crate) arguments: Vec<Expression>,
+}
+
 /// Verified helper-body facts available while lowering one translation unit.
 #[derive(Clone, Debug, Default)]
 pub struct InlineSummaries {
@@ -38,6 +47,7 @@ pub struct InlineSummaries {
     queue_pops: HashMap<String, QueuePopSummary>,
     queue_services: HashMap<String, QueueServiceSummary>,
     queue_services_with_callers: HashSet<String>,
+    static_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
 }
 
 impl InlineSummaries {
@@ -61,6 +71,11 @@ impl InlineSummaries {
             if let Some(summary) = summarize_queue_service(function) {
                 summaries
                     .queue_services
+                    .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_static_call_wrapper(function) {
+                summaries
+                    .static_call_wrappers
                     .insert(function.name.clone(), summary);
             }
         }
@@ -99,6 +114,10 @@ impl InlineSummaries {
     pub(crate) fn queue_service_has_caller(&self, name: &str) -> bool {
         self.queue_services_with_callers.contains(name)
     }
+
+    pub(crate) fn static_call_wrapper(&self, name: &str) -> Option<&StaticCallWrapperSummary> {
+        self.static_call_wrappers.get(name)
+    }
 }
 
 fn peel_casts(mut expression: &Expression) -> &Expression {
@@ -124,6 +143,24 @@ fn is_plain_void_helper(function: &Function) -> bool {
         && function.guards.is_empty()
         && function.return_expression.is_none()
         && function.asm_body.is_none()
+}
+
+fn summarize_static_call_wrapper(function: &Function) -> Option<StaticCallWrapperSummary> {
+    if !function.is_static || !is_plain_void_helper(function) || !function.locals.is_empty() {
+        return None;
+    }
+    let [Statement::Expression(Expression::Call { name, arguments })] =
+        function.statements.as_slice()
+    else {
+        return None;
+    };
+    if name == &function.name {
+        return None;
+    }
+    Some(StaticCallWrapperSummary {
+        callee: name.clone(),
+        arguments: arguments.clone(),
+    })
 }
 
 fn summarize_fixed_poll(function: &Function) -> Option<FixedPollSummary> {
@@ -231,4 +268,68 @@ fn summarize_fixed_local_rmw(function: &Function) -> Option<FixedLocalRmwSummary
             .ok()
             .filter(|bits| *bits != 0)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrapper(name: &str, is_static: bool, statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: name.into(),
+            is_static,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+        }
+    }
+
+    #[test]
+    fn static_call_wrapper_requires_the_entire_helper_shape() {
+        let direct_call = Statement::Expression(Expression::Call {
+            name: "target".into(),
+            arguments: vec![Expression::IntegerLiteral(7)],
+        });
+        let valid = wrapper("helper", true, vec![direct_call.clone()]);
+        let summaries = InlineSummaries::analyze(&[valid]);
+        let summary = summaries.static_call_wrapper("helper").unwrap();
+        assert_eq!(summary.callee, "target");
+        assert!(matches!(
+            summary.arguments.as_slice(),
+            [Expression::IntegerLiteral(7)]
+        ));
+
+        let external = wrapper("external", false, vec![direct_call]);
+        let recursive = wrapper(
+            "recursive",
+            true,
+            vec![Statement::Expression(Expression::Call {
+                name: "recursive".into(),
+                arguments: Vec::new(),
+            })],
+        );
+        let extra_statement = wrapper(
+            "extra",
+            true,
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "target".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Expression(Expression::IntegerLiteral(0)),
+            ],
+        );
+        let near_misses = InlineSummaries::analyze(&[external, recursive, extra_statement]);
+        assert!(near_misses.static_call_wrapper("external").is_none());
+        assert!(near_misses.static_call_wrapper("recursive").is_none());
+        assert!(near_misses.static_call_wrapper("extra").is_none());
+    }
 }

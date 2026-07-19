@@ -101,11 +101,35 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.pooling_enabled,
                 };
             }
-            // `-sdata N`: a threshold of zero addresses globals absolutely.
+            // `-sdata N`: zero disables writable SDA (r13); a later non-zero
+            // threshold turns it back on. Keep it independent from `-sdata2`.
             "-sdata" => {
                 index += 1;
-                if arguments.get(index).map(String::as_str) == Some("0") {
-                    invocation.flags.global_addressing = GlobalAddressing::Absolute;
+                if let Some(threshold) = arguments
+                    .get(index)
+                    .and_then(|value| value.parse::<u32>().ok())
+                {
+                    invocation.flags.global_addressing = if threshold == 0 {
+                        GlobalAddressing::Absolute
+                    } else {
+                        GlobalAddressing::SmallData
+                    };
+                }
+            }
+            // `-sdata2 N` is the corresponding independent read-only SDA2 (r2)
+            // threshold. Model zero versus non-zero until exact numeric threshold
+            // selection is needed by a measured object.
+            "-sdata2" => {
+                index += 1;
+                if let Some(threshold) = arguments
+                    .get(index)
+                    .and_then(|value| value.parse::<u32>().ok())
+                {
+                    invocation.flags.read_only_global_addressing = if threshold == 0 {
+                        GlobalAddressing::Absolute
+                    } else {
+                        GlobalAddressing::SmallData
+                    };
                 }
             }
             // `-O0,p` .. `-O4,s` — only the level affects what we model so far.
@@ -388,6 +412,8 @@ fn compile(
             function.weak_inline = true;
         }
     }
+    let read_only_small_data =
+        config.flags.read_only_global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let total_inline_bump = unit.skipped_inline_functions as i64;
     for (function_index, function) in machine_functions.iter().enumerate() {
@@ -413,7 +439,7 @@ fn compile(
                 alignment: *alignment,
                 initial_bytes: bytes.clone(),
                 is_const: *is_const,
-                force_full_data_section: false,
+                force_full_data_section: *is_const && !read_only_small_data,
                 is_static: true,
                 is_explicit_zero: false,
                 relocations: Vec::new(),
@@ -533,9 +559,9 @@ fn compile(
         if extern_reference || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
             continue;
         }
-        let force_full_data_section = behavior.inferred_array_uses_full_data_section
-            && global.array_length_inferred
-            && global.section.is_none();
+        let force_full_data_section = global.section.is_none()
+            && ((behavior.inferred_array_uses_full_data_section && global.array_length_inferred)
+                || (global.is_const && !read_only_small_data));
         // A `static const` SCALAR is folded into its readers (or elided when unused),
         // so keep dropping it. A `static const` ARRAY can't be folded into a register —
         // mwcc emits it to `.rodata` with a LOCAL symbol — so let it fall through to the
@@ -673,7 +699,8 @@ fn compile(
                                     alignment: 4,
                                     initial_bytes: Some(object_bytes),
                                     is_const: config.flags.string_literals_read_only,
-                                    force_full_data_section: false,
+                                    force_full_data_section: config.flags.string_literals_read_only
+                                        && !read_only_small_data,
                                     is_static: true,
                                     is_explicit_zero: false,
                                     relocations: Vec::new(),
@@ -909,7 +936,10 @@ fn compile(
                                             alignment: 4,
                                             initial_bytes: Some(object_bytes),
                                             is_const: config.flags.string_literals_read_only,
-                                            force_full_data_section: false,
+                                            force_full_data_section: config
+                                                .flags
+                                                .string_literals_read_only
+                                                && !read_only_small_data,
                                             is_static: true,
                                             is_explicit_zero: false,
                                             relocations: Vec::new(),
@@ -994,7 +1024,9 @@ fn compile(
                     initial_bytes: Some(object_bytes),
                     is_const: config.flags.string_literals_read_only
                         || machine_function.strings_are_const,
-                    force_full_data_section: false,
+                    force_full_data_section: (config.flags.string_literals_read_only
+                        || machine_function.strings_are_const)
+                        && !read_only_small_data,
                     is_static: true,
                     is_explicit_zero: false,
                     relocations: Vec::new(),
@@ -1304,6 +1336,7 @@ fn compile(
 #[cfg(test)]
 mod tests {
     use super::parse_invocation;
+    use mwcc_versions::GlobalAddressing;
 
     #[test]
     fn command_line_cats_pragma_controls_object_catalogs() {
@@ -1341,6 +1374,35 @@ mod tests {
         let last_wins =
             parse_invocation(&["-pool".into(), "off".into(), "-pool".into(), "on".into()]);
         assert!(last_wins.flags.pooling_enabled);
+    }
+
+    #[test]
+    fn command_line_small_data_areas_are_independent_and_last_wins() {
+        let split = parse_invocation(&["-sdata".into(), "8".into(), "-sdata2".into(), "0".into()]);
+        assert_eq!(split.flags.global_addressing, GlobalAddressing::SmallData);
+        assert_eq!(
+            split.flags.read_only_global_addressing,
+            GlobalAddressing::Absolute
+        );
+
+        let last_wins = parse_invocation(&[
+            "-sdata".into(),
+            "0".into(),
+            "-sdata2".into(),
+            "0".into(),
+            "-sdata".into(),
+            "8".into(),
+            "-sdata2".into(),
+            "8".into(),
+        ]);
+        assert_eq!(
+            last_wins.flags.global_addressing,
+            GlobalAddressing::SmallData
+        );
+        assert_eq!(
+            last_wins.flags.read_only_global_addressing,
+            GlobalAddressing::SmallData
+        );
     }
 }
 

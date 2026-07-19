@@ -426,6 +426,9 @@ pub struct Behavior {
     pub integer_dag_style: IntegerDagStyle,
     /// Entry, allocation, and scheduling policy for specialized integer loops.
     pub integer_loop_style: IntegerLoopStyle,
+    /// Whether the invocation runs mwcc's O4 latency scheduler over selected
+    /// instructions and linkage save/reload slots.
+    pub schedule_latency_slots: bool,
     /// Optimization-level policy for ctor/dtor function-pointer walkers.
     pub pointer_walker_schedule_style: PointerWalkerScheduleStyle,
     /// Allocation and scheduling for float DAGs shared by two return arms.
@@ -534,6 +537,9 @@ pub struct Behavior {
     /// absolute (ADDR16 hi/lo). Driven by `-sdata`; the resolved home for the
     /// addressing decision Phase C will consume.
     pub global_addressing: GlobalAddressing,
+    /// How read-only file-scope objects are addressed — SDA2 (SDA21 off r2) or
+    /// absolute (ADDR16 hi/lo). Driven independently by `-sdata2`.
+    pub read_only_global_addressing: GlobalAddressing,
     /// Whether `-inline …,deferred` is active. Most deferred behavior belongs
     /// to TU/object orchestration; captures consult this only for measured
     /// codegen metadata differences.
@@ -581,6 +587,7 @@ impl Behavior {
             raise_family_style: config.build.profile.raise_family_style(),
             integer_dag_style: config.build.profile.integer_dag_style(),
             integer_loop_style: config.build.profile.integer_loop_style(),
+            schedule_latency_slots: config.flags.optimization == Optimization::O4,
             pointer_walker_schedule_style: match config.flags.optimization {
                 Optimization::O0 => PointerWalkerScheduleStyle::DirectAddressDuplicateLoad,
                 Optimization::O1 => PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad,
@@ -673,6 +680,7 @@ impl Behavior {
             narrow_compound_shift_style: config.build.profile.narrow_compound_shift_style(),
             logical_or_value_style: config.build.profile.logical_or_value_style(),
             global_addressing: config.flags.global_addressing,
+            read_only_global_addressing: config.flags.read_only_global_addressing,
             deferred_inlining: config.flags.inline_deferred,
         }
     }
@@ -916,31 +924,35 @@ mod tests {
             (
                 Optimization::O0,
                 PointerWalkerScheduleStyle::DirectAddressDuplicateLoad,
+                false,
             ),
             (
                 Optimization::O1,
                 PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad,
+                false,
             ),
             (
                 Optimization::O2,
                 PointerWalkerScheduleStyle::ReusedConditionLoad,
+                false,
             ),
             (
                 Optimization::O3,
                 PointerWalkerScheduleStyle::ReusedConditionLoad,
+                false,
             ),
             (
                 Optimization::O4,
                 PointerWalkerScheduleStyle::LatencyInterleaved,
+                true,
             ),
         ];
-        for (optimization, style) in expected {
+        for (optimization, style, schedule_latency_slots) in expected {
             let mut config = CompilerConfig::new(build::GC_2_6);
             config.flags.optimization = optimization;
-            assert_eq!(
-                Behavior::resolve(&config).pointer_walker_schedule_style,
-                style
-            );
+            let behavior = Behavior::resolve(&config);
+            assert_eq!(behavior.pointer_walker_schedule_style, style);
+            assert_eq!(behavior.schedule_latency_slots, schedule_latency_slots);
         }
     }
 

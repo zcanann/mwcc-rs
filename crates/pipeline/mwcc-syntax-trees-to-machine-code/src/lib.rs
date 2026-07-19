@@ -464,7 +464,9 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
 /// scheduler's identity policy this is a no-op; it becomes active as the policy
 /// is tuned against the oracle.
 fn schedule_instructions(generator: &mut Generator) {
-    let permutation: Vec<usize> = if generator.output.pre_scheduled {
+    let permutation: Vec<usize> = if generator.output.pre_scheduled
+        || !generator.behavior.schedule_latency_slots
+    {
         (0..generator.output.instructions.len()).collect()
     } else {
         // The `lis -> addi` latency-slot fill runs first (mwcc issues a ready
@@ -482,6 +484,9 @@ fn schedule_instructions(generator: &mut Generator) {
 /// Move the epilogue's saved-LR reload up to right after the last call, remapping
 /// relocation indices through the resulting permutation.
 fn hoist_link_register_reload(generator: &mut Generator) {
+    if !generator.behavior.schedule_latency_slots {
+        return;
+    }
     let permutation = mwcc_vreg::hoist_link_register_reload(&mut generator.output.instructions);
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
@@ -489,6 +494,9 @@ fn hoist_link_register_reload(generator: &mut Generator) {
 }
 
 fn schedule_link_register_save(generator: &mut Generator) {
+    if !generator.behavior.schedule_latency_slots {
+        return;
+    }
     let permutation = mwcc_vreg::schedule_link_register_save(&mut generator.output.instructions);
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];

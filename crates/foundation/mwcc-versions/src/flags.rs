@@ -21,10 +21,11 @@ pub enum Optimization {
     O4,
 }
 
-/// How file-scope globals are addressed. `-sdata N`/`-sdata2 N` set the small-data
-/// thresholds; a threshold of zero means a symbol never lands in small data, so it
-/// is addressed absolutely (`lis`/`addi` with `R_PPC_ADDR16_HA`/`_LO`) rather than
-/// off `r13`/`r2` (`R_PPC_EMB_SDA21`). REL modules build with both at zero.
+/// Whether one class of file-scope objects uses its small-data area. A threshold
+/// of zero means a symbol never lands in small data, so it is addressed absolutely
+/// (`lis`/`addi` with `R_PPC_ADDR16_HA`/`_LO`) rather than through
+/// `R_PPC_EMB_SDA21`. [`Flags`] keeps the writable (`-sdata`, r13) and read-only
+/// (`-sdata2`, r2) classes independent; REL modules commonly disable both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlobalAddressing {
     /// Small-data area: an `R_PPC_EMB_SDA21` reference off `r13`/`r2`.
@@ -47,7 +48,10 @@ pub enum CharDefault {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flags {
     pub optimization: Optimization,
+    /// Writable globals controlled by `-sdata` and addressed through r13 when on.
     pub global_addressing: GlobalAddressing,
+    /// Read-only globals controlled by `-sdata2` and addressed through r2 when on.
+    pub read_only_global_addressing: GlobalAddressing,
     pub char_default: CharDefault,
     /// `-inline …,deferred`: deferred inlining emits the object's compiler-generated
     /// functions in REVERSE definition order (and thus their symbols/records too).
@@ -76,6 +80,7 @@ impl Default for Flags {
         Flags {
             optimization: Optimization::O4,
             global_addressing: GlobalAddressing::SmallData,
+            read_only_global_addressing: GlobalAddressing::SmallData,
             char_default: CharDefault::BuildDefault,
             inline_deferred: false,
             cpp_exceptions: true,

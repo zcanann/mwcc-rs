@@ -20,8 +20,9 @@ impl Generator {
     /// The keystone is the r12 reuse: the condition load `lwz r12,0(r31)` (the next table entry)
     /// doubles as the indirect callee, so the body is just `mtctr r12; bctrl`. The walker lives in
     /// r31 (callee-saved, it crosses the calls). A `void` function (`_epilog`) drops the trailing
-    /// call and the `li r3,0`; an `int` function returns 0. Any trailing statement other than bare
-    /// calls, a non-4-byte table element, or a differently-shaped loop defers.
+    /// call and the `li r3,0`; an `int` function returns 0. A retained static helper whose entire
+    /// body is one call may be expanded through the TU's semantic inline summary. Any other trailing
+    /// statement, a non-4-byte table element, or a differently-shaped loop defers.
     pub(crate) fn try_pointer_walker_call_loop(
         &mut self,
         function: &Function,
@@ -110,14 +111,18 @@ impl Generator {
         }
 
         // The trailing statements: zero or more bare calls, then (for `int`) an optional `return 0`.
-        let mut trailing_calls: Vec<String> = Vec::new();
+        let mut trailing_calls: Vec<(
+            String,
+            Option<crate::inline_summaries::StaticCallWrapperSummary>,
+        )> = Vec::new();
         let mut saw_return_zero = false;
         for statement in trailing {
             match statement {
                 Statement::Expression(Expression::Call { name, arguments })
                     if arguments.is_empty() =>
                 {
-                    trailing_calls.push(name.clone());
+                    let wrapper = self.inline_summaries.static_call_wrapper(name).cloned();
+                    trailing_calls.push((name.clone(), wrapper));
                 }
                 Statement::Return(Some(Expression::IntegerLiteral(0))) if returns_int => {
                     saw_return_zero = true;
@@ -125,13 +130,12 @@ impl Generator {
                 _ => return Ok(false),
             }
         }
-        // A trailing call must be a genuine external (a file-scope prototype). A name the TU
-        // DEFINES instead — e.g. board_executor.c's `static ObjectSetup` — is one mwcc may INLINE
-        // into the caller (`lis BoardCreate; lis BoardDestroy; bl BoardObjectSetup`), which this
-        // recognizer does not model, so defer rather than emit a plain `bl`.
+        // A trailing call must be a genuine external (a file-scope prototype), or a verified
+        // parameterless static wrapper. The latter stays emitted out of line but its one-call body
+        // is expanded here (`ObjectSetup()` -> `BoardObjectSetup(BoardCreate, BoardDestroy)`).
         if trailing_calls
             .iter()
-            .any(|name| !self.prototyped_names.contains(name))
+            .any(|(name, wrapper)| !self.prototyped_names.contains(name) && wrapper.is_none())
         {
             return Ok(false);
         }
@@ -279,11 +283,15 @@ impl Generator {
         // The trailing calls, then the final schedule. O4 issues the saved-LR reload early to overlap
         // it with return-value materialization and the GPR reload; lower levels retain source/canonical
         // `li; lwz r31; lwz r0` order.
-        for name in &trailing_calls {
-            self.record_relocation(RelocationKind::Rel24, name);
-            self.output.instructions.push(Instruction::BranchAndLink {
-                target: name.clone(),
-            });
+        for (name, wrapper) in &trailing_calls {
+            if let Some(wrapper) = wrapper {
+                self.emit_call(&wrapper.callee, &wrapper.arguments, None, false)?;
+            } else {
+                self.record_relocation(RelocationKind::Rel24, name);
+                self.output.instructions.push(Instruction::BranchAndLink {
+                    target: name.clone(),
+                });
+            }
         }
         if interleave_linkage {
             self.output.instructions.push(Instruction::LoadWord {
