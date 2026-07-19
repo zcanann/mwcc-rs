@@ -551,6 +551,57 @@ impl Generator {
         Ok(true)
     }
 
+    /// Recognize `if (punned-word < C) { x *= K; } return x;` after frame slots
+    /// have been assigned. The resulting plan is shared by frame layout and
+    /// emission so generation-specific padding cannot drift from the claimed
+    /// writeback shape.
+    fn classify_frame_writeback<'a>(
+        &self,
+        function: &'a Function,
+    ) -> Option<(GuardTest<'a>, i16, f64)> {
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
+        else {
+            return None;
+        };
+        if !else_body.is_empty() {
+            return None;
+        }
+        let Some(Expression::Variable(returned)) = &function.return_expression else {
+            return None;
+        };
+        let slot = self.frame_slots.get(returned).filter(|slot| {
+            slot.class == ValueClass::Float && slot.size == 8 && slot.parameter_register.is_some()
+        })?;
+        let [Statement::Assign { name, value }] = then_body.as_slice() else {
+            return None;
+        };
+        if name != returned {
+            return None;
+        }
+        let Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left,
+            right,
+        } = value
+        else {
+            return None;
+        };
+        if !matches!(left.as_ref(), Expression::Variable(name) if name == returned) {
+            return None;
+        }
+        let Expression::FloatLiteral(constant) = right.as_ref() else {
+            return None;
+        };
+        match self.classify_guard_test(condition) {
+            test @ GuardTest::LisCompare { .. } => Some((test, slot.offset, *constant)),
+            _ => None,
+        }
+    }
+
     /// If the function takes the address of any variable, lower it with a stack
     /// frame: lay out a slot per address-taken parameter/local, spill the
     /// parameters in the prologue, and run the body against those slots. Returns
@@ -747,6 +798,17 @@ impl Generator {
             }
         }
 
+        // Classify the trailing punned writeback before choosing the physical
+        // frame: build 163's no-local form is compact, while a source-level
+        // punned local reserves one additional eight-byte lane.
+        let writeback_plan = if guard_plan.is_none() {
+            self.classify_frame_writeback(function)
+        } else {
+            None
+        };
+        let legacy_punned_float = self.behavior.punned_float_frame_convention
+            == PunnedFloatFrameConvention::LegacyReloading;
+
         // The frame is the linkage area plus the slots. Build 163's linkage-
         // first ABI rounds generic aggregate/local frames to 8 bytes; mainline
         // uses 16-byte frames.
@@ -774,8 +836,6 @@ impl Generator {
         {
             frame_size += 8;
         }
-        let legacy_punned_float = self.behavior.punned_float_frame_convention
-            == PunnedFloatFrameConvention::LegacyReloading;
         if !non_leaf
             && legacy_punned_float
             && matches!(function.return_type, Type::Float | Type::Double)
@@ -787,7 +847,9 @@ impl Generator {
                 let reserved_bytes = reserved_words.saturating_mul(4);
                 frame_size += i16::try_from(reserved_bytes.next_multiple_of(8))
                     .map_err(|_| Diagnostic::error("frame local pressure exceeds target range"))?;
-            } else if !function.locals.is_empty() || !function.statements.is_empty() {
+            } else if !function.locals.is_empty()
+                || (!function.statements.is_empty() && writeback_plan.is_none())
+            {
                 frame_size += 8;
             }
         }
@@ -944,67 +1006,6 @@ impl Generator {
                 a: 1,
                 offset: -frame_size,
             });
-        // The trailing WRITEBACK BLOCK (no guards): `if (test) { x *= C; } return x;`
-        // — the guard-style skip over a float-multiply written back to x's slot,
-        // with the merge reloading x unconditionally (measured m1). The test's lis
-        // hoists exactly like a guard's.
-        let writeback_plan: Option<(GuardTest, i16, f64)> = if guard_tests.is_none() {
-            match function.statements.as_slice() {
-                [Statement::If {
-                    condition,
-                    then_body,
-                    else_body,
-                }] if else_body.is_empty() => {
-                    let returned = match &function.return_expression {
-                        Some(Expression::Variable(name)) => Some(name.as_str()),
-                        _ => None,
-                    };
-                    let spilled_double = returned.and_then(|name| {
-                        self.frame_slots
-                            .get(name)
-                            .filter(|slot| {
-                                slot.class == ValueClass::Float
-                                    && slot.size == 8
-                                    && slot.parameter_register.is_some()
-                            })
-                            .map(|slot| (name, slot.offset))
-                    });
-                    let assign = match then_body.as_slice() {
-                        [Statement::Assign { name, value }] => Some((name.as_str(), value)),
-                        _ => None,
-                    };
-                    match (spilled_double, assign) {
-                        (Some((x, slot_offset)), Some((target, value))) if x == target => {
-                            match value {
-                                Expression::Binary {
-                                    operator: BinaryOperator::Multiply,
-                                    left,
-                                    right,
-                                } => {
-                                    let self_multiply = matches!(left.as_ref(), Expression::Variable(name) if name.as_str() == x);
-                                    match (self_multiply, right.as_ref()) {
-                                        (true, Expression::FloatLiteral(constant)) => {
-                                            match self.classify_guard_test(condition) {
-                                                test @ GuardTest::LisCompare { .. } => {
-                                                    Some((test, slot_offset, *constant))
-                                                }
-                                                _ => None,
-                                            }
-                                        }
-                                        _ => None,
-                                    }
-                                }
-                                _ => None,
-                            }
-                        }
-                        _ => None,
-                    }
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
         let first_test = guard_tests
             .as_ref()
             .and_then(|(tests, _)| tests.first())
@@ -1272,6 +1273,13 @@ impl Generator {
                 .find(|slot| slot.offset == slot_offset)
                 .and_then(|slot| slot.parameter_register)
                 .expect("gated: spilled parameter");
+            if legacy_punned_float {
+                self.output.instructions.push(Instruction::LoadFloatDouble {
+                    d: x_register,
+                    a: 1,
+                    offset: slot_offset,
+                });
+            }
             self.load_double_constant(FLOAT_SCRATCH, constant.to_bits());
             self.output
                 .instructions
