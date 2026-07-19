@@ -217,6 +217,8 @@ pub struct FunctionObject<'a> {
     /// prototype). mwcc creates their symbols at the call site inside the body, so the
     /// writer emits them AFTER this function's own symbol rather than before it.
     pub implicit_external_callees: Vec<String>,
+    /// Implicit callees created before this function's referenced data symbols.
+    pub early_implicit_external_callees: Vec<String>,
 }
 
 /// A dense `switch`'s jump table — one `.text` body offset per index, plus how far

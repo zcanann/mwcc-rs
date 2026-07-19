@@ -428,6 +428,9 @@ impl Generator {
     /// same selected slot-relative body, so apply the generation's leaf-frame
     /// layout after selection while preserving every non-stack instruction.
     pub(crate) fn normalize_linkage_first_conversion_frame(&mut self) {
+        if self.normalize_legacy_nonleaf_call_result_conversion_frame() {
+            return;
+        }
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || self.non_leaf
             || !self.output.has_conversion
@@ -524,6 +527,71 @@ impl Generator {
             }
         }
         self.frame_size = new_size;
+    }
+
+    /// Build 163's call-result conversion reuses the linkage-first non-leaf
+    /// frame. A value stored from f0 needs the 16-byte logical conversion frame;
+    /// a value returned in f1 reserves one additional eight-byte lane.
+    fn normalize_legacy_nonleaf_call_result_conversion_frame(&mut self) -> bool {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || self.behavior.int_call_result_conversion_style
+                != mwcc_versions::IntCallResultConversionStyle::LegacyBiasFirst
+            || !self.non_leaf
+            || !self.output.has_conversion
+        {
+            return false;
+        }
+        let Some(frame_push) = self.output.instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -8
+                }
+            )
+        }) else {
+            return false;
+        };
+        let returned = self.output.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::FloatSubtractDouble { d, .. }
+                    | Instruction::FloatSubtractSingle { d, .. }
+                    if *d == Eabi::float_result().number
+            )
+        });
+        let padding = if returned { 8 } else { 0 };
+        let new_size = 16 + padding;
+
+        if let Instruction::StoreWordWithUpdate { offset, .. } =
+            &mut self.output.instructions[frame_push]
+        {
+            *offset = -new_size;
+        }
+        for instruction in &mut self.output.instructions[frame_push + 1..] {
+            match instruction {
+                Instruction::StoreWord { a: 1, offset, .. }
+                | Instruction::LoadWord { a: 1, offset, .. }
+                | Instruction::LoadFloatDouble { a: 1, offset, .. }
+                    if *offset >= 8 =>
+                {
+                    *offset += padding;
+                }
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 16,
+                } => {
+                    if let Instruction::AddImmediate { immediate, .. } = instruction {
+                        *immediate = new_size;
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.frame_size = new_size;
+        true
     }
 
     /// Copy a parameter or call result into its callee-saved home using the

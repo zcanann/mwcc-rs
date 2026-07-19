@@ -340,6 +340,16 @@ pub enum VaArgScheduleStyle {
     SerialScratch,
 }
 
+/// Scheduling and frame family for an integer call result converted to float.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntCallResultConversionStyle {
+    /// 2.4.x follows the call-result value chain before loading the bias.
+    ValueStoreFirst,
+    /// Build 163 stages the biased value through r0, loads the bias first, and
+    /// gives a returned conversion one additional eight-byte frame lane.
+    LegacyBiasFirst,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -364,6 +374,10 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// unsigned form likewise stores the value before loading the bias pool.
     fn legacy_float_cast_schedule(&self) -> bool {
         false
+    }
+
+    fn int_call_result_conversion_style(&self) -> IntCallResultConversionStyle {
+        IntCallResultConversionStyle::ValueStoreFirst
     }
 
     /// In a non-leaf `if`-prologue, whether the saved-LR store (`stw r0,20(r1)`) is
@@ -626,6 +640,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn legacy_float_cast_schedule(&self) -> bool {
         true
+    }
+
+    fn int_call_result_conversion_style(&self) -> IntCallResultConversionStyle {
+        IntCallResultConversionStyle::LegacyBiasFirst
     }
 
     fn lr_save_precedes_float_const(&self) -> bool {

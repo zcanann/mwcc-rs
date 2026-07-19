@@ -163,6 +163,35 @@ impl Generator {
                             Some(source) => source,
                             None => self.place_store_value(value, pointee)?,
                         };
+                        // Build 163 creates the implicit integer callee while
+                        // lowering the conversion, before it creates the float
+                        // store target. Later builds retain AST target-first
+                        // traversal for these two symbols.
+                        if self.behavior.int_call_result_conversion_style
+                            == mwcc_versions::IntCallResultConversionStyle::LegacyBiasFirst
+                            && matches!(pointee, Pointee::Float | Pointee::Double)
+                        {
+                            if let Expression::Call {
+                                name: callee,
+                                arguments,
+                            } = value
+                            {
+                                if arguments.is_empty()
+                                    && !self.prototyped_names.contains(callee)
+                                    && !is_intrinsic_call(callee)
+                                    && !matches!(
+                                        self.call_return_types.get(callee),
+                                        Some(Type::Float | Type::Double)
+                                    )
+                                {
+                                    self.output.symbol_order =
+                                        vec![callee.clone(), name.clone()];
+                                    self.output
+                                        .early_implicit_external_callees
+                                        .push(callee.clone());
+                                }
+                            }
+                        }
                         self.record_relocation(RelocationKind::EmbSda21, name);
                         self.output
                             .instructions
@@ -824,7 +853,7 @@ impl Generator {
                             double,
                             true,
                             Eabi::float_result().number,
-                            true,
+                            crate::casts::IntToFloatSchedule::CallResult,
                         );
                         return Ok(FLOAT_SCRATCH);
                     }

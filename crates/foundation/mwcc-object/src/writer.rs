@@ -1828,6 +1828,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         let (implicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = ordered
             .into_iter()
             .partition(|name| implicit.contains(name));
+        let early_implicit: std::collections::HashSet<&str> = function
+            .early_implicit_external_callees
+            .iter()
+            .map(|name| name.as_str())
+            .collect();
+        let (early_implicit_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) =
+            implicit_ordered
+                .into_iter()
+                .partition(|name| early_implicit.contains(name));
         // Build 163 creates an absolute-address symbol while materializing its
         // ADDR16 pair, before it registers the current function. SDA21 data
         // references and calls retain the ordinary function-first ordering.
@@ -2010,6 +2019,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if input.object_format.function_symbol_before_references {
             emit_referenced!(absolute_ordered);
             emit_current_function_symbol!();
+            emit_referenced!(early_implicit_ordered.iter().copied());
         }
         // Prototyped externals first, then the save/restore helpers, then the
         // function's own symbol, then the remaining implicit callees.
@@ -2018,6 +2028,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
         emit_current_function_symbol!();
+        if !input.object_format.function_symbol_before_references {
+            emit_referenced!(early_implicit_ordered.iter().copied());
+        }
         // A STATIC asm function's own symbol is LOCAL (emitted in the local run
         // above); its GLOBAL `entry` points still emit HERE, at the function's source
         // position in the global run (wind_waker's `ASM static` runtime.c — the local

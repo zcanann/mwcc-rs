@@ -17,8 +17,9 @@ use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
     ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle, FrameConvention,
-    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
-    IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
+    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
+    IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder,
+    LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
     NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
     PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
@@ -58,6 +59,7 @@ pub enum Quirk {
     /// Build 163's int-to-float lowering stores a biased signed value through
     /// r0 before materializing the high word in that same register.
     LegacyFloatCastSchedule,
+    LegacyIntCallResultConversion,
     /// Build 163 preserves a compare/branch diamond for canonical integer
     /// boolean ternaries instead of using the 2.4.x branchless idioms.
     LegacyBranchPreservingIntegerSelect,
@@ -110,6 +112,7 @@ impl Quirk {
             // A scheduling change introduced by the 2.0 patch release.
             Quirk::FloatCastStoresValueFirst => QuirkKind::Intentional,
             Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
+            Quirk::LegacyIntCallResultConversion => QuirkKind::Intentional,
             Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
             Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
             Quirk::LegacyFullWidthNarrowComputedReturn => QuirkKind::Intentional,
@@ -163,6 +166,9 @@ impl Quirk {
             }
             Quirk::LegacyFloatCastSchedule => {
                 "int->float uses build 163's r0 scratch/store schedule"
+            }
+            Quirk::LegacyIntCallResultConversion => {
+                "integer call results use build 163's bias-first conversion frame"
             }
             Quirk::LegacyBranchPreservingIntegerSelect => {
                 "integer ternaries preserve build 163's source-level branch shape"
@@ -298,6 +304,8 @@ pub struct Behavior {
     pub float_cast_value_store_first: bool,
     /// Whether int-to-float uses build 163's r0 scratch/store ordering.
     pub legacy_float_cast_schedule: bool,
+    /// Scheduling and frame family for integer call results converted to float.
+    pub int_call_result_conversion_style: IntCallResultConversionStyle,
     /// In a non-leaf `if`-prologue, whether the saved-LR store precedes a leading
     /// float-constant load rather than filling the mflr->store latency slot with it
     /// (GC/2.0p1's order).
@@ -423,6 +431,10 @@ impl Behavior {
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
             legacy_float_cast_schedule: config.build.profile.legacy_float_cast_schedule(),
+            int_call_result_conversion_style: config
+                .build
+                .profile
+                .int_call_result_conversion_style(),
             lr_save_precedes_float_const: config.build.profile.lr_save_precedes_float_const(),
             float_compare_value_before_const: config
                 .build
@@ -511,6 +523,13 @@ impl Behavior {
         }
         if self.legacy_float_cast_schedule {
             quirks.push(ActiveQuirk::of(Quirk::LegacyFloatCastSchedule));
+        }
+        if self.int_call_result_conversion_style
+            == IntCallResultConversionStyle::LegacyBiasFirst
+        {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyIntCallResultConversion,
+            ));
         }
         if self.integer_select_style == IntegerSelectStyle::BranchPreserving {
             quirks.push(ActiveQuirk::of(Quirk::LegacyBranchPreservingIntegerSelect));
@@ -719,6 +738,10 @@ mod tests {
         );
         assert_eq!(behavior.va_arg_schedule_style, VaArgScheduleStyle::SerialScratch);
         assert!(behavior.legacy_float_cast_schedule);
+        assert_eq!(
+            behavior.int_call_result_conversion_style,
+            IntCallResultConversionStyle::LegacyBiasFirst
+        );
         assert_eq!(
             behavior.integer_select_style,
             IntegerSelectStyle::BranchPreserving

@@ -5,6 +5,12 @@ use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{Expression, Type};
 
+#[derive(Clone, Copy)]
+pub(crate) enum IntToFloatSchedule {
+    LeafValue,
+    CallResult,
+}
+
 impl Generator {
     /// The integer width (bits) of a cast's leaf operand, when determinable. Used to
     /// defer a cast-to-float of a narrow (char/short) value: mwcc first widens it to
@@ -140,16 +146,16 @@ impl Generator {
             double,
             signed,
             bias_register,
-            self.behavior.float_cast_value_store_first,
+            IntToFloatSchedule::LeafValue,
         );
         Ok(())
     }
 
     /// The int->float magic body — everything after the `stwu` frame push — for an int
-    /// value already in `source` (a GPR). `value_store_first` picks whether the biased
-    /// value store precedes the bias load (they are independent; the caller decides the
-    /// schedule). Assumes a 16-byte frame is already established (a leaf's own `stwu`, or
-    /// a non-leaf call prologue) and uses its `r1+8`/`r1+12` scratch.
+    /// value already in `source` (a GPR). `schedule` distinguishes a leaf value
+    /// from a call result so each build can select its measured independent-load
+    /// ordering. Assumes a logical 16-byte conversion frame and uses its
+    /// `r1+8`/`r1+12` scratch before build-specific frame normalization.
     pub(crate) fn emit_int_to_float_body(
         &mut self,
         source: u8,
@@ -157,7 +163,7 @@ impl Generator {
         double: bool,
         signed: bool,
         bias_register: u8,
-        value_store_first: bool,
+        schedule: IntToFloatSchedule,
     ) {
         let bias: u64 = if signed {
             0x4330_0000_8000_0000
@@ -168,7 +174,29 @@ impl Generator {
         if self.frame_size < 16 {
             self.frame_size = 16;
         }
-        if self.behavior.legacy_float_cast_schedule {
+        if matches!(schedule, IntToFloatSchedule::CallResult)
+            && self.behavior.int_call_result_conversion_style
+                == mwcc_versions::IntCallResultConversionStyle::LegacyBiasFirst
+        {
+            if signed {
+                self.output
+                    .instructions
+                    .push(Instruction::XorImmediateShifted {
+                        a: 0,
+                        s: source,
+                        immediate: 0x8000,
+                    });
+            }
+            self.load_double_constant(bias_register, bias);
+            self.output.instructions.push(Instruction::StoreWord {
+                s: if signed { 0 } else { source },
+                a: 1,
+                offset: 12,
+            });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(0, 17200));
+        } else if self.behavior.legacy_float_cast_schedule {
             if signed {
                 self.output
                     .instructions
@@ -197,6 +225,10 @@ impl Generator {
             }
             self.load_double_constant(bias_register, bias);
         } else {
+            let value_store_first = match schedule {
+                IntToFloatSchedule::LeafValue => self.behavior.float_cast_value_store_first,
+                IntToFloatSchedule::CallResult => true,
+            };
             if signed {
                 self.output
                     .instructions

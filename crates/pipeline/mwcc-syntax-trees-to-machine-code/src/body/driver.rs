@@ -4139,7 +4139,7 @@ impl Generator {
                             value_type == Type::Double,
                             true,
                             bias_register,
-                            true,
+                            crate::casts::IntToFloatSchedule::CallResult,
                         );
                         return Ok(());
                     }

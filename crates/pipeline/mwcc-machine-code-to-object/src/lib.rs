@@ -179,6 +179,9 @@ pub fn assemble_object(
             symbol_order: function.symbol_order.clone(),
             referenced_function_symbols: function.referenced_function_symbols.clone(),
             implicit_external_callees: function.implicit_external_callees.clone(),
+            early_implicit_external_callees: function
+                .early_implicit_external_callees
+                .clone(),
         })
         .collect();
     let data_objects = defined_globals

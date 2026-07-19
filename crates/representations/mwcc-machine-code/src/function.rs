@@ -186,6 +186,10 @@ pub struct MachineFunction {
     /// and precedes the function). The writer uses this to place such callees after the
     /// function symbol instead of before.
     pub implicit_external_callees: Vec<String>,
+    /// Implicit callees that build 163 creates before a referenced data target
+    /// while lowering a call-result conversion. They remain after the current
+    /// function symbol, but precede that function's explicit data references.
+    pub early_implicit_external_callees: Vec<String>,
     /// A Metrowerks inline-`asm` function: its instructions were assembled
     /// verbatim. mwcc does NOT catalog hand-written asm in the `.mwcats.text`
     /// section (only compiler-generated functions are cataloged), so the writer
@@ -239,6 +243,7 @@ impl MachineFunction {
             referenced_function_symbols: Vec::new(),
             local_symbol_order: Vec::new(),
             implicit_external_callees: Vec::new(),
+            early_implicit_external_callees: Vec::new(),
             is_asm: false,
             entry_points: Vec::new(),
             force_active: false,
