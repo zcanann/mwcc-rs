@@ -81,6 +81,9 @@ pub struct Flags {
     /// `-ipa file` enables whole-file interprocedural optimizations. The first
     /// modeled consequence is sibling-call elimination for trivial wrappers.
     pub ipa_file: bool,
+    /// Explicit `-func_align N` override, in bytes. `None` retains the compiler
+    /// build's default code-section and function alignment.
+    pub function_alignment: Option<u32>,
 }
 
 impl Default for Flags {
@@ -100,6 +103,7 @@ impl Default for Flags {
             use_lmw_stmw: false,
             debug_info: false,
             ipa_file: false,
+            function_alignment: None,
         }
     }
 }

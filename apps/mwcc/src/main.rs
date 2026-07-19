@@ -132,6 +132,18 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.ipa_file,
                 };
             }
+            // `-func_align N` overrides the build-default code alignment. The
+            // project configurations use byte alignments (currently 4 or 32).
+            "-func_align" => {
+                index += 1;
+                if let Some(alignment) = arguments
+                    .get(index)
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|value| value.is_power_of_two())
+                {
+                    invocation.flags.function_alignment = Some(alignment);
+                }
+            }
             // `-sdata N`: zero disables writable SDA (r13); a later non-zero
             // threshold turns it back on. Keep it independent from `-sdata2`.
             "-sdata" => {
@@ -1353,9 +1365,16 @@ fn compile(
                 pooling_enabled: config.flags.pooling_enabled,
             },
             emb_sda21_offset: config.build.emb_sda21_offset,
-            code_alignment: u32::from(config.build.code_alignment),
+            code_alignment: config
+                .flags
+                .function_alignment
+                .unwrap_or(u32::from(config.build.code_alignment)),
             sdata2_writable: config.build.sdata2_writable,
-            function_symbol_order: if config.build.function_symbol_before_references {
+            function_symbol_order: if config.flags.ipa_file {
+                // Whole-file IPA registers the optimized function before the
+                // external target discovered while lowering its body.
+                mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
+            } else if config.build.function_symbol_before_references {
                 if config.flags.inline_deferred {
                     mwcc_machine_code_to_object::FunctionSymbolOrder::LegacyDeferred
                 } else {
@@ -1469,6 +1488,20 @@ mod tests {
         let last_wins =
             parse_invocation(&["-ipa".into(), "file".into(), "-ipa".into(), "off".into()]);
         assert!(!last_wins.flags.ipa_file);
+    }
+
+    #[test]
+    fn command_line_function_alignment_is_last_valid_value() {
+        let parsed = parse_invocation(&[
+            "-func_align".into(),
+            "32".into(),
+            "-func_align".into(),
+            "4".into(),
+        ]);
+        assert_eq!(parsed.flags.function_alignment, Some(4));
+
+        let invalid = parse_invocation(&["-func_align".into(), "3".into()]);
+        assert_eq!(invalid.flags.function_alignment, None);
     }
 
     #[test]
