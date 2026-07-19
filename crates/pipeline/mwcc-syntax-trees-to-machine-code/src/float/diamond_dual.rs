@@ -1205,13 +1205,17 @@ impl Generator {
             // stores through the f0 scratch; the else arm addis?/li/stw/stw;
             // the tail reads qx as a FrameLoad (measured: the D2 battery).
             let (options, condition_bit) = self.emit_condition_test(condition)?;
-            self.frame_size = 16;
+            let legacy_frame = self.behavior.punned_float_frame_convention
+                == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading;
+            let frame_size = if legacy_frame { 32 } else { 16 };
+            let qx_offset = frame_size - 8;
+            self.frame_size = frame_size;
             self.output
                 .instructions
                 .push(Instruction::StoreWordWithUpdate {
                     s: 1,
                     a: 1,
-                    offset: -16,
+                    offset: -frame_size,
                 });
             let skip_index = self.output.instructions.len();
             self.output
@@ -1227,7 +1231,7 @@ impl Generator {
                 .push(Instruction::StoreFloatDouble {
                     s: 0,
                     a: 1,
-                    offset: 8,
+                    offset: qx_offset,
                 });
             let join_index = self.output.instructions.len();
             self.output
@@ -1241,43 +1245,55 @@ impl Generator {
             }
             let hi_store_register = match addis_shift {
                 Some(shift) => {
-                    let Expression::Variable(name) = condition else {
-                        unreachable!("gated above")
+                    let target = if legacy_frame {
+                        0
+                    } else {
+                        let Expression::Variable(name) = condition else {
+                            unreachable!("gated above")
+                        };
+                        self.locations
+                            .get(name)
+                            .map(|location| location.register)
+                            .expect("condition tested above")
                     };
-                    let condition_register = self
-                        .locations
-                        .get(name)
-                        .map(|location| location.register)
-                        .expect("condition tested above");
                     self.output
                         .instructions
                         .push(Instruction::AddImmediateShifted {
-                            d: condition_register,
+                            d: target,
                             a: hi_register,
                             immediate: shift,
                         });
-                    condition_register
+                    target
                 }
                 None => hi_register,
             };
+            if legacy_frame {
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: hi_store_register,
+                    a: 1,
+                    offset: qx_offset,
+                });
+            }
             self.output
                 .instructions
                 .push(Instruction::load_immediate(0, 0));
-            self.output.instructions.push(Instruction::StoreWord {
-                s: hi_store_register,
-                a: 1,
-                offset: 8,
-            });
+            if !legacy_frame {
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: hi_store_register,
+                    a: 1,
+                    offset: qx_offset,
+                });
+            }
             self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
                 a: 1,
-                offset: 12,
+                offset: qx_offset + 4,
             });
             let join = self.output.instructions.len();
             if let Instruction::Branch { target } = &mut self.output.instructions[join_index] {
                 *target = join;
             }
-            self.float.frame_local = Some((qx.to_string(), 8));
+            self.float.frame_local = Some((qx.to_string(), qx_offset));
             let claimed = self.try_float_dag_return(&synthetic);
             self.float.frame_local = None;
             match claimed {
@@ -1290,7 +1306,7 @@ impl Generator {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: 1,
                 a: 1,
-                immediate: 16,
+                immediate: frame_size,
             });
             self.output
                 .instructions
