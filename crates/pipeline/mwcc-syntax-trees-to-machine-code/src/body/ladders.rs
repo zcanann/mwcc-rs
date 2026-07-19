@@ -9,9 +9,10 @@ impl Generator {
     ///   __HI(x) = hx | sx;  __LO(x) = lx;  return x;
     /// Measured: `hx - HI_BIT` folds to `addis` (high-half subtract);
     /// the stfd spill DELAYS into the int computation; the two punned
-    /// stores REORDER BY READINESS (the LO store's lx was ready before
-    /// the or-chain, so it emits first); the reload lfd feeds the
-    /// return; frame 16 for the one punned double.
+    /// stores REORDER BY READINESS in mainline (the LO store's lx was
+    /// ready before the or-chain, so it emits first); build 163 preserves
+    /// source evaluation order. The reload lfd feeds the return. Frame
+    /// shape follows the punned-float convention: 16 mainline, 32 legacy.
     pub(crate) fn try_writeback_norm(&mut self, function: &Function) -> Compilation<bool> {
         use mwcc_syntax_trees::Statement;
         if function.return_type != Type::Double
@@ -148,14 +149,18 @@ impl Generator {
         ) else {
             return Ok(false);
         };
+        let plan = super::punned_ladder_policy::norm_writeback_plan(
+            self.behavior.punned_float_frame_convention,
+            self.behavior.computed_store_issue_style,
+        );
         // -- emit --
-        self.frame_size = 16;
+        self.frame_size = plan.frame_size;
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 1,
                 a: 1,
-                offset: -16,
+                offset: plan.frame_delta,
             });
         self.output.instructions.push(Instruction::AddImmediate {
             d: 0,
@@ -194,17 +199,23 @@ impl Generator {
             s: 0,
             b: sx_register,
         });
-        // Stores reorder by readiness: lx first.
-        self.output.instructions.push(Instruction::StoreWord {
-            s: lx_register,
-            a: 1,
-            offset: 12,
-        });
-        self.output.instructions.push(Instruction::StoreWord {
+        let high_store = Instruction::StoreWord {
             s: 0,
             a: 1,
             offset: 8,
-        });
+        };
+        let low_store = Instruction::StoreWord {
+            s: lx_register,
+            a: 1,
+            offset: 12,
+        };
+        if plan.high_store_first {
+            self.output.instructions.push(high_store);
+            self.output.instructions.push(low_store);
+        } else {
+            self.output.instructions.push(low_store);
+            self.output.instructions.push(high_store);
+        }
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 1,
             a: 1,
@@ -213,7 +224,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
-            immediate: 16,
+            immediate: plan.frame_size,
         });
         self.output
             .instructions
@@ -645,8 +656,9 @@ impl Generator {
     /// JOIN at the shared epilogue (`li; b JOIN` — inline blr is a
     /// frameless-only behavior); punned loads emit in first-use order
     /// with ly DELAYED past the cmpw into its branch latency, reusing
-    /// dead hx's r0; frame 32 = 8 linkage + 2x8 doubles, spilled at
-    /// 8/16(r1); no stmw.
+    /// dead hx's register; the frame convention selects 32 bytes and
+    /// hx=r0/hy=r3 for mainline versus build 163's compact 24 bytes and
+    /// hx=r3/hy=r0. Both spill the doubles at 8/16(r1); no stmw.
     pub(crate) fn try_punned_pair_ladder(&mut self, function: &Function) -> Compilation<bool> {
         use mwcc_syntax_trees::Statement;
         if function.return_type != Type::Int
@@ -777,14 +789,17 @@ impl Generator {
         let Ok(k3) = i16::try_from(*k3) else {
             return Ok(false);
         };
-        // -- emit (registers per the capture: hx r0, hy r3, lx r4, ly r0) --
-        self.frame_size = 32;
+        let plan = super::punned_ladder_policy::pair_ladder_plan(
+            self.behavior.punned_float_frame_convention,
+        );
+        // -- emit (lx r4; ly takes the dead r0 lane after the signed compare) --
+        self.frame_size = plan.frame_size;
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 1,
                 a: 1,
-                offset: -32,
+                offset: plan.frame_delta,
             });
         self.output
             .instructions
@@ -801,12 +816,12 @@ impl Generator {
                 offset: 16,
             });
         self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
+            d: plan.high_x,
             a: 1,
             offset: 8,
         });
         self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
+            d: plan.high_y,
             a: 1,
             offset: 16,
         });
@@ -815,12 +830,13 @@ impl Generator {
             a: 1,
             offset: 12,
         });
-        self.output
-            .instructions
-            .push(Instruction::CompareWord { a: 0, b: 3 });
-        // ly's load DELAYS into the compare->branch latency, reusing dead hx's r0.
+        self.output.instructions.push(Instruction::CompareWord {
+            a: plan.high_x,
+            b: plan.high_y,
+        });
+        // ly's load delays into the compare->branch latency in the dead r0 lane.
         self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
+            d: plan.low_y,
             a: 1,
             offset: 20,
         });
@@ -830,7 +846,10 @@ impl Generator {
         self.emit_branch_conditional_to(12, 0, first_return_label); // blt
         self.output
             .instructions
-            .push(Instruction::CompareLogicalWord { a: 4, b: 0 });
+            .push(Instruction::CompareLogicalWord {
+                a: 4,
+                b: plan.low_y,
+            });
         let equality_label = self.fresh_label();
         self.emit_branch_conditional_to(4, 0, equality_label); // bge
         let join_label = self.fresh_label();
@@ -853,7 +872,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
-            immediate: 32,
+            immediate: plan.frame_size,
         });
         self.output
             .instructions

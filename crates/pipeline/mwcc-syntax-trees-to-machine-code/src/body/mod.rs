@@ -17,6 +17,7 @@ mod ladders;
 mod legacy_constant_store;
 mod loops;
 mod passes;
+mod punned_ladder_policy;
 mod punned_select;
 mod punned_writeback;
 mod store_fill;
