@@ -117,10 +117,18 @@ impl Generator {
         // a non-zero element hoists the FULL folded address (`lis`+`addi`) and the
         // load runs at displacement 0. Measured: R[0] -> `lis; loop: lwz lo(rB)`,
         // R[13] -> `lis; addi; loop: lwz 0(rB)`.
+        let materialize_page = self.behavior.fixed_address_rmw_style
+            == mwcc_versions::FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+            && *index != 0;
         let element_address = address as u32 + *index as u32 * element_bytes;
+        let materialized_address = if materialize_page {
+            address as u32
+        } else {
+            element_address
+        };
         let base_register = self.lowest_free_general()?;
-        let high = ((element_address.wrapping_add(0x8000)) >> 16) as u16;
-        let low = element_address as u16 as i16;
+        let high = ((materialized_address.wrapping_add(0x8000)) >> 16) as u16;
+        let low = materialized_address as u16 as i16;
         // The loop's internal labels advance mwcc's anonymous-`@N` counter: by 6 for
         // an element-0 poll, by 7 for a non-zero element (the folded full-address
         // temporary adds one) — measured against the no-loop baseline (@9 -> @15/@16).
@@ -140,7 +148,13 @@ impl Generator {
                 a: base_register,
                 immediate: low,
             });
-            0
+            if materialize_page {
+                i16::try_from(*index * i64::from(element_bytes)).map_err(|_| {
+                    Diagnostic::error("fixed-address poll displacement is out of range")
+                })?
+            } else {
+                0
+            }
         };
 
         // loop: load; test (sets cr0); branch back while waiting.

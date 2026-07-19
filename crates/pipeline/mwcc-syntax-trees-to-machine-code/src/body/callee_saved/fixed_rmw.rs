@@ -162,111 +162,128 @@ impl Generator {
         let second_offset = displacement(second_index)?;
         let third_offset = displacement(third_index)?;
 
+        let legacy = self.behavior.fixed_address_rmw_style
+            == mwcc_versions::FixedAddressRmwStyle::MaterializedPageWithPromotedMask;
         // Captured three-update DAG. r3 is intentionally absent: it holds the
         // entering call's result for `leave`. Independent extracts fill the
         // first two load-latency windows, and r0 carries the final inserted field.
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(7, high));
-        self.output
-            .instructions
-            .push(Instruction::ShiftRightLogicalImmediate {
+        if legacy {
+            // Build 163 assigns three internal anonymous ordinals while
+            // lowering this promoted halfword-RMW chain. They survive only in
+            // the unwind symbols, despite the branchless final instruction
+            // stream.
+            self.output.anonymous_label_bump += 3;
+            self.emit_legacy_fixed_rmw_triple(
+                high,
+                low,
+                [first_offset, second_offset, third_offset],
+                address_home,
+                length_home,
+            );
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(7, high));
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: 5,
+                    s: address_home,
+                    shift: 16,
+                });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    6,
+                    7,
+                    first_offset,
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 4,
+                    s: address_home,
+                    clear: 16,
+                });
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: 0,
+                s: length_home,
+                shift: 27,
+                begin: 16,
+                end: 31,
+            });
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: 6,
+                s: 6,
+                shift: 0,
+                begin: 0,
+                end: 21,
+            });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 5, s: 6, b: 5 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    5,
+                    7,
+                    first_offset,
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    5,
+                    7,
+                    second_offset,
+                )?);
+            self.output.instructions.push(Instruction::RotateAndMask {
                 a: 5,
-                s: address_home,
-                shift: 16,
+                s: 5,
+                shift: 0,
+                begin: 27,
+                end: 15,
             });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                6,
-                7,
-                first_offset,
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 4, s: 5, b: 4 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    4,
+                    7,
+                    second_offset,
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    4,
+                    7,
+                    third_offset,
+                )?);
+            self.output.instructions.push(Instruction::RotateAndMask {
                 a: 4,
-                s: address_home,
-                clear: 16,
+                s: 4,
+                shift: 0,
+                begin: 0,
+                end: 16,
             });
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 0,
-            s: length_home,
-            shift: 27,
-            begin: 16,
-            end: 31,
-        });
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 6,
-            s: 6,
-            shift: 0,
-            begin: 0,
-            end: 21,
-        });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 5, s: 6, b: 5 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                5,
-                7,
-                first_offset,
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                5,
-                7,
-                second_offset,
-            )?);
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 5,
-            s: 5,
-            shift: 0,
-            begin: 27,
-            end: 15,
-        });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 4, s: 5, b: 4 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                4,
-                7,
-                second_offset,
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                4,
-                7,
-                third_offset,
-            )?);
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 4,
-            s: 4,
-            shift: 0,
-            begin: 0,
-            end: 16,
-        });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 0, s: 4, b: 0 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                0,
-                7,
-                third_offset,
-            )?);
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 0, s: 4, b: 0 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    0,
+                    7,
+                    third_offset,
+                )?);
+        }
 
         self.locations.insert(
             state.name.clone(),
@@ -382,8 +399,15 @@ impl Generator {
             return Ok(false);
         }
 
+        let legacy = self.behavior.fixed_address_rmw_style
+            == mwcc_versions::FixedAddressRmwStyle::MaterializedPageWithPromotedMask;
+        let parameter_order = if legacy {
+            [length, aram_address, direction, main_address]
+        } else {
+            [length, aram_address, main_address, direction]
+        };
         let mut incoming = Vec::with_capacity(4);
-        for parameter in [length, aram_address, main_address, direction] {
+        for parameter in parameter_order {
             let Some(register) = self.lookup_general(&parameter.name) else {
                 return Ok(false);
             };
@@ -392,8 +416,11 @@ impl Generator {
         let homes: Vec<u8> = (0..4).map(|_| self.fresh_virtual_general()).collect();
         let length_home = homes[0];
         let aram_home = homes[1];
-        let main_home = homes[2];
-        let direction_home = homes[3];
+        let (main_home, direction_home) = if legacy {
+            (homes[3], homes[2])
+        } else {
+            (homes[2], homes[3])
+        };
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
@@ -416,240 +443,255 @@ impl Generator {
         // Captured seven-update DAG. The physical temporaries encode mwcc's
         // cross-statement schedule; the four call-crossing inputs remain virtual
         // and are colored onto r31..r28 by the shared allocator.
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(4, high));
-        self.output
-            .instructions
-            .push(Instruction::ShiftRightLogicalImmediate {
-                a: 0,
-                s: main_home,
-                shift: 16,
-            });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                5,
-                4,
-                offsets[0],
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
-                a: 9,
-                s: main_home,
-                clear: 16,
-            });
-        self.output
-            .instructions
-            .push(Instruction::ShiftRightLogicalImmediate {
-                a: 8,
-                s: aram_home,
-                shift: 16,
-            });
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
-                a: 7,
-                s: aram_home,
-                clear: 16,
-            });
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 5,
-            s: 5,
-            shift: 0,
-            begin: 16,
-            end: 21,
-        });
-        self.output
-            .instructions
-            .push(Instruction::ShiftLeftImmediate {
-                a: 6,
-                s: direction_home,
-                shift: 15,
-            });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 0, s: 5, b: 0 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                0,
-                4,
-                offsets[0],
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::ShiftRightLogicalImmediate {
-                a: 5,
-                s: length_home,
-                shift: 16,
-            });
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
-                a: 0,
-                s: length_home,
-                clear: 16,
-            });
-
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                10,
-                4,
-                offsets[1],
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
-                a: 10,
-                s: 10,
-                clear: 27,
-            });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 9, s: 10, b: 9 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                9,
-                4,
-                offsets[1],
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                9,
-                4,
-                offsets[2],
-            )?);
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 9,
-            s: 9,
-            shift: 0,
-            begin: 16,
-            end: 21,
-        });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 8, s: 9, b: 8 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                8,
-                4,
-                offsets[2],
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                8,
-                4,
-                offsets[3],
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
-                a: 8,
-                s: 8,
-                clear: 27,
-            });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 7, s: 8, b: 7 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                7,
-                4,
-                offsets[3],
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                7,
-                4,
-                offsets[4],
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::RotateAndMaskInsert {
-                a: 6,
-                s: 7,
-                shift: 0,
-                begin: 17,
-                end: 31,
-            });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                6,
-                4,
-                offsets[4],
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                6,
-                4,
-                offsets[5],
-            )?);
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 6,
-            s: 6,
-            shift: 0,
-            begin: 16,
-            end: 21,
-        });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 5, s: 6, b: 5 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                5,
-                4,
-                offsets[5],
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                5,
-                4,
-                offsets[6],
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
+        if legacy {
+            // The longer promoted chain consumes six build-163 internal
+            // ordinals before its unwind entries.
+            self.output.anonymous_label_bump += 6;
+            self.emit_legacy_fixed_rmw_seven(
+                high,
+                low,
+                &offsets,
+                direction_home,
+                main_home,
+                aram_home,
+                length_home,
+            );
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(4, high));
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: 0,
+                    s: main_home,
+                    shift: 16,
+                });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    5,
+                    4,
+                    offsets[0],
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 9,
+                    s: main_home,
+                    clear: 16,
+                });
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: 8,
+                    s: aram_home,
+                    shift: 16,
+                });
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 7,
+                    s: aram_home,
+                    clear: 16,
+                });
+            self.output.instructions.push(Instruction::RotateAndMask {
                 a: 5,
                 s: 5,
-                clear: 27,
+                shift: 0,
+                begin: 16,
+                end: 21,
             });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: 0, s: 5, b: 0 });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                0,
-                4,
-                offsets[6],
-            )?);
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: 6,
+                    s: direction_home,
+                    shift: 15,
+                });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 0, s: 5, b: 0 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    0,
+                    4,
+                    offsets[0],
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::ShiftRightLogicalImmediate {
+                    a: 5,
+                    s: length_home,
+                    shift: 16,
+                });
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 0,
+                    s: length_home,
+                    clear: 16,
+                });
+
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    10,
+                    4,
+                    offsets[1],
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 10,
+                    s: 10,
+                    clear: 27,
+                });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 9, s: 10, b: 9 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    9,
+                    4,
+                    offsets[1],
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    9,
+                    4,
+                    offsets[2],
+                )?);
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: 9,
+                s: 9,
+                shift: 0,
+                begin: 16,
+                end: 21,
+            });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 8, s: 9, b: 8 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    8,
+                    4,
+                    offsets[2],
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    8,
+                    4,
+                    offsets[3],
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 8,
+                    s: 8,
+                    clear: 27,
+                });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 7, s: 8, b: 7 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    7,
+                    4,
+                    offsets[3],
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    7,
+                    4,
+                    offsets[4],
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::RotateAndMaskInsert {
+                    a: 6,
+                    s: 7,
+                    shift: 0,
+                    begin: 17,
+                    end: 31,
+                });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    6,
+                    4,
+                    offsets[4],
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    6,
+                    4,
+                    offsets[5],
+                )?);
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: 6,
+                s: 6,
+                shift: 0,
+                begin: 16,
+                end: 21,
+            });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 5, s: 6, b: 5 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    5,
+                    4,
+                    offsets[5],
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    5,
+                    4,
+                    offsets[6],
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 5,
+                    s: 5,
+                    clear: 27,
+                });
+            self.output
+                .instructions
+                .push(Instruction::Or { a: 0, s: 5, b: 0 });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    0,
+                    4,
+                    offsets[6],
+                )?);
+        }
 
         self.locations.insert(
             state.name.clone(),

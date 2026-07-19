@@ -11,6 +11,7 @@ mod fixed_read;
 mod fixed_rmw;
 mod fixed_rmw_inline_tail;
 mod fixed_rmw_leaf;
+mod fixed_rmw_legacy;
 mod fixed_rmw_recognize;
 mod frame_convention;
 mod global_swap;
@@ -1139,50 +1140,49 @@ impl Generator {
                     offset: 0,
                 });
                 let result = mwcc_target::Eabi::general_result().number;
-                let early_epilogue = if let Some((condition, early_constant)) =
-                    guard_chain.first().copied()
-                {
-                    self.locations.insert(
-                        local.name.clone(),
-                        Location {
-                            class: ValueClass::General,
-                            register: GENERAL_SCRATCH,
-                            signed: !matches!(local.declared_type, Type::UnsignedInt),
-                            width: 32,
-                            pointee: None,
-                            stride: None,
-                        },
-                    );
-                    let (options, condition_bit) = self.emit_condition_test(condition)?;
-                    self.output.instructions.push(Instruction::Or {
-                        a: saved,
-                        s: GENERAL_SCRATCH,
-                        b: GENERAL_SCRATCH,
-                    });
-                    let continuation_branch = self.output.instructions.len();
-                    self.output
-                        .instructions
-                        .push(Instruction::BranchConditionalForward {
-                            options,
-                            condition_bit,
-                            target: 0,
+                let early_epilogue =
+                    if let Some((condition, early_constant)) = guard_chain.first().copied() {
+                        self.locations.insert(
+                            local.name.clone(),
+                            Location {
+                                class: ValueClass::General,
+                                register: GENERAL_SCRATCH,
+                                signed: !matches!(local.declared_type, Type::UnsignedInt),
+                                width: 32,
+                                pointee: None,
+                                stride: None,
+                            },
+                        );
+                        let (options, condition_bit) = self.emit_condition_test(condition)?;
+                        self.output.instructions.push(Instruction::Or {
+                            a: saved,
+                            s: GENERAL_SCRATCH,
+                            b: GENERAL_SCRATCH,
                         });
-                    self.load_integer_constant(result, early_constant as i64);
-                    let early_epilogue = self.output.instructions.len();
-                    self.output
-                        .instructions
-                        .push(Instruction::Branch { target: 0 });
-                    let continuation = self.output.instructions.len();
-                    if let Instruction::BranchConditionalForward { target, .. } =
-                        &mut self.output.instructions[continuation_branch]
-                    {
-                        *target = continuation;
-                    }
-                    self.output.anonymous_label_bump = 3;
-                    Some(early_epilogue)
-                } else {
-                    None
-                };
+                        let continuation_branch = self.output.instructions.len();
+                        self.output
+                            .instructions
+                            .push(Instruction::BranchConditionalForward {
+                                options,
+                                condition_bit,
+                                target: 0,
+                            });
+                        self.load_integer_constant(result, early_constant as i64);
+                        let early_epilogue = self.output.instructions.len();
+                        self.output
+                            .instructions
+                            .push(Instruction::Branch { target: 0 });
+                        let continuation = self.output.instructions.len();
+                        if let Instruction::BranchConditionalForward { target, .. } =
+                            &mut self.output.instructions[continuation_branch]
+                        {
+                            *target = continuation;
+                        }
+                        self.output.anonymous_label_bump = 3;
+                        Some(early_epilogue)
+                    } else {
+                        None
+                    };
                 for statement in calls {
                     self.emit_statement(statement)?;
                 }
