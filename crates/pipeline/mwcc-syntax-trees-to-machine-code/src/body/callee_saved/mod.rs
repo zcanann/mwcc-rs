@@ -940,6 +940,128 @@ impl Generator {
                 return Ok(false);
             }
 
+            if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+                self.non_leaf = true;
+                self.frame_size = 24;
+                let index_register = self.general_register_of_leaf(load_index)?;
+                let high = self.fresh_virtual_general();
+                let saved = self.fresh_virtual_general();
+                self.callee_saved = vec![saved];
+                self.output
+                    .instructions
+                    .push(Instruction::MoveFromLinkRegister { d: 0 });
+                self.emit_address_high(high, load_name);
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: index_register,
+                        s: index_register,
+                        shift: 2,
+                    });
+                self.record_relocation(RelocationKind::Addr16Lo, load_name);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: high,
+                    immediate: 0,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -24,
+                    });
+                self.output.instructions.push(Instruction::Add {
+                    d: index_register,
+                    a: GENERAL_SCRATCH,
+                    b: index_register,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: saved,
+                    a: 1,
+                    offset: 20,
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: GENERAL_SCRATCH,
+                    a: index_register,
+                    offset: 0,
+                });
+                self.locations.insert(
+                    local.name.clone(),
+                    Location {
+                        class: ValueClass::General,
+                        register: GENERAL_SCRATCH,
+                        signed: !matches!(local.declared_type, Type::UnsignedInt),
+                        width: 32,
+                        pointee: None,
+                        stride: None,
+                    },
+                );
+                let (options, condition_bit) = self.emit_condition_test(store_condition)?;
+                self.output.instructions.push(Instruction::Or {
+                    a: saved,
+                    s: GENERAL_SCRATCH,
+                    b: GENERAL_SCRATCH,
+                });
+                let skip_branch = self.output.instructions.len();
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options,
+                        condition_bit,
+                        target: 0,
+                    });
+                self.load_integer_constant(GENERAL_SCRATCH, store_constant as i64);
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: GENERAL_SCRATCH,
+                    a: index_register,
+                    offset: 0,
+                });
+                let skip_label = self.output.instructions.len();
+                if let Instruction::BranchConditionalForward { target, .. } =
+                    &mut self.output.instructions[skip_branch]
+                {
+                    *target = skip_label;
+                }
+                self.output.anonymous_label_bump = 4;
+                for statement in calls {
+                    self.emit_statement(statement)?;
+                }
+                let result = mwcc_target::Eabi::general_result().number;
+                self.output.instructions.push(Instruction::Or {
+                    a: result,
+                    s: saved,
+                    b: saved,
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 28,
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: saved,
+                    a: 1,
+                    offset: 20,
+                });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 24,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::MoveToLinkRegister { s: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchToLinkRegister);
+                return Ok(true);
+            }
+
             self.non_leaf = true;
             self.frame_size = 16;
             self.callee_saved = vec![31];
