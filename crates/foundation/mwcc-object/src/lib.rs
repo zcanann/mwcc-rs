@@ -46,10 +46,10 @@ pub enum FunctionSymbolOrder {
     /// The function is registered before its body references, except for the
     /// legacy fixed-address-symbol special case.
     FunctionFirst,
-    /// Deferred modern codegen can resolve another function already defined in
-    /// this translation unit before registering the current function. Other
-    /// body references follow the current function.
-    DefinedFunctionsThenFunction,
+    /// Modern deferred codegen registers locally defined function targets and
+    /// ordinary external references before the current function, but locally
+    /// defined data targets after it.
+    Deferred,
 }
 
 /// The inputs for one translation unit's object: the source file name (for the

@@ -1816,14 +1816,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // as the only declaration, so the front end may classify its call as an
         // implicit body reference even though object emission resolves it locally.
         let (defined_function_ordered, ordered): (Vec<&str>, Vec<&str>) =
-            if input.object_format.function_symbol_order
-                == FunctionSymbolOrder::DefinedFunctionsThenFunction
-            {
+            if input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred {
                 ordered.into_iter().partition(|name| {
                     functions.iter().any(|candidate| {
                         !candidate.is_static && !candidate.implicit_local && candidate.name == *name
                     })
                 })
+            } else {
+                (Vec::new(), ordered)
+            };
+        // Deferred body compilation registers a defined data symbol only after
+        // the current function. Remove those targets from the ordinary
+        // explicit/implicit runs so undefined externals can retain their normal
+        // pre-function position.
+        let (deferred_data_ordered, ordered): (Vec<&str>, Vec<&str>) =
+            if input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred {
+                ordered
+                    .into_iter()
+                    .partition(|name| data_offsets.contains_key(name))
             } else {
                 (Vec::new(), ordered)
             };
@@ -2035,12 +2045,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             };
         }
-        if input.object_format.function_symbol_order != FunctionSymbolOrder::ReferencesFirst {
+        if input.object_format.function_symbol_order == FunctionSymbolOrder::FunctionFirst {
             emit_referenced!(absolute_ordered);
-            emit_referenced!(defined_function_ordered);
             emit_current_function_symbol!();
             emit_referenced!(early_implicit_ordered.iter().copied());
         }
+        emit_referenced!(defined_function_ordered);
         // Prototyped externals first, then the save/restore helpers, then the
         // function's own symbol, then the remaining implicit callees.
         emit_referenced!(explicit_ordered);
@@ -2048,6 +2058,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
         emit_current_function_symbol!();
+        emit_referenced!(deferred_data_ordered);
         if input.object_format.function_symbol_order == FunctionSymbolOrder::ReferencesFirst {
             emit_referenced!(early_implicit_ordered.iter().copied());
         }

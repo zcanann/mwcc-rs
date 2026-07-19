@@ -1245,7 +1245,7 @@ fn compile(
             function_symbol_order: if config.build.function_symbol_before_references {
                 mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
             } else if config.flags.inline_deferred {
-                mwcc_machine_code_to_object::FunctionSymbolOrder::DefinedFunctionsThenFunction
+                mwcc_machine_code_to_object::FunctionSymbolOrder::Deferred
             } else {
                 mwcc_machine_code_to_object::FunctionSymbolOrder::ReferencesFirst
             },
