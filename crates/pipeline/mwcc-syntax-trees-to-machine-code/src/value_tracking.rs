@@ -107,14 +107,21 @@ impl Generator {
         // array element, dereference, or member) inlines into its use, matching the direct
         // `arr[i] + 1` lowering, but ONLY in a store-free leaf body: a store could alias the
         // read and a call could rewrite the memory, so those keep their order (non-leaf is
-        // rejected below; a store is excluded here). The duplication guard below rejects a
-        // twice-read load.
+        // rejected below; a store is excluded here). An unsigned-byte local initialized by
+        // an unsigned-byte load is equally value-preserving: `lbz` has already performed the
+        // local's conversion, and retaining the synthetic local would add a second `clrlwi`.
+        // Other narrow locals remain excluded because their declaration may truncate or
+        // sign-extend. The duplication guard below rejects a twice-read load.
         let single_memory_local = function.locals.len() == 1
             && !has_store
-            && function
-                .locals
-                .first()
-                .is_some_and(|local| local.declared_type.width() >= 32)
+            && function.locals.first().is_some_and(|local| {
+                local.declared_type.width() >= 32
+                    || (local.declared_type == Type::UnsignedChar
+                        && local.initializer.as_ref().is_some_and(|initializer| {
+                            self.is_byte_load(initializer)
+                                && matches!(self.signedness_of(initializer), Ok(false))
+                        }))
+            })
             && function
                 .locals
                 .first()

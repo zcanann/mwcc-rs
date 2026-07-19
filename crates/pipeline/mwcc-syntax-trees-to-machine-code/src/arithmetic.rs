@@ -1258,18 +1258,26 @@ impl Generator {
         // A narrow leaf masked entirely within its own bit-width needs no promotion
         // (extsb/extsh/clrlwi): the mask keeps only bits the extension would leave
         // unchanged, so mwcc masks the raw register — `char a & 0xf` is `clrlwi r3,r3,28`,
-        // not `extsb r0,r3; clrlwi r3,r0,28`. The mask run must start within the narrow
-        // value's low `width` bits (big-endian bit `32-width` onward); a mask reaching the
-        // extension bits (`a & 0x1ff`) keeps the promotion via the normal path below.
+        // not `extsb r0,r3; clrlwi r3,r0,28`. For an unsigned leaf, a wider mask that
+        // contains every value bit is equivalent to its normal zero-extension, so
+        // `unsigned char a; a & 0x1ff` is just `clrlwi r3,r3,24`.
         if let &Immediate::Mask(begin, end) = &kind {
-            if let Ok((register, width, _signed)) = self.leaf_info(variable) {
-                if width < 32 && (begin as u32) >= 32 - width as u32 {
+            if let Ok((register, width, signed)) = self.leaf_info(variable) {
+                let value_begin = 32 - width as u32;
+                let mask_is_within_value = (begin as u32) >= value_begin;
+                let mask_contains_unsigned_value =
+                    !signed && (begin as u32) <= value_begin && end == 31;
+                if width < 32 && (mask_is_within_value || mask_contains_unsigned_value) {
                     self.output
                         .instructions
                         .push(Instruction::AndContiguousMask {
                             a: destination,
                             s: register,
-                            begin,
+                            begin: if mask_contains_unsigned_value {
+                                value_begin as u8
+                            } else {
+                                begin
+                            },
                             end,
                         });
                     return Ok(true);

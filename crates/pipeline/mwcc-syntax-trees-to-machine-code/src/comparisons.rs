@@ -1443,17 +1443,24 @@ impl Generator {
             && !matches!(value, Expression::Index { index, .. } if constant_value(index).is_none())
     }
 
-    /// Whether `value` is a load of a signed 8-bit value (a `char`/`signed char`
-    /// dereference, index, or struct member) — emitted as `lbz`, which zero-extends
-    /// and so needs a following `extsb` in the sign-sensitive idioms.
-    pub(crate) fn is_signed_byte_load(&self, value: &Expression) -> Compilation<bool> {
+    /// Whether `value` is an 8-bit memory load — a dereference, index, or struct
+    /// member. All byte loads use `lbz`, so the loaded register already contains
+    /// the exact unsigned-byte value even when the source type is signed.
+    pub(crate) fn is_byte_load(&self, value: &Expression) -> bool {
         let width = match value {
             Expression::Dereference { pointer } => self.dereferenced_width(pointer),
             Expression::Index { base, .. } => self.dereferenced_width(base),
             Expression::Member { member_type, .. } => Some(member_type.width()),
-            _ => return Ok(false),
+            _ => return false,
         };
-        Ok(width == Some(8) && self.signedness_of(value)?)
+        width == Some(8)
+    }
+
+    /// Whether `value` is a load of a signed 8-bit value (a `char`/`signed char`
+    /// dereference, index, or struct member) — emitted as `lbz`, which zero-extends
+    /// and so needs a following `extsb` in the sign-sensitive idioms.
+    pub(crate) fn is_signed_byte_load(&self, value: &Expression) -> Compilation<bool> {
+        Ok(self.is_byte_load(value) && self.signedness_of(value)?)
     }
 
     /// A NARROW (8/16-bit) UNSIGNED load (deref/element/member). It promotes to a SIGNED `int`
