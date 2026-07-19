@@ -1368,6 +1368,7 @@
                                                             window_floor: 0,
                                                             tier_position_desc: false,
                                                             legacy_three_tier_rotation: false,
+                                                            legacy_inframe_full_tier: false,
                                                             emission_over_tier: false,
                                                             prepass_always: false,
                                                             prepass_start_asc: false,
@@ -1405,6 +1406,7 @@
                     window_floor: 0,
                     tier_position_desc: false,
                     legacy_three_tier_rotation: false,
+                    legacy_inframe_full_tier: false,
                     emission_over_tier: false,
                     prepass_always: false,
                     prepass_start_asc: false,
@@ -2515,4 +2517,30 @@
             assign_float_registers(&nodes, &[0, 1, 2, 3], &[(1, 1)], model),
             [Some(4), Some(3), Some(5), None]
         );
+    }
+
+    #[test]
+    fn legacy_deep_inframe_prefix_keeps_deferred_local_in_tier() {
+        use OpKind::Store as St;
+        let nodes = vec![
+            DagNode::new("z", ALU).local_home().reads(&[1]).writes(&[10]),
+            DagNode::new("coefficient", LOAD).writes(&[11]),
+            DagNode::new("fshared", ALU).reads(&[10, 11]).writes(&[12]),
+            DagNode::new("v", ALU).local_home().reads(&[10, 1]).writes(&[13]),
+            DagNode::new("sink", STORE).kind(St).reads(&[12, 13]),
+        ];
+        let order = [0, 1, 2, 3, 4];
+        let mut modern = FROZEN_FLOAT_REG;
+        modern.tier_position_desc = true;
+        modern.window_floor = 4;
+        modern.void_forward = false;
+        let modern_registers = assign_float_registers(&nodes, &order, &[(1, 1)], modern);
+
+        let mut legacy = modern;
+        legacy.legacy_inframe_full_tier = true;
+        let legacy_registers = assign_float_registers(&nodes, &order, &[(1, 1)], legacy);
+
+        assert_eq!(modern_registers[0], Some(3));
+        assert_eq!(legacy_registers[0], Some(2));
+        assert_eq!(legacy_registers[3], Some(3));
     }

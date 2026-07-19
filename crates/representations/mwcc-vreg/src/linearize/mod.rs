@@ -1439,6 +1439,9 @@ pub struct FloatRegModel {
     /// product homes from reverse-definition [last, middle, first] to
     /// [last, first, middle]. Other tier sizes retain their normal order.
     pub legacy_three_tier_rotation: bool,
+    /// Build 163's deep in-frame shared prefix retains the local immediately
+    /// following the first chain op in the tier; modern duals squeeze it out.
+    pub legacy_inframe_full_tier: bool,
     /// The COMPOSED-tail regime (the k_cos else: an x re-reload AND a frame
     /// local together): the emission-ordered sequence takes the whole DAG —
     /// the tier-forward machine and the structural crossing tier stand down
@@ -1519,6 +1522,7 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     window_floor: 0,
     tier_position_desc: false,
     legacy_three_tier_rotation: false,
+    legacy_inframe_full_tier: false,
     emission_over_tier: false,
     prepass_always: false,
     prepass_start_asc: false,
@@ -1703,7 +1707,11 @@ pub fn assign_float_registers(
                     // after the first chain arith is squeezed out of the tier
                     // (d4's v, slot chain1+1); a load separating them keeps
                     // the local in the tier (d5's v at chain1+2).
-                    tier.retain(|&node| !nodes[node].local_home || position[node] != first_arith + 1);
+                    if !model.legacy_inframe_full_tier {
+                        tier.retain(|&node| {
+                            !nodes[node].local_home || position[node] != first_arith + 1
+                        });
+                    }
                 }
             }
             if model.tier_position_desc {

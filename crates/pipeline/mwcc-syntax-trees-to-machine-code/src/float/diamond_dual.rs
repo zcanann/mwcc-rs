@@ -500,24 +500,32 @@ impl Generator {
         let mut condition_encoding: Option<(u8, u8)> = None;
         if !nodes.is_empty() {
             let mut order = linearize(&nodes);
-            let register_order = order.clone();
-            if !in_frame
-                && self.behavior.shared_float_dag_style == SharedFloatDagStyle::LegacyBalancedPrefix
-            {
+            let legacy_shared_prefix =
+                self.behavior.shared_float_dag_style == SharedFloatDagStyle::LegacyBalancedPrefix;
+            let legacy_deep_inframe = in_frame
+                && self.float.dual_compare.is_some()
+                && legacy_shared_prefix
+                && nodes.iter().filter(|node| node.label == "fshared").count() >= 4;
+            let mut register_order = order.clone();
+            if legacy_shared_prefix && (!in_frame || legacy_deep_inframe) {
                 // Build 163 starts the first ready shared-chain operation
                 // before the final independent coefficient load. The modern
-                // scheduler completes the whole load run first.
+                // scheduler completes the whole load run first. Deep framed
+                // duals also allocate against that changed lifetime order;
+                // standalone prefixes retain their original allocation pass.
                 if let Some(position) = order.iter().position(|&node| {
                     nodes[node].label == "fshared" && follows_independent_load(&nodes, &order, node)
                 }) {
                     order.swap(position - 1, position);
+                    if legacy_deep_inframe {
+                        register_order = order.clone();
+                    }
                 }
             }
             let mut model = FROZEN_FLOAT_REG;
             model.tier_position_desc = true;
-            model.legacy_three_tier_rotation = !in_frame
-                && self.behavior.shared_float_dag_style
-                    == SharedFloatDagStyle::LegacyBalancedPrefix;
+            model.legacy_three_tier_rotation = !in_frame && legacy_shared_prefix;
+            model.legacy_inframe_full_tier = legacy_deep_inframe;
             model.window_floor = window_floor;
             // The sink absorbs every consumer, so there is no return node;
             // the shared DAG still allocates on the reverse/tier machine.
@@ -803,10 +811,18 @@ impl Generator {
                 // when the shared DAG is loadless (measured: fire-350).
                 // IN-FRAME the compare lands right after the x reload
                 // (measured: the real k_sin, cmpwi at slot 1) — except the
-                // BIG-const form, whose cmpw lands after the FOURTH shared
-                // load (measured at chain depths 3 and 4).
+                // BIG-const form: modern builds compare after the fourth
+                // shared load, while build 163 compares after the third
+                // (measured at chain depths 3 and 4).
                 if let Some((_, _, ix_register)) = self.float.dual_compare {
-                    if condition_encoding.is_none() && emitted_loads == 4 {
+                    let compare_load_count = if self.behavior.shared_float_dag_style
+                        == SharedFloatDagStyle::LegacyBalancedPrefix
+                    {
+                        3
+                    } else {
+                        4
+                    };
+                    if condition_encoding.is_none() && emitted_loads == compare_load_count {
                         self.output.instructions.push(Instruction::CompareWord {
                             a: ix_register,
                             b: 0,
