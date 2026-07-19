@@ -58,7 +58,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--state-dir", type=Path, default=Path("target/reference-parity/frontier"))
     parser.add_argument("--size", type=int, default=256)
-    parser.add_argument("--byte-audit", type=int, default=16)
+    parser.add_argument(
+        "--byte-audit",
+        type=int,
+        default=0,
+        help="old BYTE rows to spend work-frontier slots on (the fixed audit is the default regression sample)",
+    )
     parser.add_argument("--audit-size", type=int, default=384)
     parser.add_argument("--audit-seed", default="mwcc-representative-audit-v1")
     parser.add_argument("--audit-epoch", default="0")
@@ -216,6 +221,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         fingerprint,
         "--audit-selection",
         str(audit),
+        "--frontier-selection",
+        str(frontier),
         *filters,
         *result_arguments(all_results),
     ]

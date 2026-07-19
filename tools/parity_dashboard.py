@@ -158,6 +158,13 @@ def load_selection(path: Optional[Path]) -> Optional[set[str]]:
     return set(document)
 
 
+def load_selection_manifest(path: Path) -> Dict[str, Any]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not isinstance(document.get("configuration_ids"), list):
+        raise ValueError("selection manifest must contain configuration_ids")
+    return document
+
+
 def filtered_rows(
     inventory: Dict[str, Any], args: argparse.Namespace
 ) -> List[Dict[str, Any]]:
@@ -295,32 +302,53 @@ def representative_audit(
     rows: List[Dict[str, Any]],
     observations: Dict[str, Dict[str, Any]],
     selection: set[str],
+    manifest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     universe = {row["configuration_id"] for row in rows if row["source_exists"]}
     selected = universe & selection
     direct = {identity: observations[identity] for identity in selected if identity in observations}
     counts = Counter(observation["status"] for observation in direct.values())
     complete = len(direct) == len(selected)
+    manifest = manifest or {}
+    declared_population = manifest.get("population_size")
+    population_matches = declared_population is None or declared_population == len(universe)
+    selection_members_present = len(selected) == len(selection)
+    design_valid = population_matches and selection_members_present
     result: Dict[str, Any] = {
-        "method": "simple_random_sample_without_replacement",
+        "method": manifest.get("kind", "simple_random_sample_without_replacement"),
+        "seed": manifest.get("seed"),
+        "epoch": manifest.get("epoch"),
+        "population_size": len(universe),
+        "declared_population_size": declared_population,
+        "design_valid": design_valid,
+        "population_matches": population_matches,
+        "selection_members_present": selection_members_present,
+        "requested": len(selection),
         "selected": len(selected),
         "observed": len(direct),
         "complete": complete,
         "statuses": {status: counts[status] for status in STATUSES if status != "UNTESTED"},
         "estimate": None,
     }
-    if complete and selected:
+    if complete and selected and design_valid:
         successes = counts["BYTE"]
-        unknown = counts["HARNESS"] + counts["MISSING_DEPENDENCY"]
+        known_nonparity = counts["DIFF"] + counts["DEFER"] + counts["UNSUPPORTED_BUILD"]
+        unknown = (
+            counts["HARNESS"]
+            + counts["MISSING_DEPENDENCY"]
+            + counts["INVALID_CONFIGURATION"]
+        )
         resolved = len(selected) - unknown
         resolved_low, resolved_high = wilson_interval(successes, resolved)
         result["estimate"] = {
             "measure": "configured_byte_exact",
             "successes": successes,
             "total": len(selected),
+            "known_nonparity": known_nonparity,
             "measurement_unknown": unknown,
             "harness_unknown": counts["HARNESS"],
             "missing_dependency_unknown": counts["MISSING_DEPENDENCY"],
+            "invalid_configuration_unknown": counts["INVALID_CONFIGURATION"],
             "confirmed_proportion": successes / len(selected),
             "identification_interval_low": successes / len(selected),
             "identification_interval_high": (successes + unknown) / len(selected),
@@ -331,6 +359,31 @@ def representative_audit(
             "resolved_interval_high": resolved_high,
         }
     return result
+
+
+def work_frontier(
+    rows: List[Dict[str, Any]],
+    observations: Dict[str, Dict[str, Any]],
+    manifest: Dict[str, Any],
+) -> Dict[str, Any]:
+    universe = {row["configuration_id"] for row in rows if row["source_exists"]}
+    requested = set(manifest["configuration_ids"])
+    selected = universe & requested
+    direct = {identity: observations[identity] for identity in selected if identity in observations}
+    counts = Counter(observation["status"] for observation in direct.values())
+    return {
+        "method": "failure_prioritized_work_queue",
+        "is_parity_estimate": False,
+        "seed": manifest.get("seed"),
+        "epoch": manifest.get("epoch"),
+        "universe_size": len(universe),
+        "declared_universe_size": manifest.get("universe_size"),
+        "selected": len(selected),
+        "requested": len(requested),
+        "observed": len(direct),
+        "previous_statuses": manifest.get("previous_status_counts", {}),
+        "statuses": {status: counts[status] for status in STATUSES if status != "UNTESTED"},
+    }
 
 
 def print_breakdown(title: str, rows: List[Dict[str, Any]]) -> None:
@@ -379,9 +432,17 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
     audit = report.get("representative_audit")
     if audit is not None:
         print(
-            f"representative audit: {audit['observed']}/{audit['selected']} observed "
-            f"({'complete' if audit['complete'] else 'INCOMPLETE'})"
+            f"fixed parity audit (SRSWOR; seed={audit['seed']!r}, epoch={audit['epoch']!r}): "
+            f"n={audit['selected']} from N={audit['population_size']}; "
+            f"{audit['observed']}/{audit['selected']} observed "
+            f"({'complete' if audit['complete'] else 'INCOMPLETE'}; "
+            f"design {'valid' if audit['design_valid'] else 'INVALID'})"
         )
+        if not audit["design_valid"]:
+            print(
+                "audit estimate suppressed: inventory population or fixed sample membership changed; "
+                "regenerate the audit deliberately"
+            )
         estimate = audit["estimate"]
         if estimate is not None:
             print(
@@ -390,9 +451,14 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                 f"{estimate['confirmed_proportion']:.1%}"
             )
             print(
+                f"known non-parity: {estimate['known_nonparity']}/{estimate['total']} "
+                "(DIFF + DEFER + unsupported compiler build)"
+            )
+            print(
                 f"measurement-unknown: {estimate['measurement_unknown']}/{estimate['total']} "
                 f"(harness {estimate['harness_unknown']}, "
-                f"missing dependency {estimate['missing_dependency_unknown']}); "
+                f"missing dependency {estimate['missing_dependency_unknown']}, "
+                f"invalid configuration {estimate['invalid_configuration_unknown']}); "
                 f"sample parity bounds "
                 f"{estimate['identification_interval_low']:.1%}.."
                 f"{estimate['identification_interval_high']:.1%}"
@@ -411,9 +477,32 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
             if status != "UNTESTED"
         )
         print(f"audit outcomes: {counts}")
+        audit_delta = audit.get("delta")
+        if audit_delta is not None:
+            print(
+                f"fixed-audit delta: +{audit_delta['byte_gained']} BYTE / "
+                f"-{audit_delta['byte_lost']} BYTE across "
+                f"{audit_delta['common_observations']}/{audit['selected']} common sample rows"
+            )
+            for transition, count in audit_delta["transitions"].items():
+                print(f"  {transition}: {count}")
+    frontier = report.get("work_frontier")
+    if frontier is not None:
+        outcomes = " / ".join(
+            f"{status} {frontier['statuses'][status]}"
+            for status in STATUSES
+            if status != "UNTESTED"
+        )
+        print(
+            f"work frontier (failure-biased; NOT A PARITY ESTIMATE): "
+            f"{frontier['observed']}/{frontier['selected']} observed from "
+            f"N={frontier['universe_size']}"
+        )
+        print(f"frontier outcomes: {outcomes}")
     if delta_report is not None:
         print(
-            f"delta: +{delta_report['byte_gained']} BYTE / -{delta_report['byte_lost']} BYTE "
+            f"all-cached delta (diagnostic, not an estimate): "
+            f"+{delta_report['byte_gained']} BYTE / -{delta_report['byte_lost']} BYTE "
             f"across {delta_report['common_observations']} common observations"
         )
         for transition, count in delta_report["transitions"].items():
@@ -437,6 +526,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--baseline-tool-fingerprint", help="baseline tool fingerprint prefix")
     parser.add_argument("--selection", type=Path)
     parser.add_argument("--audit-selection", type=Path)
+    parser.add_argument("--frontier-selection", type=Path)
     parser.add_argument("--project", action="append")
     parser.add_argument("--version", action="append")
     parser.add_argument("--language", choices=("c", "c++"), action="append")
@@ -464,9 +554,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         report = snapshot(
             inventory, rows, observations, tool, unsupported_versions, source_projects
         )
+        audit_manifest = None
         if args.audit_selection is not None:
+            audit_manifest = load_selection_manifest(args.audit_selection)
             report["representative_audit"] = representative_audit(
-                rows, observations, load_selection(args.audit_selection) or set()
+                rows,
+                observations,
+                set(audit_manifest["configuration_ids"]),
+                audit_manifest,
+            )
+        if args.frontier_selection is not None:
+            report["work_frontier"] = work_frontier(
+                rows, observations, load_selection_manifest(args.frontier_selection)
             )
         delta_report = None
         if args.baseline_result:
@@ -476,6 +575,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             universe = {row["configuration_id"] for row in rows if row["source_exists"]}
             delta_report = delta(observations, baseline, universe)
             report["delta"] = delta_report
+            if audit_manifest is not None:
+                audit_ids = universe & set(audit_manifest["configuration_ids"])
+                report["representative_audit"]["delta"] = delta(
+                    observations, baseline, audit_ids
+                )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"parity dashboard: {error}")
         return 2

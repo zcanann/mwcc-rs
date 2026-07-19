@@ -6,7 +6,13 @@ import argparse
 import unittest
 
 from parity_audit import build_audit
-from parity_dashboard import failure_reason, representative_audit, snapshot, wilson_interval
+from parity_dashboard import (
+    failure_reason,
+    representative_audit,
+    snapshot,
+    wilson_interval,
+    work_frontier,
+)
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
 from reference_parity import stable_sample
@@ -143,6 +149,55 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["estimate"]["identification_interval_low"], 0.25)
         self.assertEqual(report["estimate"]["identification_interval_high"], 0.75)
         self.assertEqual(report["estimate"]["resolved_proportion"], 0.5)
+
+    def test_invalid_configuration_is_measurement_unknown_not_compiler_failure(self):
+        rows = [row(source=f"src/{index}.c") for index in range(3)]
+        statuses = ("BYTE", "DEFER", "INVALID_CONFIGURATION")
+        observations = {
+            item["configuration_id"]: {"status": statuses[index]}
+            for index, item in enumerate(rows)
+        }
+        report = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )
+        self.assertEqual(report["estimate"]["known_nonparity"], 1)
+        self.assertEqual(report["estimate"]["measurement_unknown"], 1)
+        self.assertEqual(report["estimate"]["resolved_outcomes"], 2)
+
+    def test_audit_suppresses_estimate_after_inventory_drift(self):
+        rows = [row(source="src/a.c"), row(source="src/b.c")]
+        selection = {item["configuration_id"] for item in rows}
+        observations = {identity: {"status": "BYTE"} for identity in selection}
+        report = representative_audit(
+            rows,
+            observations,
+            selection,
+            {
+                "kind": "simple_random_sample_without_replacement",
+                "population_size": 3,
+                "configuration_ids": sorted(selection),
+                "seed": "fixed",
+                "epoch": "0",
+            },
+        )
+        self.assertFalse(report["design_valid"])
+        self.assertIsNone(report["estimate"])
+
+    def test_frontier_is_explicitly_not_a_parity_estimate(self):
+        rows = [row(source="src/a.c"), row(source="src/b.c")]
+        selection = {item["configuration_id"] for item in rows}
+        observations = {
+            rows[0]["configuration_id"]: {"status": "BYTE"},
+            rows[1]["configuration_id"]: {"status": "DEFER"},
+        }
+        report = work_frontier(
+            rows,
+            observations,
+            {"configuration_ids": sorted(selection), "universe_size": 2},
+        )
+        self.assertFalse(report["is_parity_estimate"])
+        self.assertEqual(report["statuses"]["BYTE"], 1)
+        self.assertEqual(report["statuses"]["DEFER"], 1)
 
 
 class AuditSelectionTests(unittest.TestCase):
