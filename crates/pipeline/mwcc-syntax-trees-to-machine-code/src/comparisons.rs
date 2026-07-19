@@ -84,6 +84,20 @@ impl Generator {
         // `u >= 1` / `u < 1` as their own relational idioms, so those are NOT folded; and signed
         // comparisons are unaffected — `int a > 0` is not `a != 0`.)
         if !signed_comparison {
+            // The remaining relations at the unsigned domain boundary are constants:
+            // `u < 0` / `0 > u` can never hold, while `u >= 0` / `0 <= u` always do.
+            // mwcc removes the operand evaluation entirely for these non-volatile shapes.
+            let constant = match operator {
+                BinaryOperator::Less if is_zero_literal(right) => Some(0),
+                BinaryOperator::GreaterEqual if is_zero_literal(right) => Some(1),
+                BinaryOperator::Greater if is_zero_literal(left) => Some(0),
+                BinaryOperator::LessEqual if is_zero_literal(left) => Some(1),
+                _ => None,
+            };
+            if let Some(value) = constant {
+                self.load_integer_constant(d, value);
+                return Ok(());
+            }
             let folded = match operator {
                 BinaryOperator::Greater if is_zero_literal(right) => {
                     Some((BinaryOperator::NotEqual, left))
@@ -199,6 +213,11 @@ impl Generator {
                     let value = if self.is_signed_byte_load(left)? {
                         self.evaluate_general(left, GENERAL_SCRATCH)?;
                         self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+                        GENERAL_SCRATCH
+                    } else if self.is_byte_load(left) {
+                        // `lbz` is already the promoted unsigned-byte value. Compare it
+                        // directly in the scratch; adding `clrlwi` would be redundant.
+                        self.evaluate_general(left, GENERAL_SCRATCH)?;
                         GENERAL_SCRATCH
                     } else if self.is_word_load(left) {
                         self.evaluate_general(left, GENERAL_SCRATCH)?;
