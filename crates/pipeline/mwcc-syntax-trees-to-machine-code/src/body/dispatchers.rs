@@ -1134,9 +1134,11 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
-        // Pre-pool labels (measured @17 on the math_inlines object vs the
-        // +0 base's @5).
-        self.output.anonymous_label_bump += 12;
+        // Pre-pool labels: ordinary compilation retains 12 around this CFG;
+        // `-inline auto,deferred` retains three more. This is independent of
+        // compiler generation (the build's initial counter still differs).
+        let deferred_bump = if self.behavior.deferred_inlining { 3 } else { 0 };
+        self.output.anonymous_label_bump += 12 + deferred_bump;
         Ok(true)
     }
 

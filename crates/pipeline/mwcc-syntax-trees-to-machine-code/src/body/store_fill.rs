@@ -550,8 +550,10 @@ impl Generator {
     /// — except a constant store cannot occupy the `li`'s one-cycle latency slot, so if the
     /// constant is the FIRST store it swaps with the next (leaf) store:
     ///
-    ///     gi=a; gj=b; gk=5  ->  li r0,5; stw r3,gi; stw r4,gj; stw r0,gk   (source order)
-    ///     gi=5; gj=a; gk=b  ->  li r0,5; stw r3,gj; stw r0,gi; stw r4,gk   (leading const swaps)
+    /// ```text
+    /// gi=a; gj=b; gk=5  ->  li r0,5; stw r3,gi; stw r4,gj; stw r0,gk   (source order)
+    /// gi=5; gj=a; gk=b  ->  li r0,5; stw r3,gj; stw r0,gi; stw r4,gk   (leading const swaps)
+    /// ```
     ///
     /// (Two stores are the mixed fill; all-constant is the constant fill; a non-leaf, non-
     /// constant value among the rest needs the general scheduler and defers.)

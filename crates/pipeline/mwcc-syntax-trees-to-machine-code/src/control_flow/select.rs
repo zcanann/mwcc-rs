@@ -779,8 +779,10 @@ impl Generator {
     /// straight into the two return blocks — mwcc branches each term to the taken or
     /// fall-through return rather than computing the logical operator as a 0/1 value:
     ///
-    ///     &&: cmpwi rA,0; beq FALL; cmpwi rB,0; beq FALL; <X>; blr; FALL: <Y>; blr
-    ///     ||: cmpwi rA,0; bne TAKEN; cmpwi rB,0; beq FALL; TAKEN: <X>; blr; FALL: <Y>; blr
+    /// ```text
+    /// &&: cmpwi rA,0; beq FALL; cmpwi rB,0; beq FALL; <X>; blr; FALL: <Y>; blr
+    /// ||: cmpwi rA,0; bne TAKEN; cmpwi rB,0; beq FALL; TAKEN: <X>; blr; FALL: <Y>; blr
+    /// ```
     ///
     /// Restricted to a single &&/|| chain of leaf/comparison terms (no mixed/nested logical)
     /// with leaf-or-constant return values; anything else returns false to defer.
