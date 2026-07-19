@@ -881,11 +881,14 @@ fn compile(
         }
 
         // Writable global. Small (≤ 8 bytes) → `.sdata`/`.sbss`; large (> 8) →
-        // `.data`/`.bss` (the writer routes by size). Large data is only emitted
-        // under small-data addressing and when no jump table shares `.data`;
-        // otherwise it is still dropped (the prior behavior — never a wrong object).
-        if size > 8 && (!small_data || has_jump_table) {
-            continue;
+        // `.data`/`.bss` (the writer routes by size). Absolute addressing changes
+        // references, not whether the definition exists, so `-sdata 0` must retain
+        // large objects. A dense-switch jump table still shares `.data` with these
+        // objects without a reconciled layout; defer that combination honestly.
+        if size > 8 && has_jump_table {
+            return Err(Diagnostic::error(
+                "a large writable global alongside a jump table needs shared .data layout (roadmap)",
+            ));
         }
         // Materialize the initializer's bytes if there is one (a struct value/array uses the
         // parser's pre-serialized field bytes — exact for sub-word/nested/padded fields; a

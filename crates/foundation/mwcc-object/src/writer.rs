@@ -166,6 +166,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             } else {
                 ".rodata"
             }
+        } else if !input.small_data {
+            // `-sdata 0` disables the small writable sections entirely. Small
+            // and large definitions share one `.data`/`.bss` layout; merely
+            // renaming separate `.sdata` and `.data` sections would create two
+            // same-named ELF sections with independent offsets.
+            if object.initial_bytes.is_some() {
+                ".data"
+            } else {
+                ".bss"
+            }
         } else if object.size <= 8 && !object.force_full_data_section {
             if object.initial_bytes.is_some() {
                 ".sdata"
@@ -2477,20 +2487,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
 
     // 5. `.shstrtab` — section names in section order; record each name's offset.
     let mut shstrtab = StringTable::new();
-    // With the small-data area off (`-sdata 0`), the defined-data sections are
-    // named `.bss`/`.data` rather than `.sbss`/`.sdata` (identical otherwise). The
-    // name only appears in `.shstrtab`, so map it here and keep the internal keys.
-    let name_offsets: Vec<u32> = order
-        .iter()
-        .map(|name| {
-            let display = match *name {
-                ".sbss" if !input.small_data => ".bss",
-                ".sdata" if !input.small_data => ".data",
-                other => other,
-            };
-            shstrtab.add(display)
-        })
-        .collect();
+    // Writable objects are routed directly to `.data`/`.bss` when `-sdata 0`
+    // is active, so section names are already canonical here.
+    let name_offsets: Vec<u32> = order.iter().map(|name| shstrtab.add(name)).collect();
     let offset_of =
         |name: &str| name_offsets[order.iter().position(|entry| *entry == name).unwrap()];
 
