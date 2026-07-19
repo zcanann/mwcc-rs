@@ -454,6 +454,9 @@ pub struct Behavior {
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
     pub frexp_family_style: FrexpFamilyStyle,
+    /// Additional anonymous labels retained around `frexp` when deferred
+    /// inlining is enabled. Zero for ordinary compilation.
+    pub frexp_deferred_label_bump: u8,
     /// Whole-family schedule for the signal-dispatch `raise` transaction.
     pub raise_family_style: RaiseFamilyStyle,
     /// Scheduler, register allocation, and symbol creation for integer DAGs.
@@ -628,6 +631,11 @@ impl Behavior {
                 .folded_float_compare_linkage_style(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
+            frexp_deferred_label_bump: if config.flags.inline_deferred {
+                config.build.profile.frexp_deferred_label_bump()
+            } else {
+                0
+            },
             raise_family_style: config.build.profile.raise_family_style(),
             integer_dag_style: config.build.profile.integer_dag_style(),
             integer_loop_style: config.build.profile.integer_loop_style(),

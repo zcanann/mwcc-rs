@@ -574,6 +574,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         FrexpFamilyStyle::VirtualCompactFrame
     }
 
+    /// Anonymous labels retained by the deferred control-flow pass around the
+    /// fdlibm `frexp` transaction. Build 81 and the later mainline retain three;
+    /// the earlier builds override this with their five-label block.
+    fn frexp_deferred_label_bump(&self) -> u8 {
+        3
+    }
+
     fn raise_family_style(&self) -> RaiseFamilyStyle {
         RaiseFamilyStyle::DirectLoadCountRegister
     }
@@ -858,6 +865,10 @@ impl CodegenProfile for Gc13Build53 {
     fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
         TrigDispatcherStyle::EarlyLiveParameter
     }
+
+    fn frexp_deferred_label_bump(&self) -> u8 {
+        5
+    }
 }
 
 /// GC/1.3.2 — mwcceppc 2.4.2 build 81. Its MSL aligned-copy loop still uses
@@ -923,6 +934,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn frexp_family_style(&self) -> FrexpFamilyStyle {
         FrexpFamilyStyle::LegacyPhysicalFrame
+    }
+
+    fn frexp_deferred_label_bump(&self) -> u8 {
+        5
     }
 
     fn raise_family_style(&self) -> RaiseFamilyStyle {

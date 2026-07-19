@@ -2212,7 +2212,10 @@ impl Generator {
             offset: SLOT,
         });
         self.bind_label(epilogue);
-        self.output.anonymous_label_bump += 6;
+        // The ordinary compact CFG consumes six anonymous labels. Deferred
+        // compilation retains a generation-specific hidden block before pool
+        // numbering (five labels in build 53, three in build 81+).
+        self.output.anonymous_label_bump += 6 + u32::from(self.behavior.frexp_deferred_label_bump);
         self.emit_epilogue_and_return();
         Ok(true)
     }

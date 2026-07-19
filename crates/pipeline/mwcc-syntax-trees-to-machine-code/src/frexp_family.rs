@@ -229,8 +229,9 @@ impl Generator {
         });
         self.bind_label(epilogue);
         // Build 163 assigns three additional internal block labels before the
-        // pooled scale constant (@11 versus the compact family's @8).
-        self.output.anonymous_label_bump += 9;
+        // pooled scale constant (@11 versus the compact family's @8). Its
+        // deferred pass retains five more hidden labels.
+        self.output.anonymous_label_bump += 9 + u32::from(self.behavior.frexp_deferred_label_bump);
         self.emit_epilogue_and_return();
     }
 }
