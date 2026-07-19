@@ -5,6 +5,7 @@
 
 use crate::profile::{
     CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc233Build163, Gc41Build51213, Mainline,
+    Wii43Build145,
 };
 
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.
@@ -26,6 +27,11 @@ pub struct CompilerBuild {
     pub comment_version: (u8, u8, u8),
     /// Byte offset within an instruction used by SDA21 relocation records.
     pub emb_sda21_offset: u8,
+    /// Required alignment of the code section and every function within it.
+    pub code_alignment: u8,
+    /// Whether `.sdata2` carries ELF's writable flag. GameCube compilers mark
+    /// their constant pool writable; Wii build 145 marks it read-only.
+    pub sdata2_writable: bool,
     /// Whether a global function symbol precedes externals first referenced by
     /// its body (2.3.3), instead of following prototyped externals (2.4.x).
     pub function_symbol_before_references: bool,
@@ -49,6 +55,8 @@ pub const GC_1_2_5: CompilerBuild = CompilerBuild {
     comment_marker: 0x08,
     comment_version: (2, 3, 0),
     emb_sda21_offset: 2,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: true,
     initial_anonymous_counter: 2,
     post_leaf_function_anonymous_bump: 1,
@@ -65,6 +73,8 @@ pub const GC_1_2_5N: CompilerBuild = CompilerBuild {
     comment_marker: 0x08,
     comment_version: (2, 3, 0),
     emb_sda21_offset: 2,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: true,
     initial_anonymous_counter: 2,
     post_leaf_function_anonymous_bump: 1,
@@ -82,6 +92,8 @@ pub const GC_1_3: CompilerBuild = CompilerBuild {
     comment_marker: 0x0a,
     comment_version: (2, 4, 2),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -98,6 +110,8 @@ pub const GC_1_3_2: CompilerBuild = CompilerBuild {
     comment_marker: 0x0a,
     comment_version: (2, 4, 2),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -116,6 +130,8 @@ pub const GC_1_3_2R: CompilerBuild = CompilerBuild {
     comment_marker: 0x0a,
     comment_version: (2, 4, 2),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -132,6 +148,8 @@ pub const GC_2_0: CompilerBuild = CompilerBuild {
     comment_marker: 0x0a,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -149,6 +167,8 @@ pub const GC_2_0P1: CompilerBuild = CompilerBuild {
     comment_marker: 0x0a,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -165,6 +185,8 @@ pub const GC_2_5: CompilerBuild = CompilerBuild {
     comment_marker: 0x0a,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -181,6 +203,8 @@ pub const GC_2_6: CompilerBuild = CompilerBuild {
     comment_marker: 0x0a,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -197,6 +221,8 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
     comment_marker: 0x0b,
     comment_version: (2, 4, 7),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -216,6 +242,8 @@ pub const GC_3_0A3: CompilerBuild = CompilerBuild {
     comment_marker: 0x0e,
     comment_version: (4, 0, 0),
     emb_sda21_offset: 0,
+    code_alignment: 4,
+    sdata2_writable: true,
     function_symbol_before_references: false,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
@@ -232,6 +260,26 @@ pub const GC_3_0A3P1: CompilerBuild = CompilerBuild {
     ..GC_3_0A3
 };
 
+/// Wii/1.0 — mwcceppc 4.3 build 145. The newer optimizer remains under
+/// characterization; measured object conventions include 16-byte code
+/// alignment and a read-only `.sdata2` constant pool.
+pub const WII_1_0: CompilerBuild = CompilerBuild {
+    label: "Wii/1.0",
+    product: "CodeWarrior for Wii 1.0",
+    version: (4, 3, 0),
+    build: 145,
+    comment_marker: 0x0f,
+    comment_version: (4, 0, 0),
+    emb_sda21_offset: 0,
+    code_alignment: 16,
+    sdata2_writable: false,
+    function_symbol_before_references: false,
+    initial_anonymous_counter: 5,
+    post_leaf_function_anonymous_bump: 4,
+    post_framed_function_anonymous_bump: 4,
+    profile: &Wii43Build145,
+};
+
 /// Every build the generator reproduces byte-for-byte across the canary suite.
 pub const SUPPORTED: &[CompilerBuild] = &[
     GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_0P1, GC_2_5, GC_2_6, GC_2_7,
@@ -239,7 +287,7 @@ pub const SUPPORTED: &[CompilerBuild] = &[
 
 /// Known compiler identities whose profiles are still incomplete. They are
 /// available only through the explicit experimental-build opt-in.
-pub const EXPERIMENTAL: &[CompilerBuild] = &[GC_1_2_5, GC_1_2_5N, GC_3_0A3, GC_3_0A3P1];
+pub const EXPERIMENTAL: &[CompilerBuild] = &[GC_1_2_5, GC_1_2_5N, GC_3_0A3, GC_3_0A3P1, WII_1_0];
 
 /// The default build new compilations target until one is selected.
 pub const DEFAULT: CompilerBuild = GC_1_3_2;
@@ -308,5 +356,17 @@ mod tests {
             assert_eq!(build.comment_version, (4, 0, 0));
             assert_eq!(build.initial_anonymous_counter, 5);
         }
+    }
+
+    #[test]
+    fn wii_build_145_has_measured_object_conventions() {
+        assert!(by_label("Wii/1.0").is_none());
+        let build = by_label_experimental("Wii/1.0").expect("experimental Wii build");
+        assert_eq!(build.version, (4, 3, 0));
+        assert_eq!(build.build, 145);
+        assert_eq!(build.comment_marker, 0x0f);
+        assert_eq!(build.comment_version, (4, 0, 0));
+        assert_eq!(build.code_alignment, 16);
+        assert!(!build.sdata2_writable);
     }
 }

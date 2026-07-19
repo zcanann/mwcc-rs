@@ -1318,6 +1318,8 @@ fn compile(
                 pooling_enabled: config.flags.pooling_enabled,
             },
             emb_sda21_offset: config.build.emb_sda21_offset,
+            code_alignment: u32::from(config.build.code_alignment),
+            sdata2_writable: config.build.sdata2_writable,
             function_symbol_order: if config.build.function_symbol_before_references {
                 if config.flags.inline_deferred {
                     mwcc_machine_code_to_object::FunctionSymbolOrder::LegacyDeferred

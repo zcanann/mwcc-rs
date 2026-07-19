@@ -858,6 +858,12 @@ impl CodegenProfile for Mainline {}
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {}
 
+/// Wii/1.0 — mwcceppc 4.3 build 145. Kept separate from the 4.1 GameCube
+/// profile so measured optimizer transitions remain scoped to this generation.
+#[derive(Debug)]
+pub struct Wii43Build145;
+impl CodegenProfile for Wii43Build145 {}
+
 /// GC/1.3 — mwcceppc 2.4.2 build 53. The early 2.4.2 build that defaulted plain
 /// `char` to unsigned, before build 81 restored signed.
 #[derive(Debug)]

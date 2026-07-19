@@ -24,6 +24,10 @@ pub struct CommentFormat {
 pub struct ObjectFormat {
     pub comment: CommentFormat,
     pub emb_sda21_offset: u8,
+    /// Required alignment of the code section and each function body.
+    pub code_alignment: u32,
+    /// Whether the `.sdata2` constant pool carries ELF's `SHF_WRITE` bit.
+    pub sdata2_writable: bool,
     pub function_symbol_order: FunctionSymbolOrder,
     /// Whether file-scope LOCAL data symbols preserve declaration order across
     /// initialized and zero-filled sections.

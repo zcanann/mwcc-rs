@@ -100,10 +100,11 @@ struct Section {
 
 pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let functions = &input.functions;
+    assert!(input.object_format.code_alignment.is_power_of_two());
 
-    // `.text` is the functions concatenated in source order (each function's text
-    // size is a multiple of 4, so they pack contiguously). Track each function's
-    // byte offset and size for its symbol, relocations, and `.mwcats` record.
+    // Track each function's aligned byte offset and unpadded size for its symbol,
+    // relocations, and `.mwcats` record. GameCube functions naturally pack at
+    // four-byte boundaries; Wii build 145 inserts zero padding up to 16 bytes.
     let mut text = Vec::new();
     // `.text` LAYOUT order: a text_deferred function (a materialized static
     // inline) lays out AFTER the next non-deferred function — mwcc's deferred
@@ -126,6 +127,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut function_offset: Vec<u32> = vec![0; functions.len()];
     let mut function_size: Vec<u32> = vec![0; functions.len()];
     for &index in &layout_order {
+        while text.len() % input.object_format.code_alignment as usize != 0 {
+            text.push(0);
+        }
         function_offset[index] = text.len() as u32;
         function_size[index] = functions[index].text.len() as u32;
         text.extend_from_slice(functions[index].text);
@@ -875,6 +879,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         *entry = (*entry).max(data_aligns[name]);
     }
     let section_align = |name: &str| -> u32 {
+        if name == text_section {
+            return input.object_format.code_alignment;
+        }
         let base = match name {
             ".sdata2" | ".sdata" | ".sbss" | ".data" | ".bss" | ".rodata" => 8,
             _ => 4,
@@ -1102,7 +1109,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     index_of(text_section) as u16,
                 );
                 comment_values.push((
-                    4,
+                    input.object_format.code_alignment,
                     if functions[index].force_active {
                         FORCE_ACTIVE_FLAG
                     } else {
@@ -1229,7 +1236,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     index_of(text_section) as u16,
                 );
                 comment_values.push((
-                    4,
+                    input.object_format.code_alignment,
                     if functions[index].force_active {
                         FORCE_ACTIVE_FLAG
                     } else {
@@ -1352,7 +1359,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 0,
                 index_of(text_section) as u16,
             );
-            comment_values.push((4, 0)); // a function is 4-aligned
+            comment_values.push((input.object_format.code_alignment, 0));
         }
         // This function's NEW strings sit at the FRONT of its `@N` block, before its constants and
         // unwind entries. Each `@N` name already has a laid-out data object (`.sdata`/`.data`); emit
@@ -1635,7 +1642,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     index_of(text_section) as u16,
                 );
                 comment_values.push((
-                    4,
+                    input.object_format.code_alignment,
                     if function.force_active {
                         FORCE_ACTIVE_FLAG
                     } else {
@@ -1769,7 +1776,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0
                     };
                     comment_values.push((
-                        4,
+                        input.object_format.code_alignment,
                         flags
                             | if function.force_active {
                                 FORCE_ACTIVE_FLAG
@@ -2057,7 +2064,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         } else {
                             0
                         };
-                        comment_values.push((4, flags));
+                        comment_values.push((input.object_format.code_alignment, flags));
                         continue;
                     }
                     global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -2120,7 +2127,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0
                     };
                     comment_values.push((
-                        4,
+                        input.object_format.code_alignment,
                         flags
                             | if function.force_active {
                                 FORCE_ACTIVE_FLAG
@@ -2141,7 +2148,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             index_of(text_section) as u16,
                         );
                         comment_values.push((
-                            4,
+                            input.object_format.code_alignment,
                             if function.force_active {
                                 FORCE_ACTIVE_FLAG
                             } else {
@@ -2191,7 +2198,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     index_of(text_section) as u16,
                 );
                 comment_values.push((
-                    4,
+                    input.object_format.code_alignment,
                     if function.force_active {
                         FORCE_ACTIVE_FLAG
                     } else {
@@ -2536,7 +2543,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             SHF_WRITE_EXEC,
             0,
             0,
-            4,
+            input.object_format.code_alignment,
             0,
             text.to_vec(),
             0,
@@ -2643,7 +2650,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push(
             ".sdata2",
             SHT_PROGBITS,
-            SHF_WRITE_ALLOC,
+            if input.object_format.sdata2_writable {
+                SHF_WRITE_ALLOC
+            } else {
+                SHF_ALLOC
+            },
             0,
             0,
             section_align(".sdata2"),
