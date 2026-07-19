@@ -90,14 +90,15 @@ impl Generator {
         Ok(())
     }
 
-    /// Whether reading global `name` needs a trailing `extsb` — a signed plain
-    /// `char` (unsigned char and the self-extending half/word loads need none).
+    /// Whether reading global `name` needs a trailing `extsb`. Plain `char` has
+    /// already been resolved by the parser, so `Type::Char` means a signed byte
+    /// here, including an explicit `signed char` under build 53.
     pub(crate) fn global_char_extend(&self, name: &str) -> Compilation<bool> {
         let global_type = *self
             .globals
             .get(name)
             .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
-        Ok(global_type == Type::Char && self.behavior.char_is_signed)
+        Ok(global_type == Type::Char)
     }
 
     /// The type-appropriate load of a global from base register `a` (displacement

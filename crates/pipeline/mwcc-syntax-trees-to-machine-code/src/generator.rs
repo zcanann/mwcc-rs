@@ -299,17 +299,13 @@ pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
 }
 
 impl Generator {
-    /// Signedness of a source-level type for the target build. Plain `char` is
-    /// the one type whose signedness is build-dependent (unsigned in GC/1.3
-    /// build 53, signed from build 81 on); every other type is fixed. Routing
-    /// all type-signedness queries through here makes the whole cascade — read
-    /// extension, `>>`/`/`/`%` strength reduction, comparison folding, and the
-    /// int->float bias — follow the build with no scattered version checks.
+    /// Signedness of a resolved syntax-tree type. The parser has already mapped
+    /// a build-dependent plain `char` to either `Char` or `UnsignedChar`, while
+    /// explicit `signed char` always remains `Char`. Codegen must therefore use
+    /// the resolved type directly or build 53 incorrectly treats explicit
+    /// signed characters as unsigned.
     pub(crate) fn signed_of(&self, declared: Type) -> bool {
-        match declared {
-            Type::Char => self.behavior.char_is_signed,
-            other => other.is_signed(),
-        }
+        declared.is_signed()
     }
 
     /// A fresh general-purpose virtual register, as the u8 field value selection
