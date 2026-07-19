@@ -136,6 +136,14 @@ decompctx_log="$dir/decompctx.log"
     "$src" "${include_flags[@]}" -o "$dir/$ctx_name" ) \
   >"$decompctx_log" 2>&1 || { echo "decompctx failed for $src"; exit 1; }
 
+# Some reconstructed headers use C++ alternative tokens in preprocessor
+# expressions (`#elif A or B`). MWCC accepts `or` in language expressions but
+# its legacy preprocessor does not. Normalize only directive lines in the
+# synthetic context, preserving line count and meaning for both compilers.
+sed -E '/^[[:space:]]*#/ s/[[:space:]]+or[[:space:]]+/ || /g' \
+  "$dir/$ctx_name" > "$dir/ctx.normalized"
+mv "$dir/ctx.normalized" "$dir/$ctx_name"
+
 # decompctx is intentionally permissive: when an include is absent it logs the
 # path, emits an empty include region, and exits successfully. Keep those paths
 # so a later reference-compiler rejection can be distinguished from an actual
