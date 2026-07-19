@@ -1201,7 +1201,11 @@ fn compile(
                 version: config.build.comment_version,
             },
             emb_sda21_offset: config.build.emb_sda21_offset,
-            function_symbol_before_references: config.build.function_symbol_before_references,
+            // Deferred inlining registers the current function before resolving
+            // its referenced symbols, even on the modern builds that normally
+            // create prototyped references first.
+            function_symbol_before_references: config.build.function_symbol_before_references
+                || config.flags.inline_deferred,
             local_data_symbols_in_declaration_order: behavior.local_data_symbol_order
                 == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,
             small_zero_statics_in_declaration_order: behavior.small_zero_data_layout_style
