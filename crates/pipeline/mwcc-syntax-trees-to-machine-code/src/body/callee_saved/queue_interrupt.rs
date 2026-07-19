@@ -247,9 +247,11 @@ impl Generator {
             .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
         let function_end = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, function_end);
-        match self.behavior.frame_convention {
-            FrameConvention::Predecrement => self.emit_queue_service_body(&service, function_end),
-            FrameConvention::LinkageFirst => {
+        match self.behavior.queue_service_inlining_style {
+            mwcc_versions::QueueServiceInliningStyle::InlineVerifiedCallers => {
+                self.emit_queue_service_body(&service, function_end)
+            }
+            mwcc_versions::QueueServiceInliningStyle::KeepServiceCallOutOfLine => {
                 self.record_relocation(RelocationKind::Rel24, service_name);
                 self.output.instructions.push(Instruction::BranchAndLink {
                     target: service_name.to_string(),
@@ -258,11 +260,21 @@ impl Generator {
         }
         self.bind_label(function_end);
 
-        // Build 163 leaves the service helper out of line, while 2.4.x folds
-        // both verified helper CFGs into the interrupt routine.
-        self.output.anonymous_label_bump += match self.behavior.frame_convention {
-            FrameConvention::Predecrement => 31,
-            FrameConvention::LinkageFirst => 13,
+        // Builds 53 and 163 leave the service helper out of line; build 81+
+        // folds both verified helper CFGs into the interrupt routine.
+        self.output.anonymous_label_bump += match (
+            self.behavior.queue_service_inlining_style,
+            self.behavior.frame_convention,
+        ) {
+            (mwcc_versions::QueueServiceInliningStyle::InlineVerifiedCallers, _) => 31,
+            (
+                mwcc_versions::QueueServiceInliningStyle::KeepServiceCallOutOfLine,
+                FrameConvention::Predecrement,
+            ) => 16,
+            (
+                mwcc_versions::QueueServiceInliningStyle::KeepServiceCallOutOfLine,
+                FrameConvention::LinkageFirst,
+            ) => 13,
         };
         self.pin_queue_helper_post_function_bump();
         self.emit_epilogue_and_return();

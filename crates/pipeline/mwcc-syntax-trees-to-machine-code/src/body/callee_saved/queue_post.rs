@@ -573,9 +573,11 @@ impl Generator {
             .instructions
             .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, restore_point);
-        match self.behavior.frame_convention {
-            FrameConvention::Predecrement => self.emit_queue_service_body(&service, restore_point),
-            FrameConvention::LinkageFirst => {
+        match self.behavior.queue_service_inlining_style {
+            mwcc_versions::QueueServiceInliningStyle::InlineVerifiedCallers => {
+                self.emit_queue_service_body(&service, restore_point)
+            }
+            mwcc_versions::QueueServiceInliningStyle::KeepServiceCallOutOfLine => {
                 self.record_relocation(RelocationKind::Rel24, service_name);
                 self.output.instructions.push(Instruction::BranchAndLink {
                     target: service_name.to_string(),
@@ -591,11 +593,21 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchAndLink {
             target: restore.clone(),
         });
-        // Build 163 keeps the service helper out of line. The resulting label
-        // walk is smaller than the 2.4.x schedule that inlines both helpers.
-        self.output.anonymous_label_bump += match self.behavior.frame_convention {
-            FrameConvention::Predecrement => 39,
-            FrameConvention::LinkageFirst => 21,
+        // Builds 53 and 163 keep the service helper out of line. Their label
+        // walk is smaller than the build 81+ schedule that inlines both helpers.
+        self.output.anonymous_label_bump += match (
+            self.behavior.queue_service_inlining_style,
+            self.behavior.frame_convention,
+        ) {
+            (mwcc_versions::QueueServiceInliningStyle::InlineVerifiedCallers, _) => 39,
+            (
+                mwcc_versions::QueueServiceInliningStyle::KeepServiceCallOutOfLine,
+                FrameConvention::Predecrement,
+            ) => 24,
+            (
+                mwcc_versions::QueueServiceInliningStyle::KeepServiceCallOutOfLine,
+                FrameConvention::LinkageFirst,
+            ) => 21,
         };
         self.pin_queue_helper_post_function_bump();
         if self.behavior.frame_convention == FrameConvention::LinkageFirst {

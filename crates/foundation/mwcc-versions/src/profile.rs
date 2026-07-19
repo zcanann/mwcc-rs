@@ -432,6 +432,17 @@ pub enum FixedAddressPollAddressStyle {
     MaterializedBankPage,
 }
 
+/// Interprocedural policy for a verified chunked queue-service helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueServiceInliningStyle {
+    /// Build 81 and later splice the service helper CFG into its interrupt and
+    /// queue-posting callers.
+    InlineVerifiedCallers,
+    /// Builds 53 and 163 recognize the helper as an inline candidate but leave
+    /// the service call out of line in these compound callers.
+    KeepServiceCallOutOfLine,
+}
+
 /// Lowering of a constant right-shift compound assignment to a narrow global.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NarrowCompoundShiftStyle {
@@ -763,6 +774,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex
     }
 
+    fn queue_service_inlining_style(&self) -> QueueServiceInliningStyle {
+        QueueServiceInliningStyle::InlineVerifiedCallers
+    }
+
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {
         NarrowCompoundShiftStyle::ImmediateInScratch
     }
@@ -789,6 +804,10 @@ impl CodegenProfile for Gc13Build53 {
 
     fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
         FixedAddressPollAddressStyle::FoldedBankDisplacement
+    }
+
+    fn queue_service_inlining_style(&self) -> QueueServiceInliningStyle {
+        QueueServiceInliningStyle::KeepServiceCallOutOfLine
     }
 }
 
@@ -984,6 +1003,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
         FixedAddressPollAddressStyle::MaterializedBankPage
+    }
+
+    fn queue_service_inlining_style(&self) -> QueueServiceInliningStyle {
+        QueueServiceInliningStyle::KeepServiceCallOutOfLine
     }
 
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {

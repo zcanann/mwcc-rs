@@ -24,10 +24,10 @@ use crate::profile::{
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
     NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
     PunnedConditionalWritebackStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
-    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
-    SymbolTraversalStyle, TrigDispatcherStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
-    WideConstantAddSchedule,
+    QueueServiceInliningStyle, RaiseFamilyStyle, ReadOnlySectionAnchorOrder,
+    ReturnRegisterStoreStyle, SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle,
+    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle,
+    VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -103,6 +103,8 @@ pub enum Quirk {
     LegacyFixedAddressRmw,
     EarlyFoldedFixedPollDisplacement,
     LegacyFixedPollPageAddress,
+    EarlyOutOfLineQueueService,
+    LegacyOutOfLineQueueService,
     LegacyNarrowCompoundShift,
     LegacyTrueFirstLogicalOr,
     LegacyInterleavedConstantStores,
@@ -168,6 +170,8 @@ impl Quirk {
             Quirk::LegacyFixedAddressRmw => QuirkKind::Intentional,
             Quirk::EarlyFoldedFixedPollDisplacement => QuirkKind::Intentional,
             Quirk::LegacyFixedPollPageAddress => QuirkKind::Intentional,
+            Quirk::EarlyOutOfLineQueueService => QuirkKind::Intentional,
+            Quirk::LegacyOutOfLineQueueService => QuirkKind::Intentional,
             Quirk::LegacyNarrowCompoundShift => QuirkKind::Intentional,
             Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
             Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
@@ -316,6 +320,12 @@ impl Quirk {
             }
             Quirk::LegacyFixedPollPageAddress => {
                 "fixed-address polls materialize build 163's reusable bank page"
+            }
+            Quirk::EarlyOutOfLineQueueService => {
+                "compound queue callers keep the service helper out of line in build 53"
+            }
+            Quirk::LegacyOutOfLineQueueService => {
+                "compound queue callers keep the service helper out of line in build 163"
             }
             Quirk::LegacyNarrowCompoundShift => {
                 "narrow compound shifts materialize build 163's count register"
@@ -491,6 +501,8 @@ pub struct Behavior {
     pub fixed_address_rmw_style: FixedAddressRmwStyle,
     /// Address materialization used by fixed-register busy-wait loads.
     pub fixed_address_poll_address_style: FixedAddressPollAddressStyle,
+    /// Whether verified compound queue callers inline the service helper CFG.
+    pub queue_service_inlining_style: QueueServiceInliningStyle,
     /// Constant right-shift lowering for narrow global compound assignments.
     pub narrow_compound_shift_style: NarrowCompoundShiftStyle,
     /// Accumulator/exit convention for logical OR integer values.
@@ -622,6 +634,7 @@ impl Behavior {
                 .build
                 .profile
                 .fixed_address_poll_address_style(),
+            queue_service_inlining_style: config.build.profile.queue_service_inlining_style(),
             narrow_compound_shift_style: config.build.profile.narrow_compound_shift_style(),
             logical_or_value_style: config.build.profile.logical_or_value_style(),
             global_addressing: config.flags.global_addressing,
@@ -821,6 +834,15 @@ impl Behavior {
                 quirks.push(ActiveQuirk::of(Quirk::LegacyFixedPollPageAddress));
             }
         }
+        if self.queue_service_inlining_style == QueueServiceInliningStyle::KeepServiceCallOutOfLine
+        {
+            let quirk = if self.frame_convention == FrameConvention::LinkageFirst {
+                Quirk::LegacyOutOfLineQueueService
+            } else {
+                Quirk::EarlyOutOfLineQueueService
+            };
+            quirks.push(ActiveQuirk::of(quirk));
+        }
         if self.narrow_compound_shift_style == NarrowCompoundShiftStyle::MaterializedCount {
             quirks.push(ActiveQuirk::of(Quirk::LegacyNarrowCompoundShift));
         }
@@ -863,7 +885,7 @@ mod tests {
     fn build_53_reports_the_unsigned_char_quirk() {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
         let quirks = behavior.active_quirks();
-        assert_eq!(quirks.len(), 2);
+        assert_eq!(quirks.len(), 3);
         assert_eq!(quirks[0].quirk, Quirk::UnsignedPlainChar);
         assert_eq!(quirks[0].kind, QuirkKind::Intentional);
         assert_eq!(
@@ -871,6 +893,11 @@ mod tests {
             FixedAddressPollAddressStyle::FoldedBankDisplacement
         );
         assert_eq!(quirks[1].quirk, Quirk::EarlyFoldedFixedPollDisplacement);
+        assert_eq!(
+            behavior.queue_service_inlining_style,
+            QueueServiceInliningStyle::KeepServiceCallOutOfLine
+        );
+        assert_eq!(quirks[2].quirk, Quirk::EarlyOutOfLineQueueService);
     }
 
     #[test]
@@ -976,6 +1003,10 @@ mod tests {
         assert_eq!(
             behavior.fixed_address_poll_address_style,
             FixedAddressPollAddressStyle::MaterializedBankPage
+        );
+        assert_eq!(
+            behavior.queue_service_inlining_style,
+            QueueServiceInliningStyle::KeepServiceCallOutOfLine
         );
         assert_eq!(
             behavior.narrow_compound_shift_style,
