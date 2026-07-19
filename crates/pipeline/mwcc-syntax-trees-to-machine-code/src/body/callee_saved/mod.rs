@@ -1433,6 +1433,14 @@ impl Generator {
                         s: GENERAL_SCRATCH,
                         b: GENERAL_SCRATCH,
                     });
+                    if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+                        // Build 163's first compare consumes the staged r0;
+                        // after the latency-slot copy, later guards read the
+                        // durable callee-saved home directly.
+                        if let Some(location) = self.locations.get_mut(&local.name) {
+                            location.register = saved;
+                        }
+                    }
                 }
                 let skip_branch = self.output.instructions.len();
                 self.output
