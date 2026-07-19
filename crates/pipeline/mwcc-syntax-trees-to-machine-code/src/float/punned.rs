@@ -553,6 +553,8 @@ impl Generator {
         // form needs a second conversion slot.
         let mut frame_size: i16 = if nested { 32 } else { 16 };
         let legacy_nested_tail_slot = nested
+            && !ix_in_dual_condition
+            && ix_dual_big.is_none()
             && synthetic
                 .locals
                 .iter()
@@ -692,8 +694,24 @@ impl Generator {
                     condition_bit: 2,
                     target: 0,
                 });
+            let legacy_ix_dual =
+                legacy_reloading && (ix_in_dual_condition || ix_dual_big.is_some());
+            if legacy_ix_dual {
+                // The preserved-ix dual construction creates one internal
+                // label before any of the nested prefix's pools.
+                self.output.anonymous_label_bump += 1;
+            }
             if let Some(bits) = early_return_const {
+                if legacy_ix_dual {
+                    // Its folded constant is created through a second,
+                    // transient label scope; subsequent pools retain only
+                    // the common preserved-ix gap.
+                    self.output.anonymous_label_bump += 1;
+                }
                 self.load_double_constant(1, bits);
+                if legacy_ix_dual {
+                    self.output.anonymous_label_bump -= 1;
+                }
             }
             epilogue_branches.push(self.output.instructions.len());
             self.output
