@@ -74,6 +74,31 @@ def failure_reason(record: Dict[str, Any]) -> str:
     return status.lower()
 
 
+def code_result(record: Dict[str, Any]) -> Optional[str]:
+    """Return exact code+text-relocation status when the harness measured it.
+
+    A whole-object BYTE necessarily has exact code. DIFF and debug-info DEFER
+    records carry an explicit component result from newer harnesses; older
+    records remain unknown rather than being retroactively guessed.
+    """
+
+    for line in record.get("output", "").splitlines():
+        if line.startswith("CODE BYTE"):
+            return "BYTE"
+        if line.startswith("CODE DIFF"):
+            return "DIFF"
+        if line.startswith("CODE DEFER"):
+            return "DEFER"
+        if line.startswith("CODE EMPTY"):
+            return "EMPTY"
+    # Legacy whole-object results predate explicit component reporting. Exact
+    # objects still imply equal code, though they cannot distinguish an empty
+    # code section until rerun with the current harness.
+    if record["status"] == "BYTE":
+        return "BYTE"
+    return None
+
+
 def blocker_breakdown(
     rows: List[Dict[str, Any]],
     observations: Dict[str, Dict[str, Any]],
@@ -379,6 +404,13 @@ def representative_audit(
         supported_low, supported_high = wilson_interval(successes, supported_runnable)
         emitted = successes + counts["DIFF"]
         emitted_exact_low, emitted_exact_high = wilson_interval(successes, emitted)
+        code_results = Counter(
+            code_status
+            for observation in direct.values()
+            if (code_status := code_result(observation)) is not None
+        )
+        code_measured = code_results["BYTE"] + code_results["DIFF"]
+        code_exact_low, code_exact_high = wilson_interval(code_results["BYTE"], code_measured)
         result["estimate"] = {
             "measure": "configured_byte_exact",
             "successes": successes,
@@ -416,6 +448,21 @@ def representative_audit(
             "emitted_exact_confidence": 0.95,
             "emitted_exact_interval_low": emitted_exact_low,
             "emitted_exact_interval_high": emitted_exact_high,
+            # Component diagnostic only: this includes `-sym off` projections
+            # for debug-info deferrals and therefore earns no whole-object
+            # parity credit. It isolates backend/code convergence from debug
+            # section coverage with an explicit measured denominator.
+            "code_measured": code_measured,
+            "code_exact": code_results["BYTE"],
+            "code_wrong": code_results["DIFF"],
+            "code_deferred": code_results["DEFER"],
+            "code_empty": code_results["EMPTY"],
+            "code_exact_proportion": (
+                code_results["BYTE"] / code_measured if code_measured else None
+            ),
+            "code_exact_confidence": 0.95,
+            "code_exact_interval_low": code_exact_low,
+            "code_exact_interval_high": code_exact_high,
         }
     return result
 
@@ -567,6 +614,17 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                     f"{estimate['emitted_wrong_proportion']:.1%}; exact-share 95% CI "
                     f"{estimate['emitted_exact_interval_low']:.1%}.."
                     f"{estimate['emitted_exact_interval_high']:.1%}"
+                )
+            if estimate["code_measured"]:
+                print(
+                    "code+text-relocation diagnostic (includes non-credit debug-off projections): "
+                    f"exact {estimate['code_exact']}/{estimate['code_measured']} = "
+                    f"{estimate['code_exact_proportion']:.1%}; "
+                    f"wrong {estimate['code_wrong']}/{estimate['code_measured']}; "
+                    f"empty-code rows {estimate['code_empty']}; "
+                    f"unmeasured-after-projection {estimate['code_deferred']}; "
+                    f"exact-share 95% CI {estimate['code_exact_interval_low']:.1%}.."
+                    f"{estimate['code_exact_interval_high']:.1%}"
                 )
         counts = " / ".join(
             f"{status} {audit['statuses'][status]}"

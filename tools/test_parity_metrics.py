@@ -7,6 +7,7 @@ import unittest
 
 from parity_audit import build_audit
 from parity_dashboard import (
+    code_result,
     failure_reason,
     representative_audit,
     snapshot,
@@ -65,6 +66,27 @@ class IdentityTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_code_result_distinguishes_full_exact_projection_and_unknown(self):
+        self.assertEqual(code_result({"status": "BYTE"}), "BYTE")
+        self.assertEqual(
+            code_result(
+                {
+                    "status": "DEFER",
+                    "output": "DEFER  x.c — debug unsupported\nCODE BYTE — projection matches",
+                }
+            ),
+            "BYTE",
+        )
+        self.assertEqual(
+            code_result({"status": "DIFF", "output": "DIFF x.c\nCODE DIFF — mismatch"}),
+            "DIFF",
+        )
+        self.assertEqual(
+            code_result({"status": "BYTE", "output": "BYTE x.c\nCODE EMPTY — no code"}),
+            "EMPTY",
+        )
+        self.assertIsNone(code_result({"status": "DEFER", "output": "DEFER x.c"}))
+
     def test_snapshot_keeps_untested_in_the_denominator(self):
         rows = [row(source="src/a.c"), row(source="src/b.c"), row(source="src/missing.c", source_exists=False)]
         observations = {
@@ -205,6 +227,29 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(estimate["emitted_exact"], 1)
         self.assertEqual(estimate["emitted_wrong"], 1)
         self.assertEqual(estimate["emitted_wrong_proportion"], 0.5)
+
+    def test_code_diagnostic_has_its_own_measured_denominator(self):
+        rows = [row(source=f"src/{index}.c") for index in range(4)]
+        observations = {
+            rows[0]["configuration_id"]: {"status": "BYTE"},
+            rows[1]["configuration_id"]: {
+                "status": "DEFER",
+                "output": "DEFER x.c — debug\nCODE BYTE — projected",
+            },
+            rows[2]["configuration_id"]: {
+                "status": "DIFF",
+                "output": "DIFF x.c\nCODE DIFF — mismatch",
+            },
+            rows[3]["configuration_id"]: {"status": "DEFER", "output": "DEFER x.c — parser"},
+        }
+        report = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )
+        estimate = report["estimate"]
+        self.assertEqual(estimate["code_measured"], 3)
+        self.assertEqual(estimate["code_exact"], 2)
+        self.assertEqual(estimate["code_wrong"], 1)
+        self.assertEqual(estimate["code_exact_proportion"], 2 / 3)
 
     def test_audit_suppresses_estimate_after_inventory_drift(self):
         rows = [row(source="src/a.c"), row(source="src/b.c")]

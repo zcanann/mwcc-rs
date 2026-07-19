@@ -277,14 +277,50 @@ fi
 #     Pass the same flags the real compiler got — our mwcc models the ones it knows
 #     and ignores the rest.
 if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/$ctx_name" -o "$dir/our.o" 2>"$dir/oerr"; then
-  echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
+  defer_detail="$(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
+  echo "DEFER  $src — $defer_detail"
+  # Full-object parity still fails when debug emission is absent. For compiler-
+  # core visibility, retry only this capability boundary with a final `-sym off`
+  # and compare `.text` plus its relocations against the real debug-enabled
+  # object. This is a non-credit projection, never a BYTE result.
+  if [[ "$defer_detail" == "CodeWarrior debug-info emission requested by '-sym on' is not implemented (roadmap)" ]]; then
+    if "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off \
+        -c "$dir/ours/$ctx_name" -o "$dir/projected.o" 2>"$dir/projected.err"; then
+      "$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p' > "$dir/ref.code"
+      "$objdump" -dr "$dir/projected.o" | sed -n '/>:/,/^$/p' > "$dir/projected.code"
+      if [[ ! -s "$dir/ref.code" && ! -s "$dir/projected.code" ]]; then
+        echo "CODE EMPTY — neither object has emitted code"
+      elif cmp -s "$dir/ref.code" "$dir/projected.code"; then
+        echo "CODE BYTE — .text and text relocations match in the -sym off projection"
+      else
+        echo "CODE DIFF — .text or text relocations differ in the -sym off projection"
+      fi
+    else
+      projected_detail="$(sed 's/^mwcc: //' "$dir/projected.err" | head -1)"
+      echo "CODE DEFER — $projected_detail"
+    fi
+  fi
   exit 0
 fi
 
 if cmp -s "$dir/ref.o" "$dir/our.o"; then
   echo "BYTE   $src — whole object byte-identical ✅"
+  "$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p' > "$dir/ref.code"
+  if [[ -s "$dir/ref.code" ]]; then
+    echo "CODE BYTE — .text and text relocations match"
+  else
+    echo "CODE EMPTY — byte-exact object has no emitted code"
+  fi
 else
   echo "DIFF   $src — objects differ; first .text diff:"
-  diff <("$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p') \
-       <("$objdump" -dr "$dir/our.o" | sed -n '/>:/,/^$/p') | head -30
+  "$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p' > "$dir/ref.code"
+  "$objdump" -dr "$dir/our.o" | sed -n '/>:/,/^$/p' > "$dir/our.code"
+  if [[ ! -s "$dir/ref.code" && ! -s "$dir/our.code" ]]; then
+    echo "CODE EMPTY — neither object has emitted code"
+  elif cmp -s "$dir/ref.code" "$dir/our.code"; then
+    echo "CODE BYTE — .text and text relocations match"
+  else
+    echo "CODE DIFF — .text or text relocations differ"
+    diff "$dir/ref.code" "$dir/our.code" | head -30
+  fi
 fi

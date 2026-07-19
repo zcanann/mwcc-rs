@@ -50,8 +50,13 @@ python3 tools/parity_loop.py --refresh-inventory --size 256 --epoch 0
 
 The report separates `BYTE`, `DIFF`, `DEFER`, `HARNESS`, unsupported builds, and
 untested configurations, with language, compiler-version, and project
-breakdowns. It also reports source coverage so files absent from project build
-metadata cannot disappear from the denominator. Results are keyed by stable
+breakdowns. Full-object parity remains the credited success measure. A separate
+code-plus-text-relocation diagnostic includes explicitly labeled, non-credit
+`-sym off` projections for configurations blocked only by unimplemented debug
+sections; this preserves backend signal without misrepresenting those objects as
+1:1 matches. The report also exposes empty-code rows rather than allowing them to
+inflate that diagnostic. It reports source coverage so files absent from project
+build metadata cannot disappear from the denominator. Results are keyed by stable
 compiler inputs and retained under `target/reference-parity/frontier/`; after a
 compiler change, unresolved work remains in the frontier while observations for
 the new binary are kept separate. Increment `--epoch` to rotate equally ranked
