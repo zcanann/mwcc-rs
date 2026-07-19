@@ -407,10 +407,29 @@ fn compile(
         // The parser accumulates the measured PER-BODY label bump directly.
         first.anonymous_label_bump += unit.skipped_inline_functions as u32;
     }
-    // Deferred inlining (`-inline …,deferred`) emits the object's functions — and
-    // hence their `.text`, symbols, and metadata records — in reverse order.
+    // Deferred inlining (`-inline …,deferred`) emits COMPILER-GENERATED functions —
+    // and hence their `.text`, symbols, and metadata records — in reverse order.
+    // Hand-written asm is assembled immediately and keeps its source position/order
+    // (Runtime's all-asm runtime.c is unchanged by the flag).
     if config.flags.inline_deferred {
-        machine_functions.reverse();
+        let functions = std::mem::take(&mut machine_functions);
+        let mut reversed_compiled = Vec::new();
+        let slots: Vec<Option<mwcc_machine_code::MachineFunction>> = functions
+            .into_iter()
+            .map(|function| {
+                if function.is_asm {
+                    Some(function)
+                } else {
+                    reversed_compiled.push(function);
+                    None
+                }
+            })
+            .collect();
+        let mut reversed_compiled = reversed_compiled.into_iter().rev();
+        machine_functions = slots
+            .into_iter()
+            .map(|slot| slot.unwrap_or_else(|| reversed_compiled.next().expect("compiled slot")))
+            .collect();
     }
     // `#pragma defer_codegen on` defers the covered functions the same way:
     // they emit LAST, in REVERSE definition order (measured: melee mem_funcs,
@@ -1189,10 +1208,32 @@ fn compile(
         ));
     }
 
+    // Immediate inline processing retains every skipped static-inline asm helper
+    // as a LOCAL undefined symbol. Under `-inline …,deferred`, mwcc drops helpers
+    // that no emitted function calls; referenced helpers still need their local
+    // UND entry so call relocations bind correctly.
+    let referenced_targets: std::collections::HashSet<&str> = machine_functions
+        .iter()
+        .flat_map(|function| &function.relocations)
+        .filter_map(|relocation| match &relocation.target {
+            mwcc_machine_code::RelocationTarget::External(name)
+            | mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, _) => {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let object_inline_asm_symbols: Vec<String> = unit
+        .inline_asm_symbols
+        .iter()
+        .filter(|name| !config.flags.inline_deferred || referenced_targets.contains(name.as_str()))
+        .cloned()
+        .collect();
+
     let object = mwcc_machine_code_to_object::assemble_object(
         &machine_functions,
         &defined_globals,
-        &unit.inline_asm_symbols,
+        &object_inline_asm_symbols,
         &forward_declared_statics,
         source_name,
         mwcc_machine_code_to_object::ObjectFormat {

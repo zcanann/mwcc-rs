@@ -49,8 +49,9 @@ pub struct Flags {
     pub optimization: Optimization,
     pub global_addressing: GlobalAddressing,
     pub char_default: CharDefault,
-    /// `-inline …,deferred`: deferred inlining emits the object's functions in
-    /// REVERSE definition order (and thus their symbols/records too).
+    /// `-inline …,deferred`: deferred inlining emits the object's compiler-generated
+    /// functions in REVERSE definition order (and thus their symbols/records too).
+    /// Hand-written `asm` functions are emitted immediately and retain source order.
     pub inline_deferred: bool,
     /// Whether C++ exception support is on (the default). `-Cpp_exceptions off`
     /// suppresses the `extab`/`extabindex` unwind tables entirely (the stack frame
