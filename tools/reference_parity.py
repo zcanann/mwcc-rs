@@ -61,6 +61,8 @@ def selected_rows(rows: Iterable[Dict[str, Any]], args: argparse.Namespace) -> L
             continue
         if args.project and row["project"] not in args.project:
             continue
+        if args.variant and row["variant"] not in args.variant:
+            continue
         if args.version and row["mw_version"] not in args.version:
             continue
         if args.language and row["language"] not in args.language:
@@ -182,6 +184,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--compiler", type=Path, default=Path("target/release/mwcc"))
     parser.add_argument("--cache", type=Path, help="JSONL result cache (default: target/reference-parity)")
     parser.add_argument("--project", action="append", help="project name (repeatable)")
+    parser.add_argument("--variant", action="append", help="configured project variant (repeatable)")
     parser.add_argument("--version", action="append", help="full build label, e.g. GC/1.3.2")
     parser.add_argument("--language", choices=("c", "c++"), action="append")
     parser.add_argument("--source", help="source-path regular expression")
