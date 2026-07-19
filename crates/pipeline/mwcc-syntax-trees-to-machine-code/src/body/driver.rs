@@ -1827,6 +1827,11 @@ impl Generator {
                 }
             }
         }
+        // The guarded scalar sibling has a measured store/return schedule and
+        // must claim before the conservative general-family defer below.
+        if self.try_guarded_global_constant_store_return(function)? {
+            return Ok(());
+        }
         // `global = const; return <const or global>` — mwcc's scheduler computes the return value
         // (a `li` for a constant, an SDA `lwz` for a global) BEFORE the global constant store; ours
         // emits the store first. A param return (already in r3) or a deref/index return is
