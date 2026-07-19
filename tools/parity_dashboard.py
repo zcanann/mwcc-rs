@@ -224,6 +224,40 @@ def breakdown(
     return output
 
 
+def build_coverage(
+    rows: List[Dict[str, Any]],
+    observations: Dict[str, Dict[str, Any]],
+    unsupported_versions: set[str],
+) -> Dict[str, Any]:
+    """Report compiler-identity coverage independently of row sampling."""
+
+    configuration_counts: Counter[str] = Counter()
+    observed_versions: set[str] = set()
+    for row in rows:
+        if not row["source_exists"]:
+            continue
+        version = row["mw_version"]
+        configuration_counts[version] += 1
+        if row["configuration_id"] in observations:
+            observed_versions.add(version)
+
+    versions = set(configuration_counts)
+    unsupported = sorted(versions & unsupported_versions)
+    supported = sorted(observed_versions - unsupported_versions)
+    unprobed = sorted(versions - observed_versions - unsupported_versions)
+    return {
+        "total_builds": len(versions),
+        "supported_builds": supported,
+        "unsupported_builds": unsupported,
+        "unprobed_builds": unprobed,
+        "configuration_counts": {
+            "supported": sum(configuration_counts[version] for version in supported),
+            "unsupported": sum(configuration_counts[version] for version in unsupported),
+            "unprobed": sum(configuration_counts[version] for version in unprobed),
+        },
+    }
+
+
 def snapshot(
     inventory: Dict[str, Any],
     rows: List[Dict[str, Any]],
@@ -253,6 +287,7 @@ def snapshot(
         "classified": classified,
         "evaluable": evaluable,
         "source_inventory": {"discovered": discovered, "mapped": mapped, "unmapped": unmapped},
+        "build_coverage": build_coverage(rows, observations, unsupported_versions),
         "statuses": {status: counts[status] for status in STATUSES},
         "rates": {
             "byte_of_existing": counts["BYTE"] / len(existing) if existing else 0.0,
@@ -442,6 +477,26 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
         f"({report['rates']['classified_of_existing']:.1%}); "
         f"direct configuration compilations: {report['observed']}"
     )
+    build_report = report["build_coverage"]
+    build_counts = build_report["configuration_counts"]
+    identity_coverage_rate = (
+        build_counts["supported"] / report["existing"] if report["existing"] else 0.0
+    )
+    print(
+        f"compiler identities: {len(build_report['supported_builds'])}/"
+        f"{build_report['total_builds']} probed supported; "
+        f"{len(build_report['unsupported_builds'])} unsupported; "
+        f"{len(build_report['unprobed_builds'])} unprobed"
+    )
+    print(
+        f"identity-covered configurations: {build_counts['supported']}/"
+        f"{report['existing']} ({identity_coverage_rate:.3%}); "
+        f"unsupported {build_counts['unsupported']}; unprobed {build_counts['unprobed']}"
+    )
+    if build_report["unsupported_builds"]:
+        print(f"unsupported identities: {', '.join(build_report['unsupported_builds'])}")
+    if build_report["unprobed_builds"]:
+        print(f"unprobed identities: {', '.join(build_report['unprobed_builds'])}")
     print()
     print(f"{'status':18} {'count':>8} {'% existing':>12}")
     for status in STATUSES:
@@ -451,7 +506,7 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
     print(
         f"\nproven exact parity (full-corpus lower bound): "
         f"{report['statuses']['BYTE']}/{report['existing']} existing "
-        f"({report['rates']['byte_of_existing']:.1%})"
+        f"({report['rates']['byte_of_existing']:.3%})"
     )
     audit = report.get("representative_audit")
     if audit is not None:

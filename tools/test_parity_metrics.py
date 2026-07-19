@@ -100,6 +100,23 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["statuses"]["UNSUPPORTED_BUILD"], 3)
         self.assertEqual(report["observed"], 1)
         self.assertEqual(report["classified"], 3)
+        self.assertEqual(report["build_coverage"]["unsupported_builds"], ["Wii/1.0"])
+        self.assertEqual(
+            report["build_coverage"]["configuration_counts"]["unsupported"], 3
+        )
+
+    def test_build_coverage_exposes_unprobed_identities(self):
+        rows = [
+            row(source="src/a.c", mw_version="GC/2.6"),
+            row(source="src/b.c", mw_version="ProDG/3.5"),
+        ]
+        observations = {rows[0]["configuration_id"]: {"status": "BYTE"}}
+        report = snapshot({"projects": []}, rows, observations, "tool")
+        coverage = report["build_coverage"]
+        self.assertEqual(coverage["supported_builds"], ["GC/2.6"])
+        self.assertEqual(coverage["unsupported_builds"], [])
+        self.assertEqual(coverage["unprobed_builds"], ["ProDG/3.5"])
+        self.assertEqual(coverage["configuration_counts"]["unprobed"], 1)
 
     def test_failure_reason_extracts_reference_compiler_diagnostic(self):
         record = {
