@@ -98,6 +98,30 @@ for ((flag_index=0; flag_index<${#all_flags[@]}; flag_index++)); do
   esac
 done
 
+# Prefer the authoritative project input. Real MWCC can resolve most projects'
+# exact access paths directly; preprocessing that source preserves conditional
+# include order, macro state, and include guards that decompctx cannot model.
+# Keep the original basename on our preprocessed copy so FILE symbols match.
+mkdir -p "$dir/ours"
+source_name="${src##*/}"
+direct_ready=0
+direct_reference_output=""
+if direct_reference_output="$(
+  cd "$project" && "$wibo" "$sjis" "$compiler" \
+    ${all_flags[@]+"${all_flags[@]}"} -c "$src" -o "$dir/ref.o" 2>&1
+)"; then
+  if direct_preprocess_output="$(
+    cd "$project" && "$wibo" "$sjis" "$compiler" \
+      ${all_flags[@]+"${all_flags[@]}"} -E "$src" -o "$dir/ours/$source_name" 2>&1
+  )"; then
+    # MWCC emits no preprocessed file for an empty translation unit.
+    [[ -f "$dir/ours/$source_name" ]] || : > "$dir/ours/$source_name"
+    direct_ready=1
+    ctx_name="$source_name"
+  fi
+fi
+
+if [[ $direct_ready -eq 0 ]]; then
 if [[ -n "${REFCTX_INCLUDES:-}" ]]; then
   read -r -a include_dirs <<< "$REFCTX_INCLUDES"
 else
@@ -158,6 +182,16 @@ while IFS= read -r missing; do
   fi
 done < <(sed -n 's/^Failed to locate //p' "$decompctx_log" | sort -u)
 
+# A direct compile gives the authoritative missing-file diagnostic. decompctx
+# may also visit missing includes inside inactive conditionals, so its log alone
+# is insufficient to classify a dependency as required.
+if [[ ${#missing_dependencies[@]} -gt 0 ]] \
+  && grep -Eqi 'cannot be opened|can.t be opened|file not found|no such file' \
+       <<<"$direct_reference_output"; then
+  echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
+  exit 0
+fi
+
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
 #    preprocess). mwcceppc drops language-changing pragmas from `-E` output, so
 #    preserve the subset our parser models as inert declaration sentinels and
@@ -203,11 +237,12 @@ if ! reference_output="$(
   exit 1
 fi
 [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
+cp "$dir/ctx.i" "$dir/ours/$ctx_name"
+fi
 
 # 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.
 #     Pass the same flags the real compiler got — our mwcc models the ones it knows
 #     and ignores the rest.
-mkdir -p "$dir/ours" && cp "$dir/ctx.i" "$dir/ours/$ctx_name"
 if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/$ctx_name" -o "$dir/our.o" 2>"$dir/oerr"; then
   echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   exit 0
