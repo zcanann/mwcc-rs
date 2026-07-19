@@ -136,8 +136,11 @@ impl Generator {
 
         let legacy = self.behavior.fixed_address_rmw_style
             == mwcc_versions::FixedAddressRmwStyle::MaterializedPageWithPromotedMask;
-        // Seven-update DAG. The poll element's address is hoisted into r9 in
-        // the first store's latency window; r3/r4/r5 may then be consumed as
+        let materialize_poll_element = self.behavior.fixed_address_poll_address_style
+            == mwcc_versions::FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex;
+        // Seven-update DAG. Build 81+ hoists the poll element's address into r9
+        // in the first store's latency window; build 53 retains r6 and folds
+        // the element into the load displacement. r3/r4/r5 may be consumed as
         // scratch because both helper calls have been proven to inline.
         if legacy {
             self.emit_legacy_fixed_rmw_inline_tail(
@@ -223,11 +226,13 @@ impl Generator {
                     6,
                     offsets[0],
                 )?);
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: 9,
-                a: 6,
-                immediate: tail_offset,
-            });
+            if materialize_poll_element {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 9,
+                    a: 6,
+                    immediate: tail_offset,
+                });
+            }
 
             self.output
                 .instructions
@@ -399,8 +404,12 @@ impl Generator {
                 .instructions
                 .push(Instruction::LoadHalfwordZero {
                     d: 0,
-                    a: 9,
-                    offset: 0,
+                    a: if materialize_poll_element { 9 } else { 6 },
+                    offset: if materialize_poll_element {
+                        0
+                    } else {
+                        tail_offset
+                    },
                 });
             self.output
                 .instructions

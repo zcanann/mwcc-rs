@@ -417,6 +417,21 @@ pub enum FixedAddressRmwStyle {
     MaterializedPageWithPromotedMask,
 }
 
+/// Address shape used by a busy-wait load from a fixed-address register bank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedAddressPollAddressStyle {
+    /// Build 81 and later materialize a nonzero element's full address, then
+    /// poll it at displacement zero. Element zero retains the bank low half as
+    /// the load displacement.
+    MaterializedElementForNonzeroIndex,
+    /// Build 53 keeps the bank high half as the base and folds the bank low
+    /// half plus the element offset into the polling load.
+    FoldedBankDisplacement,
+    /// Build 163 materializes the bank page and keeps only the element offset
+    /// in the polling load.
+    MaterializedBankPage,
+}
+
 /// Lowering of a constant right-shift compound assignment to a narrow global.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NarrowCompoundShiftStyle {
@@ -744,6 +759,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         FixedAddressRmwStyle::FoldedDisplacementWithNarrowMask
     }
 
+    fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
+        FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex
+    }
+
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {
         NarrowCompoundShiftStyle::ImmediateInScratch
     }
@@ -766,6 +785,10 @@ pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
     fn char_is_signed(&self) -> bool {
         false
+    }
+
+    fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
+        FixedAddressPollAddressStyle::FoldedBankDisplacement
     }
 }
 
@@ -957,6 +980,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn fixed_address_rmw_style(&self) -> FixedAddressRmwStyle {
         FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+    }
+
+    fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
+        FixedAddressPollAddressStyle::MaterializedBankPage
     }
 
     fn narrow_compound_shift_style(&self) -> NarrowCompoundShiftStyle {

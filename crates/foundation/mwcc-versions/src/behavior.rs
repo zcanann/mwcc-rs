@@ -16,11 +16,11 @@ use crate::flags::GlobalAddressing;
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
-    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle,
-    FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle, GlobalArrayIndexStyle,
-    IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
-    IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle, JumpTableBaseStyle,
-    LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
+    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressPollAddressStyle,
+    FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle,
+    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
+    IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
+    JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
     NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
     PunnedConditionalWritebackStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
@@ -101,6 +101,8 @@ pub enum Quirk {
     LegacyPreservedAsmBranchTargets,
     LegacyVerbatimAsmFrames,
     LegacyFixedAddressRmw,
+    EarlyFoldedFixedPollDisplacement,
+    LegacyFixedPollPageAddress,
     LegacyNarrowCompoundShift,
     LegacyTrueFirstLogicalOr,
     LegacyInterleavedConstantStores,
@@ -164,6 +166,8 @@ impl Quirk {
             Quirk::LegacyPreservedAsmBranchTargets => QuirkKind::Intentional,
             Quirk::LegacyVerbatimAsmFrames => QuirkKind::Intentional,
             Quirk::LegacyFixedAddressRmw => QuirkKind::Intentional,
+            Quirk::EarlyFoldedFixedPollDisplacement => QuirkKind::Intentional,
+            Quirk::LegacyFixedPollPageAddress => QuirkKind::Intentional,
             Quirk::LegacyNarrowCompoundShift => QuirkKind::Intentional,
             Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
             Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
@@ -306,6 +310,12 @@ impl Quirk {
             }
             Quirk::LegacyFixedAddressRmw => {
                 "fixed-address halfword updates use build 163's page base and promoted mask"
+            }
+            Quirk::EarlyFoldedFixedPollDisplacement => {
+                "fixed-address polls fold the bank displacement into each build 53 load"
+            }
+            Quirk::LegacyFixedPollPageAddress => {
+                "fixed-address polls materialize build 163's reusable bank page"
             }
             Quirk::LegacyNarrowCompoundShift => {
                 "narrow compound shifts materialize build 163's count register"
@@ -479,6 +489,8 @@ pub struct Behavior {
     pub asm_function_finalization_style: AsmFunctionFinalizationStyle,
     /// Base and mask selection for fixed-address halfword RMW leaves.
     pub fixed_address_rmw_style: FixedAddressRmwStyle,
+    /// Address materialization used by fixed-register busy-wait loads.
+    pub fixed_address_poll_address_style: FixedAddressPollAddressStyle,
     /// Constant right-shift lowering for narrow global compound assignments.
     pub narrow_compound_shift_style: NarrowCompoundShiftStyle,
     /// Accumulator/exit convention for logical OR integer values.
@@ -606,6 +618,10 @@ impl Behavior {
             asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
             asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
             fixed_address_rmw_style: config.build.profile.fixed_address_rmw_style(),
+            fixed_address_poll_address_style: config
+                .build
+                .profile
+                .fixed_address_poll_address_style(),
             narrow_compound_shift_style: config.build.profile.narrow_compound_shift_style(),
             logical_or_value_style: config.build.profile.logical_or_value_style(),
             global_addressing: config.flags.global_addressing,
@@ -796,6 +812,15 @@ impl Behavior {
         if self.fixed_address_rmw_style == FixedAddressRmwStyle::MaterializedPageWithPromotedMask {
             quirks.push(ActiveQuirk::of(Quirk::LegacyFixedAddressRmw));
         }
+        match self.fixed_address_poll_address_style {
+            FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex => {}
+            FixedAddressPollAddressStyle::FoldedBankDisplacement => {
+                quirks.push(ActiveQuirk::of(Quirk::EarlyFoldedFixedPollDisplacement))
+            }
+            FixedAddressPollAddressStyle::MaterializedBankPage => {
+                quirks.push(ActiveQuirk::of(Quirk::LegacyFixedPollPageAddress));
+            }
+        }
         if self.narrow_compound_shift_style == NarrowCompoundShiftStyle::MaterializedCount {
             quirks.push(ActiveQuirk::of(Quirk::LegacyNarrowCompoundShift));
         }
@@ -838,9 +863,14 @@ mod tests {
     fn build_53_reports_the_unsigned_char_quirk() {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
         let quirks = behavior.active_quirks();
-        assert_eq!(quirks.len(), 1);
+        assert_eq!(quirks.len(), 2);
         assert_eq!(quirks[0].quirk, Quirk::UnsignedPlainChar);
         assert_eq!(quirks[0].kind, QuirkKind::Intentional);
+        assert_eq!(
+            behavior.fixed_address_poll_address_style,
+            FixedAddressPollAddressStyle::FoldedBankDisplacement
+        );
+        assert_eq!(quirks[1].quirk, Quirk::EarlyFoldedFixedPollDisplacement);
     }
 
     #[test]
@@ -942,6 +972,10 @@ mod tests {
         assert_eq!(
             behavior.fixed_address_rmw_style,
             FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+        );
+        assert_eq!(
+            behavior.fixed_address_poll_address_style,
+            FixedAddressPollAddressStyle::MaterializedBankPage
         );
         assert_eq!(
             behavior.narrow_compound_shift_style,

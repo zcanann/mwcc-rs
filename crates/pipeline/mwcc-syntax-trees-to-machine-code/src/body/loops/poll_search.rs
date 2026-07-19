@@ -112,19 +112,18 @@ impl Generator {
             _ => return Ok(false),
         };
 
-        // The loop-invariant address: element 0's hoisted invariant is just the `lis`
-        // half (the `lo` rides the load's displacement, re-read each iteration);
-        // a non-zero element hoists the FULL folded address (`lis`+`addi`) and the
-        // load runs at displacement 0. Measured: R[0] -> `lis; loop: lwz lo(rB)`,
-        // R[13] -> `lis; addi; loop: lwz 0(rB)`.
-        let materialize_page = self.behavior.fixed_address_rmw_style
-            == mwcc_versions::FixedAddressRmwStyle::MaterializedPageWithPromotedMask
-            && *index != 0;
+        // Fixed-register polling has three measured address policies: build 53
+        // folds the bank low half plus element offset into the load; build 81+
+        // materializes a nonzero element's full address; build 163 materializes
+        // the reusable bank page and keeps only the element offset in the load.
+        let address_style = self.behavior.fixed_address_poll_address_style;
         let element_address = address as u32 + *index as u32 * element_bytes;
-        let materialized_address = if materialize_page {
-            address as u32
-        } else {
-            element_address
+        let materialized_address = match address_style {
+            mwcc_versions::FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex => {
+                element_address
+            }
+            mwcc_versions::FixedAddressPollAddressStyle::FoldedBankDisplacement
+            | mwcc_versions::FixedAddressPollAddressStyle::MaterializedBankPage => address as u32,
         };
         let base_register = self.lowest_free_general()?;
         let high = ((materialized_address.wrapping_add(0x8000)) >> 16) as u16;
@@ -140,15 +139,18 @@ impl Generator {
                 a: 0,
                 immediate: high as i16,
             });
-        let load_offset = if *index == 0 {
-            low
+        let load_offset = if *index == 0
+            || address_style == mwcc_versions::FixedAddressPollAddressStyle::FoldedBankDisplacement
+        {
+            i16::try_from(low as i64 + *index * i64::from(element_bytes))
+                .map_err(|_| Diagnostic::error("fixed-address poll displacement is out of range"))?
         } else {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: base_register,
                 a: base_register,
                 immediate: low,
             });
-            if materialize_page {
+            if address_style == mwcc_versions::FixedAddressPollAddressStyle::MaterializedBankPage {
                 i16::try_from(*index * i64::from(element_bytes)).map_err(|_| {
                     Diagnostic::error("fixed-address poll displacement is out of range")
                 })?
