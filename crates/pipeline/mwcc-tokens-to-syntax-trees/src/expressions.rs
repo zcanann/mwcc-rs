@@ -530,29 +530,44 @@ impl Parser {
                     }
                 }
                 self.expect(Token::ParenClose)?;
-                // A call to a PARSED single-return inline definition substitutes
-                // the body (mwcc -inline auto inlines it; a bl would be wrong
-                // bytes). Only PURE arguments (a variable or literal) substitute
-                // — the body may read a parameter several times; an impure call
-                // stays a Call and the skipped-inline check defers the unit.
-                match self.inline_bodies.get(&name) {
-                    Some((parameters, body))
-                        if parameters.len() == arguments.len()
-                            && arguments.iter().all(|argument| {
-                                matches!(
-                                    argument,
-                                    Expression::Variable(_) | Expression::IntegerLiteral(_)
-                                )
-                            }) =>
-                    {
-                        let map: std::collections::HashMap<&str, &Expression> = parameters
-                            .iter()
-                            .map(String::as_str)
-                            .zip(arguments.iter())
-                            .collect();
-                        substitute_variables(body, &map)
+                if let Some((mangled, is_inline)) =
+                    self.resolve_implicit_member_call(&name, arguments.len())?
+                {
+                    if is_inline {
+                        return Err(Diagnostic::error(format!(
+                            "an inline C++ member call to '{name}' is not lowered yet (roadmap)"
+                        )));
                     }
-                    _ => Expression::Call { name, arguments },
+                    arguments.insert(0, Expression::Variable("this".to_string()));
+                    Expression::Call {
+                        name: mangled,
+                        arguments,
+                    }
+                } else {
+                    // A call to a PARSED single-return inline definition substitutes
+                    // the body (mwcc -inline auto inlines it; a bl would be wrong
+                    // bytes). Only PURE arguments (a variable or literal) substitute
+                    // — the body may read a parameter several times; an impure call
+                    // stays a Call and the skipped-inline check defers the unit.
+                    match self.inline_bodies.get(&name) {
+                        Some((parameters, body))
+                            if parameters.len() == arguments.len()
+                                && arguments.iter().all(|argument| {
+                                    matches!(
+                                        argument,
+                                        Expression::Variable(_) | Expression::IntegerLiteral(_)
+                                    )
+                                }) =>
+                        {
+                            let map: std::collections::HashMap<&str, &Expression> = parameters
+                                .iter()
+                                .map(String::as_str)
+                                .zip(arguments.iter())
+                                .collect();
+                            substitute_variables(body, &map)
+                        }
+                        _ => Expression::Call { name, arguments },
+                    }
                 }
             }
             // A FIXED-ADDRESS global (`AT_ADDRESS`) aliases a const-address deref `*(Type *)addr`;
@@ -571,10 +586,28 @@ impl Parser {
             }
             // A bare name is an enumerator (its integer value) if known, else a
             // variable — resolved through any active block-scope shadow renames.
-            Token::Identifier(name) => match self.enum_constants.get(&name) {
-                Some(&value) => Expression::IntegerLiteral(value),
-                None => Expression::Variable(self.resolve_block_rename(name)),
-            },
+            Token::Identifier(name) => {
+                let resolved = self.resolve_block_rename(name.clone());
+                if self.variable_types.contains_key(&resolved) || resolved != name {
+                    Expression::Variable(resolved)
+                } else if let Some(member) = self
+                    .current_member_scope
+                    .as_deref()
+                    .and_then(|scope| self.structs.get(scope))
+                    .and_then(|layout| layout.fields.get(&name))
+                {
+                    Expression::Member {
+                        base: Box::new(Expression::Variable("this".to_string())),
+                        offset: member.offset,
+                        member_type: member.member_type,
+                        index_stride: None,
+                    }
+                } else if let Some(&value) = self.enum_constants.get(&name) {
+                    Expression::IntegerLiteral(value)
+                } else {
+                    Expression::Variable(resolved)
+                }
+            }
             Token::ParenOpen => {
                 // `(type) expr` is a cast; otherwise a parenthesised expression.
                 if self.peek_is_type() {

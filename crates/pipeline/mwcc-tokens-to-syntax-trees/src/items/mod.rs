@@ -228,6 +228,29 @@ pub(crate) fn statement_calls(
 // flattened into its body).
 
 impl Parser {
+    /// Consume surfaced file-scope pragmas and update parser state. Keeping this
+    /// at translation-unit level lets a language pragma affect the namespace or
+    /// declaration that follows it instead of being mistaken for part of that item.
+    fn consume_top_level_pragmas(&mut self) {
+        while let Token::Pragma(directive) = self.peek() {
+            match directive.as_str() {
+                "push" => self.cplusplus_stack.push(self.cplusplus),
+                "pop" => {
+                    self.cplusplus = self.cplusplus_stack.pop().unwrap_or(self.default_cplusplus)
+                }
+                "cplusplus on" => self.cplusplus = true,
+                "cplusplus off" => self.cplusplus = false,
+                "cplusplus reset" => self.cplusplus = self.default_cplusplus,
+                "defer_codegen on" => self.defer_codegen = true,
+                "defer_codegen off" => self.defer_codegen = false,
+                "force_active on" => self.force_active = true,
+                "force_active off" | "force_active reset" => self.force_active = false,
+                _ => {}
+            }
+            self.advance();
+        }
+    }
+
     /// Consume an identifier token if it matches `word` (used for the `long` and
     /// `signed`/`unsigned` specifier words that aren't dedicated keywords).
     pub(crate) fn eat_word(&mut self, word: &str) -> bool {
@@ -561,6 +584,32 @@ impl Parser {
         // so defer the unit if an emittable static global follows a function.
         let mut seen_function = false;
         while *self.peek() != Token::EndOfFile {
+            self.consume_top_level_pragmas();
+            if *self.peek() == Token::EndOfFile {
+                break;
+            }
+            // Namespace braces delimit declaration scopes rather than ordinary
+            // statements. Keep the scope explicitly so class-member symbols use
+            // CodeWarrior's nested `Qn` encoding, while the existing top-level item
+            // parser can continue consuming the declarations inside the wrapper.
+            if self.cplusplus && self.eat_word("namespace") {
+                let namespace = self.parse_identifier()?;
+                self.expect(Token::BraceOpen)?;
+                self.namespace_stack.push(namespace);
+                continue;
+            }
+            if *self.peek() == Token::BraceClose && !self.namespace_stack.is_empty() {
+                self.advance();
+                self.namespace_stack.pop();
+                self.eat_keyword(Token::Semicolon);
+                continue;
+            }
+            // Linkage blocks normalized from `extern "C" { ... };` can leave the
+            // optional trailing semicolon. It is an empty declaration, not an
+            // unparseable item worth reporting through recovery.
+            if self.eat_keyword(Token::Semicolon) {
+                continue;
+            }
             let start = self.position;
             let functions_before = functions.len();
             let globals_before = globals.len();
@@ -708,6 +757,9 @@ impl Parser {
             // or without pools, and tail declarations (main.rs clamps those) all go
             // byte-exact. So no defer is needed here.
             let _ = seen_function;
+        }
+        if !self.namespace_stack.is_empty() {
+            return Err(Diagnostic::error("unterminated C++ namespace"));
         }
         // Non-constant float-array globals synthesize a startup initializer:
         // `__sinit_ctx_c` (named for the TU) assigns each unfolded element,
@@ -1253,20 +1305,7 @@ impl Parser {
             // Surfaced pragmas switch the LANGUAGE for following declarations
             // (`#pragma cplusplus on` mangles their symbol names); push/pop
             // scope the switch.
-            while let Token::Pragma(directive) = self.peek() {
-                match directive.as_str() {
-                    "push" => self.cplusplus_stack.push(self.cplusplus),
-                    "pop" => self.cplusplus = self.cplusplus_stack.pop().unwrap_or(false),
-                    "cplusplus on" => self.cplusplus = true,
-                    "cplusplus off" | "cplusplus reset" => self.cplusplus = false,
-                    "defer_codegen on" => self.defer_codegen = true,
-                    "defer_codegen off" => self.defer_codegen = false,
-                    "force_active on" => self.force_active = true,
-                    "force_active off" | "force_active reset" => self.force_active = false,
-                    _ => {}
-                }
-                self.advance();
-            }
+            self.consume_top_level_pragmas();
             let mut is_extern = false;
             let mut is_static = false;
             let mut is_weak = false;
@@ -1327,7 +1366,8 @@ impl Parser {
                     element_size: layout.size,
                 };
                 for signature in &class.constructors {
-                    let mangled = crate::cxx::mangle_member_function(&name, "__ct", signature)?;
+                    let mangled =
+                        self.mangle_member_in_current_namespace(&name, "__ct", signature)?;
                     let mut parameter_types = vec![class_type];
                     parameter_types.extend(signature.iter().copied());
                     prototypes.push((mangled, class_type, parameter_types));
@@ -2262,17 +2302,24 @@ impl Parser {
                 Vec::new()
             };
 
-            if let Some(scope) = member_scope {
+            if let Some(scope) = &member_scope {
                 let explicit_types: Vec<Type> = parameters
                     .iter()
                     .map(|parameter| parameter.parameter_type)
                     .collect();
-                let source_name = if constructor_scope.is_some() { "__ct" } else { &name };
-                name = crate::cxx::mangle_member_function(&scope, source_name, &explicit_types)?;
+                let source_name = if constructor_scope.is_some() {
+                    "__ct"
+                } else {
+                    &name
+                };
+                name =
+                    self.mangle_member_in_current_namespace(scope, source_name, &explicit_types)?;
                 parameters.insert(
                     0,
                     Parameter {
-                        parameter_type: Type::StructPointer { element_size: 0 },
+                        parameter_type: Type::StructPointer {
+                            element_size: self.structs.get(scope).map_or(0, |layout| layout.size),
+                        },
                         name: "this".to_string(),
                     },
                 );
@@ -2385,23 +2432,37 @@ impl Parser {
             if self.defer_codegen {
                 self.deferred_function_names.push(name.clone());
             }
-            let mut function =
-                self.function_body(
-                    if let Some(scope) = &constructor_scope {
-                        Type::StructPointer {
-                            element_size: self.structs.get(scope).map_or(0, |layout| layout.size),
-                        }
-                    } else {
-                        return_type
-                    },
-                    name,
-                    function_is_static,
-                    parameters,
-                )?;
+            let previous_member_scope = self.current_member_scope.clone();
+            let previous_this_struct = self.variable_structs.get("this").cloned();
+            if let Some(scope) = &member_scope {
+                self.current_member_scope = Some(scope.clone());
+                self.variable_structs
+                    .insert("this".to_string(), scope.clone());
+            }
+            let parsed_function = self.function_body(
+                if let Some(scope) = &constructor_scope {
+                    Type::StructPointer {
+                        element_size: self.structs.get(scope).map_or(0, |layout| layout.size),
+                    }
+                } else {
+                    return_type
+                },
+                name,
+                function_is_static,
+                parameters,
+            );
+            self.current_member_scope = previous_member_scope;
+            match previous_this_struct {
+                Some(scope) => {
+                    self.variable_structs.insert("this".to_string(), scope);
+                }
+                None => {
+                    self.variable_structs.remove("this");
+                }
+            }
+            let mut function = parsed_function?;
             if !constructor_initializers.is_empty() {
-                function
-                    .statements
-                    .splice(0..0, constructor_initializers);
+                function.statements.splice(0..0, constructor_initializers);
             }
             if constructor_scope.is_some() && function.return_expression.is_none() {
                 function.return_expression = Some(Expression::Variable("this".to_string()));
@@ -3016,7 +3077,10 @@ impl Parser {
                     if *self.peek() == Token::Equals {
                         self.advance();
                         if is_static
-                            && matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
+                            && matches!(
+                                declared_type,
+                                Type::Pointer(_) | Type::StructPointer { .. }
+                            )
                         {
                             // Function/data-pointer static arrays carry zero word images plus
                             // ADDR32 relocations, just like their file-scope counterparts.
@@ -3057,9 +3121,10 @@ impl Parser {
                                 Type::Struct { size, .. } => usize::from(size),
                                 _ => unreachable!(),
                             };
-                            let count = u16::try_from(bytes.len() / element_size).map_err(|_| {
-                                Diagnostic::error("too many static struct initializer elements")
-                            })?;
+                            let count =
+                                u16::try_from(bytes.len() / element_size).map_err(|_| {
+                                    Diagnostic::error("too many static struct initializer elements")
+                                })?;
                             data_bytes = Some(bytes);
                             Some(explicit.unwrap_or(count))
                         } else {
@@ -3133,11 +3198,8 @@ impl Parser {
                             && struct_tag.is_some()
                         {
                             let tag = struct_tag.as_ref().unwrap();
-                            let image = self.parse_one_struct_relocated(
-                                tag,
-                                0,
-                                &mut data_relocations,
-                            )?;
+                            let image =
+                                self.parse_one_struct_relocated(tag, 0, &mut data_relocations)?;
                             data_bytes = Some(image);
                             None
                         } else {

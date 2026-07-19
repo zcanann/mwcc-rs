@@ -20,6 +20,7 @@ use parser::Parser;
 /// function definition).
 pub fn parse_translation_unit(
     tokens: Vec<Token>,
+    cplusplus: bool,
     char_is_signed: bool,
     plain_inline_localstatic_base: u8,
     skipped_static_inline_label_base: u8,
@@ -64,8 +65,11 @@ pub fn parse_translation_unit(
         section_functions: std::collections::HashMap::new(),
         skipped_inline_names: std::collections::HashSet::new(),
         inline_bodies: std::collections::HashMap::new(),
-        cplusplus: false,
+        default_cplusplus: cplusplus,
+        cplusplus,
         cplusplus_stack: Vec::new(),
+        namespace_stack: Vec::new(),
+        current_member_scope: None,
         force_active: false,
         structs: HashMap::new(),
         cxx_classes: HashMap::new(),

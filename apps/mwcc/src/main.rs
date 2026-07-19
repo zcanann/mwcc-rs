@@ -239,6 +239,12 @@ fn compile(
     let behavior = mwcc_versions::Behavior::resolve(&config);
     let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(
         tokens.clone(),
+        matches!(
+            std::path::Path::new(source_name)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("cpp" | "cp" | "cxx" | "cc")
+        ),
         config.char_is_signed(),
         behavior.plain_inline_localstatic_base,
         behavior.skipped_static_inline_label_base,

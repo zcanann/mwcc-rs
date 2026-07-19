@@ -190,8 +190,17 @@ pub(crate) struct Parser {
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
     /// `#pragma cplusplus` state: declarations parsed under it mangle their
     /// symbol names (push/pop scope the switch).
+    pub(crate) default_cplusplus: bool,
     pub(crate) cplusplus: bool,
     pub(crate) cplusplus_stack: Vec<bool>,
+    /// Active named C++ namespaces, outermost first. Top-level namespace braces
+    /// are declaration containers; this stack supplies CodeWarrior's `Qn`
+    /// qualification when member symbols are mangled.
+    pub(crate) namespace_stack: Vec<String>,
+    /// Class whose out-of-class member body is currently being parsed. This
+    /// drives implicit `this` field access and member-call lookup, and is scoped
+    /// to one function body by the top-level parser.
+    pub(crate) current_member_scope: Option<String>,
     /// `#pragma force_active on`/`reset` state: definitions parsed under it are kept
     /// in the link even if unreferenced, carrying a `.comment` attribute (0x00080000)
     /// — animal_crossing's runtime.c wraps its register save/restore in it.

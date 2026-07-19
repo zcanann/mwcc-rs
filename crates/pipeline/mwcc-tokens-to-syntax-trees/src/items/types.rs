@@ -246,6 +246,12 @@ impl Parser {
             },
             Token::KeywordFloat => Type::Float,
             Token::KeywordVoid => Type::Void,
+            // PowerPC EABI stores C++ `bool` in one unsigned byte. The current
+            // scalar IR has no separate boolean storage type; expression results
+            // are already normalized to zero/one, so the unsigned-byte lane keeps
+            // field layout and loads/stores exact. C++ parameter mangling will need
+            // a distinct IR type before bool-valued parameters can be accepted.
+            Token::Identifier(word) if word == "bool" => Type::UnsignedChar,
             // `double` (and `long double`, which is also 64-bit here).
             Token::Identifier(word) if word == "double" => Type::Double,
             // `long` / `long int` — 32-bit signed on this target; `long double` is a

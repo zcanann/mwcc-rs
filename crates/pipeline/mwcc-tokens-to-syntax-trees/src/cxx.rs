@@ -19,6 +19,15 @@ pub(crate) struct ClassLayout {
     pub(crate) bases: Vec<BaseClass>,
     pub(crate) fields: Vec<String>,
     pub(crate) constructors: Vec<Vec<Type>>,
+    pub(crate) methods: std::collections::HashMap<String, Vec<MemberMethod>>,
+    /// The class has a virtual dispatch table pointer. This is layout state,
+    /// not merely syntax: a polymorphic primary base already supplies the slot.
+    pub(crate) is_polymorphic: bool,
+}
+
+pub(crate) struct MemberMethod {
+    pub(crate) parameters: Vec<Type>,
+    pub(crate) is_inline: bool,
 }
 
 pub(crate) struct BaseClass {
@@ -102,9 +111,57 @@ pub(crate) fn normalize_constructor_declarators(mut tokens: Vec<Token>) -> Vec<T
 }
 
 impl Parser {
-    /// Parse one non-virtual class definition and recover its object layout.
+    /// Mangle a member declared in the active namespace scope. Class layouts
+    /// remain keyed by their local source name; namespace qualification is an
+    /// ABI concern applied only at symbol boundaries.
+    pub(crate) fn mangle_member_in_current_namespace(
+        &self,
+        class: &str,
+        function: &str,
+        explicit_parameters: &[Type],
+    ) -> Compilation<String> {
+        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        scopes.push(class);
+        mangle_qualified_member_function(&scopes, function, explicit_parameters)
+    }
+
+    /// Resolve an unqualified call inside a member body. Arity is enough for the
+    /// currently modeled overload set; ambiguous same-arity overloads defer.
+    pub(crate) fn resolve_implicit_member_call(
+        &self,
+        function: &str,
+        argument_count: usize,
+    ) -> Compilation<Option<(String, bool)>> {
+        let Some(class_name) = self.current_member_scope.as_deref() else {
+            return Ok(None);
+        };
+        let Some(methods) = self
+            .cxx_classes
+            .get(class_name)
+            .and_then(|class| class.methods.get(function))
+        else {
+            return Ok(None);
+        };
+        let candidates: Vec<&MemberMethod> = methods
+            .iter()
+            .filter(|method| method.parameters.len() == argument_count)
+            .collect();
+        if candidates.len() != 1 {
+            return Err(Diagnostic::error(format!(
+                "member overload resolution for '{class_name}::{function}' is ambiguous or unavailable (roadmap)"
+            )));
+        }
+        let method = candidates[0];
+        Ok(Some((
+            self.mangle_member_in_current_namespace(class_name, function, &method.parameters)?,
+            method.is_inline,
+        )))
+    }
+
+    /// Parse one class definition and recover its object layout.
     /// Method declarations do not occupy storage and are skipped after recording
-    /// constructor signatures. A single non-virtual base is laid out first.
+    /// constructor signatures. A single non-virtual base is laid out first;
+    /// simple polymorphic classes reserve their implicit vptr at offset zero.
     pub(crate) fn parse_class_definition(
         &mut self,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
@@ -130,6 +187,10 @@ impl Parser {
                     ));
                 }
                 let base_name = self.parse_identifier()?;
+                let base_is_polymorphic = self
+                    .cxx_classes
+                    .get(&base_name)
+                    .is_some_and(|base| base.is_polymorphic);
                 let base = self.structs.get(&base_name).ok_or_else(|| {
                     Diagnostic::error(format!(
                         "base class '{base_name}' must be defined before '{name}'"
@@ -152,6 +213,7 @@ impl Parser {
                     );
                 }
                 class.bases.push(BaseClass { name: base_name });
+                class.is_polymorphic |= base_is_polymorphic;
                 offset += base.size;
                 max_align = max_align.max(base_align);
                 if !self.eat_keyword(Token::Comma) {
@@ -174,9 +236,19 @@ impl Parser {
                 continue;
             }
             if self.eat_word("virtual") {
-                return Err(Diagnostic::error(
-                    "virtual class layout is not supported yet (roadmap)",
-                ));
+                if !class.is_polymorphic {
+                    // A new vptr is the primary object component. We can place it
+                    // exactly while no base data has already occupied the prefix.
+                    // Polymorphic derivation reuses the primary base's vptr above.
+                    if offset != 0 {
+                        return Err(Diagnostic::error(
+                            "a polymorphic class with a non-polymorphic base is not supported yet (roadmap)",
+                        ));
+                    }
+                    offset = 4;
+                    max_align = max_align.max(4);
+                    class.is_polymorphic = true;
+                }
             }
             if self.eat_word("static") {
                 self.skip_class_member()?;
@@ -205,8 +277,16 @@ impl Parser {
             let attribute_align = self.skip_attributes()?.unwrap_or(1);
             let field_name = self.parse_identifier()?;
             if *self.peek() == Token::ParenOpen {
-                self.skip_balanced(Token::ParenOpen, Token::ParenClose)?;
-                self.skip_class_method_tail()?;
+                let parameters = self.parse_class_parameter_types()?;
+                let is_inline = self.skip_class_method_tail()?;
+                class
+                    .methods
+                    .entry(field_name)
+                    .or_default()
+                    .push(MemberMethod {
+                        parameters,
+                        is_inline,
+                    });
                 continue;
             }
             if matches!(self.peek(), Token::Colon) {
@@ -244,8 +324,8 @@ impl Parser {
         }
         self.expect(Token::BraceClose)?;
         self.expect(Token::Semicolon)?;
-        // C++ gives an otherwise empty class size one. Empty-base optimization and
-        // virtual layouts are deliberately outside this first, non-virtual subset.
+        // C++ gives an otherwise empty class size one. Empty-base optimization is
+        // deliberately outside this subset.
         layout.size = offset.max(1).div_ceil(max_align) * max_align;
         layout.align = max_align as u8;
         Ok((name, layout, class))
@@ -274,7 +354,7 @@ impl Parser {
         Ok(parameters)
     }
 
-    fn skip_class_method_tail(&mut self) -> Compilation<()> {
+    fn skip_class_method_tail(&mut self) -> Compilation<bool> {
         while matches!(self.peek(), Token::Identifier(word)
             if matches!(word.as_str(), "const" | "override" | "final"))
         {
@@ -284,10 +364,11 @@ impl Parser {
             self.advance();
         }
         if self.eat_keyword(Token::Semicolon) {
-            return Ok(());
+            return Ok(false);
         }
         if *self.peek() == Token::BraceOpen {
-            return self.skip_balanced(Token::BraceOpen, Token::BraceClose);
+            self.skip_balanced(Token::BraceOpen, Token::BraceClose)?;
+            return Ok(true);
         }
         Err(Diagnostic::error(format!(
             "unsupported C++ member declaration tail: {}",
@@ -393,7 +474,8 @@ impl Parser {
                     "constructor overload resolution for '{base_name}' is ambiguous or unavailable (roadmap)"
                 )));
             }
-            let name = mangle_member_function(base_name.as_str(), "__ct", candidates[0])?;
+            let name =
+                self.mangle_member_in_current_namespace(base_name.as_str(), "__ct", candidates[0])?;
             let mut call_arguments = vec![Expression::Variable("this".to_string())];
             call_arguments.extend(arguments);
             statements.push(Statement::Expression(Expression::Call {
@@ -449,7 +531,18 @@ pub(crate) fn mangle_member_function(
     function: &str,
     explicit_parameters: &[Type],
 ) -> Compilation<String> {
-    if scope.is_empty() || function.is_empty() {
+    mangle_qualified_member_function(&[scope], function, explicit_parameters)
+}
+
+/// Mangle a class member qualified by one or more scopes. CodeWarrior encodes
+/// one class directly (`7Counter`) and nested namespace/class names as
+/// `Q<count><length><name>...` (`Q26sample7Counter`).
+pub(crate) fn mangle_qualified_member_function(
+    scopes: &[&str],
+    function: &str,
+    explicit_parameters: &[Type],
+) -> Compilation<String> {
+    if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) || function.is_empty() {
         return Err(Diagnostic::error("an empty C++ member name is invalid"));
     }
     let arguments = if explicit_parameters.is_empty() {
@@ -462,7 +555,16 @@ pub(crate) fn mangle_member_function(
             .collect::<Compilation<Vec<_>>>()?
             .concat()
     };
-    Ok(format!("{function}__{}{scope}F{arguments}", scope.len()))
+    let qualified_scope = if scopes.len() == 1 {
+        format!("{}{}", scopes[0].len(), scopes[0])
+    } else {
+        let components = scopes
+            .iter()
+            .map(|scope| format!("{}{scope}", scope.len()))
+            .collect::<String>();
+        format!("Q{}{components}", scopes.len())
+    };
+    Ok(format!("{function}__{qualified_scope}F{arguments}"))
 }
 
 fn encode_type(parameter: Type) -> Compilation<String> {
@@ -550,6 +652,15 @@ mod tests {
         assert_eq!(
             mangle_member_function("Counter", "__ct", &[Type::Int, Type::Short]).unwrap(),
             "__ct__7CounterFis"
+        );
+        assert_eq!(
+            mangle_qualified_member_function(
+                &["homebutton", "FrameController"],
+                "init",
+                &[Type::Int, Type::Float, Type::Float, Type::Float],
+            )
+            .unwrap(),
+            "init__Q210homebutton15FrameControllerFifff"
         );
     }
 
