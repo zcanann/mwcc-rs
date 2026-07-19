@@ -320,6 +320,7 @@ impl Generator {
         self.emit_call(enter, enter_arguments, None, false)?;
 
         self.emit_global_load(lengths_write, 4)?;
+        let linkage_first = self.behavior.frame_convention == FrameConvention::LinkageFirst;
         self.output
             .instructions
             .push(Instruction::CompareLogicalWordImmediate {
@@ -327,11 +328,15 @@ impl Generator {
                 immediate: 0,
             });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: 4,
+            d: if linkage_first { GENERAL_SCRATCH } else { 4 },
             a: 4,
             immediate: -4,
         });
-        self.emit_global_store(lengths_write, Pointee::UnsignedInt, 4)?;
+        self.emit_global_store(
+            lengths_write,
+            Pointee::UnsignedInt,
+            if linkage_first { GENERAL_SCRATCH } else { 4 },
+        )?;
         let branch = self.output.instructions.len();
         self.output
             .instructions
@@ -340,6 +345,11 @@ impl Generator {
                 condition_bit: 2,
                 target: 0,
             });
+        if linkage_first {
+            // Build 163 re-reads the just-published cursor on the taken path
+            // instead of extending the r0 step value across the branch.
+            self.emit_global_load(lengths_write, 4)?;
+        }
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
             a: 4,
@@ -392,15 +402,27 @@ impl Generator {
             },
         );
         self.emit_call(leave, leave_arguments, None, false)?;
-        // The return reload fills the slot between the saved-LR and saved-GPR
-        // reloads; this is a distinct epilogue schedule from the shared canonical
-        // helper (`lwz LR; lwz r3,cursor; lwz r31; mtlr`).
+        if linkage_first {
+            // Build 163 creates this transaction's extern symbols in scheduled
+            // first-reference order, not the AST traversal's store order.
+            self.output.symbol_order = [enter, lengths_write, free_write, cursor_write, leave]
+                .into_iter()
+                .cloned()
+                .collect();
+        }
+        // Build 163 starts the return reload before the saved LR. Later builds
+        // fill the slot between the saved-LR and saved-GPR reloads with it.
+        if linkage_first {
+            self.emit_global_load(cursor_write, Eabi::general_result().number)?;
+        }
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
             a: 1,
             offset: self.frame_size + 4,
         });
-        self.emit_global_load(cursor_write, Eabi::general_result().number)?;
+        if !linkage_first {
+            self.emit_global_load(cursor_write, Eabi::general_result().number)?;
+        }
         self.output.instructions.push(Instruction::LoadWord {
             d: output_home,
             a: 1,
