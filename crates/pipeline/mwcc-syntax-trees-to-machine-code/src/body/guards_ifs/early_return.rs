@@ -174,6 +174,71 @@ impl Generator {
 
         let index_register = self.general_register_of_leaf(index_leaf)?;
         let shift = size.trailing_zeros() as u8;
+        if self.behavior.global_array_index_style
+            == mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+        {
+            // Build 163 completes an explicit element address in r3, performs
+            // the store sequentially, and only then materializes the constant
+            // return. For a zero displacement it scales r3 in place and uses
+            // r0 for the low address; a folded displacement keeps the scaled
+            // index in r0 and forms the base in r3 before adding it.
+            let high = self.fresh_virtual_general();
+            self.emit_address_high(high, array);
+            if offset == 0 {
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: result,
+                        s: index_register,
+                        shift,
+                    });
+                self.record_relocation(RelocationKind::Addr16Lo, array);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: high,
+                    immediate: 0,
+                });
+                self.output.instructions.push(Instruction::Add {
+                    d: result,
+                    a: GENERAL_SCRATCH,
+                    b: result,
+                });
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: index_register,
+                        shift,
+                    });
+                self.record_relocation(RelocationKind::Addr16Lo, array);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: result,
+                    a: high,
+                    immediate: 0,
+                });
+                self.output.instructions.push(Instruction::Add {
+                    d: result,
+                    a: result,
+                    b: GENERAL_SCRATCH,
+                });
+            }
+            let source = if let Some(register) = stored_register {
+                register
+            } else {
+                self.load_integer_constant(
+                    GENERAL_SCRATCH,
+                    stored_constant.expect("checked above") as i64,
+                );
+                GENERAL_SCRATCH
+            };
+            self.output
+                .instructions
+                .push(displacement_store(pointee, source, result, offset)?);
+            self.load_integer_constant(result, return_constant as i64);
+            self.emit_epilogue_and_return();
+            return Ok(true);
+        }
         if let Some(register) = stored_register {
             // Register value: the base stays OUT of the index register (the return needs
             // r3 live before the store) — `lis B; slwi; addi B,B; li r3,R; stwx v,B,r0`.
