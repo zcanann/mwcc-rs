@@ -5,6 +5,8 @@
 //! do not yet model are ignored. `--emit-artifacts <dir>` writes a per-phase
 //! report for inspecting how a translation unit becomes bytes.
 
+mod function_order;
+
 use mwcc_core::{Compilation, Diagnostic};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -515,29 +517,10 @@ fn compile(
         // The parser accumulates the measured PER-BODY label bump directly.
         first.anonymous_label_bump += unit.skipped_inline_functions as u32;
     }
-    // Deferred inlining (`-inline …,deferred`) emits COMPILER-GENERATED functions —
-    // and hence their `.text`, symbols, and metadata records — in reverse order.
-    // Hand-written asm is assembled immediately and keeps its source position/order
-    // (Runtime's all-asm runtime.c is unchanged by the flag).
+    // Deferred inlining has its own translation-unit emission schedule. Keep the
+    // policy isolated from lowering and object layout: both consume its result.
     if config.flags.inline_deferred {
-        let functions = std::mem::take(&mut machine_functions);
-        let mut reversed_compiled = Vec::new();
-        let slots: Vec<Option<mwcc_machine_code::MachineFunction>> = functions
-            .into_iter()
-            .map(|function| {
-                if function.is_asm {
-                    Some(function)
-                } else {
-                    reversed_compiled.push(function);
-                    None
-                }
-            })
-            .collect();
-        let mut reversed_compiled = reversed_compiled.into_iter().rev();
-        machine_functions = slots
-            .into_iter()
-            .map(|slot| slot.unwrap_or_else(|| reversed_compiled.next().expect("compiled slot")))
-            .collect();
+        function_order::apply_deferred_emission_order(&mut machine_functions);
     }
     // `#pragma defer_codegen on` defers the covered functions the same way:
     // they emit LAST, in REVERSE definition order (measured: melee mem_funcs,
