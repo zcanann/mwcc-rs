@@ -8,7 +8,7 @@
 //! Float/stack-frame functions add `.sdata2` / `extab` / `extabindex` sections,
 //! pooled across all functions in the unit.
 
-use crate::{CommentFormat, DataObject, ObjectInput, RelocationTarget};
+use crate::{CommentFormat, DataObject, FunctionSymbolOrder, ObjectInput, RelocationTarget};
 use std::collections::HashMap;
 
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
@@ -1808,6 +1808,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
         }
+        // Modern deferred compilation processes functions in reverse. A call to
+        // another function already defined in the TU resolves that function's
+        // symbol before the current function is registered; data and external
+        // references are still discovered after the current symbol. Pull these
+        // targets out before the explicit/implicit split: a definition can serve
+        // as the only declaration, so the front end may classify its call as an
+        // implicit body reference even though object emission resolves it locally.
+        let (defined_function_ordered, ordered): (Vec<&str>, Vec<&str>) =
+            if input.object_format.function_symbol_order
+                == FunctionSymbolOrder::DefinedFunctionsThenFunction
+            {
+                ordered.into_iter().partition(|name| {
+                    functions.iter().any(|candidate| {
+                        !candidate.is_static && !candidate.implicit_local && candidate.name == *name
+                    })
+                })
+            } else {
+                (Vec::new(), ordered)
+            };
         // An IMPLICITLY-declared callee's symbol is created by mwcc at its call site inside
         // the body, so it is emitted AFTER the function symbol; an explicitly-declared
         // (prototyped) external precedes it. Partition preserving order within each group.
@@ -1858,7 +1877,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             })
             .collect();
         let (absolute_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) =
-            if input.object_format.function_symbol_before_references {
+            if input.object_format.function_symbol_order == FunctionSymbolOrder::FunctionFirst {
                 explicit_ordered
                     .into_iter()
                     .partition(|name| absolute_targets.contains(name))
@@ -2016,8 +2035,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             };
         }
-        if input.object_format.function_symbol_before_references {
+        if input.object_format.function_symbol_order != FunctionSymbolOrder::ReferencesFirst {
             emit_referenced!(absolute_ordered);
+            emit_referenced!(defined_function_ordered);
             emit_current_function_symbol!();
             emit_referenced!(early_implicit_ordered.iter().copied());
         }
@@ -2028,7 +2048,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
         emit_current_function_symbol!();
-        if !input.object_format.function_symbol_before_references {
+        if input.object_format.function_symbol_order == FunctionSymbolOrder::ReferencesFirst {
             emit_referenced!(early_implicit_ordered.iter().copied());
         }
         // A STATIC asm function's own symbol is LOCAL (emitted in the local run

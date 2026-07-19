@@ -12,7 +12,7 @@ use mwcc_object::{
 
 /// A data-section `ADDR32` relocation (re-exported so callers can build a
 /// `DefinedGlobal`'s relocations without depending on `mwcc-object` directly).
-pub use mwcc_object::{CommentFormat, DataRelocation, ObjectFormat};
+pub use mwcc_object::{CommentFormat, DataRelocation, FunctionSymbolOrder, ObjectFormat};
 
 /// A file-scope variable *defined* in this unit (placed in a data section), in
 /// declaration order. The caller decides which globals qualify (non-`extern`,

@@ -21,7 +21,7 @@ pub struct CommentFormat {
 pub struct ObjectFormat {
     pub comment: CommentFormat,
     pub emb_sda21_offset: u8,
-    pub function_symbol_before_references: bool,
+    pub function_symbol_order: FunctionSymbolOrder,
     /// Whether file-scope LOCAL data symbols preserve declaration order across
     /// initialized and zero-filled sections.
     pub local_data_symbols_in_declaration_order: bool,
@@ -35,6 +35,21 @@ pub struct ObjectFormat {
     pub initial_anonymous_counter: u8,
     pub post_leaf_function_anonymous_bump: u8,
     pub post_framed_function_anonymous_bump: u8,
+}
+
+/// When a function's global symbol is registered relative to symbols first
+/// discovered while compiling its body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionSymbolOrder {
+    /// Prototyped references are registered before the function itself.
+    ReferencesFirst,
+    /// The function is registered before its body references, except for the
+    /// legacy fixed-address-symbol special case.
+    FunctionFirst,
+    /// Deferred modern codegen can resolve another function already defined in
+    /// this translation unit before registering the current function. Other
+    /// body references follow the current function.
+    DefinedFunctionsThenFunction,
 }
 
 /// The inputs for one translation unit's object: the source file name (for the
