@@ -1733,11 +1733,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             emit_object_targets!(object);
         }};
     }
-    // A STATIC dispatch table (`static void (*tbl[])(void) = { e1, e2 };`): its own
-    // symbol binds LOCAL (emitted in the local-statics run above), but its hoisted
-    // relocation targets join the GLOBAL run at the table's source position — up
-    // front here, or after function K below (measured: mid-file table gives
-    // f, e2, e1, h).
+    // Some STATIC objects bind LOCAL themselves but register their relocation
+    // targets in the GLOBAL source-order run:
+    //
+    // * a mutable dispatch table (`static void (*tbl[])(void) = { e1, e2 };`);
+    // * a compiler-generated `.ctors`/`.dtors` chain reference.
+    //
+    // The latter is commonly const and section-attributed, so it must not be
+    // mistaken for an ordinary dispatch table. Deferred compilation registers
+    // its target in an early chain-reference pass: the referenced destructor
+    // function precedes an otherwise reference-first data symbol. Other function
+    // ordering modes retain their existing source-position behavior.
+    let is_static_chain_reference = |object: &DataObject| -> bool {
+        if !object.is_static || object.static_local_owner.is_some() || object.relocations.is_empty()
+        {
+            return false;
+        }
+        let section_name = data_section[object.name];
+        matches!(section_name, ".ctors" | ".dtors")
+    };
     let is_static_table_hook = |object: &DataObject| -> bool {
         object.is_static
             && !object.is_const
@@ -1770,7 +1784,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in &input.data_objects {
         if is_initialized_run_object(object) && object.functions_before == 0 {
             emit_initialized_object!(object);
-        } else if is_static_table_hook(object) && object.functions_before == 0 {
+        } else if (input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred
+            && is_static_chain_reference(object))
+            || (is_static_table_hook(object) && object.functions_before == 0)
+        {
             emit_object_targets!(object);
         }
     }
@@ -1826,18 +1843,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             } else {
                 (Vec::new(), ordered)
             };
-        // Deferred body compilation registers a defined data symbol only after
-        // the current function. Remove those targets from the ordinary
-        // explicit/implicit runs so undefined externals can retain their normal
-        // pre-function position.
-        let (deferred_data_ordered, ordered): (Vec<&str>, Vec<&str>) =
-            if input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred {
-                ordered
-                    .into_iter()
-                    .partition(|name| data_offsets.contains_key(name))
-            } else {
-                (Vec::new(), ordered)
-            };
         // An IMPLICITLY-declared callee's symbol is created by mwcc at its call site inside
         // the body, so it is emitted AFTER the function symbol; an explicitly-declared
         // (prototyped) external precedes it. Partition preserving order within each group.
@@ -1863,10 +1868,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .iter()
             .map(|name| name.as_str())
             .collect();
-        let (early_implicit_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) =
-            implicit_ordered
-                .into_iter()
-                .partition(|name| early_implicit.contains(name));
+        let (early_implicit_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) = implicit_ordered
+            .into_iter()
+            .partition(|name| early_implicit.contains(name));
         // Build 163 creates an absolute-address symbol while materializing its
         // ADDR16 pair, before it registers the current function. SDA21 data
         // references and calls retain the ordinary function-first ordering.
@@ -2061,7 +2065,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
         emit_current_function_symbol!();
-        emit_referenced!(deferred_data_ordered);
         if input.object_format.function_symbol_order == FunctionSymbolOrder::ReferencesFirst {
             emit_referenced!(early_implicit_ordered.iter().copied());
         }

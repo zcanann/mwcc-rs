@@ -49,9 +49,9 @@ pub enum FunctionSymbolOrder {
     /// The function is registered before its body references, except for the
     /// legacy fixed-address-symbol special case.
     FunctionFirst,
-    /// Modern deferred codegen registers locally defined function targets and
-    /// ordinary external references before the current function, but locally
-    /// defined data targets after it.
+    /// Modern deferred codegen registers locally defined function targets before
+    /// the current function. Ordinary declared references, including defined
+    /// data, retain reference-first registration.
     Deferred,
 }
 
