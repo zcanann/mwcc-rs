@@ -515,8 +515,10 @@ impl Parser {
             break;
         }
         // Bare `name` followed by `,` or `}` — a function/global address.
-        if let (Token::Identifier(name), Some(Token::Comma) | Some(Token::BraceClose)) =
-            (self.peek(), self.tokens.get(self.position + 1))
+        if let (
+            Token::Identifier(name),
+            Some(Token::Comma) | Some(Token::BraceClose) | Some(Token::ParenClose),
+        ) = (self.peek(), self.tokens.get(self.position + 1))
         {
             if !self.enum_constants.contains_key(name) {
                 let name = name.clone();

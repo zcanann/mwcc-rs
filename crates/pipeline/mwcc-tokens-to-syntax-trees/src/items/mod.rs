@@ -3125,33 +3125,50 @@ impl Parser {
                 };
                 let initializer = if array_length.is_none() && self.eat_keyword(Token::Equals) {
                     if *self.peek() == Token::BraceOpen {
-                        // A SMALL (<= 4 byte) STRUCT-typed local's brace initializer
-                        // serializes to its byte image at parse time (the layout lives
-                        // here, not in codegen) — `GXColor c = {0xFF,0xFF,0xFF,0xFF};`
-                        // becomes a one-word image the frame path copies in from the
-                        // pool. Larger structs keep the aggregate-literal parse (their
-                        // committed handling flows through it); a relocated element
-                        // (`{&g, 0}`) is not an image — defer.
-                        let small_struct_tag = match (declared_type, struct_tag.as_ref()) {
-                            (Type::Struct { size, .. }, Some(tag))
-                                if matches!(size, 4 | 8 | 12 | 16) =>
-                            {
-                                Some(tag.clone())
-                            }
-                            _ => None,
-                        };
-                        if let Some(tag) = small_struct_tag {
-                            let tag = &tag;
-                            let mut relocations = Vec::new();
-                            let image =
-                                self.parse_one_struct_relocated(tag, 0, &mut relocations)?;
-                            if !relocations.is_empty() {
-                                return Err(Diagnostic::error("a relocated struct-local initializer is not supported yet (roadmap)"));
-                            }
+                        // A static struct local is a data object, not a frame
+                        // initialization. Serialize its complete layout and retain
+                        // any address fields as object relocations.
+                        if is_static
+                            && matches!(declared_type, Type::Struct { .. })
+                            && struct_tag.is_some()
+                        {
+                            let tag = struct_tag.as_ref().unwrap();
+                            let image = self.parse_one_struct_relocated(
+                                tag,
+                                0,
+                                &mut data_relocations,
+                            )?;
                             data_bytes = Some(image);
                             None
                         } else {
-                            Some(self.aggregate_literal()?)
+                            // A SMALL (<= 4 byte) STRUCT-typed local's brace initializer
+                            // serializes to its byte image at parse time (the layout lives
+                            // here, not in codegen) — `GXColor c = {0xFF,0xFF,0xFF,0xFF};`
+                            // becomes a one-word image the frame path copies in from the
+                            // pool. Larger structs keep the aggregate-literal parse (their
+                            // committed handling flows through it); a relocated element
+                            // (`{&g, 0}`) is not an image — defer.
+                            let small_struct_tag = match (declared_type, struct_tag.as_ref()) {
+                                (Type::Struct { size, .. }, Some(tag))
+                                    if matches!(size, 4 | 8 | 12 | 16) =>
+                                {
+                                    Some(tag.clone())
+                                }
+                                _ => None,
+                            };
+                            if let Some(tag) = small_struct_tag {
+                                let tag = &tag;
+                                let mut relocations = Vec::new();
+                                let image =
+                                    self.parse_one_struct_relocated(tag, 0, &mut relocations)?;
+                                if !relocations.is_empty() {
+                                    return Err(Diagnostic::error("a relocated struct-local initializer is not supported yet (roadmap)"));
+                                }
+                                data_bytes = Some(image);
+                                None
+                            } else {
+                                Some(self.aggregate_literal()?)
+                            }
                         }
                     } else {
                         Some(self.expression()?)

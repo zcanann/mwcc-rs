@@ -5,16 +5,13 @@ typedef void (*Callback)(void);
 typedef struct Profile {
     int tag;
     Callback callback;
+    int enabled;
 } Profile;
 
 void callback(void);
 
-Profile grouped_cast_function_address = {
-    7,
-    ((Callback)&callback),
-};
-
-Profile grouped_cast_bare_function_address = {
-    8,
-    ((Callback)callback),
-};
+int static_local_struct_addresses(void)
+{
+    static Profile profile = { 7, (Callback)callback, 1 };
+    return 0;
+}
