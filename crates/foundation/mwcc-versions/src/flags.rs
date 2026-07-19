@@ -78,6 +78,9 @@ pub struct Flags {
     /// tracked even before the sections can be emitted so the driver never
     /// silently produces a partial object for a debug-enabled invocation.
     pub debug_info: bool,
+    /// `-ipa file` enables whole-file interprocedural optimizations. The first
+    /// modeled consequence is sibling-call elimination for trivial wrappers.
+    pub ipa_file: bool,
 }
 
 impl Default for Flags {
@@ -96,6 +99,7 @@ impl Default for Flags {
             pooling_enabled: true,
             use_lmw_stmw: false,
             debug_info: false,
+            ipa_file: false,
         }
     }
 }

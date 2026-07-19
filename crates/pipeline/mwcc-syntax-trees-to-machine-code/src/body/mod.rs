@@ -22,6 +22,7 @@ mod punned_select;
 mod punned_writeback;
 mod store_fill;
 mod store_return_schedule;
+mod tail_call;
 
 pub(crate) use callee_saved::{
     summarize_queue_pop, summarize_queue_service, QueuePopSummary, QueueServiceSummary,

@@ -1157,6 +1157,9 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        if self.try_tail_call(function)? {
+            return Ok(());
+        }
         if self.try_legacy_comma_parameter_homes(function)? {
             return Ok(());
         }

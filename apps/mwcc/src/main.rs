@@ -122,6 +122,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.debug_info,
                 };
             }
+            // `-ipa file` enables whole-file optimization. Treat each
+            // occurrence as a complete mode so a later `-ipa off` wins.
+            "-ipa" => {
+                index += 1;
+                invocation.flags.ipa_file = match arguments.get(index).map(String::as_str) {
+                    Some("file") => true,
+                    Some("off") => false,
+                    _ => invocation.flags.ipa_file,
+                };
+            }
             // `-sdata N`: zero disables writable SDA (r13); a later non-zero
             // threshold turns it back on. Keep it independent from `-sdata2`.
             "-sdata" => {
@@ -1449,6 +1459,16 @@ mod tests {
         let last_wins =
             parse_invocation(&["-sym".into(), "on".into(), "-sym".into(), "off".into()]);
         assert!(!last_wins.flags.debug_info);
+    }
+
+    #[test]
+    fn command_line_ipa_mode_is_last_wins() {
+        let file = parse_invocation(&["-ipa".into(), "file".into()]);
+        assert!(file.flags.ipa_file);
+
+        let last_wins =
+            parse_invocation(&["-ipa".into(), "file".into(), "-ipa".into(), "off".into()]);
+        assert!(!last_wins.flags.ipa_file);
     }
 
     #[test]

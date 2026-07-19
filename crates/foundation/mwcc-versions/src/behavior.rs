@@ -600,6 +600,9 @@ pub struct Behavior {
     /// Whether contiguous GPR saves/restores use inline `stmw`/`lmw` rather
     /// than `_savegpr_N`/`_restgpr_N` helper calls.
     pub use_lmw_stmw: bool,
+    /// Whether whole-file IPA may replace a terminal call/return with a sibling
+    /// branch after marshaling its arguments.
+    pub tail_call_optimization: bool,
 }
 
 /// A quirk that is active for a configuration, paired with its kind and summary
@@ -774,6 +777,7 @@ impl Behavior {
             read_only_global_addressing: config.flags.read_only_global_addressing,
             deferred_inlining: config.flags.inline_deferred,
             use_lmw_stmw: config.flags.use_lmw_stmw,
+            tail_call_optimization: config.flags.ipa_file,
         }
     }
 

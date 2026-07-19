@@ -189,6 +189,7 @@ impl Instruction {
             Instruction::BranchToLinkRegisterAndLink => 0x4E80_0021,
             // The displacement is supplied by the relocation; emit the placeholder.
             Instruction::BranchAndLink { .. } => 0x4800_0001,
+            Instruction::BranchExternal { .. } => 0x4800_0000,
             Instruction::MoveFromLinkRegister { d } => 0x7C08_02A6 | ((d as u32) << 21),
             Instruction::MoveToLinkRegister { s } => 0x7C08_03A6 | ((s as u32) << 21),
             Instruction::MoveToCountRegister { s } => 0x7C09_03A6 | ((s as u32) << 21),
