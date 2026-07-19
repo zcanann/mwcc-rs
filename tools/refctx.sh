@@ -39,7 +39,11 @@ project="$(cd "$project" && pwd)"
 dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"
 # Only ever remove the mktemp scratch dir — guard against a clobbered $dir so the
 # cleanup can never delete a real tree (a stray loop variable once aliased $dir).
-trap 'case "$dir" in */refctx.??????) rm -rf "$dir";; esac' EXIT
+if [[ "${REFCTX_KEEP:-0}" == 1 ]]; then
+  trap 'echo "refctx scratch retained: $dir" >&2' EXIT
+else
+  trap 'case "$dir" in */refctx.??????) rm -rf "$dir";; esac' EXIT
+fi
 
 # Base flags shared by both compilers. A manifest runner can pass the project's
 # exact resolved flag vector as ordinary trailing arguments and explicitly
@@ -63,27 +67,31 @@ fi
 #    a 36-line STUB (implicit-declaration artifact) instead of the real ~6000-line TU —
 #    yielding false BYTE results. Discovering the real roots feeds decompctx the true
 #    compilation unit.
+all_flags=(${base[@]+"${base[@]}"} ${extra[@]+"${extra[@]}"})
+compiler_flags=()
+discovered_includes=()
+for ((flag_index=0; flag_index<${#all_flags[@]}; flag_index++)); do
+  flag="${all_flags[$flag_index]}"
+  case "$flag" in
+    -i|-I|-ir|-isystem)
+      next_index=$((flag_index+1))
+      if ((next_index < ${#all_flags[@]})); then
+        discovered_includes+=("${all_flags[$next_index]}")
+        flag_index=$next_index
+      fi
+      ;;
+    -I+*) discovered_includes+=("${flag#-I+}");;
+    -I?*) discovered_includes+=("${flag#-I}");;
+    *) compiler_flags+=("$flag");;
+  esac
+done
+
 if [[ -n "${REFCTX_INCLUDES:-}" ]]; then
   read -r -a include_dirs <<< "$REFCTX_INCLUDES"
 else
   # Prefer the actual compile command's access paths. Project configure files
   # spell these as `-i dir`, `-I dir`, `-ir dir`, or their joined variants.
-  include_dirs=()
-  all_flags=(${base[@]+"${base[@]}"} ${extra[@]+"${extra[@]}"})
-  for ((flag_index=0; flag_index<${#all_flags[@]}; flag_index++)); do
-    flag="${all_flags[$flag_index]}"
-    case "$flag" in
-      -i|-I|-ir|-isystem)
-        next_index=$((flag_index+1))
-        if ((next_index < ${#all_flags[@]})); then
-          include_dirs+=("${all_flags[$next_index]}")
-          flag_index=$next_index
-        fi
-        ;;
-      -I+*) include_dirs+=("${flag#-I+}");;
-      -I?*) include_dirs+=("${flag#-I}");;
-    esac
-  done
+  include_dirs=(${discovered_includes[@]+"${discovered_includes[@]}"})
 fi
 
 if [[ ${#include_dirs[@]} -eq 0 && -f "$project/compile_flags.txt" ]]; then
@@ -117,7 +125,7 @@ for inc in "${include_dirs[@]}"; do include_flags+=(-I "$inc"); done
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
 #    preprocess). mwcceppc only accepts .c/.cpp, so the real compiler builds the
 #    reference straight from ctx.c (preprocessing it internally) — identical input.
-( cd "$dir" && "$wibo" "$sjis" "$compiler" ${base[@]+"${base[@]}"} ${extra[@]+"${extra[@]}"} -E ctx.c -o ctx.i ) 2>/dev/null
+( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E ctx.c -o ctx.i ) 2>/dev/null
 if [[ ! -s "$dir/ctx.i" ]]; then
   # An effectively EMPTY TU (sunshine's exponentialsf.c is a single
   # newline): mwcc -E emits nothing, but both compilers produce the
@@ -130,14 +138,14 @@ if [[ ! -s "$dir/ctx.i" ]]; then
 fi
 
 # 3a. Reference object from the real compiler (from the self-contained ctx.c).
-( cd "$dir" && "$wibo" "$sjis" "$compiler" ${base[@]+"${base[@]}"} ${extra[@]+"${extra[@]}"} -c ctx.c -o ref.o ) 2>/dev/null
+( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -c ctx.c -o ref.o ) 2>/dev/null
 [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected ctx.c"; exit 1; }
 
 # 3b. Our object. Feed the preprocessed text under the name ctx.c so our FILE
 #     symbol matches the reference's (which compiled ctx.c). Pass the same flags
 #     the real compiler got — our mwcc models the ones it knows and ignores the rest.
 mkdir -p "$dir/ours" && cp "$dir/ctx.i" "$dir/ours/ctx.c"
-if ! "$ours" --build "$build" ${base[@]+"${base[@]}"} ${extra[@]+"${extra[@]}"} -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
+if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/ctx.c" -o "$dir/our.o" 2>"$dir/oerr"; then
   echo "DEFER  $src — $(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   exit 0
 fi
