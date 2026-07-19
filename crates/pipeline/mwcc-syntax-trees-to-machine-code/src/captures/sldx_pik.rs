@@ -29,7 +29,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x626216a8cf3d36f5 => 22, // pikmin: pool @27 (ours @5)
+            0x626216a8cf3d36f5 => 25, // pikmin: deferred pool starts at @47
             _ => return Ok(false),
         };
         // mwcc's extern order: the MANGLED inline-asm callee first (its bl at
@@ -49,9 +49,17 @@ impl Generator {
         }
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
             std::collections::HashMap::new();
-        for target in [13, 15, 23, 36, 41, 50, 58, 70, 76, 84] {
+        for target in [14, 16, 26, 41, 46, 55, 63, 75, 81, 89] {
             labels.insert(target, self.fresh_label());
         }
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 4,
+        });
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -59,14 +67,6 @@ impl Generator {
                 a: 1,
                 offset: -32,
             });
-        self.output
-            .instructions
-            .push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 1,
-            offset: 36,
-        });
         self.output.instructions.push(Instruction::StoreWord {
             s: 31,
             a: 1,
@@ -82,6 +82,11 @@ impl Generator {
                 a: 1,
                 offset: 8,
             });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 1,
+            a: 1,
+            offset: 8,
+        });
         self.record_relocation(RelocationKind::Rel24, "__fpclassifyd__Fd");
         self.output.instructions.push(Instruction::BranchAndLink {
             target: "__fpclassifyd__Fd".to_string(),
@@ -89,7 +94,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate { a: 3, immediate: 2 });
-        self.emit_branch_conditional_to(4, 1, labels[&13]); // ble
+        self.emit_branch_conditional_to(4, 1, labels[&14]); // ble
         self.load_double_constant(0, 0x0000000000000000);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 1,
@@ -99,35 +104,43 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatCompareUnordered { a: 0, b: 1 });
-        self.emit_branch_conditional_to(4, 2, labels[&15]); // bne
-        self.bind_label(labels[&13]);
+        self.emit_branch_conditional_to(4, 2, labels[&16]); // bne
+        self.bind_label(labels[&14]);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 1,
             a: 1,
             offset: 8,
         });
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&15]);
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&16]);
         self.output.instructions.push(Instruction::LoadWord {
-            d: 5,
+            d: 0,
             a: 1,
             offset: 8,
         });
         self.output.instructions.push(Instruction::LoadWord {
-            d: 3,
+            d: 6,
             a: 1,
             offset: 12,
         });
         self.output
             .instructions
             .push(Instruction::RotateAndMaskRecord {
-                a: 4,
-                s: 5,
+                a: 3,
+                s: 0,
                 shift: 12,
                 begin: 21,
                 end: 31,
             });
-        self.emit_branch_conditional_to(4, 2, labels[&36]); // bne
+        self.output
+            .instructions
+            .push(Instruction::move_register(5, 0));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 3,
+            immediate: 0,
+        });
+        self.emit_branch_conditional_to(4, 2, labels[&41]); // bne
         self.output
             .instructions
             .push(Instruction::ClearLeftImmediate {
@@ -137,10 +150,10 @@ impl Generator {
             });
         self.output
             .instructions
-            .push(Instruction::OrRecord { a: 0, s: 3, b: 0 });
-        self.emit_branch_conditional_to(4, 2, labels[&23]); // bne
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&23]);
+            .push(Instruction::OrRecord { a: 0, s: 6, b: 0 });
+        self.emit_branch_conditional_to(4, 2, labels[&26]); // bne
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&26]);
         self.load_double_constant(0, 0x4350000000000000);
         self.output
             .instructions
@@ -152,48 +165,56 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
+            .push(Instruction::FloatMultiplyDouble { d: 0, a: 1, c: 0 });
         self.output
             .instructions
             .push(Instruction::CompareWord { a: 31, b: 0 });
         self.output
             .instructions
             .push(Instruction::StoreFloatDouble {
-                s: 1,
+                s: 0,
                 a: 1,
                 offset: 8,
             });
         self.output.instructions.push(Instruction::LoadWord {
-            d: 5,
+            d: 0,
             a: 1,
             offset: 8,
         });
         self.output.instructions.push(Instruction::RotateAndMask {
             a: 3,
-            s: 5,
+            s: 0,
             shift: 12,
             begin: 21,
             end: 31,
         });
+        self.output
+            .instructions
+            .push(Instruction::move_register(5, 0));
         self.output.instructions.push(Instruction::AddImmediate {
             d: 4,
             a: 3,
             immediate: -54,
         });
-        self.emit_branch_conditional_to(4, 0, labels[&36]); // bge
-        self.load_double_constant(0, 0x01a56e1fc2f8f359);
+        self.emit_branch_conditional_to(4, 0, labels[&41]); // bge
+        self.load_double_constant(1, 0x01a56e1fc2f8f359);
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 0,
+            a: 1,
+            offset: 8,
+        });
         self.output
             .instructions
-            .push(Instruction::FloatMultiplyDouble { d: 1, a: 0, c: 1 });
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&36]);
+            .push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&41]);
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate {
                 a: 4,
                 immediate: 2047,
             });
-        self.emit_branch_conditional_to(4, 2, labels[&41]); // bne
+        self.emit_branch_conditional_to(4, 2, labels[&46]); // bne
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 0,
             a: 1,
@@ -202,8 +223,8 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatAddDouble { d: 1, a: 0, b: 0 });
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&41]);
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&46]);
         self.output
             .instructions
             .push(Instruction::Add { d: 4, a: 4, b: 31 });
@@ -213,7 +234,7 @@ impl Generator {
                 a: 4,
                 immediate: 2046,
             });
-        self.emit_branch_conditional_to(4, 1, labels[&50]); // ble
+        self.emit_branch_conditional_to(4, 1, labels[&55]); // ble
         self.load_double_constant(1, 0x7e37e43c8800759c);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 2,
@@ -228,12 +249,12 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatMultiplyDouble { d: 1, a: 0, c: 1 });
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&50]);
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&55]);
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate { a: 4, immediate: 0 });
-        self.emit_branch_conditional_to(4, 1, labels[&58]); // ble
+        self.emit_branch_conditional_to(4, 1, labels[&63]); // ble
         self.output.instructions.push(Instruction::RotateAndMask {
             a: 3,
             s: 5,
@@ -261,15 +282,15 @@ impl Generator {
             a: 1,
             offset: 8,
         });
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&58]);
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&63]);
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate {
                 a: 4,
                 immediate: -54,
             });
-        self.emit_branch_conditional_to(12, 1, labels[&76]); // bgt
+        self.emit_branch_conditional_to(12, 1, labels[&81]); // bgt
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(3, 1));
@@ -281,7 +302,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::CompareWord { a: 31, b: 0 });
-        self.emit_branch_conditional_to(4, 1, labels[&70]); // ble
+        self.emit_branch_conditional_to(4, 1, labels[&75]); // ble
         self.load_double_constant(1, 0x7e37e43c8800759c);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 2,
@@ -296,8 +317,8 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatMultiplyDouble { d: 1, a: 0, c: 1 });
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&70]);
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&75]);
         self.load_double_constant(1, 0x01a56e1fc2f8f359);
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: 2,
@@ -312,13 +333,14 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatMultiplyDouble { d: 1, a: 0, c: 1 });
-        self.emit_branch_to(labels[&84]); // b
-        self.bind_label(labels[&76]);
+        self.emit_branch_to(labels[&89]); // b
+        self.bind_label(labels[&81]);
         self.output.instructions.push(Instruction::AddImmediate {
             d: 0,
             a: 4,
             immediate: 54,
         });
+        self.load_double_constant(1, 0x3c90000000000000);
         self.output.instructions.push(Instruction::RotateAndMask {
             a: 3,
             s: 5,
@@ -333,7 +355,6 @@ impl Generator {
                 s: 0,
                 shift: 20,
             });
-        self.load_double_constant(1, 0x3c90000000000000);
         self.output
             .instructions
             .push(Instruction::Or { a: 0, s: 3, b: 0 });
@@ -350,7 +371,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatMultiplyDouble { d: 1, a: 1, c: 0 });
-        self.bind_label(labels[&84]);
+        self.bind_label(labels[&89]);
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
             a: 1,
@@ -361,9 +382,6 @@ impl Generator {
             a: 1,
             offset: 28,
         });
-        self.output
-            .instructions
-            .push(Instruction::MoveToLinkRegister { s: 0 });
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
@@ -371,8 +389,11 @@ impl Generator {
         });
         self.output
             .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output
+            .instructions
             .push(Instruction::BranchToLinkRegister);
-        self.output.anonymous_label_bump += bump;
+        self.add_ldexp_label_bump(bump);
         Ok(true)
     }
 }

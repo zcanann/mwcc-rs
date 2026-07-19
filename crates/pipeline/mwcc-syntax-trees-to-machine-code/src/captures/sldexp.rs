@@ -438,7 +438,7 @@ impl Generator {
             .instructions
             .push(Instruction::BranchToLinkRegister);
         // @N: measured via objprobe — the real pools start at @59.
-        self.add_inlined_ldexp_label_bump(33);
+        self.add_ldexp_label_bump(33);
         Ok(true)
     }
 }

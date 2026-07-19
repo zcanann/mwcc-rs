@@ -457,8 +457,8 @@ pub struct Behavior {
     /// Additional anonymous labels retained around `frexp` when deferred
     /// inlining is enabled. Zero for ordinary compilation.
     pub frexp_deferred_label_bump: u8,
-    /// Additional anonymous labels retained by the inlined-classifier `ldexp`
-    /// family under deferred compilation. Zero for ordinary compilation.
+    /// Additional anonymous labels retained by `ldexp` control-flow graphs
+    /// under deferred compilation. Zero for ordinary compilation.
     pub ldexp_deferred_label_bump: u8,
     /// Whole-family schedule for the signal-dispatch `raise` transaction.
     pub raise_family_style: RaiseFamilyStyle,
@@ -1144,6 +1144,7 @@ mod tests {
         let mut deferred_config = CompilerConfig::new(build::GC_1_3);
         deferred_config.flags.inline_deferred = true;
         let deferred = Behavior::resolve(&deferred_config);
+        assert_eq!(deferred.ldexp_deferred_label_bump, 20);
         assert_eq!(
             deferred.trig_dispatcher_style,
             TrigDispatcherStyle::EarlyLiveParameter
@@ -1178,6 +1179,13 @@ mod tests {
     #[test]
     fn build_163_uses_linkage_first_frames() {
         let behavior = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5N));
+        assert_eq!(behavior.ldexp_deferred_label_bump, 0);
+        let mut deferred_config = CompilerConfig::new(build::GC_1_2_5N);
+        deferred_config.flags.inline_deferred = true;
+        assert_eq!(
+            Behavior::resolve(&deferred_config).ldexp_deferred_label_bump,
+            20
+        );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
         assert!(!behavior.emit_leaf_frame_unwind);
         assert!(behavior.constant_join_return_precedes_lr_reload);
