@@ -4,6 +4,7 @@
 //! parameter is stored there in the prologue.
 
 use crate::analysis::*;
+use crate::frexp_family::FrexpFamilyPlan;
 use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, RelocationKind};
@@ -1991,6 +1992,23 @@ impl Generator {
         let Some(eptr_register) = self.lookup_general(eptr) else {
             return Ok(false);
         };
+
+        if self.behavior.frexp_family_style == mwcc_versions::FrexpFamilyStyle::LegacyPhysicalFrame
+        {
+            self.emit_legacy_frexp_family(FrexpFamilyPlan {
+                eptr_register,
+                guard_high,
+                block_high,
+                scale_bits: scale.to_bits(),
+                store_constant,
+                shift,
+                bias,
+                mask_begin,
+                mask_end,
+                or_high: or_high as u16,
+            });
+            return Ok(true);
+        }
 
         // ---- emission (the measured 35-instruction schedule; registers from the allocator) ----
         const SLOT: i16 = 8;

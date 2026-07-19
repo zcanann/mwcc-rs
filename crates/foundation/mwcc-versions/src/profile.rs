@@ -38,6 +38,16 @@ pub enum LeadingFrameGuardStoreStyle {
     GuardHighFirstAfterDataUse,
 }
 
+/// Whole-family lowering of the fdlibm-style `frexp` transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrexpFamilyStyle {
+    /// 2.4.x uses virtual local homes and its compact 16-byte punned frame.
+    VirtualCompactFrame,
+    /// Build 163 uses a padded physical frame with explicit lifetime-splitting
+    /// copies around the writeback diamond.
+    LegacyPhysicalFrame,
+}
+
 /// Lowering used when an integer condition selects the canonical boolean
 /// constants `1` and `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,6 +443,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
     }
 
+    fn frexp_family_style(&self) -> FrexpFamilyStyle {
+        FrexpFamilyStyle::VirtualCompactFrame
+    }
+
     /// In a float `if`-condition comparing a LOADED value (member/global) against a
     /// pool CONSTANT, whether the value operand is loaded BEFORE the constant.
     /// GC/2.0p1 and build 163 use `lfs f1,(v); lfs f0,k`, while mainline uses
@@ -703,6 +717,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
         LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse
+    }
+
+    fn frexp_family_style(&self) -> FrexpFamilyStyle {
+        FrexpFamilyStyle::LegacyPhysicalFrame
     }
 
     fn float_compare_value_before_const(&self) -> bool {

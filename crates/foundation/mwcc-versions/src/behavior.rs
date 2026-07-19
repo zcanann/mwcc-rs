@@ -17,7 +17,7 @@ use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
     ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle,
-    FoldedFloatCompareLinkageStyle, FrameConvention, GlobalArrayIndexStyle,
+    FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle, GlobalArrayIndexStyle,
     IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder,
     LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
@@ -62,6 +62,7 @@ pub enum Quirk {
     LegacyFloatCastSchedule,
     LegacyFoldedFloatCompareBeforeLinkage,
     LegacyGuardHighBeforeLeadingFrameStore,
+    LegacyFrexpPhysicalFrame,
     LegacyIntCallResultConversion,
     /// Build 163 preserves a compare/branch diamond for canonical integer
     /// boolean ternaries instead of using the 2.4.x branchless idioms.
@@ -119,6 +120,7 @@ impl Quirk {
             Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
             Quirk::LegacyFoldedFloatCompareBeforeLinkage => QuirkKind::Intentional,
             Quirk::LegacyGuardHighBeforeLeadingFrameStore => QuirkKind::Intentional,
+            Quirk::LegacyFrexpPhysicalFrame => QuirkKind::Intentional,
             Quirk::LegacyIntCallResultConversion => QuirkKind::Intentional,
             Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
             Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
@@ -183,6 +185,9 @@ impl Quirk {
             }
             Quirk::LegacyGuardHighBeforeLeadingFrameStore => {
                 "punned frame guards delay build 163's pointer store until the first guard-data use"
+            }
+            Quirk::LegacyFrexpPhysicalFrame => {
+                "frexp uses build 163's padded physical writeback frame"
             }
             Quirk::LegacyIntCallResultConversion => {
                 "integer call results use build 163's bias-first conversion frame"
@@ -335,6 +340,8 @@ pub struct Behavior {
     pub folded_float_compare_linkage_style: FoldedFloatCompareLinkageStyle,
     /// Scheduling of a leading pointer store around a punned frame guard.
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
+    /// Whole-family schedule for the fdlibm-style `frexp` transaction.
+    pub frexp_family_style: FrexpFamilyStyle,
     /// In a float `if`-condition against a pool constant, whether the loaded value
     /// operand (member/global) is emitted before the constant load.
     pub float_compare_value_before_const: bool,
@@ -468,6 +475,7 @@ impl Behavior {
                 .profile
                 .folded_float_compare_linkage_style(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
+            frexp_family_style: config.build.profile.frexp_family_style(),
             float_compare_value_before_const: config
                 .build
                 .profile
@@ -571,6 +579,9 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(
                 Quirk::LegacyGuardHighBeforeLeadingFrameStore,
             ));
+        }
+        if self.frexp_family_style == FrexpFamilyStyle::LegacyPhysicalFrame {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyFrexpPhysicalFrame));
         }
         if self.int_call_result_conversion_style == IntCallResultConversionStyle::LegacyBiasFirst {
             quirks.push(ActiveQuirk::of(Quirk::LegacyIntCallResultConversion));
@@ -875,6 +886,10 @@ mod tests {
         assert_eq!(
             behavior.leading_frame_guard_store_style,
             LeadingFrameGuardStoreStyle::GuardHighFirstAfterDataUse
+        );
+        assert_eq!(
+            behavior.frexp_family_style,
+            FrexpFamilyStyle::LegacyPhysicalFrame
         );
         assert!(behavior.float_compare_value_before_const);
         assert_eq!(

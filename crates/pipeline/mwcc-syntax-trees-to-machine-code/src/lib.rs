@@ -25,6 +25,7 @@ mod expressions;
 mod float;
 mod floats;
 mod frame;
+mod frexp_family;
 mod generator;
 mod inline_summaries;
 mod legacy_comparisons;
