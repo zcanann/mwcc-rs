@@ -5,6 +5,7 @@
 //! Split from the former single items.rs (fire 536); behavior-identical.
 
 mod asm;
+mod cxx;
 mod initializers;
 mod statements;
 mod templates;
@@ -1719,13 +1720,36 @@ impl Parser {
                 });
                 return Ok(());
             }
-            let name = self.parse_identifier()?;
+            let mut name = self.parse_identifier()?;
+            // An out-of-class C++ member definition spells its declarator as
+            // `Return Class::method(args)`. Keep qualification separate from
+            // ordinary identifiers: the ELF symbol is CodeWarrior-mangled and
+            // the ABI carries an implicit `this` parameter in r3.
+            let member_scope = if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+                let scope = name;
+                self.advance();
+                self.advance();
+                name = self.parse_identifier()?;
+                if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+                    return Err(Diagnostic::error(
+                        "a multiply-qualified C++ function is not supported yet (roadmap)",
+                    ));
+                }
+                Some(scope)
+            } else {
+                None
+            };
             // A `__attribute__((aligned(n)))` immediately AFTER the declarator name
             // (`T x ATTRIBUTE_ALIGN(n);` — the scalar form). Consuming it here makes the
             // following token the real `;`/`[`/`=`, so the global-variable branch below is
             // entered (otherwise the stray `__attribute__` falls to the function path and
             // the declaration is skipped — a missing-symbol DIFF). `None` when absent.
             let attribute_alignment_name = self.skip_attributes()?;
+            if member_scope.is_some() && *self.peek() != Token::ParenOpen {
+                return Err(Diagnostic::error(
+                    "a qualified C++ data definition is not supported yet (roadmap)",
+                ));
+            }
             // A `(` after the name begins a FUNCTION declarator: record a struct-pointer
             // return tag so `name()->field` resolves the returned pointee's layout.
             if *self.peek() == Token::ParenOpen {
@@ -2203,6 +2227,21 @@ impl Parser {
                 }
             }
             self.expect(Token::ParenClose)?;
+
+            if let Some(scope) = member_scope {
+                let explicit_types: Vec<Type> = parameters
+                    .iter()
+                    .map(|parameter| parameter.parameter_type)
+                    .collect();
+                name = cxx::mangle_member_function(&scope, &name, &explicit_types)?;
+                parameters.insert(
+                    0,
+                    Parameter {
+                        parameter_type: Type::StructPointer { element_size: 0 },
+                        name: "this".to_string(),
+                    },
+                );
+            }
 
             if *self.peek() == Token::Semicolon {
                 self.advance(); // a prototype — record its return + parameter types, keep looking

@@ -665,7 +665,8 @@ impl Parser {
             }
             other => {
                 return Err(Diagnostic::error(format!(
-                    "expected an expression, found {other}"
+                    "expected an expression, found {other} at token {}",
+                    self.position.saturating_sub(1)
                 )))
             }
         };
