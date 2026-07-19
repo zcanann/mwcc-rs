@@ -29,6 +29,9 @@ impl Generator {
         if self.try_inplace_accumulator(function)? {
             return Ok(true);
         }
+        if self.try_legacy_inplace_returned_local(function)? {
+            return Ok(true);
+        }
         // Only take over the cases the straight-line path does not: a reassigned
         // local, or more than one local. A single never-reassigned local keeps the
         // existing handling.
@@ -602,6 +605,88 @@ impl Generator {
         Ok(true)
     }
 
+    /// Build 163 preserves the source-level identity of one returned mutable
+    /// local across a straight-line arithmetic chain. Once the local has a value
+    /// in r3, each reassignment mutates r3 in place. The 2.4.x line instead
+    /// substitutes the complete expression and lets one-use intermediates occupy
+    /// r0, so this must run before the generic substitution path erases those
+    /// assignment boundaries.
+    fn try_legacy_inplace_returned_local(&mut self, function: &Function) -> Compilation<bool> {
+        if self.behavior.value_tracked_mutation_style
+            != mwcc_versions::ValueTrackedMutationStyle::InPlaceResultRegister
+            || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+            || !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == &local.name)
+        {
+            return Ok(false);
+        }
+        let Some(initializer) = local.initializer.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(initializer, Expression::Variable(_))
+            && !self.is_single_op_register_value(initializer)
+        {
+            return Ok(false);
+        }
+
+        let assignments: Vec<&Expression> = function
+            .statements
+            .iter()
+            .map(|statement| match statement {
+                Statement::Assign { name, value } if name == &local.name => Some(value),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+        if assignments.len() != function.statements.len()
+            || assignments.is_empty()
+            || !assignments
+                .iter()
+                .all(|value| inplace_local_step(value, &local.name))
+        {
+            return Ok(false);
+        }
+
+        let result = Eabi::general_result().number;
+        let mut first_assignment = 0;
+        if matches!(initializer, Expression::Variable(_)) {
+            // Do not materialize a pure alias: build 163 folds its source register
+            // directly into the first mutation (`addi r3,r4,1`, not `mr; addi`).
+            let mut alias = HashMap::new();
+            alias.insert(local.name.clone(), initializer.clone());
+            let first = substitute(assignments[0], &alias);
+            self.evaluate_general(&first, result)?;
+            first_assignment = 1;
+        } else {
+            self.evaluate_general(initializer, result)?;
+        }
+
+        self.locations.insert(
+            local.name.clone(),
+            Location {
+                class: ValueClass::General,
+                register: result,
+                signed: local.declared_type.is_signed(),
+                width: 32,
+                pointee: None,
+                stride: None,
+            },
+        );
+        for value in &assignments[first_assignment..] {
+            self.evaluate_general(value, result)?;
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// The clean in-place accumulator shape — `int t = p0 OP p1; t = t OP p2; …;
     /// return t;` — where every STEP operand is the NEXT parameter in register order
     /// and the accumulator is always the LEFT operand. mwcc keeps `t` in the result
@@ -764,6 +849,35 @@ impl Generator {
         }
         self.emit_epilogue_and_return();
         Ok(true)
+    }
+}
+
+/// A source assignment that consumes the local exactly once and can therefore
+/// update its result-register home without preserving the previous value.
+fn inplace_local_step(expression: &Expression, local: &str) -> bool {
+    let is_local =
+        |operand: &Expression| matches!(operand, Expression::Variable(name) if name == local);
+    let is_leaf = |operand: &Expression| {
+        matches!(
+            operand,
+            Expression::Variable(_) | Expression::IntegerLiteral(_)
+        )
+    };
+    match expression {
+        Expression::Binary {
+            operator:
+                BinaryOperator::Add
+                | BinaryOperator::Subtract
+                | BinaryOperator::Multiply
+                | BinaryOperator::BitAnd
+                | BinaryOperator::BitOr
+                | BinaryOperator::BitXor
+                | BinaryOperator::ShiftLeft
+                | BinaryOperator::ShiftRight,
+            left,
+            right,
+        } => (is_local(left) && is_leaf(right)) || (is_leaf(left) && is_local(right)),
+        _ => false,
     }
 }
 

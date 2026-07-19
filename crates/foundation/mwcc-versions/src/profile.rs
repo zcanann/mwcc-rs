@@ -162,6 +162,27 @@ pub enum ComputedStoreIssueStyle {
     EvaluationOrder,
 }
 
+/// Placement of a source-level mutable local across a straight-line arithmetic
+/// reassignment chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueTrackedMutationStyle {
+    /// 2.4.x substitutes the local's expression and uses the ordinary expression
+    /// allocator, including r0 for one-use intermediates.
+    InlineExpression,
+    /// 2.3.3 keeps a single returned local in r3 and mutates it in place at each
+    /// source assignment boundary.
+    InPlaceResultRegister,
+}
+
+/// Register used for the shift in `x * -2^N`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NegativePowerOfTwoMultiplyStyle {
+    /// 2.4.x shifts into r0, then negates into the result register.
+    ShiftThroughScratch,
+    /// 2.3.3 shifts and negates in place in the result register.
+    ShiftInResultRegister,
+}
+
 /// AST traversal used to assign external/data symbol indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolTraversalStyle {
@@ -409,6 +430,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         ComputedStoreIssueStyle::ReadinessOrder
     }
 
+    fn value_tracked_mutation_style(&self) -> ValueTrackedMutationStyle {
+        ValueTrackedMutationStyle::InlineExpression
+    }
+
+    fn negative_power_of_two_multiply_style(&self) -> NegativePowerOfTwoMultiplyStyle {
+        NegativePowerOfTwoMultiplyStyle::ShiftThroughScratch
+    }
+
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {
         GlobalArrayIndexStyle::Indexed
     }
@@ -585,6 +614,12 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn computed_store_issue_style(&self) -> ComputedStoreIssueStyle {
         ComputedStoreIssueStyle::EvaluationOrder
+    }
+    fn value_tracked_mutation_style(&self) -> ValueTrackedMutationStyle {
+        ValueTrackedMutationStyle::InPlaceResultRegister
+    }
+    fn negative_power_of_two_multiply_style(&self) -> NegativePowerOfTwoMultiplyStyle {
+        NegativePowerOfTwoMultiplyStyle::ShiftInResultRegister
     }
 
     fn global_array_index_style(&self) -> GlobalArrayIndexStyle {

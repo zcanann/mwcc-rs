@@ -19,8 +19,9 @@ use crate::profile::{
     FrameConvention, GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntegerComparisonValueStyle,
     IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, SymbolTraversalStyle, VaArgScheduleStyle,
+    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
+    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, SignedPowerOfTwoDivisionStyle,
+    SmallZeroDataLayoutStyle, SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
     WideConstantAddSchedule,
 };
 
@@ -86,6 +87,8 @@ pub enum Quirk {
     LegacyTrueFirstLogicalOr,
     LegacyInterleavedConstantStores,
     LegacyEvaluationOrderComputedStores,
+    LegacyInPlaceValueTrackedMutation,
+    LegacyInPlaceNegativePowerOfTwoMultiply,
     LegacyInPlaceBitFieldExtraction,
     LegacyConstantJoinReturnBeforeLrReload,
     LegacyGuardStoreBeforeReturnValue,
@@ -131,6 +134,8 @@ impl Quirk {
             Quirk::LegacyTrueFirstLogicalOr => QuirkKind::Intentional,
             Quirk::LegacyInterleavedConstantStores => QuirkKind::Intentional,
             Quirk::LegacyEvaluationOrderComputedStores => QuirkKind::Intentional,
+            Quirk::LegacyInPlaceValueTrackedMutation => QuirkKind::Intentional,
+            Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => QuirkKind::Intentional,
             Quirk::LegacyInPlaceBitFieldExtraction => QuirkKind::Intentional,
             Quirk::LegacyConstantJoinReturnBeforeLrReload => QuirkKind::Intentional,
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
@@ -236,6 +241,12 @@ impl Quirk {
             Quirk::LegacyEvaluationOrderComputedStores => {
                 "computed-store runs issue stores in build 163's value evaluation order"
             }
+            Quirk::LegacyInPlaceValueTrackedMutation => {
+                "straight-line mutable locals remain in build 163's result register"
+            }
+            Quirk::LegacyInPlaceNegativePowerOfTwoMultiply => {
+                "negative power-of-two multiplies shift and negate in place in build 163"
+            }
             Quirk::LegacyInPlaceBitFieldExtraction => {
                 "bit-field unit loads extract in place in build 163"
             }
@@ -310,6 +321,10 @@ pub struct Behavior {
     pub constant_store_schedule_style: ConstantStoreScheduleStyle,
     /// Issue order for stores fed by an overlapping two-value schedule.
     pub computed_store_issue_style: ComputedStoreIssueStyle,
+    /// Placement of a returned local across source-level arithmetic reassignments.
+    pub value_tracked_mutation_style: ValueTrackedMutationStyle,
+    /// Placement of the shift in a negative power-of-two multiply.
+    pub negative_power_of_two_multiply_style: NegativePowerOfTwoMultiplyStyle,
     /// Addressing shape for variable-indexed file-scope arrays.
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
@@ -415,6 +430,11 @@ impl Behavior {
             bit_field_load_placement: config.build.profile.bit_field_load_placement(),
             constant_store_schedule_style: config.build.profile.constant_store_schedule_style(),
             computed_store_issue_style: config.build.profile.computed_store_issue_style(),
+            value_tracked_mutation_style: config.build.profile.value_tracked_mutation_style(),
+            negative_power_of_two_multiply_style: config
+                .build
+                .profile
+                .negative_power_of_two_multiply_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -500,6 +520,16 @@ impl Behavior {
         }
         if self.computed_store_issue_style == ComputedStoreIssueStyle::EvaluationOrder {
             quirks.push(ActiveQuirk::of(Quirk::LegacyEvaluationOrderComputedStores));
+        }
+        if self.value_tracked_mutation_style == ValueTrackedMutationStyle::InPlaceResultRegister {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyInPlaceValueTrackedMutation));
+        }
+        if self.negative_power_of_two_multiply_style
+            == NegativePowerOfTwoMultiplyStyle::ShiftInResultRegister
+        {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyInPlaceNegativePowerOfTwoMultiply,
+            ));
         }
         if self.global_array_index_style == GlobalArrayIndexStyle::ExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitGlobalArrayAddress));
@@ -704,6 +734,14 @@ mod tests {
         assert_eq!(
             behavior.computed_store_issue_style,
             ComputedStoreIssueStyle::EvaluationOrder
+        );
+        assert_eq!(
+            behavior.value_tracked_mutation_style,
+            ValueTrackedMutationStyle::InPlaceResultRegister
+        );
+        assert_eq!(
+            behavior.negative_power_of_two_multiply_style,
+            NegativePowerOfTwoMultiplyStyle::ShiftInResultRegister
         );
         assert!(behavior.lr_save_precedes_float_const);
         assert_eq!(

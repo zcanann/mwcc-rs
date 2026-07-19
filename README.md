@@ -4,6 +4,8 @@ A byte-exact reimplementation, in Rust, of **Metrowerks CodeWarrior for Embedded
 
 The goal is narrow and absolute: for a supported translation unit, `mwcc-rs` emits a `.text` that is **identical, byte for byte, to the output of the real compiler**. Not equivalent code. The same code. It currently reproduces **eight GameCube builds** — GC/1.3, 1.3.2, 1.3.2r, 2.0, 2.0p1, 2.5, 2.6, 2.7 (mwcceppc 2.4.2 build 53 through 2.4.7 build 108) — from one code generator parameterized by build.
 
+GC/1.3.2r remains recognized for compatibility, but it is not a required parity gate: it was a hacked Animal Crossing compiler variant that disabled `.rodata` pooling, and the underlying stock GC/1.3.2 bug is now understood without relying on that build.
+
 ## Why this exists
 
 A decompilation is verified by recompiling reconstructed source and checking that it reproduces the original game's machine code exactly. That makes the *compiler* a hard dependency: you must own the precise build the game shipped with, and you must be able to coax its precise register allocation and instruction scheduling. Two problems follow:

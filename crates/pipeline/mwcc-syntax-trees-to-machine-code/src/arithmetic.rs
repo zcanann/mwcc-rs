@@ -1173,24 +1173,32 @@ impl Generator {
             return Ok(true);
         }
 
-        // `a * -C` for a power-of-two C is `-(a << log2 C)`: shift into the scratch then negate into
-        // the destination (`slwi r0,a,n; neg d,r0`), as mwcc does — not a `mulli` by the negative.
+        // `a * -C` for a power-of-two C is `-(a << log2 C)`, not a `mulli` by
+        // the negative. The 2.4.x allocator stages the shift through r0; build
+        // 163 keeps this particular strength-reduced chain in the result register.
         if operator == BinaryOperator::Multiply && constant <= -2 {
             let magnitude = constant.unsigned_abs();
             if magnitude.is_power_of_two() {
                 let shift = magnitude.trailing_zeros();
                 if (1..=31).contains(&shift) {
                     let source = self.place_operand_or_scratch(variable, destination)?;
+                    let shift_result = if self.behavior.negative_power_of_two_multiply_style
+                        == mwcc_versions::NegativePowerOfTwoMultiplyStyle::ShiftInResultRegister
+                    {
+                        destination
+                    } else {
+                        GENERAL_SCRATCH
+                    };
                     self.output
                         .instructions
                         .push(Instruction::ShiftLeftImmediate {
-                            a: GENERAL_SCRATCH,
+                            a: shift_result,
                             s: source,
                             shift: shift as u8,
                         });
                     self.output.instructions.push(Instruction::Negate {
                         d: destination,
-                        a: GENERAL_SCRATCH,
+                        a: shift_result,
                     });
                     return Ok(true);
                 }
