@@ -632,19 +632,55 @@ impl Generator {
             },
         ];
         let registers = allocate(&values);
-        let extract_temp = registers[0];
-        let a2_temp = registers[1];
-        let a3_mask_reg = registers[2];
-        let one_reg = registers[3];
-        let j0_reg = registers[4];
-        let i0_reg = if i0 == 0 { registers[5] } else { registers[6] };
-        let i1_reg = if i0 == 0 { registers[6] } else { registers[5] };
-        let a2_i = registers[7];
-        let a3_i = registers[8];
+        let legacy_roles =
+            policy::legacy_ladder_registers(self.behavior.punned_shift_writeback_style);
+        let extract_temp = legacy_roles
+            .as_ref()
+            .map(|roles| roles.extract)
+            .unwrap_or(registers[0]);
+        let a2_temp = legacy_roles
+            .as_ref()
+            .map(|roles| roles.arm_temp)
+            .unwrap_or(registers[1]);
+        let a3_mask_reg = legacy_roles
+            .as_ref()
+            .map(|roles| roles.arm_mask)
+            .unwrap_or(registers[2]);
+        let one_reg = legacy_roles
+            .as_ref()
+            .map(|roles| roles.carry_one)
+            .unwrap_or(registers[3]);
+        let j0_reg = legacy_roles
+            .as_ref()
+            .map(|roles| roles.scrutinee)
+            .unwrap_or(registers[4]);
+        let i0_reg = legacy_roles
+            .as_ref()
+            .map(|roles| roles.source_home)
+            .unwrap_or(if i0 == 0 { registers[5] } else { registers[6] });
+        let i1_reg = legacy_roles
+            .as_ref()
+            .map(|roles| roles.other)
+            .unwrap_or(if i0 == 0 { registers[6] } else { registers[5] });
+        let source_load = legacy_roles
+            .as_ref()
+            .map(|roles| roles.source_load)
+            .unwrap_or(i0_reg);
+        let a2_i = legacy_roles
+            .as_ref()
+            .map(|roles| roles.arm_shift)
+            .unwrap_or(registers[7]);
+        let a3_i = legacy_roles
+            .as_ref()
+            .map(|roles| roles.arm_shift)
+            .unwrap_or(registers[8]);
         // NB: loads emit in frame-offset order = locals order; registers[5]
         // belongs to locals[0].
-        let load0 = registers[5];
-        let load1 = registers[6];
+        let load0 = if i0 == 0 { source_load } else { i1_reg };
+        let load1 = if i0 == 0 { i1_reg } else { source_load };
+        let store0 = if i0 == 0 { i0_reg } else { i1_reg };
+        let store1 = if i0 == 0 { i1_reg } else { i0_reg };
+        let legacy_reloading = legacy_roles.is_some();
         // -- emit --
         self.frame_size = 16;
         self.output
@@ -679,7 +715,7 @@ impl Generator {
                 };
                 self.output.instructions.push(Instruction::RotateAndMask {
                     a: extract_temp,
-                    s: i0_reg,
+                    s: source_load,
                     shift: rotated,
                     begin,
                     end,
@@ -690,7 +726,7 @@ impl Generator {
                     .instructions
                     .push(Instruction::ShiftRightAlgebraicImmediate {
                         a: extract_temp,
-                        s: i0_reg,
+                        s: source_load,
                         shift: guard.shift,
                     });
             }
@@ -712,6 +748,11 @@ impl Generator {
                 a: j0_reg,
                 immediate: k1,
             });
+        if source_load != i0_reg {
+            self.output
+                .instructions
+                .push(Instruction::move_register(i0_reg, source_load));
+        }
         self.emit_branch_conditional_to(4, 0, ladder2_at); // bge
         self.output
             .instructions
@@ -722,6 +763,13 @@ impl Generator {
         self.emit_branch_conditional_to(4, 0, arm2_at); // bge
                                                         // ARM1.
         self.load_double_constant(2, huge_bits);
+        if legacy_reloading {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.load_double_constant(0, zero_bits);
         self.output
             .instructions
@@ -827,9 +875,23 @@ impl Generator {
         });
         let a2_cont = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, a2_cont); // bne
+        if legacy_reloading {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.emit_branch_to(epilogue);
         self.bind_label(a2_cont);
         self.load_double_constant(2, huge_bits);
+        if legacy_reloading {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.load_double_constant(0, zero_bits);
         self.output
             .instructions
@@ -883,11 +945,32 @@ impl Generator {
                 a: j0_reg,
                 immediate: k3,
             });
-        self.emit_branch_conditional_to(4, 2, epilogue); // bne — return x
-        self.output
-            .instructions
-            .push(Instruction::FloatAddDouble { d: 1, a: 1, b: 1 });
-        self.emit_branch_to(epilogue);
+        if legacy_reloading {
+            let mid_return = self.fresh_label();
+            self.emit_branch_conditional_to(4, 2, mid_return); // bne — return x
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 0,
+                a: 1,
+                offset: 8,
+            });
+            self.output
+                .instructions
+                .push(Instruction::FloatAddDouble { d: 1, a: 0, b: 0 });
+            self.emit_branch_to(epilogue);
+            self.bind_label(mid_return);
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+            self.emit_branch_to(epilogue);
+        } else {
+            self.emit_branch_conditional_to(4, 2, epilogue); // bne — return x
+            self.output
+                .instructions
+                .push(Instruction::FloatAddDouble { d: 1, a: 1, b: 1 });
+            self.emit_branch_to(epilogue);
+        }
         // ARM3.
         self.bind_label(arm3_at);
         self.output.instructions.push(Instruction::AddImmediate {
@@ -910,9 +993,23 @@ impl Generator {
         });
         let a3_cont = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, a3_cont); // bne
+        if legacy_reloading {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.emit_branch_to(epilogue);
         self.bind_label(a3_cont);
         self.load_double_constant(2, huge_bits);
+        if legacy_reloading {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.load_double_constant(0, zero_bits);
         self.output
             .instructions
@@ -987,12 +1084,12 @@ impl Generator {
         // JOIN + EPI.
         self.bind_label(join);
         self.output.instructions.push(Instruction::StoreWord {
-            s: load0,
+            s: store0,
             a: 1,
             offset: 8 + locals[0].1,
         });
         self.output.instructions.push(Instruction::StoreWord {
-            s: load1,
+            s: store1,
             a: 1,
             offset: 8 + locals[1].1,
         });
@@ -1010,9 +1107,13 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
-        // Pre-pool labels (measured on the full s_floor object: real @45
-        // vs the +0 base's @5).
-        self.output.anonymous_label_bump += 40;
+        // Pre-pool labels: mainline advances 40; build 163 retains four
+        // additional ladder-edge slots before the shared double constants.
+        self.output.anonymous_label_bump += 40
+            + legacy_roles
+                .as_ref()
+                .map(|roles| roles.constant_label_bump)
+                .unwrap_or(0);
         Ok(true)
     }
 }

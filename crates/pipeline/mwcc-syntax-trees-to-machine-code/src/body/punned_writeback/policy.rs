@@ -172,6 +172,38 @@ pub(super) fn legacy_shift_carry_registers(
     )
 }
 
+pub(super) struct LegacyLadderRegisters {
+    pub(super) extract: u8,
+    pub(super) scrutinee: u8,
+    pub(super) source_load: u8,
+    pub(super) source_home: u8,
+    pub(super) other: u8,
+    pub(super) arm_temp: u8,
+    pub(super) arm_shift: u8,
+    pub(super) arm_mask: u8,
+    pub(super) carry_one: u8,
+    pub(super) constant_label_bump: u32,
+}
+
+pub(super) fn legacy_ladder_registers(
+    style: mwcc_versions::PunnedShiftWritebackStyle,
+) -> Option<LegacyLadderRegisters> {
+    (style == mwcc_versions::PunnedShiftWritebackStyle::LegacyReloading).then_some(
+        LegacyLadderRegisters {
+            extract: 3,
+            scrutinee: 4,
+            source_load: 0,
+            source_home: 6,
+            other: 7,
+            arm_temp: 3,
+            arm_shift: 5,
+            arm_mask: 3,
+            carry_one: 3,
+            constant_label_bump: 4,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
