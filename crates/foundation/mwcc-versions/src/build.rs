@@ -45,6 +45,22 @@ pub struct CompilerBuild {
     pub profile: &'static dyn CodegenProfile,
 }
 
+/// GC/1.1 — mwcceppc 2.3.3 build 159.
+pub const GC_1_1: CompilerBuild = CompilerBuild {
+    label: "GC/1.1",
+    product: "CodeWarrior for GameCube 1.1",
+    build: 159,
+    profile: &Gc233Build163,
+    ..GC_1_2_5
+};
+
+/// GC/1.1p1 — patch 1 of the same preserved build 159 compiler.
+pub const GC_1_1P1: CompilerBuild = CompilerBuild {
+    label: "GC/1.1p1",
+    product: "CodeWarrior for GameCube 1.1 (patch 1)",
+    ..GC_1_1
+};
+
 /// GC/1.2.5 — mwcceppc 2.3.3 build 163. Kept experimental until its complete
 /// frame scheduler and object conventions pass the full corpus.
 pub const GC_1_2_5: CompilerBuild = CompilerBuild {
@@ -287,7 +303,9 @@ pub const SUPPORTED: &[CompilerBuild] = &[
 
 /// Known compiler identities whose profiles are still incomplete. They are
 /// available only through the explicit experimental-build opt-in.
-pub const EXPERIMENTAL: &[CompilerBuild] = &[GC_1_2_5, GC_1_2_5N, GC_3_0A3, GC_3_0A3P1, WII_1_0];
+pub const EXPERIMENTAL: &[CompilerBuild] = &[
+    GC_1_1, GC_1_1P1, GC_1_2_5, GC_1_2_5N, GC_3_0A3, GC_3_0A3P1, WII_1_0,
+];
 
 /// The default build new compilations target until one is selected.
 pub const DEFAULT: CompilerBuild = GC_1_3_2;
@@ -326,6 +344,18 @@ mod tests {
         assert_eq!(build.initial_anonymous_counter, 2);
         assert_eq!(build.post_leaf_function_anonymous_bump, 1);
         assert_eq!(build.post_framed_function_anonymous_bump, 1);
+    }
+
+    #[test]
+    fn gc11_builds_are_separate_experimental_identities() {
+        for label in ["GC/1.1", "GC/1.1p1"] {
+            assert!(by_label(label).is_none());
+            let build = by_label_experimental(label).expect("experimental GC/1.1 build");
+            assert_eq!(build.version, (2, 3, 3));
+            assert_eq!(build.build, 159);
+            assert_eq!(build.comment_marker, 0x08);
+            assert_eq!(build.comment_version, (2, 3, 0));
+        }
     }
 
     #[test]
